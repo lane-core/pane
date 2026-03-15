@@ -119,7 +119,7 @@
             # Override workspace members to include pane-comp on Linux
             postPatch = ''
               substituteInPlace Cargo.toml \
-                --replace 'members = ["crates/pane-proto"]' 'members = ["crates/pane-proto", "crates/pane-comp"]'
+                --replace-fail 'members = ["crates/pane-proto"]' 'members = ["crates/pane-proto", "crates/pane-comp"]'
             '';
 
             nativeBuildInputs = [
@@ -131,6 +131,7 @@
             # Only build pane-comp binary
             cargoBuildFlags = [ "-p" "pane-comp" ];
             cargoTestFlags = [ "-p" "pane-proto" "-p" "pane-comp" ];
+
           };
 
           pane-proto = pkgs.rustPlatform.buildRustPackage {
