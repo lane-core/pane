@@ -16,6 +16,7 @@ use smithay::{
     utils::{Rectangle, Size, Transform},
 };
 use anyhow::{Context, Result};
+use bpaf::Bpaf;
 use tracing::{info, warn};
 
 use glyph_atlas::GlyphAtlas;
@@ -24,17 +25,37 @@ use pane_renderer::PaneRenderer;
 /// Background color — dark grey, 90s-inspired
 const BG_COLOR: Color32F = Color32F::new(0.12, 0.12, 0.14, 1.0);
 
+/// pane desktop environment compositor
+#[derive(Debug, Clone, Bpaf)]
+#[bpaf(options, version)]
+struct Opts {
+    /// font family name
+    #[bpaf(long, fallback("monospace".to_string()))]
+    font: String,
+
+    /// font size in points
+    #[bpaf(long, fallback(14.0))]
+    font_size: f32,
+
+    /// log level (error, warn, info, debug, trace)
+    #[bpaf(long("log"), fallback("info".to_string()))]
+    log_level: String,
+}
+
 fn main() {
+    let opts = opts().run();
+
     tracing_subscriber::fmt()
         .with_env_filter(
             tracing_subscriber::EnvFilter::try_from_default_env()
-                .unwrap_or_else(|_| "pane_comp=info".into()),
+                .unwrap_or_else(|_| format!("pane_comp={}", opts.log_level).into()),
         )
         .init();
 
     info!("pane-comp starting");
+    info!("font: {} {}pt", opts.font, opts.font_size);
 
-    if let Err(e) = run() {
+    if let Err(e) = run(&opts) {
         eprintln!("pane-comp fatal: {e:?}");
         std::process::exit(1);
     }
@@ -42,7 +63,7 @@ fn main() {
     info!("pane-comp shutdown");
 }
 
-fn run() -> Result<()> {
+fn run(opts: &Opts) -> Result<()> {
     // Log Wayland environment for debugging
     info!("WAYLAND_DISPLAY={:?}", std::env::var("WAYLAND_DISPLAY").ok());
     info!("XDG_RUNTIME_DIR={:?}", std::env::var("XDG_RUNTIME_DIR").ok());
@@ -72,7 +93,7 @@ fn run() -> Result<()> {
     output.set_preferred(mode);
 
     // Initialize glyph atlas
-    let mut atlas = GlyphAtlas::new(14.0)?;
+    let mut atlas = GlyphAtlas::new(opts.font_size)?;
     let renderer = backend.renderer();
     atlas.load_ascii(renderer)?;
     info!(
