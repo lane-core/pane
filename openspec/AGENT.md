@@ -51,6 +51,9 @@ Things that will trip you up — not documented elsewhere in the specs:
 1. **macOS can't build pane-comp.** smithay requires wayland-sys (Linux-only).
    Workspace default members exclude pane-comp. Use `nix develop` for
    consistent toolchain, Linux box for pane-comp.
+   **When adding deps to pane-comp**: temporarily add it to workspace members,
+   run `cargo generate-lockfile`, then revert members. The nix offline
+   build needs all deps in Cargo.lock.
 2. **CellRegion requires validated construction** via `CellRegion::new()`.
    Direct struct construction bypasses the `width * height` invariant.
 3. **FKey requires TryFrom<u8>** — values outside 1-24 are rejected.
