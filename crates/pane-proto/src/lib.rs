@@ -6,6 +6,8 @@ pub mod message;
 pub mod polarity;
 pub mod server;
 pub mod state;
+pub mod tag;
+pub mod widget;
 pub mod wire;
 
 pub use attrs::{AttrValue, PaneMessage};
@@ -17,4 +19,6 @@ pub use polarity::{Compute, Value};
 pub use server::ServerVerb;
 pub use server::views::{TypedView, ViewError};
 pub use state::{ProtocolError, ProtocolState};
+pub use tag::{BuiltInAction, TagAction, TagCommand, TagLine};
+pub use widget::{WidgetEvent, WidgetNode};
 pub use wire::{deserialize, frame, frame_length, serialize};

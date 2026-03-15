@@ -5,6 +5,8 @@ use serde::{Deserialize, Serialize};
 use crate::cell::CellRegion;
 use crate::event::{KeyEvent, MouseEvent};
 use crate::polarity::Value;
+use crate::tag::TagLine;
+use crate::widget::{WidgetEvent, WidgetNode};
 
 /// Opaque, compositor-assigned pane identifier.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -26,23 +28,27 @@ impl PaneId {
 pub enum PaneKind {
     /// Cell grid — compositor renders text from cell data.
     CellGrid,
+    /// Graphical widgets — compositor renders widget tree.
+    Widget,
     /// Wayland surface — client renders pixels.
     Surface,
 }
 
 /// Messages from a pane-native client to the compositor.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum PaneRequest {
     /// Create a new pane.
     Create { name: String, kind: PaneKind },
     /// Close an existing pane.
     Close { id: PaneId },
-    /// Write cells to the pane body.
+    /// Write cells to the pane body (CellGrid panes).
     WriteCells { id: PaneId, region: CellRegion },
+    /// Set the widget tree (Widget panes).
+    SetWidgetTree { id: PaneId, root: WidgetNode },
     /// Scroll the pane body. Positive = down (toward newer content), unit = rows.
     Scroll { id: PaneId, delta: i32 },
-    /// Set the pane tag line text.
-    SetTag { id: PaneId, text: String },
+    /// Set the pane tag line.
+    SetTag { id: PaneId, tag: TagLine },
     /// Mark the pane as dirty or clean.
     SetDirty { id: PaneId, dirty: bool },
     /// Request a specific geometry (cols, rows).
@@ -52,7 +58,7 @@ pub enum PaneRequest {
 impl Value for PaneRequest {}
 
 /// Messages from the compositor to a pane-native client.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum PaneEvent {
     /// A pane was created. Returns the assigned id and kind.
     Created { id: PaneId, kind: PaneKind },
@@ -66,12 +72,14 @@ pub enum PaneEvent {
     Focus { id: PaneId, focused: bool },
     /// Compositor requests the pane to close.
     CloseRequested { id: PaneId },
-    /// User executed text from the tag line (B2 click).
-    TagExecute { id: PaneId, text: String },
-    /// User routed text from the tag line (B3 click).
+    /// User executed a tag action (B2/left-click).
+    TagExecute { id: PaneId, action: TagLine },
+    /// User routed text from the tag (B3 click).
     TagRoute { id: PaneId, text: String },
     /// A routed message was delivered to this client.
     Route { message: RouteMessage },
+    /// Widget interaction event (Widget panes).
+    Widget { id: PaneId, event: WidgetEvent },
 }
 
 /// A message routed through pane-route.

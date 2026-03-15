@@ -126,7 +126,38 @@ fn arb_mouse_event() -> impl Strategy<Value = MouseEvent> {
 }
 
 fn arb_pane_kind() -> impl Strategy<Value = message::PaneKind> {
-    prop_oneof![Just(message::PaneKind::CellGrid), Just(message::PaneKind::Surface)]
+    prop_oneof![
+        Just(message::PaneKind::CellGrid),
+        Just(message::PaneKind::Widget),
+        Just(message::PaneKind::Surface),
+    ]
+}
+
+fn arb_tag_action() -> impl Strategy<Value = pane_proto::tag::TagAction> {
+    (".*", prop_oneof![
+        Just(pane_proto::tag::TagCommand::BuiltIn(pane_proto::tag::BuiltInAction::Del)),
+        Just(pane_proto::tag::TagCommand::BuiltIn(pane_proto::tag::BuiltInAction::Get)),
+        ".*".prop_map(pane_proto::tag::TagCommand::Shell),
+        ".*".prop_map(pane_proto::tag::TagCommand::Route),
+    ]).prop_map(|(label, command)| pane_proto::tag::TagAction { label, command })
+}
+
+fn arb_tag_line() -> impl Strategy<Value = pane_proto::tag::TagLine> {
+    (
+        ".*",
+        proptest::collection::vec(arb_tag_action(), 0..=3),
+        proptest::collection::vec(arb_tag_action(), 0..=3),
+    ).prop_map(|(name, actions, user_actions)| pane_proto::tag::TagLine {
+        name, actions, user_actions,
+    })
+}
+
+fn arb_widget_node_leaf() -> impl Strategy<Value = pane_proto::widget::WidgetNode> {
+    prop_oneof![
+        (".*", any::<u32>()).prop_map(|(label, id)| pane_proto::widget::WidgetNode::Button { label, id }),
+        ".*".prop_map(|text| pane_proto::widget::WidgetNode::Label { text }),
+        Just(pane_proto::widget::WidgetNode::Separator),
+    ]
 }
 
 fn arb_route_message() -> impl Strategy<Value = RouteMessage> {
@@ -160,14 +191,24 @@ fn arb_pane_request() -> impl Strategy<Value = PaneRequest> {
         arb_pane_id().prop_map(|id| PaneRequest::Close { id }),
         (arb_pane_id(), arb_cell_region())
             .prop_map(|(id, region)| PaneRequest::WriteCells { id, region }),
+        (arb_pane_id(), arb_widget_node_leaf())
+            .prop_map(|(id, root)| PaneRequest::SetWidgetTree { id, root }),
         (arb_pane_id(), any::<i32>())
             .prop_map(|(id, delta)| PaneRequest::Scroll { id, delta }),
-        (arb_pane_id(), ".*")
-            .prop_map(|(id, text)| PaneRequest::SetTag { id, text }),
+        (arb_pane_id(), arb_tag_line())
+            .prop_map(|(id, tag)| PaneRequest::SetTag { id, tag }),
         (arb_pane_id(), any::<bool>())
             .prop_map(|(id, dirty)| PaneRequest::SetDirty { id, dirty }),
         (arb_pane_id(), any::<u16>(), any::<u16>())
             .prop_map(|(id, cols, rows)| PaneRequest::RequestGeometry { id, cols, rows }),
+    ]
+}
+
+fn arb_widget_event() -> impl Strategy<Value = pane_proto::widget::WidgetEvent> {
+    prop_oneof![
+        any::<u32>().prop_map(|id| pane_proto::widget::WidgetEvent::Clicked { id }),
+        (any::<u32>(), any::<bool>())
+            .prop_map(|(id, checked)| pane_proto::widget::WidgetEvent::Toggled { id, checked }),
     ]
 }
 
@@ -184,11 +225,13 @@ fn arb_pane_event() -> impl Strategy<Value = PaneEvent> {
         (arb_pane_id(), any::<bool>())
             .prop_map(|(id, focused)| PaneEvent::Focus { id, focused }),
         arb_pane_id().prop_map(|id| PaneEvent::CloseRequested { id }),
-        (arb_pane_id(), ".*")
-            .prop_map(|(id, text)| PaneEvent::TagExecute { id, text }),
+        (arb_pane_id(), arb_tag_line())
+            .prop_map(|(id, action)| PaneEvent::TagExecute { id, action }),
         (arb_pane_id(), ".*")
             .prop_map(|(id, text)| PaneEvent::TagRoute { id, text }),
         arb_route_message().prop_map(|message| PaneEvent::Route { message }),
+        (arb_pane_id(), arb_widget_event())
+            .prop_map(|(id, event)| PaneEvent::Widget { id, event }),
     ]
 }
 
@@ -323,7 +366,11 @@ fn state_machine_multi_pane() {
     let state = state
         .apply(&PaneRequest::SetTag {
             id: id2,
-            text: "test".into(),
+            tag: TagLine {
+                name: "test".into(),
+                actions: vec![],
+                user_actions: vec![],
+            },
         })
         .unwrap();
     assert_eq!(state_pane_count(&state), 1);

@@ -274,9 +274,9 @@ Communication between pane-native clients and pane-comp uses four logical channe
 
 | Channel | Client → Compositor | Compositor → Client |
 |---------|---------------------|---------------------|
-| **body** | write cells (position, character, attributes) | — |
-| **tag** | set tag text | tag text executed (B2 click), tag text routed (B3 click) |
-| **event** | — | key, mouse, resize, focus, route message delivery |
+| **body** | write cells (CellGrid) or widget tree (Widget) | — |
+| **tag** | set tag line (structured TagLine) | tag action executed (B2/left-click), tag text routed (B3) |
+| **event** | — | key, mouse, resize, focus, route message, widget events |
 | **ctl** | set name, set dirty/clean, request geometry | close requested, hide, show |
 
 All messages are `PaneMessage<PaneRequest>` or `PaneMessage<PaneEvent>` — typed core wrapped with an open attrs bag. Serialized with postcard.
@@ -329,16 +329,22 @@ Tree-based tiling with tag-based visibility:
 
 ## Aesthetic
 
-90s-inspired, visible structure:
+Frutiger Aero — the polished evolution of 90s desktop design. The design philosophy: what if Be Inc. survived into the 2000s and refined their visual design alongside the early Aqua era? BeOS's information density and integration, Mac OS X Aqua 1.0's rendering refinement and warmth, combined into a power-user desktop that is both beautiful and dense.
 
-- **Monospace as design language**: tags, bodies, status — all monospace, all the same font family. Not a limitation — a deliberate choice for consistency and information density.
-- **Beveled borders and visible chrome**: panes have real borders. You can see the structure. Not borderless windows in void.
-- **Color as information**: dirty state, focus, errors. Not decoration. No gradients, no shadows, no transparency.
-- **Chunky, readable text**: clear mouse affordances. Text you can point at and click.
+Reference points: BeOS R5 / Haiku (density, integration, matte bevels), Mac OS X 10.0–10.2 Aqua 1.0 (rendering quality, subtle translucency, warm palette), Frutiger Aero (the intersection: depth and warmth serving comprehension).
+
+- **Depth through lighting**: subtle vertical gradients on controls (light top, darker bottom), 1px highlight/shadow edges. Matte and solid — not glossy Aqua gel, not flat Metro. Depth communicates hierarchy.
+- **Beveled borders and visible chrome**: panes have real borders. Controls look like controls. Structure is always visible. Rounded corners (3-4px radius) — approachable without losing density.
+- **Selective translucency**: floating elements (scratchpads, popups) are translucent to show context. Translucency where it's beautiful and aids comprehension, not universally.
+- **Warm saturated palette**: warm grey base, saturated accent colors for focus/dirty/active states. The workspace feels well-lit — not a dark cave, not a white void.
+- **Typography split**: proportional sans-serif for widget chrome (labels, buttons). Monospace for cell grid content and tag line text regions. Tag line stays monospace (it's executable text where column alignment matters).
+- **Color as information**: dirty state, focus, errors. Not decoration.
+- **Dense but refined**: closer to BeOS than Aqua in spacing. Smaller controls, tighter layout. Enough padding to be comfortable, not enough to waste space.
+- **One opinionated look**: no theme engine, no theme selector. The aesthetic IS pane's identity. Individual properties configurable via filesystem-as-config (accent color, font size) but not wholesale theme replacement.
 
 ## Accessibility
 
-Acknowledged gap: a cell-grid-only rendering model with no widget semantics makes screen readers difficult. The compositor knows it's rendering text but not the semantic structure (where a button is, what's a heading, where a list starts). This is a fundamental limitation of the terminal model. Addressing it is a research problem for later phases.
+The widget content model improves accessibility over cell-grid-only: widget panes have semantic structure (buttons, labels, lists) that screen readers can interpret. Cell grid panes remain a challenge. Addressing cell grid accessibility is a research problem for later phases.
 
 ## Technology
 
@@ -353,9 +359,11 @@ Acknowledged gap: a cell-grid-only rendering model with no widget semantics make
 - **Actor model:** Looper/Handler on calloop — each server/connection is a Looper with a typed message queue, Handle<M> for typed actor references
 - **Polarity:** Value/Compute marker traits (from sequent calculus / CBPV)
 - **Optics:** `optics` crate for composed access paths into nested attrs (when complexity justifies it)
+- **Widget layout:** taffy (flexbox/grid layout engine, pure computation)
+- **Widget rendering:** femtovg (2D vector graphics on OpenGL via glow — rounded rects, gradients, text)
 - **Compositional interfaces (candidates, not commitments):**
   - Layer 1 (result-like domain types): `result-like` crate
-  - Layer 3 (reactive signals): `agility` crate
+  - Layer 3 (reactive signals): `agility` crate — widget state bindings, store notifications
   - Specific crate choices deferred to when consuming code is built
 
 ## Build Sequence
@@ -370,5 +378,6 @@ Each phase produces a testable, usable artifact:
 6. **pane-route** — router daemon, pattern matching, port routing, service-aware multi-match
 7. **pane-roster** — service directory, app supervision, service registry, session management
 8. **pane-store** — attribute indexing, change notifications, queries, in-memory index
-9. **pane-fs** — FUSE at `/srv/pane/`, format-per-endpoint
-10. **Legacy Wayland/XWayland** — xdg-shell and xwayland support
+9. **Widget rendering** — femtovg integration, taffy layout, Frutiger Aero controls
+10. **pane-fs** — FUSE at `/srv/pane/`, format-per-endpoint
+11. **Legacy Wayland/XWayland** — xdg-shell and xwayland support

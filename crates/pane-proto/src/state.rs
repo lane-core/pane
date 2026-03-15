@@ -95,14 +95,27 @@ impl ProtocolState {
                     PaneRequest::WriteCells { id, .. } | PaneRequest::Scroll { id, .. } => {
                         match panes.get(id) {
                             None => return Err(ProtocolError::UnknownPane { id: *id }),
-                            Some(PaneKind::Surface) => {
+                            Some(PaneKind::CellGrid) => {}
+                            Some(other) => {
                                 return Err(ProtocolError::WrongPaneKind {
                                     id: *id,
                                     expected: "CellGrid",
-                                    got: PaneKind::Surface,
+                                    got: *other,
                                 });
                             }
-                            Some(PaneKind::CellGrid) => {}
+                        }
+                    }
+                    PaneRequest::SetWidgetTree { id, .. } => {
+                        match panes.get(id) {
+                            None => return Err(ProtocolError::UnknownPane { id: *id }),
+                            Some(PaneKind::Widget) => {}
+                            Some(other) => {
+                                return Err(ProtocolError::WrongPaneKind {
+                                    id: *id,
+                                    expected: "Widget",
+                                    got: *other,
+                                });
+                            }
                         }
                     }
                     PaneRequest::SetTag { id, .. }
