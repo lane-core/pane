@@ -23,9 +23,12 @@
   # QEMU options are set by nix/run-vm-macos.sh, not here.
   # This is a plain NixOS config, not a vmVariant.
 
-  # Disable binfmt — the builder has Rosetta/x86_64 configured but
-  # the VM doesn't need it and it causes sandbox errors.
-  boot.binfmt.emulatedSystems = pkgs.lib.mkForce [];
+  # Explicitly disable binfmt and Rosetta registration.
+  # The builder has x86_64-linux emulation configured, which adds a
+  # binfmt_nixos.conf to /etc. That conf references /run/rosetta which
+  # doesn't exist in the builder's sandbox. Force it off for this VM.
+  boot.binfmt.registrations = pkgs.lib.mkForce {};
+  nix.settings.extra-platforms = pkgs.lib.mkForce [];
 
   hardware.graphics.enable = true;
 
