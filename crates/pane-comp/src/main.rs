@@ -7,7 +7,7 @@ use smithay::{
     backend::{
         renderer::{
             gles::GlesRenderer,
-            Bind, Frame, Renderer,
+            Frame, Renderer,
             Color32F,
         },
         winit::{self, WinitEvent},
@@ -42,13 +42,11 @@ fn main() {
 }
 
 fn run() -> Result<(), Box<dyn std::error::Error>> {
-    // Initialize winit backend — opens a window on the host desktop
     let (mut backend, mut winit_evt) = winit::init::<GlesRenderer>()?;
 
     let size = backend.window_size();
     info!("window size: {}x{}", size.w, size.h);
 
-    // Create a virtual output matching the window
     let output = Output::new(
         "pane-winit".to_string(),
         PhysicalProperties {
@@ -66,9 +64,9 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     output.change_current_state(Some(mode), Some(Transform::Normal), None, Some((0, 0).into()));
     output.set_preferred(mode);
 
-    // Initialize glyph atlas and pane renderer
-    let renderer = backend.renderer();
+    // Initialize glyph atlas
     let mut atlas = GlyphAtlas::new(14.0)?;
+    let renderer = backend.renderer();
     atlas.load_ascii(renderer)?;
     info!(
         "glyph atlas: cell {}x{}, {} glyphs loaded",
@@ -77,15 +75,12 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         atlas.glyph_count()
     );
 
-    let _pane_renderer = PaneRenderer::new(&atlas);
+    let pane_renderer = PaneRenderer::new(&atlas);
 
-    // Track window size for resize handling
     let mut current_size = size;
-
-    // Event loop
     let mut running = true;
+
     while running {
-        // Dispatch winit events
         winit_evt.dispatch_new_events(|event| match event {
             WinitEvent::Resized { size: new_size, .. } => {
                 current_size = new_size;
@@ -94,12 +89,11 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                     refresh: 60_000,
                 };
                 output.change_current_state(Some(new_mode), None, None, None);
-
                 let (cols, rows) = (
                     new_size.w as u16 / atlas.cell_width(),
                     new_size.h as u16 / atlas.cell_height(),
                 );
-                info!("resized: {}x{} pixels, {}x{} cells", new_size.w, new_size.h, cols, rows);
+                info!("resized: {}x{} px, {}x{} cells", new_size.w, new_size.h, cols, rows);
             }
             WinitEvent::Input(_) => {}
             WinitEvent::Focus(_) => {}
@@ -114,21 +108,24 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             break;
         }
 
-        // Render frame
-        let size = current_size;
-        let output_size = Size::from((size.w as i32, size.h as i32));
+        // Render
+        let output_size = Size::from((current_size.w as i32, current_size.h as i32));
         let output_rect = Rectangle::from_size(output_size);
 
         {
             let (renderer, mut target) = backend.bind()?;
             let mut frame = renderer.render(&mut target, output_size, Transform::Normal)?;
             frame.clear(BG_COLOR, &[output_rect])?;
+
+            if let Err(e) = pane_renderer.render(&mut frame, &atlas, output_size) {
+                warn!("pane render error: {e}");
+            }
+
             frame.finish()?;
         }
 
         backend.submit(Some(&[output_rect]))?;
 
-        // Yield — don't spin
         std::thread::sleep(Duration::from_millis(16));
     }
 

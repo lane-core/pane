@@ -22,14 +22,14 @@
 
 - [x] 4.1 Implement cell-to-quad mapping: for each Cell, emit a background quad and a textured foreground quad from the atlas
 - [x] 4.2 Handle Cell colors: map pane-proto Color variants to RGBA values
-- [ ] 4.3 Handle Cell attributes: bold (font weight or synthetic), italic, underline (drawn as a line below the cell)
+- [x] 4.3 Handle Cell attributes: bold (font weight or synthetic), italic, underline (drawn as a line below the cell)
 - [ ] 4.4 Render a hardcoded CellRegion (welcome message with mixed colors/attributes) and verify it displays correctly
 
 ## 5. Pane chrome
 
-- [ ] 5.1 Render tag line: draw a colored background bar above the body, render tag text in monospace
-- [ ] 5.2 Render beveled borders around the pane (light top/left edge, dark bottom/right edge)
-- [ ] 5.3 Compose full pane frame: tag line + borders + cell grid body
+- [x] 5.1 Render tag line: draw a colored background bar above the body, render tag text in monospace
+- [x] 5.2 Render beveled borders around the pane (light top/left edge, dark bottom/right edge)
+- [x] 5.3 Compose full pane frame: tag line + borders + cell grid body
 - [ ] 5.4 Verify the complete pane renders with visible chrome, tag, and body content
 
 ## 6. Integration
