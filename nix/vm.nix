@@ -47,8 +47,15 @@
     };
   };
 
-  # Put pane-comp on PATH for easy testing from the terminal
+  # Put pane-comp on PATH and ensure wayland libs are findable at runtime
+  # (winit loads libwayland-client.so via dlopen)
   environment.variables.PATH = [ "${pane-comp}/bin" ];
+  environment.variables.LD_LIBRARY_PATH = with pkgs; lib.makeLibraryPath [
+    wayland
+    libxkbcommon
+    libglvnd
+    mesa
+  ];
 
   users.users.pane = {
     isNormalUser = true;
