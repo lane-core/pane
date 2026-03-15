@@ -29,7 +29,7 @@ fn solid(
     frame: &mut GlesFrame<'_, '_>,
     rect: Rectangle<i32, Physical>,
     color: Color32F,
-) -> Result<(), Box<dyn std::error::Error>> {
+) -> anyhow::Result<()> {
     frame.draw_solid(rect, &[rect], color)?;
     Ok(())
 }
@@ -99,7 +99,7 @@ impl PaneRenderer {
         frame: &mut GlesFrame<'_, '_>,
         _atlas: &GlyphAtlas,
         window_size: Size<i32, Physical>,
-    ) -> Result<(), Box<dyn std::error::Error>> {
+    ) -> anyhow::Result<()> {
         let pane_w = self.body_cells.width as i32 * self.cell_w;
         let pane_h = self.cell_h + BORDER_PX * 2 + self.body_cells.height as i32 * self.cell_h;
 

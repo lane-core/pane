@@ -12,3 +12,4 @@ calloop = "0.14"
 cosmic-text = "0.12"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+anyhow = "1"

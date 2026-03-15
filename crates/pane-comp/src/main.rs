@@ -15,6 +15,7 @@ use smithay::{
     output::{Mode, Output, PhysicalProperties, Subpixel},
     utils::{Rectangle, Size, Transform},
 };
+use anyhow::{Context, Result};
 use tracing::{info, warn};
 
 use glyph_atlas::GlyphAtlas;
@@ -34,15 +35,21 @@ fn main() {
     info!("pane-comp starting");
 
     if let Err(e) = run() {
-        eprintln!("pane-comp fatal: {e}");
+        eprintln!("pane-comp fatal: {e:?}");
         std::process::exit(1);
     }
 
     info!("pane-comp shutdown");
 }
 
-fn run() -> Result<(), Box<dyn std::error::Error>> {
-    let (mut backend, mut winit_evt) = winit::init::<GlesRenderer>()?;
+fn run() -> Result<()> {
+    // Log Wayland environment for debugging
+    info!("WAYLAND_DISPLAY={:?}", std::env::var("WAYLAND_DISPLAY").ok());
+    info!("XDG_RUNTIME_DIR={:?}", std::env::var("XDG_RUNTIME_DIR").ok());
+    info!("DISPLAY={:?}", std::env::var("DISPLAY").ok());
+
+    let (mut backend, mut winit_evt) = winit::init::<GlesRenderer>()
+        .context("winit backend init")?;
 
     let size = backend.window_size();
     info!("window size: {}x{}", size.w, size.h);

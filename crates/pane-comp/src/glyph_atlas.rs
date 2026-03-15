@@ -46,7 +46,7 @@ pub struct GlyphAtlas {
 }
 
 impl GlyphAtlas {
-    pub fn new(font_size: f32) -> Result<Self, Box<dyn std::error::Error>> {
+    pub fn new(font_size: f32) -> anyhow::Result<Self> {
         let mut font_system = FontSystem::new();
 
         // Derive cell metrics from a reference buffer
@@ -128,7 +128,7 @@ impl GlyphAtlas {
     pub fn load_ascii(
         &mut self,
         _renderer: &mut GlesRenderer,
-    ) -> Result<(), Box<dyn std::error::Error>> {
+    ) -> anyhow::Result<()> {
         for ch in (0x20u8..=0x7Eu8).map(|b| b as char) {
             self.rasterize_glyph(ch);
         }

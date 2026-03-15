@@ -25,6 +25,9 @@
 
   hardware.graphics.enable = true;
 
+  # Seat management — needed for Wayland compositors to access input/display
+  services.seatd.enable = true;
+
   # SSH for debugging
   services.openssh = {
     enable = true;
