@@ -145,6 +145,9 @@
         }
       );
 
+      # nix-darwin module for linux-builder
+      darwinModules.linux-builder = import ./nix/darwin-linux-builder.nix;
+
       # Quick check: does pane-proto build and test?
       checks = forAllSystems (system:
         let
