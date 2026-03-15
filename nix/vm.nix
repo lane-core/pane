@@ -42,16 +42,21 @@
     settings.PasswordAuthentication = true;
   };
 
-  # Auto-login, launch pane-comp via cage
+  # Auto-login, launch cage with foot terminal.
+  # Run pane-comp from the terminal: it connects as a winit client.
+  # (pane-comp winit backend needs a running Wayland session to connect to)
   services.greetd = {
     enable = true;
     settings = {
       default_session = {
-        command = "${pkgs.cage}/bin/cage -- ${pane-comp}/bin/pane-comp";
+        command = "${pkgs.cage}/bin/cage -- ${pkgs.foot}/bin/foot";
         user = "pane";
       };
     };
   };
+
+  # Put pane-comp on PATH for easy testing from the terminal
+  environment.variables.PATH = [ "${pane-comp}/bin" ];
 
   users.users.pane = {
     isNormalUser = true;
@@ -64,9 +69,10 @@
     noto-fonts
   ];
 
-  environment.systemPackages = with pkgs; [
-    foot
-    cage
-    htop
+  environment.systemPackages = [
+    pkgs.foot
+    pkgs.cage
+    pkgs.htop
+    pane-comp
   ];
 }

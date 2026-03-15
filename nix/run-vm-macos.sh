@@ -69,6 +69,7 @@ exec qemu-system-aarch64 \
     -nic user,model=virtio-net-pci,hostfwd=tcp::2222-:22 \
     -device virtio-rng-pci \
     -virtfs local,path=/nix/store,security_model=none,mount_tag=nix-store,readonly=on \
+    -virtfs local,path="$TMPDIR/xchg",security_model=none,mount_tag=shared \
     -virtfs local,path="$TMPDIR/xchg",security_model=none,mount_tag=xchg \
     -drive cache=writeback,file="$DISK_IMAGE",id=drive1,if=none,index=1,werror=report \
     -device virtio-blk-pci,bootindex=1,drive=drive1,serial=root \
