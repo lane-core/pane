@@ -72,6 +72,8 @@
     pkgs.foot
     pkgs.cage
     pkgs.htop
+    pkgs.ncurses    # terminfo databases
+    pkgs.less
     pane-comp
   ];
 }
