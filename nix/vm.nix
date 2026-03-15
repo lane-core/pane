@@ -23,6 +23,10 @@
   # QEMU options are set by nix/run-vm-macos.sh, not here.
   # This is a plain NixOS config, not a vmVariant.
 
+  # Disable binfmt — the builder has Rosetta/x86_64 configured but
+  # the VM doesn't need it and it causes sandbox errors.
+  boot.binfmt.emulatedSystems = pkgs.lib.mkForce [];
+
   hardware.graphics.enable = true;
 
   # Seat management — needed for Wayland compositors to access input/display
