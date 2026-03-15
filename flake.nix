@@ -151,6 +151,18 @@
       # nix-darwin module for linux-builder
       darwinModules.linux-builder = import ./nix/darwin-linux-builder.nix;
 
+      # NixOS VM for testing pane-comp visually
+      # Build: nix build .#nixosConfigurations.pane-test-vm.config.system.build.vm
+      # Run:   ./result/bin/run-nixos-vm (on Linux, or via the linux-builder)
+      nixosConfigurations.pane-test-vm = nixpkgs.lib.nixosSystem {
+        system = "aarch64-linux";
+        modules = [
+          (import ./nix/vm.nix {
+            pane-comp = self.packages.aarch64-linux.pane-comp;
+          })
+        ];
+      };
+
       # Quick check: does pane-proto build and test?
       checks = forAllSystems (system:
         let
