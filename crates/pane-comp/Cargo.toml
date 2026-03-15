@@ -1,0 +1,13 @@
+[package]
+name = "pane-comp"
+version = "0.1.0"
+edition = "2021"
+description = "Pane desktop environment compositor"
+
+[dependencies]
+pane-proto = { path = "../pane-proto" }
+smithay = { version = "0.7", features = ["backend_winit", "renderer_glow"] }
+calloop = "0.14"
+cosmic-text = "0.12"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }

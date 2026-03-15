@@ -1,8 +1,8 @@
 ## 1. Crate scaffold
 
-- [ ] 1.1 Create `crates/pane-comp/Cargo.toml` with dependencies: pane-proto (path), smithay (winit + renderer_glow features), calloop, cosmic-text, tracing/tracing-subscriber
-- [ ] 1.2 Create `crates/pane-comp/src/main.rs` with minimal main function
-- [ ] 1.3 Verify `cargo build -p pane-comp` compiles
+- [x] 1.1 Create `crates/pane-comp/Cargo.toml` with dependencies: pane-proto (path), smithay (winit + renderer_glow features), calloop, cosmic-text, tracing/tracing-subscriber
+- [x] 1.2 Create `crates/pane-comp/src/main.rs` with minimal main function
+- [ ] 1.3 Verify `cargo build -p pane-comp` compiles (requires Linux)
 
 ## 2. Smithay winit backend setup
 

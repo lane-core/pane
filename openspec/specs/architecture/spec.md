@@ -18,7 +18,7 @@ The **pane** is the universal UI object. Everything — shells, editors, file ma
 
 Pane targets Linux exclusively, tracking the latest stable kernel release. The system leverages Linux-specific capabilities: mount namespaces, user namespaces, fanotify, inotify, xattrs, memfd, pidfd, and seccomp.
 
-**Init system:** Infrastructure servers are managed by a supervision-tree init system (s6 or runit). Desktop applications are managed by pane-roster. The system does not depend on systemd.
+**Init system:** Infrastructure servers are managed by a supervision-tree init system. The design is init-system-agnostic by default — s6, runit, and systemd all qualify as supervisors. pane-roster acts as the service directory (infrastructure servers register with it) and as the process supervisor for desktop applications. If a specific feature requires supervision semantics that only one init system provides, the design picks that init system rather than contorting the feature to be agnostic.
 
 **Filesystem:** The target filesystem must support the `user.*` xattr namespace. ext4, btrfs, XFS, and bcachefs all qualify. Advanced filesystem features (snapshots, subvolumes, CoW) are available through an abstraction layer when the filesystem provides them, and degrade gracefully on filesystems that lack them.
 
@@ -348,7 +348,7 @@ Acknowledged gap: a cell-grid-only rendering model with no widget semantics make
 - **Wire format:** postcard (serde-based, varint-encoded, compact)
 - **Filesystem notification:** pane-notify (fanotify + inotify abstraction)
 - **FUSE:** pane-fs at `/srv/pane/`
-- **Init system:** s6 or runit (supervision tree)
+- **Init system:** supervision-tree init (s6, runit, or systemd — agnostic by default, opinionated when forced)
 - **Testing:** property-based (proptest) for protocol correctness, integration tests for server composition
 - **Actor model:** Looper/Handler on calloop — each server/connection is a Looper with a typed message queue, Handle<M> for typed actor references
 - **Polarity:** Value/Compute marker traits (from sequent calculus / CBPV)
