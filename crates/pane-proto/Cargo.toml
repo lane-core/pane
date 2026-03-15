@@ -3,6 +3,7 @@ name = "pane-proto"
 version = "0.1.0"
 edition = "2021"
 description = "Wire types, serialization, and protocol state machine for the pane desktop environment"
+license = "MIT"
 
 [dependencies]
 serde = { version = "1", features = ["derive"] }

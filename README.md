@@ -62,4 +62,7 @@ status
 license
 -------
 
-    TBD
+    protocol crates and client kits    MIT
+    servers (compositor, router, etc)  AGPL-3.0-only
+
+    see LICENSE-MIT and LICENSE-AGPL3

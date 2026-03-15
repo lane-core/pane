@@ -55,6 +55,8 @@
         # Display
         pkgs.libdrm
         pkgs.mesa
+        pkgs.mesa.drivers
+        pkgs.libgbm
         pkgs.libglvnd
         # System
         pkgs.udev
