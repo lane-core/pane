@@ -2,6 +2,8 @@
 # Run the pane test VM on macOS using QEMU with HVF acceleration
 #
 # Usage:
+#   nix build .#nixosConfigurations.pane-test-vm.config.system.build.vm
+#   nix build .#packages.aarch64-linux.vm-disk -o result-disk
 #   ./nix/run-vm-macos.sh
 #
 # SSH: ssh -p 2222 pane@localhost  (password: pane)
@@ -12,6 +14,7 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 PROJECT_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
 RESULT="$PROJECT_DIR/result"
+DISK_RESULT="$PROJECT_DIR/result-disk"
 
 if [ ! -d "$RESULT" ]; then
     echo "Build the VM first:"
@@ -31,23 +34,16 @@ INITRD=$(sed -n 's/.*-initrd \(\/nix\/store\/[^ ]*\).*/\1/p' "$RESULT/bin/run-ni
 REGINFO=$(sed -n 's/.*regInfo=\(\/nix\/store\/[^ ]*\).*/\1/p' "$RESULT/bin/run-nixos-vm")
 KERNEL_PARAMS="$(cat "$SYSTEM/kernel-params") init=$SYSTEM/init regInfo=$REGINFO console=ttyAMA0,115200n8 console=tty0"
 
-# Locate UEFI firmware
-EFI_CODE="$(dirname "$(which qemu-system-aarch64)")/../share/qemu/edk2-aarch64-code.fd"
-if [ ! -f "$EFI_CODE" ]; then
-    # Try nix store path
-    EFI_CODE=$(find /nix/store -name "edk2-aarch64-code.fd" -maxdepth 3 2>/dev/null | head -1)
-fi
-if [ ! -f "$EFI_CODE" ]; then
-    echo "UEFI firmware not found (edk2-aarch64-code.fd)"
-    echo "Falling back to direct kernel boot (no UEFI)"
-    EFI_CODE=""
-fi
-
-# Create disk image if needed
+# Get or create disk image
 DISK_IMAGE="$PROJECT_DIR/nixos.qcow2"
 if [ ! -e "$DISK_IMAGE" ]; then
-    echo "Creating disk image..."
-    qemu-img create -f qcow2 "$DISK_IMAGE" 1024M
+    if [ ! -d "$DISK_RESULT" ]; then
+        echo "Building disk image via linux-builder..."
+        nix build "$PROJECT_DIR#packages.aarch64-linux.vm-disk" -o "$DISK_RESULT"
+    fi
+    echo "Copying disk image (so it's writable)..."
+    cp "$DISK_RESULT/nixos.qcow2" "$DISK_IMAGE"
+    chmod 644 "$DISK_IMAGE"
 fi
 
 # Temp dirs for VM exchange
@@ -59,19 +55,14 @@ echo "pane test VM"
 echo "  SSH:  ssh -p 2222 pane@localhost (password: pane)"
 echo "  Quit: close window"
 
-BIOS_ARGS=()
-if [ -n "$EFI_CODE" ]; then
-    BIOS_ARGS=(-bios "$EFI_CODE")
-fi
-
 exec qemu-system-aarch64 \
     -M virt \
     -accel hvf \
     -cpu host \
     -smp 4 \
     -m 4G \
-    -device virtio-gpu-gl-pci,xres=1280,yres=720 \
-    -display cocoa,gl=on \
+    -device virtio-gpu-pci,xres=1280,yres=720 \
+    -display cocoa \
     -device qemu-xhci \
     -device usb-kbd \
     -device usb-tablet \
@@ -84,5 +75,4 @@ exec qemu-system-aarch64 \
     -kernel "$KERNEL" \
     -initrd "$INITRD" \
     -append "$KERNEL_PARAMS" \
-    "${BIOS_ARGS[@]}" \
     "$@"

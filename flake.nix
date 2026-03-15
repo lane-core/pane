@@ -144,6 +144,9 @@
             cargoBuildFlags = [ "-p" "pane-proto" ];
             cargoTestFlags = [ "-p" "pane-proto" ];
           };
+
+          # Ext4 disk image for the test VM
+          vm-disk = import ./nix/make-disk-image.nix { inherit pkgs; };
         }
       );
 
