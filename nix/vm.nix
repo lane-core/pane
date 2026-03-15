@@ -20,19 +20,8 @@
 {
   system.stateVersion = "24.11";
 
-  # VM configuration
-  virtualisation = {
-    qemu.options = [
-      # GPU: virgl for OpenGL ES passthrough
-      "-device" "virtio-gpu-gl-pci,xres=1280,yres=720"
-      # Display: cocoa with GL context for virgl
-      "-display" "cocoa,gl=on"
-      # Network: SSH port forward
-      "-nic" "user,hostfwd=tcp::2222-:22"
-    ];
-    memorySize = 2048;
-    cores = 2;
-  };
+  # QEMU options are set by nix/run-vm-macos.sh, not here.
+  # This is a plain NixOS config, not a vmVariant.
 
   hardware.graphics.enable = true;
 
