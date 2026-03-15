@@ -48,7 +48,7 @@ fn main() {
     tracing_subscriber::fmt()
         .with_env_filter(
             tracing_subscriber::EnvFilter::try_from_default_env()
-                .unwrap_or_else(|_| format!("pane_comp={}", opts.log_level).into()),
+                .unwrap_or_else(|_| format!("pane_comp={},smithay=debug", opts.log_level).into()),
         )
         .init();
 
@@ -71,7 +71,7 @@ fn run(opts: &Opts) -> Result<()> {
 
     let (mut backend, mut winit_evt): (smithay::backend::winit::WinitGraphicsBackend<GlesRenderer>, _) =
         winit::init()
-            .map_err(|e| anyhow::anyhow!("winit backend init: {e}"))?;
+            .map_err(|e| anyhow::anyhow!("winit backend init: {e:?}"))?;
 
     let size = backend.window_size();
     info!("window size: {}x{}", size.w, size.h);
