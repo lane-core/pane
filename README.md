@@ -1,6 +1,12 @@
 pane
 ====
 
+> *What are we to do with these spring days that are now fast coming on?
+> Early this morning the sky was grey, but if you go to the window now
+> you are surprised and lean your cheek against the latch of the casement.*
+>
+> — Franz Kafka, "Absent-minded Window-gazing"
+
 pane is a desktop environment for Linux.
 
 it combines ideas from BeOS (integrated feel, server/kit decomposition,
