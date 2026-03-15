@@ -69,8 +69,9 @@ fn run(opts: &Opts) -> Result<()> {
     info!("XDG_RUNTIME_DIR={:?}", std::env::var("XDG_RUNTIME_DIR").ok());
     info!("DISPLAY={:?}", std::env::var("DISPLAY").ok());
 
-    let (mut backend, mut winit_evt) = winit::init::<GlesRenderer>()
-        .context("winit backend init")?;
+    let (mut backend, mut winit_evt): (smithay::backend::winit::WinitGraphicsBackend<GlesRenderer>, _) =
+        winit::init()
+            .map_err(|e| anyhow::anyhow!("winit backend init: {e}"))?;
 
     let size = backend.window_size();
     info!("window size: {}x{}", size.w, size.h);
@@ -141,18 +142,23 @@ fn run(opts: &Opts) -> Result<()> {
         let output_rect = Rectangle::from_size(output_size);
 
         {
-            let (renderer, mut target) = backend.bind()?;
-            let mut frame = renderer.render(&mut target, output_size, Transform::Normal)?;
-            frame.clear(BG_COLOR, &[output_rect])?;
+            let (renderer, mut target) = backend.bind()
+                .map_err(|e| anyhow::anyhow!("bind: {e}"))?;
+            let mut frame = renderer.render(&mut target, output_size, Transform::Normal)
+                .map_err(|e| anyhow::anyhow!("render: {e}"))?;
+            frame.clear(BG_COLOR, &[output_rect])
+                .map_err(|e| anyhow::anyhow!("clear: {e}"))?;
 
             if let Err(e) = pane_renderer.render(&mut frame, &atlas, output_size) {
                 warn!("pane render error: {e}");
             }
 
-            frame.finish()?;
+            frame.finish()
+                .map_err(|e| anyhow::anyhow!("finish: {e}"))?;
         }
 
-        backend.submit(Some(&[output_rect]))?;
+        backend.submit(Some(&[output_rect]))
+            .map_err(|e| anyhow::anyhow!("submit: {e}"))?;
 
         std::thread::sleep(Duration::from_millis(16));
     }

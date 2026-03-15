@@ -30,7 +30,8 @@ fn solid(
     rect: Rectangle<i32, Physical>,
     color: Color32F,
 ) -> anyhow::Result<()> {
-    frame.draw_solid(rect, &[rect], color)?;
+    frame.draw_solid(rect, &[rect], color)
+        .map_err(|e| anyhow::anyhow!("draw_solid: {e}"))?;
     Ok(())
 }
 
