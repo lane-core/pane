@@ -1,0 +1,13 @@
+[package]
+name = "pane-proto"
+version = "0.1.0"
+edition = "2021"
+description = "Wire types, serialization, and protocol state machine for the pane desktop environment"
+
+[dependencies]
+serde = { version = "1", features = ["derive"] }
+postcard = { version = "1", features = ["alloc"] }
+bitflags = { version = "2", features = ["serde"] }
+
+[dev-dependencies]
+proptest = "1"

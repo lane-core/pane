@@ -1,0 +1,89 @@
+use std::num::NonZeroU32;
+
+use serde::{Deserialize, Serialize};
+
+use crate::cell::CellRegion;
+use crate::event::{KeyEvent, MouseEvent};
+
+/// Opaque, compositor-assigned pane identifier.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub struct PaneId(NonZeroU32);
+
+impl PaneId {
+    /// Create a PaneId. Only the compositor should call this.
+    pub fn new(id: NonZeroU32) -> Self {
+        Self(id)
+    }
+
+    pub fn get(self) -> u32 {
+        self.0.get()
+    }
+}
+
+/// What kind of content a pane displays.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum PaneKind {
+    /// Cell grid — compositor renders text from cell data.
+    CellGrid,
+    /// Wayland surface — client renders pixels.
+    Surface,
+}
+
+/// Messages from a pane-native client to the compositor.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub enum PaneRequest {
+    /// Create a new pane.
+    Create { name: String, kind: PaneKind },
+    /// Close an existing pane.
+    Close { id: PaneId },
+    /// Write cells to the pane body.
+    WriteCells { id: PaneId, region: CellRegion },
+    /// Scroll the pane body.
+    Scroll { id: PaneId, delta: i32 },
+    /// Set the pane tag line text.
+    SetTag { id: PaneId, text: String },
+    /// Mark the pane as dirty or clean.
+    SetDirty { id: PaneId, dirty: bool },
+    /// Request a specific geometry (cols, rows).
+    RequestGeometry { id: PaneId, cols: u16, rows: u16 },
+}
+
+/// Messages from the compositor to a pane-native client.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub enum PaneEvent {
+    /// A pane was created. Returns the assigned id.
+    Created { id: PaneId },
+    /// Keyboard input.
+    Key { id: PaneId, event: KeyEvent },
+    /// Mouse input.
+    Mouse { id: PaneId, event: MouseEvent },
+    /// Pane was resized.
+    Resize { id: PaneId, cols: u16, rows: u16 },
+    /// Pane gained or lost focus.
+    Focus { id: PaneId, focused: bool },
+    /// Compositor requests the pane to close.
+    CloseRequested { id: PaneId },
+    /// User executed text from the tag line (B2 click).
+    TagExecute { id: PaneId, text: String },
+    /// User plumbed text from the tag line (B3 click).
+    TagPlumb { id: PaneId, text: String },
+    /// A plumb message was delivered to this client.
+    Plumb { message: PlumbMessage },
+}
+
+/// A message routed through the plumber.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PlumbMessage {
+    /// Source application identifier.
+    pub src: String,
+    /// Destination port (e.g., "edit", "web").
+    pub dst: String,
+    /// Working directory for relative paths.
+    pub wdir: String,
+    /// Content type (e.g., "text").
+    pub content_type: String,
+    /// Key-value attributes.
+    pub attrs: Vec<(String, String)>,
+    /// The text data being plumbed.
+    pub data: String,
+}
