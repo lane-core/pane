@@ -14,11 +14,19 @@ The **pane** is the universal UI object. Everything — shells, editors, file ma
 - A **body**: the content area. May be a cell grid (native panes), a Wayland surface (legacy clients), or a hybrid.
 - A **protocol connection**: communication with the compositor over typed messages.
 
+## Target Platform
+
+Pane targets Linux exclusively, tracking the latest stable kernel release. The system leverages Linux-specific capabilities: mount namespaces, user namespaces, fanotify, inotify, xattrs, memfd, pidfd, and seccomp.
+
+**Init system:** Infrastructure servers are managed by a supervision-tree init system (s6 or runit). Desktop applications are managed by pane-roster. The system does not depend on systemd.
+
+**Filesystem:** The target filesystem must support the `user.*` xattr namespace. ext4, btrfs, XFS, and bcachefs all qualify. Advanced filesystem features (snapshots, subvolumes, CoW) are available through an abstraction layer when the filesystem provides them, and degrade gracefully on filesystems that lack them.
+
 ## Design Pillars
 
 ### 1. Text as Action
 
-Any visible text is potentially executable. Middle-click (B2) runs it as a command. Right-click (B3) plumbs it — sends it to the plumber for pattern-matched routing to the appropriate handler. Click `Makefile:42` anywhere in the system and it opens in the editor at line 42. This collapses toolbars, menus, hyperlinks, and file associations into one mechanism: clickable text and pattern matching.
+Any visible text is potentially executable. Middle-click (B2) runs it as a command. Right-click (B3) routes it — sends it to the router for pattern-matched routing to the appropriate handler. Click `Makefile:42` anywhere in the system and it opens in the editor at line 42. This collapses toolbars, menus, hyperlinks, and file associations into one mechanism: clickable text and pattern matching.
 
 ### 2. Cell Grid as Native Rendering
 
@@ -38,19 +46,27 @@ This is the unix/plan9 principle applied at the desktop level: servers are filte
 
 ### 4. Typed Protocol with Correctness Guarantees
 
-All server/client communication uses algebraic message types (Rust enums) serialized with postcard. The protocol has a formal state machine. Property-based testing verifies round-trip serialization, state machine invariants, and exhaustive message handling. The compiler enforces that every message variant is handled.
+All communication uses algebraic message types (Rust enums) wrapped in `PaneMessage<T>` — a typed core plus an open-ended attributes bag. The core provides compile-time exhaustiveness checking. The attrs bag provides BMessage-style extensibility. The protocol has a formal state machine. Property-based testing verifies round-trip serialization, state machine invariants, and exhaustive message handling.
 
-### 5. Declarative State
+### 5. Compositional Interfaces
 
-Configuration is data, not code. Settings are pane-proto message types serialized to files — the same types used for IPC are used for persistence. No separate config format, no config file parsers, no scripting languages for configuration. Typed values you can read, write, and watch.
+Kits use Rust's native monadic idioms (`Result`/`?`, `Option` combinators, iterator chains) as the primary composition mechanism. Domain types with success/failure shape provide derived combinator APIs (`map`, `and_then`, `unwrap_or`) rather than requiring manual matching. Protocol operation sequences compose via a combinator builder in pane-app. Observable state composes via reactive signals in state-oriented kits.
 
-### 6. Compositional Interfaces
+**Value/Compute polarity.** Protocol types carry polarity, grounded in sequent calculus (Curien & Herbelin's λμμ̃) and Call-by-Push-Value (Levy). Value types are constructed by the sender and inspected by the receiver — requests, cell data, route messages, attr values. Compute types are defined by their behavior when observed — event handlers, protocol continuations. The `Proto<A>` combinator enforces valid composition: Value-after-Value, Value-after-Compute, and Compute-after-Compute compose freely. Compute-after-Value requires explicit synchronization. Event handling has dual representations: the `PaneEvent` enum (Value — for exhaustive matching) and a `PaneHandler` builder (Compute — for declarative dispatch).
 
-Kits use Rust's native monadic idioms (`Result`/`?`, `Option` combinators, iterator chains) as the primary composition mechanism. Where domain types have a success/failure or some/none shape, they provide derived combinator APIs (`map`, `and_then`, `unwrap_or`) rather than requiring manual matching. Protocol operation sequences compose via a combinator builder in pane-app. Observable state composes via reactive signals in state-oriented kits. Monadic patterns are not forced onto imperative operations — cell grid writes, calloop event dispatch, and buffer mutation remain direct. The test: if combinator chaining reads more clearly than sequential statements, use it; if it doesn't, don't.
+The fundamental operation is the **cut**: ⟨request | handler⟩. Protocol dispatch is a cut. Making cuts explicit enables pure-function testing of dispatch without I/O.
+
+Monadic patterns are not forced onto imperative operations — cell grid writes, calloop event dispatch, and buffer mutation remain direct. The test: if combinator chaining reads more clearly than sequential statements, use it; if it doesn't, don't.
+
+### 6. Filesystem as Interface
+
+State and configuration are filesystem primitives — file content for values, xattrs for metadata, directories for structure. Plugin discovery is via well-known directories watched by pane-notify. The FUSE interface at `/srv/pane/` exposes server state for scripting and debugging. The filesystem is the database, the registry, and the configuration format.
+
+**Caching invariant:** Servers cache filesystem state in memory at startup and update only in response to pane-notify events. The render loop and event dispatch never perform filesystem I/O.
 
 ## Servers
 
-Each server is a separate process that does exactly one thing. Servers communicate via the pane message protocol over unix sockets. Servers are built on calloop event loops (Looper pattern).
+Each server is a separate process that does exactly one thing. Servers communicate via the inter-server protocol (`PaneMessage<ServerVerb>`) over unix sockets. Infrastructure servers are managed by the init system (s6/runit) and register with pane-roster as a service directory on startup. Servers are built on calloop event loops (Looper pattern).
 
 ### pane-comp — Compositor
 
@@ -61,64 +77,125 @@ Responsibilities:
 - Layout tree: tree-based tiling (recursive splits) with tag-based visibility (dwm-style bitmask)
 - Cell grid rendering: GPU-accelerated text rasterization, glyph atlas
 - Surface compositing: DMA-BUF/shared memory for legacy Wayland clients
-- Pane protocol server: accepts pane-native client connections
+- Pane protocol server: accepts pane-native client connections (multiple panes per connection)
 - Tag line rendering: draws tag lines for all panes
+- Input handling: libinput integration, xkbcommon keyboard layout, key binding resolution, pointer acceleration (in-process, not a separate server — latency-critical)
 - Input dispatch: routes keyboard/mouse events to the focused pane
 - Chrome rendering: borders, split lines, focus indicators
 
-Does NOT contain: layout algorithms (these are properties of the tree structure), plumbing logic, app launch logic, file type recognition.
+Does NOT contain: routing logic, app launch logic, file type recognition. For native panes, B3-click sends a `TagRoute` event to the pane client; the client (via pane-app kit) sends the route message to pane-route. For legacy Wayland panes, pane-comp connects to pane-route directly as a fallback.
 
-### pane-plumb — Plumber
+### pane-route — Router
 
 Matches patterns on messages, routes to ports. Inspired by Plan 9's plumber.
 
 Responsibilities:
 - Maintains named ports (edit, web, image, etc.)
-- Receives plumb messages (text fragment + source + working directory + attributes)
+- Receives route messages (text fragment + source + working directory + attributes)
 - Matches messages against an ordered rule set
 - Routes matched messages to the appropriate port
 - Applications listen on ports to receive routed messages
+- Queries pane-roster's service registry for additional matching operations
+- When multiple handlers match: spawns a transient floating pane (scratchpad) listing options as B2-clickable text. Single match auto-dispatches. Routing rules take priority over registered services.
 
-Rules are declarative typed structures, not a DSL. They are serialized pane-proto types stored as files.
+Routing rules are files in well-known directories (`/etc/pane/route/rules/`, `~/.config/pane/route/rules/`), one file per rule. pane-notify watches these directories for live addition/removal.
 
-Does NOT contain: type recognition logic (that's upstream — pane-store identifies types, attaches as attributes, plumber rules can match on those attributes).
-
-### pane-input — Input Server
-
-Translates hardware events to input messages.
-
-Responsibilities:
-- Input device discovery and management (via libinput)
-- Keyboard layout / keymap handling (via xkbcommon)
-- Key binding resolution
-- Pointer acceleration and configuration
-- Input method (IM) framework integration
-
-Does NOT contain: focus management (that's pane-comp), command execution (key bindings produce messages, receivers act on them).
+Does NOT contain: type recognition logic (that's upstream — pane-store identifies types, attaches as attributes, routing rules match on those attributes).
 
 ### pane-roster — Roster
 
-Tracks running pane clients and their identities.
+Service directory for infrastructure servers, process supervisor for desktop applications, and service registry for discoverable operations.
 
-Responsibilities:
-- Maintains a list of connected pane clients with their app signatures
-- Emits events when clients connect/disconnect
-- Answers queries: "is app X running?", "list all running apps", "which app has focus?"
-- Single-launch enforcement: if a client declares single-launch, roster knows if it's already running
+**Service directory** (for infrastructure servers):
+- Infrastructure servers (pane-comp, pane-route, pane-store, pane-fs) register on startup
+- Roster records identity and capabilities without assuming supervision responsibility
+- Answers queries: "where is the router?", "is the store running?"
+- If an infrastructure server crashes, the init system restarts it; the server re-registers with roster
 
-Does NOT contain: app launch logic (launching is: query roster, exec binary if absent, roster observes the new connection — a sequence of operations, not a roster feature).
+**Process supervisor** (for desktop applications):
+- Launches desktop apps (shells, editors, user programs) directly
+- Monitors running apps, restarts on crash (distinguishes crash from clean exit via pane protocol)
+- Session save/restore: serializes running app state, restores on login
+
+**Service registry** (for discoverable operations):
+- Apps register `(content_type_pattern, operation_name, description)` tuples
+- Router queries the registry for multi-match scenarios
+- Answers: "what operations are available for this content type?"
+
+Does NOT contain: supervision of infrastructure servers (that's the init system).
 
 ### pane-store — Attribute Store
 
 Indexes file attributes, emits change notifications.
 
 Responsibilities:
-- Reads and writes extended attributes on files (xattr on Linux/macOS)
-- Maintains an index over attribute values for fast queries
-- Emits change notifications when watched files/attributes change (node monitoring)
+- Reads and writes extended attributes on files (`user.pane.*` xattr namespace on Linux)
+- Maintains an in-memory index over attribute values for fast queries (rebuilt from xattr scan on startup, like BFS)
+- Uses pane-notify for filesystem change detection (fanotify for mount-wide xattr changes, inotify for targeted watches)
+- Emits change notifications when watched files/attributes change
 - Provides a query interface over the index
 
-Does NOT contain: live query maintenance (that's a client-side composition of index reads + change notification subscriptions), settings management (settings are just serialized pane-proto types — any client can persist its own), file type recognition as a built-in (type recognition is a client of pane-store that sets type attributes based on sniffing rules).
+Does NOT contain: live query maintenance (that's a client-side composition of index reads + change notification subscriptions), file type recognition as a built-in (type recognition is a client of pane-store that sets type attributes based on sniffing rules).
+
+### pane-fs — Filesystem Interface
+
+Exposes compositor, router, and configuration state as a FUSE filesystem at `/srv/pane/`.
+
+Responsibilities:
+- Mounts FUSE filesystem at `/srv/pane/`
+- Speaks pane socket protocol to other servers (it's just another client)
+- Format per endpoint: plain text for text data (tag, body), JSON for structured data (cells, attrs, index), line commands for control files (ctl), JSONL for event streams (event, route ports)
+- Exposes configuration at `/srv/pane/config/` mirroring `/etc/pane/`
+
+```
+/srv/pane/
+  index              # JSON: list of panes
+  new                # write to create a pane
+  1/
+    ctl              # line commands write, state read
+    tag              # plain text
+    body             # plain text read
+    cells            # JSON: full cell grid with colors/attrs
+    attrs            # JSON: attrs bag
+    event            # JSONL stream
+  route/
+    send             # JSON write (or plain text shorthand)
+    edit             # JSONL stream read
+    web              # JSONL stream read
+  config/
+    comp/
+      font           # read/write config values
+      font-size
+      ...
+```
+
+Does NOT contain: any server logic — pane-fs is a translation layer between FUSE operations and the socket protocol.
+
+## Shared Infrastructure
+
+### pane-notify — Filesystem Notification
+
+An internal crate (not a standalone server) that abstracts over Linux filesystem notification interfaces.
+
+- **fanotify** with `FAN_MARK_FILESYSTEM` for mount-wide watches (pane-store bulk xattr tracking)
+- **inotify** for targeted watches (specific directories, config files, plugin directories)
+- Consumers request watches by scope; pane-notify picks the right kernel interface
+- Unified event stream integrating into calloop as an event source
+
+### Filesystem-Based Configuration
+
+Server configuration is stored as files in well-known directories under `/etc/pane/<server>/`. Each config key is a separate file. File content is the value. xattrs carry metadata: `user.pane.type` (string, int, float, bool), `user.pane.description`, optionally `user.pane.range` and `user.pane.options`.
+
+Servers watch their config directories via pane-notify. Config changes take effect without server restart, without SIGHUP, without manual reload commands. All available config keys are discoverable by listing the directory.
+
+### Filesystem-Based Plugin Discovery
+
+Servers that support extensibility discover plugins by scanning well-known directories:
+- `~/.config/pane/translators/` — content translators (type sniffing, format conversion)
+- `~/.config/pane/input/` — input method add-ons (IME, connected via Wayland IME protocols)
+- `~/.config/pane/route/rules/` — routing rules (one file per rule)
+
+System-wide equivalents exist under `/etc/pane/` with user directories taking precedence. pane-notify watches these directories for live addition/removal. Plugin metadata is carried in xattrs: `user.pane.plugin.type`, `user.pane.plugin.handles`, `user.pane.plugin.description`.
 
 ## Composition Examples
 
@@ -126,22 +203,30 @@ Integrated behavior emerges from sequential composition of servers:
 
 **"Open this file":**
 1. Type recognizer (a client of pane-store) identifies file type, sets type attribute
-2. pane-plumb matches type attribute against rules
+2. pane-route matches type attribute against rules
 3. pane-roster checks if the handler app is running
-4. If not, handler is started (exec)
-5. Handler receives the plumb message, opens the file
+4. If not, handler is started (pane-roster launches it)
+5. Handler receives the route message, opens the file
 
-**"Right-click selected text":**
-1. pane-comp sends selected text as a plumb message to pane-plumb
-2. pane-plumb matches text against rules (filename:line pattern, URL pattern, etc.)
-3. Matched message is routed to the appropriate port
-4. Listening application receives and acts on it
+**"Right-click selected text" (native pane):**
+1. pane-comp sends a `TagRoute` event to the pane client
+2. The pane-app kit sends the selected text as a route message to pane-route
+3. pane-route matches text against rules and queries roster for service matches
+4. If single match: auto-dispatches to the handler
+5. If multiple matches: spawns a transient scratchpad pane listing options
+6. User B2-clicks an option; it dispatches
 
 **"Live query (all .rs files modified today)":**
 1. Client reads pane-store index with query predicate
 2. Client subscribes to pane-store change notifications for matching paths
 3. Client maintains the result set, updating as notifications arrive
 4. This is a client-side composition — no "live query" feature in pane-store
+
+**"Change the compositor font":**
+1. User runs `echo "JetBrains Mono" > /etc/pane/comp/font`
+2. pane-notify (inotify watch on `/etc/pane/comp/`) fires
+3. pane-comp re-reads the font config file into memory
+4. pane-comp re-rasterizes the glyph atlas and re-renders on the next frame
 
 **"Persist and restore session":**
 1. pane-comp serializes its layout tree (pane-proto types → postcard → file)
@@ -154,10 +239,10 @@ Integrated behavior emerges from sequential composition of servers:
 Kits are Rust crate libraries that provide ergonomic access to server protocols. They are thin wrappers — the protocol is the real API. You can always bypass the kit and speak protocol directly.
 
 ### pane-proto (foundation)
-Wire types (message enums), serde derivations, protocol state machine, validation. Every other crate depends on this. No runtime dependencies — pure types and serialization.
+Wire types (message enums), PaneMessage wrapper with attrs bag, protocol state machine, Value/Compute polarity markers, inter-server protocol types (ServerVerb + typed views), serde derivations, validation. Every other crate depends on this. No runtime dependencies — pure types and serialization.
 
 ### pane-app (application lifecycle)
-Looper/Handler actor model on calloop. Pane lifecycle management. Convenience for connecting to servers and dispatching events. The `Handle<M>` type for typed actor references.
+Looper/Handler actor model on calloop. Pane lifecycle management. `Proto<A>` combinator for composable protocol sequences with Value/Compute polarity. `PaneHandler` builder for codata-style event dispatch. Convenience for connecting to servers and dispatching events. The `Handle<M>` type for typed actor references. Automatic connection to pane-route for B3-click handling.
 
 ### pane-ui (interface)
 Cell grid writing helpers. Tag line management. Styling primitives (colors, attributes). Coordinate systems and scrolling.
@@ -166,45 +251,72 @@ Cell grid writing helpers. Tag line management. Styling primitives (colors, attr
 Text buffer data structures. Structural regular expressions (sam-style x/pattern/command). Editing operations (insert, delete, transform). Address expressions.
 
 ### pane-store-client (store access)
-Client library for pane-store. Attribute read/write. Query building. Change notification subscription.
+Client library for pane-store. Attribute read/write. Query building. Change notification subscription. Reactive signal composition for live queries.
+
+### pane-notify (filesystem notification)
+Abstraction over fanotify and inotify. Calloop event source. Used by pane-store, pane-comp (config), and any server that watches filesystem state.
 
 ## Compositional Layers
 
 Kit APIs compose through three layers, each mapped to a crate boundary:
 
-**Layer 1 — Result-like domain types (all kits, when applicable).** Custom enums with success/failure or some/none shape provide derived combinator APIs (`map`, `and_then`, `unwrap_or`, `ok_or`). Standard `Result` and `Option` remain the default — derived combinators are for domain types that parallel their shape but carry different semantics (e.g., plumber match results, store query outcomes). Applicable kits: pane-plumb, pane-store-client, pane-app.
+**Layer 1 — Result-like domain types (all kits, when applicable).** Custom enums with success/failure or some/none shape provide derived combinator APIs (`map`, `and_then`, `unwrap_or`, `ok_or`). Standard `Result` and `Option` remain the default — derived combinators are for domain types that parallel their shape but carry different semantics. Candidate implementation: `result-like` crate. Decision deferred to when consuming types exist.
 
-**Layer 2 — Protocol combinators (pane-app).** A builder API for composing protocol operation sequences as testable values. Operations chain via `and_then` (bind) and `map`. The combinator type wraps `ProtocolState → Result<(A, ProtocolState), ProtocolError>` — the state monad with error handling. The executor runs sequences against a real connection; tests run them against in-memory state. This lives in pane-app, not pane-proto, because it requires runtime context.
+**Layer 2 — Protocol combinators (pane-app).** A builder API for composing protocol operation sequences as testable values. Operations chain via `and_then` (bind) and `map`. The combinator type wraps `ProtocolState → Result<(A, ProtocolState), ProtocolError>`. The executor runs sequences against a real connection; tests run them against in-memory state. Polarity-aware: Value operations (produce a result) and Compute operations (fire behavior) compose according to the duploid's three-fourths associativity rule.
 
-**Layer 3 — Reactive signals (pane-app, pane-store-client).** Signals for observable state with `map`, `combine`, `contramap`. Change notifications from pane-store become signals. Live queries are compositions of query results and notification streams. UI state (focus, dirty, tag content) can be signals that views react to. This replaces manual callback registration with declarative dataflow.
+**Layer 3 — Reactive signals (pane-app, pane-store-client).** Signals for observable state with `map`, `combine`, `contramap`. Change notifications from pane-store become signals. Live queries are compositions of query results and notification streams. UI state (focus, dirty, tag content) can be signals that views react to. Candidate implementation: `agility` crate. Decision deferred to when consuming code is built.
 
 ## Pane Protocol
 
-Communication between pane-native clients and pane-comp uses four logical channels over a single unix socket connection:
+### Client ↔ Compositor
+
+Communication between pane-native clients and pane-comp uses four logical channels over a single unix socket connection. A single connection can own multiple panes.
 
 | Channel | Client → Compositor | Compositor → Client |
 |---------|---------------------|---------------------|
 | **body** | write cells (position, character, attributes) | — |
-| **tag** | set tag text | tag text executed (B2 click), tag text plumbed (B3 click) |
-| **event** | — | key, mouse, resize, focus, plumb message delivery |
+| **tag** | set tag text | tag text executed (B2 click), tag text routed (B3 click) |
+| **event** | — | key, mouse, resize, focus, route message delivery |
 | **ctl** | set name, set dirty/clean, request geometry | close requested, hide, show |
 
-Messages are Rust enums serialized with postcard. The protocol has a state machine:
+All messages are `PaneMessage<PaneRequest>` or `PaneMessage<PaneEvent>` — typed core wrapped with an open attrs bag. Serialized with postcard.
+
+The protocol state machine:
 
 ```
-Disconnected → Connected → PaneCreated → Active ⇄ { Writing, Receiving }
-                                                  → Closed
+Disconnected → Active { panes: HashMap<PaneId, PaneKind>, pending_creates: u32 }
 ```
 
-Invalid state transitions are type errors (compile-time) or protocol violations (rejected at runtime with error messages).
+Create increments `pending_creates`. `activate(id, kind)` decrements it and inserts into the pane map. Close removes from the pane map. Operations are validated against the pane map and pane kind (WriteCells rejected for Surface panes). `ProtocolState` is local tracking — not serialized, not sent on the wire.
+
+### Inter-Server
+
+Servers communicate via `PaneMessage<ServerVerb>`:
+
+```rust
+enum ServerVerb { Query, Notify, Command }
+```
+
+The verb is the typed core. The attrs bag carries the payload. Type safety is recovered at the kit layer via typed view/builder patterns: each server defines structs that parse/build attrs with compile-time field validation (e.g., `RouteCommand::build().data("parse.c:42").wdir("/src").into_message()`).
+
+This is the BMessage model: one envelope, universal routing. Any server can forward, log, or inspect any message without understanding its semantics. The wire format is universal; the access layer is typed.
 
 ## Client Classes
 
 ### Pane-native clients
-Speak the pane protocol. Get full integration: tag line, cell grid body, plumbing, event streams, compositor-rendered chrome. Examples: shell (PTY bridge), editor, file manager, status widgets.
+Speak the pane protocol. Get full integration: tag line, cell grid body, routing, event streams, compositor-rendered chrome. Examples: shell (PTY bridge), editor, file manager, status widgets.
 
 ### Legacy Wayland clients
-Speak standard xdg-shell (or xwayland for X11 apps). Get a pane wrapper: the compositor provides a tag line and borders, but the body is an opaque surface rendered by the client. Full desktop functionality (Firefox, Inkscape, etc.) works — just without plumbing or cell grid integration.
+Speak standard xdg-shell (or xwayland for X11 apps). Get a pane wrapper: the compositor provides a tag line and borders, but the body is an opaque surface rendered by the client. Full desktop functionality (Firefox, Inkscape, etc.) works — just without routing or cell grid integration.
+
+## pane-shell Architectural Constraints
+
+pane-shell (the PTY bridge client) is the most important pane client — it makes the system a daily driver.
+
+- **Terminal emulation level:** xterm-256color. Covers cursor movement, scroll regions, alternate screen buffer, 256-color and RGB color, mouse reporting, bracketed paste. `$TERM=xterm-256color`.
+- **Screen buffer model:** pane-shell maintains a full screen buffer internally. VT sequences update this buffer. On each change, pane-shell sends dirty regions as CellRegion writes — not the entire screen.
+- **Alternate screen:** Enter (`\e[?1049h`) swaps to a second buffer. Exit (`\e[?1049l`) restores the original. Both are internal to pane-shell. The compositor just receives cell writes.
+- The compositor does not know or care that it's rendering a terminal. pane-shell is just another client writing cells.
 
 ## Layout
 
@@ -213,7 +325,7 @@ Tree-based tiling with tag-based visibility:
 - The layout is a tree of containers. Leaf nodes hold panes. Branch nodes define splits (horizontal or vertical).
 - Each pane has a tag bitmask. The compositor displays panes matching the currently selected tags. A pane can appear in multiple tag sets. Multiple tags can be viewed simultaneously (bitwise OR).
 - Tiling splits are explicit visible lines on screen. The structure is always visible.
-- Floating panes (scratchpad) are supported as a separate layer.
+- Floating panes (scratchpad) are supported as a separate layer. Transient floating panes are used for the router's multi-match chooser.
 
 ## Aesthetic
 
@@ -224,29 +336,39 @@ Tree-based tiling with tag-based visibility:
 - **Color as information**: dirty state, focus, errors. Not decoration. No gradients, no shadows, no transparency.
 - **Chunky, readable text**: clear mouse affordances. Text you can point at and click.
 
+## Accessibility
+
+Acknowledged gap: a cell-grid-only rendering model with no widget semantics makes screen readers difficult. The compositor knows it's rendering text but not the semantic structure (where a button is, what's a heading, where a list starts). This is a fundamental limitation of the terminal model. Addressing it is a research problem for later phases.
+
 ## Technology
 
 - **Language:** Rust
 - **Compositor library:** smithay
 - **Event loop:** calloop (unified event loop for Wayland events, protocol messages, timers, IPC)
 - **Wire format:** postcard (serde-based, varint-encoded, compact)
+- **Filesystem notification:** pane-notify (fanotify + inotify abstraction)
+- **FUSE:** pane-fs at `/srv/pane/`
+- **Init system:** s6 or runit (supervision tree)
 - **Testing:** property-based (proptest) for protocol correctness, integration tests for server composition
 - **Actor model:** Looper/Handler on calloop — each server/connection is a Looper with a typed message queue, Handle<M> for typed actor references
+- **Polarity:** Value/Compute marker traits (from sequent calculus / CBPV)
+- **Optics:** `optics` crate for composed access paths into nested attrs (when complexity justifies it)
 - **Compositional interfaces (candidates, not commitments):**
-  - Layer 1 (result-like domain types): `result-like` crate — derive macros for Option/Result-style combinators on custom enums
-  - Layer 3 (reactive signals): `agility` crate — FRP signals with map/combine/contramap
+  - Layer 1 (result-like domain types): `result-like` crate
+  - Layer 3 (reactive signals): `agility` crate
   - Specific crate choices deferred to when consuming code is built
 
 ## Build Sequence
 
 Each phase produces a testable, usable artifact:
 
-1. **pane-proto** — message types, serde, state machine, property tests
-2. **pane-comp skeleton** — smithay compositor, single hardcoded pane, tag line + cell grid rendering
-3. **pane-shell** — PTY bridge client, first usable terminal
-4. **Layout tree** — tiling with splits, multiple panes, tag-based visibility
-5. **pane-plumb** — plumber daemon, pattern matching, port routing
-6. **pane-input** — input server, key binding, device management
-7. **pane-roster** — app tracking, signatures, single-launch
-8. **pane-store** — attribute indexing, change notifications, queries
-9. **Legacy Wayland/XWayland** — xdg-shell and xwayland support
+1. **pane-proto** — message types, PaneMessage wrapper, state machine, polarity markers, inter-server protocol, property tests ✓ (built, fixes in progress)
+2. **pane-notify** — fanotify/inotify abstraction, calloop integration
+3. **pane-comp skeleton** — smithay compositor, single hardcoded pane, tag line + cell grid rendering
+4. **pane-shell** — PTY bridge client, first usable terminal
+5. **Layout tree** — tiling with splits, multiple panes, tag-based visibility
+6. **pane-route** — router daemon, pattern matching, port routing, service-aware multi-match
+7. **pane-roster** — service directory, app supervision, service registry, session management
+8. **pane-store** — attribute indexing, change notifications, queries, in-memory index
+9. **pane-fs** — FUSE at `/srv/pane/`, format-per-endpoint
+10. **Legacy Wayland/XWayland** — xdg-shell and xwayland support

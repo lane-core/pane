@@ -1,6 +1,7 @@
 use serde::{Deserialize, Serialize};
 
 use crate::color::Color;
+use crate::polarity::Value;
 
 bitflags::bitflags! {
     /// Text attributes for a cell.
@@ -37,6 +38,31 @@ impl Default for Cell {
     }
 }
 
+impl Value for Cell {}
+
+/// Error when constructing a CellRegion with inconsistent dimensions.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CellRegionError {
+    pub width: u16,
+    pub height: u16,
+    pub cells_len: usize,
+}
+
+impl std::fmt::Display for CellRegionError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "CellRegion: width={} * height={} = {}, but cells.len() = {}",
+            self.width,
+            self.height,
+            self.width as usize * self.height as usize,
+            self.cells_len
+        )
+    }
+}
+
+impl std::error::Error for CellRegionError {}
+
 /// A positioned rectangle of cells within a pane body.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct CellRegion {
@@ -46,6 +72,35 @@ pub struct CellRegion {
     pub row: u16,
     /// Width in columns.
     pub width: u16,
-    /// Cells in row-major order.
+    /// Height in rows.
+    pub height: u16,
+    /// Cells in row-major order. Must have exactly width * height elements.
     pub cells: Vec<Cell>,
+}
+
+impl CellRegion {
+    /// Construct a CellRegion, validating that cells.len() == width * height.
+    pub fn new(
+        col: u16,
+        row: u16,
+        width: u16,
+        height: u16,
+        cells: Vec<Cell>,
+    ) -> Result<Self, CellRegionError> {
+        let expected = width as usize * height as usize;
+        if cells.len() != expected {
+            return Err(CellRegionError {
+                width,
+                height,
+                cells_len: cells.len(),
+            });
+        }
+        Ok(Self {
+            col,
+            row,
+            width,
+            height,
+            cells,
+        })
+    }
 }

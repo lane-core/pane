@@ -1,3 +1,5 @@
+use std::fmt;
+
 use serde::{Deserialize, Serialize};
 
 bitflags::bitflags! {
@@ -35,8 +37,42 @@ pub enum NamedKey {
     Down,
     Left,
     Right,
-    F(u8),
+    F(FKey),
     Insert,
+}
+
+/// Function key number (1-24). Validated at construction time.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct FKey(u8);
+
+impl FKey {
+    pub fn get(self) -> u8 {
+        self.0
+    }
+}
+
+/// Error when constructing an FKey with an out-of-range value.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct FKeyError(pub u8);
+
+impl fmt::Display for FKeyError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "function key {} out of range (valid: 1-24)", self.0)
+    }
+}
+
+impl std::error::Error for FKeyError {}
+
+impl TryFrom<u8> for FKey {
+    type Error = FKeyError;
+
+    fn try_from(n: u8) -> Result<Self, Self::Error> {
+        if (1..=24).contains(&n) {
+            Ok(FKey(n))
+        } else {
+            Err(FKeyError(n))
+        }
+    }
 }
 
 /// Whether a key was pressed or released.

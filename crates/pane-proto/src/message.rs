@@ -4,6 +4,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::cell::CellRegion;
 use crate::event::{KeyEvent, MouseEvent};
+use crate::polarity::Value;
 
 /// Opaque, compositor-assigned pane identifier.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -38,7 +39,7 @@ pub enum PaneRequest {
     Close { id: PaneId },
     /// Write cells to the pane body.
     WriteCells { id: PaneId, region: CellRegion },
-    /// Scroll the pane body.
+    /// Scroll the pane body. Positive = down (toward newer content), unit = rows.
     Scroll { id: PaneId, delta: i32 },
     /// Set the pane tag line text.
     SetTag { id: PaneId, text: String },
@@ -48,11 +49,13 @@ pub enum PaneRequest {
     RequestGeometry { id: PaneId, cols: u16, rows: u16 },
 }
 
+impl Value for PaneRequest {}
+
 /// Messages from the compositor to a pane-native client.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum PaneEvent {
-    /// A pane was created. Returns the assigned id.
-    Created { id: PaneId },
+    /// A pane was created. Returns the assigned id and kind.
+    Created { id: PaneId, kind: PaneKind },
     /// Keyboard input.
     Key { id: PaneId, event: KeyEvent },
     /// Mouse input.
@@ -65,15 +68,15 @@ pub enum PaneEvent {
     CloseRequested { id: PaneId },
     /// User executed text from the tag line (B2 click).
     TagExecute { id: PaneId, text: String },
-    /// User plumbed text from the tag line (B3 click).
-    TagPlumb { id: PaneId, text: String },
-    /// A plumb message was delivered to this client.
-    Plumb { message: PlumbMessage },
+    /// User routed text from the tag line (B3 click).
+    TagRoute { id: PaneId, text: String },
+    /// A routed message was delivered to this client.
+    Route { message: RouteMessage },
 }
 
-/// A message routed through the plumber.
+/// A message routed through pane-route.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct PlumbMessage {
+pub struct RouteMessage {
     /// Source application identifier.
     pub src: String,
     /// Destination port (e.g., "edit", "web").
@@ -84,6 +87,9 @@ pub struct PlumbMessage {
     pub content_type: String,
     /// Key-value attributes.
     pub attrs: Vec<(String, String)>,
-    /// The text data being plumbed.
+    /// The text data being routed.
     pub data: String,
 }
+
+impl Value for RouteMessage {}
+impl Value for CellRegion {}

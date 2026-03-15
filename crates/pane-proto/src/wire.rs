@@ -11,12 +11,16 @@ pub fn deserialize<T: DeserializeOwned>(bytes: &[u8]) -> Result<T, postcard::Err
 }
 
 /// Encode a message with a 4-byte little-endian length prefix.
-pub fn frame(payload: &[u8]) -> Vec<u8> {
-    let len = payload.len() as u32;
+/// Returns an error if the payload exceeds u32::MAX bytes.
+pub fn frame(payload: &[u8]) -> Result<Vec<u8>, postcard::Error> {
+    let len: u32 = payload
+        .len()
+        .try_into()
+        .map_err(|_| postcard::Error::SerializeBufferFull)?;
     let mut buf = Vec::with_capacity(4 + payload.len());
     buf.extend_from_slice(&len.to_le_bytes());
     buf.extend_from_slice(payload);
-    buf
+    Ok(buf)
 }
 
 /// Read the length prefix from a framed message.

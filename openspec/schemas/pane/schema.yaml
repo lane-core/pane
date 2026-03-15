@@ -1,0 +1,129 @@
+name: pane
+version: 1
+description: >
+  pane workflow — proposal → contracts → architecture → tasks.
+  Contracts use normative language (SHALL/MUST), Rust type signatures,
+  Value/Compute polarity annotations, and hazard markers.
+  Architecture and contracts are parallel (both depend on proposal).
+artifacts:
+  - id: proposal
+    generates: proposal.md
+    description: Motivation and scope — why this change, what contracts it touches
+    template: proposal.md
+    instruction: |
+      Create the proposal document that establishes WHY this change is needed.
+
+      Sections:
+      - **Why**: 1-2 sentences on the problem or opportunity. Why now?
+      - **What Changes**: Bullet list of changes. Mark breaking changes with **BREAKING**.
+      - **Specs Affected**: Which specs are created or modified:
+        - **New**: Capabilities being introduced. Each becomes `specs/<name>/spec.md`.
+        - **Modified**: Existing specs whose contracts change (not just implementation).
+      - **Impact**: Affected crates, modules, protocols, servers, build sequence.
+
+      Keep it concise. Focus on "why" not "how" — implementation details
+      belong in architecture.md.
+    requires: []
+
+  - id: contracts
+    generates: "specs/**/*.md"
+    description: >
+      Behavioral contracts: SHALL/MUST invariants, Rust type signatures,
+      Value/Compute polarity annotations, hazard markers
+    template: contracts.md
+    instruction: |
+      Create contract files that define WHAT the system SHALL do.
+
+      Create one spec file per capability listed in the proposal's Specs Affected section.
+      - New capabilities: `specs/<name>/spec.md`
+      - Modified capabilities: delta spec at `specs/<name>/spec.md`
+
+      Delta operations (use ## headers):
+      - **ADDED Requirements**: New invariants or API surface
+      - **MODIFIED Requirements**: Changed behavior — MUST include full updated content
+      - **REMOVED Requirements**: Deprecated — MUST include **Reason** and **Migration**
+
+      Format:
+      - Each requirement: `### Requirement: <name>` followed by normative text
+      - Use SHALL for mandatory behavior, MUST for implementation constraints
+      - Rust type signatures, trait bounds, and struct definitions are first-class content
+      - Polarity annotations where applicable:
+        - **Value**: constructed by sender, inspected by receiver (data/positive)
+        - **Compute**: defined by behavior when observed (codata/negative)
+        - **Boundary**: mediates between Value and Compute modes
+      - Crate/module citations: `pane-proto::message::PaneRequest`
+      - Hazard markers for non-obvious failure modes or polarity mismatches
+      - Each requirement MUST have at least one verification criterion:
+        `#### Scenario: <name>` with a concrete check (proptest, assertion, or build criterion)
+
+      Example:
+      ```
+      ### Requirement: Multi-pane state tracking
+
+      `ProtocolState::Active` SHALL track a `HashMap<PaneId, PaneKind>` of active panes
+      and a `pending_creates: u32` counter. Operations on a PaneId SHALL be validated
+      against the pane map and the pane's kind.
+
+      **Polarity**: Boundary (mediates Value requests and Compute event dispatch)
+      **Hazard**: Stale PaneId after pane close — consumers must handle UnknownPane errors.
+      **Crate**: `pane-proto::state::ProtocolState`
+
+      #### Scenario: WriteCells rejected for Surface pane
+      `proptest`: generate Active state with Surface pane, apply WriteCells, assert WrongPaneKind error.
+      ```
+
+      Requirements should be verifiable — each verification criterion is a potential
+      proptest strategy, assertion, or build-system check.
+    requires:
+      - proposal
+
+  - id: architecture
+    generates: architecture.md
+    description: Design decisions, rationale, risks, and alternatives
+    template: architecture.md
+    instruction: |
+      Create the architecture document that explains HOW to implement the change.
+
+      Sections:
+      - **Context**: Current state, constraints, reference systems (BeOS, Plan 9, etc.)
+      - **Goals / Non-Goals**: What this achieves and explicitly excludes
+      - **Decisions**: Key technical choices with rationale (why X over Y?)
+        Include alternatives considered and why they were rejected.
+        Cite sequent calculus / CBPV / duploid theory where it grounds the design.
+      - **Risks / Trade-offs**: Known limitations. Format: [Risk] → Mitigation
+      - **Open Questions**: Outstanding decisions or unknowns
+
+      Focus on architecture and approach, not line-by-line implementation.
+      Reference the proposal for motivation and contracts for invariants.
+    requires:
+      - proposal
+
+  - id: tasks
+    generates: tasks.md
+    description: Implementation checklist with trackable tasks
+    template: tasks.md
+    instruction: |
+      Create the task list that breaks down the implementation work.
+
+      **IMPORTANT: Follow the template exactly.** The apply phase parses
+      checkbox format to track progress.
+
+      Guidelines:
+      - Group related tasks under ## numbered headings
+      - Each task MUST be a checkbox: `- [ ] X.Y Task description`
+      - Tasks should be small enough to complete in one session
+      - Order tasks by dependency (what must be done first?)
+      - Include build criterion for each group: `cargo build && cargo test`
+
+      Reference contracts for what must hold, architecture for how to build it.
+    requires:
+      - contracts
+      - architecture
+
+apply:
+  requires: [tasks]
+  tracks: tasks.md
+  instruction: |
+    Read context files, work through pending tasks, mark complete as you go.
+    Pause if you hit blockers or need clarification.
+    Every completed task group MUST pass `cargo build && cargo test`.

@@ -3,6 +3,11 @@ use std::num::NonZeroU32;
 use proptest::prelude::*;
 
 use pane_proto::*;
+use pane_proto::color;
+use pane_proto::event;
+use pane_proto::message;
+use pane_proto::attrs::AttrValue;
+use pane_proto::server::ServerVerb;
 
 // --- Arbitrary strategies ---
 
@@ -49,20 +54,21 @@ fn arb_cell() -> impl Strategy<Value = Cell> {
         .prop_map(|(ch, fg, bg, attrs)| Cell { ch, fg, bg, attrs })
 }
 
-fn arb_cell_region() -> impl Strategy<Value = CellRegion> {
-    (any::<u16>(), any::<u16>(), 1..=20u16).prop_flat_map(|(col, row, width)| {
-        let len = width as usize * 3; // up to 3 rows
-        proptest::collection::vec(arb_cell(), 0..=len).prop_map(move |cells| CellRegion {
-            col,
-            row,
-            width,
-            cells,
+fn arb_cell_region() -> impl Strategy<Value = cell::CellRegion> {
+    (any::<u16>(), any::<u16>(), 1..=10u16, 1..=5u16).prop_flat_map(|(col, row, width, height)| {
+        let len = width as usize * height as usize;
+        proptest::collection::vec(arb_cell(), len..=len).prop_map(move |cells| {
+            cell::CellRegion::new(col, row, width, height, cells).unwrap()
         })
     })
 }
 
 fn arb_modifiers() -> impl Strategy<Value = Modifiers> {
     any::<u8>().prop_map(|bits| Modifiers::from_bits_truncate(bits))
+}
+
+fn arb_fkey() -> impl Strategy<Value = event::FKey> {
+    (1..=24u8).prop_map(|n| event::FKey::try_from(n).unwrap())
 }
 
 fn arb_key() -> impl Strategy<Value = Key> {
@@ -82,7 +88,7 @@ fn arb_key() -> impl Strategy<Value = Key> {
             Just(event::NamedKey::Down),
             Just(event::NamedKey::Left),
             Just(event::NamedKey::Right),
-            (1..=12u8).prop_map(event::NamedKey::F),
+            arb_fkey().prop_map(event::NamedKey::F),
             Just(event::NamedKey::Insert),
         ]
         .prop_map(Key::Named),
@@ -123,7 +129,7 @@ fn arb_pane_kind() -> impl Strategy<Value = message::PaneKind> {
     prop_oneof![Just(message::PaneKind::CellGrid), Just(message::PaneKind::Surface)]
 }
 
-fn arb_plumb_message() -> impl Strategy<Value = PlumbMessage> {
+fn arb_route_message() -> impl Strategy<Value = RouteMessage> {
     (
         ".*",
         ".*",
@@ -132,14 +138,19 @@ fn arb_plumb_message() -> impl Strategy<Value = PlumbMessage> {
         proptest::collection::vec((".*", ".*"), 0..=3),
         ".*",
     )
-        .prop_map(|(src, dst, wdir, content_type, attrs, data)| PlumbMessage {
-            src,
-            dst,
-            wdir,
-            content_type,
-            attrs,
-            data,
+        .prop_map(|(src, dst, wdir, content_type, attrs, data)| RouteMessage {
+            src, dst, wdir, content_type, attrs, data,
         })
+}
+
+fn arb_attr_value() -> impl Strategy<Value = AttrValue> {
+    // Non-recursive for simplicity; nesting tested separately
+    prop_oneof![
+        ".*".prop_map(AttrValue::String),
+        any::<i64>().prop_map(AttrValue::Int),
+        any::<bool>().prop_map(AttrValue::Bool),
+        proptest::collection::vec(any::<u8>(), 0..=16).prop_map(AttrValue::Bytes),
+    ]
 }
 
 fn arb_pane_request() -> impl Strategy<Value = PaneRequest> {
@@ -162,7 +173,8 @@ fn arb_pane_request() -> impl Strategy<Value = PaneRequest> {
 
 fn arb_pane_event() -> impl Strategy<Value = PaneEvent> {
     prop_oneof![
-        arb_pane_id().prop_map(|id| PaneEvent::Created { id }),
+        (arb_pane_id(), arb_pane_kind())
+            .prop_map(|(id, kind)| PaneEvent::Created { id, kind }),
         (arb_pane_id(), arb_key_event())
             .prop_map(|(id, event)| PaneEvent::Key { id, event }),
         (arb_pane_id(), arb_mouse_event())
@@ -175,26 +187,33 @@ fn arb_pane_event() -> impl Strategy<Value = PaneEvent> {
         (arb_pane_id(), ".*")
             .prop_map(|(id, text)| PaneEvent::TagExecute { id, text }),
         (arb_pane_id(), ".*")
-            .prop_map(|(id, text)| PaneEvent::TagPlumb { id, text }),
-        arb_plumb_message().prop_map(|message| PaneEvent::Plumb { message }),
+            .prop_map(|(id, text)| PaneEvent::TagRoute { id, text }),
+        arb_route_message().prop_map(|message| PaneEvent::Route { message }),
     ]
+}
+
+fn arb_pane_message<T: std::fmt::Debug + 'static>(
+    core_strategy: impl Strategy<Value = T> + 'static,
+) -> impl Strategy<Value = PaneMessage<T>> {
+    (core_strategy, proptest::collection::vec((".*", arb_attr_value()), 0..=3))
+        .prop_map(|(core, attrs)| PaneMessage::with_attrs(core, attrs))
 }
 
 // --- Round-trip tests ---
 
 proptest! {
     #[test]
-    fn roundtrip_pane_request(req in arb_pane_request()) {
-        let bytes = serialize(&req).unwrap();
-        let decoded: PaneRequest = deserialize(&bytes).unwrap();
-        prop_assert_eq!(req, decoded);
+    fn roundtrip_pane_request(msg in arb_pane_message(arb_pane_request())) {
+        let bytes = serialize(&msg).unwrap();
+        let decoded: PaneMessage<PaneRequest> = deserialize(&bytes).unwrap();
+        prop_assert_eq!(msg, decoded);
     }
 
     #[test]
-    fn roundtrip_pane_event(evt in arb_pane_event()) {
-        let bytes = serialize(&evt).unwrap();
-        let decoded: PaneEvent = deserialize(&bytes).unwrap();
-        prop_assert_eq!(evt, decoded);
+    fn roundtrip_pane_event(msg in arb_pane_message(arb_pane_event())) {
+        let bytes = serialize(&msg).unwrap();
+        let decoded: PaneMessage<PaneEvent> = deserialize(&bytes).unwrap();
+        prop_assert_eq!(msg, decoded);
     }
 
     #[test]
@@ -205,9 +224,31 @@ proptest! {
     }
 
     #[test]
-    fn roundtrip_plumb_message(msg in arb_plumb_message()) {
+    fn roundtrip_route_message(msg in arb_route_message()) {
         let bytes = serialize(&msg).unwrap();
-        let decoded: PlumbMessage = deserialize(&bytes).unwrap();
+        let decoded: RouteMessage = deserialize(&bytes).unwrap();
+        prop_assert_eq!(msg, decoded);
+    }
+
+    #[test]
+    fn roundtrip_attr_value(val in arb_attr_value()) {
+        let bytes = serialize(&val).unwrap();
+        let decoded: AttrValue = deserialize(&bytes).unwrap();
+        prop_assert_eq!(val, decoded);
+    }
+
+    #[test]
+    fn roundtrip_server_verb_message(
+        msg in arb_pane_message(
+            prop_oneof![
+                Just(ServerVerb::Query),
+                Just(ServerVerb::Notify),
+                Just(ServerVerb::Command),
+            ]
+        )
+    ) {
+        let bytes = serialize(&msg).unwrap();
+        let decoded: PaneMessage<ServerVerb> = deserialize(&bytes).unwrap();
         prop_assert_eq!(msg, decoded);
     }
 }
@@ -221,69 +262,163 @@ proptest! {
         state = state.connect().unwrap();
 
         for req in &requests {
-            // apply may return Ok or Err, but must never panic
             match state.apply(req) {
                 Ok(new_state) => {
-                    // If Create succeeded, simulate compositor response
                     if matches!(req, PaneRequest::Create { .. }) {
-                        let fake_id = PaneId::new(NonZeroU32::new(1).unwrap());
-                        state = new_state.activate(fake_id).unwrap_or(new_state);
+                        let fake_id = PaneId::new(NonZeroU32::new(
+                            (state_pane_count(&new_state) + 1) as u32
+                        ).unwrap());
+                        state = new_state.activate(fake_id, message::PaneKind::CellGrid)
+                            .unwrap_or(new_state);
                     } else {
                         state = new_state;
                     }
                 }
-                Err(_) => {
-                    // State unchanged on error — this is correct
-                }
+                Err(_) => {}
             }
         }
     }
 }
 
-#[test]
-fn state_machine_create_then_close() {
-    let state = ProtocolState::Disconnected;
-    let state = state.connect().unwrap();
-    assert_eq!(state, ProtocolState::Connected);
-
-    // Create is valid when Connected
-    let state = state
-        .apply(&PaneRequest::Create {
-            name: "test".into(),
-            kind: message::PaneKind::CellGrid,
-        })
-        .unwrap();
-
-    // Simulate compositor assigning an id
-    let id = PaneId::new(NonZeroU32::new(42).unwrap());
-    let state = state.activate(id).unwrap();
-    assert_eq!(state, ProtocolState::Active { pane_id: id });
-
-    // Close returns to Connected
-    let state = state.apply(&PaneRequest::Close { id }).unwrap();
-    assert_eq!(state, ProtocolState::Connected);
+fn state_pane_count(state: &ProtocolState) -> usize {
+    match state {
+        ProtocolState::Disconnected => 0,
+        ProtocolState::Active { panes, .. } => panes.len(),
+    }
 }
 
 #[test]
-fn state_machine_rejects_write_before_create() {
+fn state_machine_multi_pane() {
+    let state = ProtocolState::Disconnected;
+    let state = state.connect().unwrap();
+
+    // Create first pane
+    let state = state
+        .apply(&PaneRequest::Create {
+            name: "shell".into(),
+            kind: message::PaneKind::CellGrid,
+        })
+        .unwrap();
+    let id1 = PaneId::new(NonZeroU32::new(1).unwrap());
+    let state = state.activate(id1, message::PaneKind::CellGrid).unwrap();
+
+    // Create second pane
+    let state = state
+        .apply(&PaneRequest::Create {
+            name: "editor".into(),
+            kind: message::PaneKind::CellGrid,
+        })
+        .unwrap();
+    let id2 = PaneId::new(NonZeroU32::new(2).unwrap());
+    let state = state.activate(id2, message::PaneKind::CellGrid).unwrap();
+
+    // Both panes are tracked
+    assert_eq!(state_pane_count(&state), 2);
+
+    // Close first pane
+    let state = state.apply(&PaneRequest::Close { id: id1 }).unwrap();
+    assert_eq!(state_pane_count(&state), 1);
+
+    // Second pane still works
+    let state = state
+        .apply(&PaneRequest::SetTag {
+            id: id2,
+            text: "test".into(),
+        })
+        .unwrap();
+    assert_eq!(state_pane_count(&state), 1);
+}
+
+#[test]
+fn state_machine_connect_errors_when_active() {
+    let state = ProtocolState::Disconnected;
+    let state = state.connect().unwrap();
+    assert!(state.connect().is_err());
+}
+
+#[test]
+fn state_machine_rejects_write_to_unknown_pane() {
     let state = ProtocolState::Disconnected;
     let state = state.connect().unwrap();
 
     let id = PaneId::new(NonZeroU32::new(1).unwrap());
     let result = state.apply(&PaneRequest::WriteCells {
         id,
-        region: CellRegion {
-            col: 0,
-            row: 0,
-            width: 1,
-            cells: vec![],
-        },
+        region: cell::CellRegion::new(0, 0, 1, 1, vec![Cell::default()]).unwrap(),
     });
-
     assert!(result.is_err());
 }
 
-// Need to re-export the inner modules for test access
-use pane_proto::color;
-use pane_proto::event;
-use pane_proto::message;
+#[test]
+fn state_machine_rejects_write_to_surface_pane() {
+    let state = ProtocolState::Disconnected;
+    let state = state.connect().unwrap();
+
+    let state = state
+        .apply(&PaneRequest::Create {
+            name: "surf".into(),
+            kind: message::PaneKind::Surface,
+        })
+        .unwrap();
+    let id = PaneId::new(NonZeroU32::new(1).unwrap());
+    let state = state.activate(id, message::PaneKind::Surface).unwrap();
+
+    let result = state.apply(&PaneRequest::WriteCells {
+        id,
+        region: cell::CellRegion::new(0, 0, 1, 1, vec![Cell::default()]).unwrap(),
+    });
+    assert!(result.is_err());
+}
+
+#[test]
+fn state_machine_activate_without_pending_errors() {
+    let state = ProtocolState::Disconnected;
+    let state = state.connect().unwrap();
+
+    let id = PaneId::new(NonZeroU32::new(1).unwrap());
+    assert!(state.activate(id, message::PaneKind::CellGrid).is_err());
+}
+
+#[test]
+fn cell_region_validation() {
+    // Valid
+    let region = cell::CellRegion::new(0, 0, 2, 3, vec![Cell::default(); 6]);
+    assert!(region.is_ok());
+
+    // Invalid: wrong count
+    let region = cell::CellRegion::new(0, 0, 2, 3, vec![Cell::default(); 5]);
+    assert!(region.is_err());
+
+    // Valid: empty
+    let region = cell::CellRegion::new(0, 0, 0, 0, vec![]);
+    assert!(region.is_ok());
+}
+
+#[test]
+fn fkey_validation() {
+    assert!(event::FKey::try_from(1).is_ok());
+    assert!(event::FKey::try_from(24).is_ok());
+    assert!(event::FKey::try_from(0).is_err());
+    assert!(event::FKey::try_from(25).is_err());
+}
+
+#[test]
+fn pane_message_attrs() {
+    let mut msg = PaneMessage::new(PaneRequest::Create {
+        name: "test".into(),
+        kind: message::PaneKind::CellGrid,
+    });
+
+    assert!(msg.attr("cwd").is_none());
+
+    msg.set_attr("cwd", AttrValue::String("/home/lane".into()));
+    assert_eq!(
+        msg.attr("cwd").and_then(|v| v.as_str()),
+        Some("/home/lane")
+    );
+
+    // insert allows duplicates
+    msg.insert_attr("ref", AttrValue::String("file1.rs".into()));
+    msg.insert_attr("ref", AttrValue::String("file2.rs".into()));
+    assert_eq!(msg.attrs_all("ref").count(), 2);
+}
