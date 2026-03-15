@@ -7,14 +7,14 @@ use smithay::backend::renderer::Color32F;
 use crate::glyph_atlas::GlyphAtlas;
 
 /// Tag line and chrome colors — 90s-inspired, BeOS-ish
-const TAG_BG: Color32F = Color32F::new(0.85, 0.82, 0.72, 1.0);
+const TAG_BG: Color32F = Color32F::new(0.95, 0.85, 0.35, 1.0); // BeOS-inspired warm yellow
 const BORDER_LIGHT: Color32F = Color32F::new(0.7, 0.68, 0.62, 1.0);
 const BORDER_DARK: Color32F = Color32F::new(0.3, 0.28, 0.25, 1.0);
 const BODY_BG: Color32F = Color32F::new(0.12, 0.12, 0.14, 1.0);
 const BODY_FG: [f32; 4] = [0.85, 0.85, 0.80, 1.0];
 
 /// Border width in pixels
-const BORDER_PX: i32 = 2;
+const BORDER_PX: i32 = 4;
 
 /// Renders a single hardcoded pane with tag line, borders, and cell grid body.
 pub struct PaneRenderer {
@@ -42,8 +42,8 @@ impl PaneRenderer {
 
         let tag_text = "~/src/pane  Del Snarf Get Put | Look".to_string();
 
-        let width = 40u16;
-        let height = 6u16;
+        let width = 120u16;
+        let height = 30u16;
         let mut cells = Vec::with_capacity(width as usize * height as usize);
 
         // Row 0: empty
