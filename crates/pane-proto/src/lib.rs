@@ -15,5 +15,6 @@ pub use event::{KeyEvent, MouseEvent, MouseButton, MouseEventKind, Modifiers, Ke
 pub use message::{PaneEvent, PaneId, PaneKind, PaneRequest, RouteMessage};
 pub use polarity::{Compute, Value};
 pub use server::ServerVerb;
+pub use server::views::{TypedView, ViewError};
 pub use state::{ProtocolError, ProtocolState};
 pub use wire::{deserialize, frame, frame_length, serialize};
