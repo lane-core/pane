@@ -97,7 +97,7 @@ in
     bindsym $mod+Shift+Right move right
 
     # Use virtio-gpu output
-    output * bg #d1d0c8 solid_color
+    output * bg #6644aa solid_color
   '';
 
   # Runtime library path for wayland/GL (winit dlopen)
