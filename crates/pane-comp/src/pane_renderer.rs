@@ -25,12 +25,17 @@ pub struct PaneRenderer {
 }
 
 /// Draw a solid rectangle, using itself as damage.
+/// Full-window damage rect, passed to every draw call.
+/// smithay clips rendering to the intersection of dst and damage.
+static mut FRAME_DAMAGE: Option<Rectangle<i32, Physical>> = None;
+
 fn solid(
     frame: &mut GlesFrame<'_, '_>,
     rect: Rectangle<i32, Physical>,
     color: Color32F,
 ) -> anyhow::Result<()> {
-    frame.draw_solid(rect, &[rect], color)
+    let damage = unsafe { FRAME_DAMAGE.unwrap() };
+    frame.draw_solid(rect, &[damage], color)
         .map_err(|e| anyhow::anyhow!("draw_solid: {e}"))?;
     Ok(())
 }
@@ -109,6 +114,9 @@ impl PaneRenderer {
         _atlas: &GlyphAtlas,
         window_size: Size<i32, Physical>,
     ) -> anyhow::Result<()> {
+        // Set full-window damage so draw_solid isn't clipped
+        unsafe { FRAME_DAMAGE = Some(Rectangle::from_size(window_size)); }
+
         // Coordinate mapping: red at origin, stretching right and up
         let red = Color32F::new(1.0, 0.0, 0.0, 1.0);
         let green = Color32F::new(0.0, 1.0, 0.0, 1.0);
