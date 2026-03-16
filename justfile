@@ -39,8 +39,8 @@ vm-disk:
 vm: vm-build
     ./nix/run-vm-macos.sh
 
-# Rebuild VM from scratch (fresh disk)
-vm-fresh: vm-build
+# Rebuild VM from scratch (fresh disk + reset SSH key)
+vm-fresh: vm-build vm-reset-ssh
     rm -f nixos.qcow2
     ./nix/run-vm-macos.sh
 
