@@ -60,16 +60,45 @@ in
     settings.PasswordAuthentication = true;
   };
 
-  # Auto-login into cage + foot
+  # Auto-login into sway
   services.greetd = {
     enable = true;
     settings = {
       default_session = {
-        command = "${pkgs.cage}/bin/cage -- ${pkgs.foot}/bin/foot";
+        command = "${pkgs.sway}/bin/sway";
         user = "pane";
       };
     };
   };
+
+  # Sway config: vertical split with foot terminal
+  environment.etc."sway/config".text = ''
+    # Default to vertical split (foot left, pane-comp right)
+    default_orientation horizontal
+
+    # No window decorations (pane has its own chrome)
+    default_border pixel 1
+
+    # Launch foot on startup
+    exec ${pkgs.foot}/bin/foot
+
+    # Keybindings
+    set $mod Mod4
+    bindsym $mod+Return exec ${pkgs.foot}/bin/foot
+    bindsym $mod+Shift+q kill
+    bindsym $mod+d exec pane-comp
+    bindsym $mod+h splith
+    bindsym $mod+v splitv
+    bindsym $mod+Left focus left
+    bindsym $mod+Right focus right
+    bindsym $mod+Up focus up
+    bindsym $mod+Down focus down
+    bindsym $mod+Shift+Left move left
+    bindsym $mod+Shift+Right move right
+
+    # Use virtio-gpu output
+    output * bg #1e1e24 solid_color
+  '';
 
   # Runtime library path for wayland/GL (winit dlopen)
   environment.variables.PATH = [ "${pane-comp}/bin" ];
@@ -93,7 +122,7 @@ in
 
   environment.systemPackages = [
     pkgs.foot
-    pkgs.cage
+    pkgs.sway
     pkgs.htop
     pkgs.ncurses
     pkgs.less
