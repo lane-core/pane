@@ -112,9 +112,9 @@ impl PaneRenderer {
         let pane_w = self.body_cells.width as i32 * self.cell_w;
         let pane_h = self.cell_h + BORDER_PX * 2 + self.body_cells.height as i32 * self.cell_h;
 
-        // Y=0 is bottom in GL coordinates. Position pane from top of window.
+        // Debug: try different Y positions to understand coordinate system
         let pane_x = 50;
-        let pane_y = window_size.h - pane_h - 50;
+        let pane_y = 300;
 
         // --- Tag line background ---
         solid(frame, Rectangle::new(
