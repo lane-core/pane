@@ -112,8 +112,9 @@ impl PaneRenderer {
         let pane_w = self.body_cells.width as i32 * self.cell_w;
         let pane_h = self.cell_h + BORDER_PX * 2 + self.body_cells.height as i32 * self.cell_h;
 
-        let pane_x = (window_size.w - pane_w - BORDER_PX * 2) / 2;
-        let pane_y = (window_size.h - pane_h) / 2;
+        // Fixed offset from top-left — centering was clipping the top
+        let pane_x = 50;
+        let pane_y = 50;
 
         // --- Tag line background ---
         solid(frame, Rectangle::new(
