@@ -77,7 +77,9 @@ in
     default_orientation horizontal
 
     # No window decorations (pane has its own chrome)
-    default_border pixel 1
+    default_border pixel 2
+    gaps inner 8
+    gaps outer 8
 
     # Launch foot on startup
     exec ${pkgs.foot}/bin/foot
