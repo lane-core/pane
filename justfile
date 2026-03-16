@@ -6,7 +6,7 @@
 build:
     cargo build
 
-# Build pane-comp (requires linux-builder)
+# Build pane-comp via nix (clean build on linux-builder)
 build-comp:
     nix build .#packages.aarch64-linux.pane-comp --print-build-logs
 
@@ -48,6 +48,23 @@ vm-fresh: vm-build
 vm-ssh:
     ssh -p 2222 pane@localhost
 
+# --- Fast iteration (VM must be running) ---
+
+# Set up rust toolchain in VM (run once after first boot)
+dev-setup:
+    ssh -p 2222 pane@localhost "rustup default stable"
+
+# Incremental cargo build of pane-comp inside the VM
+dev-build:
+    ssh -p 2222 pane@localhost "cd /mnt/pane && cargo build -p pane-comp"
+
+# Run freshly built pane-comp in the VM
+dev-run:
+    ssh -p 2222 pane@localhost "WAYLAND_DISPLAY=wayland-0 XDG_RUNTIME_DIR=/run/user/1000 /mnt/pane/target/debug/pane-comp"
+
+# Build and run in one step
+dev: dev-build dev-run
+
 # --- Lockfile ---
 
 # Regenerate Cargo.lock with all deps (needed after adding pane-comp deps)
@@ -82,3 +99,7 @@ push:
 # Check what would be committed
 status:
     git status
+
+# Remove stale VM SSH host key (after VM rebuild)
+vm-reset-ssh:
+    ssh-keygen -R "[localhost]:2222"

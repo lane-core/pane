@@ -71,6 +71,7 @@ exec qemu-system-aarch64 \
     -virtfs local,path=/nix/store,security_model=none,mount_tag=nix-store,readonly=on \
     -virtfs local,path="$TMPDIR/xchg",security_model=none,mount_tag=shared \
     -virtfs local,path="$TMPDIR/xchg",security_model=none,mount_tag=xchg \
+    -virtfs local,path="$PROJECT_DIR",security_model=mapped-xattr,mount_tag=project \
     -drive cache=writeback,file="$DISK_IMAGE",id=drive1,if=none,index=1,werror=report \
     -device virtio-blk-pci,bootindex=1,drive=drive1,serial=root \
     -kernel "$KERNEL" \

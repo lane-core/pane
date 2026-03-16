@@ -30,10 +30,10 @@ openspec new change --schema pane "<name>"
 ### Phase 2 (pane-notify)
 - `pane-notify`: fanotify/inotify abstraction, calloop integration
 
-### Phase 3 (pane-comp skeleton) — IN PROGRESS
-- `pane-compositor` (in pane-comp-skeleton change): winit backend, calloop event loop, chrome
-- `cell-grid-renderer` (in pane-comp-skeleton change): glyph atlas, cell rendering, font loading
-- Requires Linux build environment (smithay/wayland deps)
+### Phase 3 (pane-comp skeleton) — COMPLETE ✓
+- `pane-compositor`: winit backend, calloop event loop, chrome rendering
+- `cell-grid-renderer`: glyph atlas, cell rendering, font loading
+- First pane rendered: yellow tag bar, beveled borders, dark blue body
 
 ### Phase 4 (pane-shell)
 - Architecture spec §pane-shell constraints: xterm-256color, screen buffer, dirty regions

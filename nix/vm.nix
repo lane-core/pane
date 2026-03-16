@@ -1,50 +1,66 @@
-# NixOS VM for testing pane-comp
+# NixOS VM for testing and developing pane-comp
 #
 # Build:
-#   nix build .#nixosConfigurations.pane-test-vm.config.system.build.vm
+#   just vm-build
 #
 # Run:
-#   nix shell nixpkgs#qemu -c ./result/bin/run-nixos-vm
+#   just vm-fresh   (or ./nix/run-vm-macos.sh)
 #
-# SSH in (after boot):
+# Fast iteration:
+#   just dev-build  # cargo build inside VM via SSH
+#   just dev-run    # run freshly built binary in VM
+#
+# SSH:
 #   ssh -p 2222 pane@localhost  (password: pane)
-#
-# The VM boots NixOS, auto-logs in via greetd, and launches pane-comp
-# inside cage (single-window Wayland compositor wrapper).
-#
-# Display: virtio-gpu-gl-pci for virgl GLES passthrough (falls back to
-# llvmpipe if virgl unavailable on the host).
 { pane-comp }:
-{ pkgs, ... }:
+{ pkgs, lib, ... }:
 
+let
+  # Build dependencies for pane-comp (needed for cargo build inside VM)
+  buildDeps = with pkgs; [
+    wayland
+    wayland.dev
+    wayland-protocols
+    wayland-scanner
+    libinput.dev
+    libxkbcommon.dev
+    libdrm.dev
+    mesa
+    libgbm
+    libglvnd.dev
+    udev.dev
+    pixman
+    fontconfig.dev
+    freetype.dev
+    seatd.dev
+    pkg-config
+  ];
+in
 {
   system.stateVersion = "25.05";
 
-  # QEMU options are set by nix/run-vm-macos.sh, not here.
-  # This is a plain NixOS config, not a vmVariant.
+  # Disable binfmt (builder has Rosetta configured, breaks in QEMU sandbox)
+  boot.binfmt.registrations = lib.mkForce {};
+  nix.settings.extra-platforms = lib.mkForce [];
+  environment.etc."binfmt.d/nixos.conf".enable = lib.mkForce false;
 
-  # The builder has Rosetta/x86_64 binfmt configured, which generates
-  # a binfmt_nixos.conf referencing /run/rosetta. The QEMU-based builder
-  # can't access /run/rosetta (it's an Apple Virtualization.framework
-  # feature, not available in QEMU). Remove the etc entry entirely.
-  boot.binfmt.registrations = pkgs.lib.mkForce {};
-  nix.settings.extra-platforms = pkgs.lib.mkForce [];
-  environment.etc."binfmt.d/nixos.conf".enable = pkgs.lib.mkForce false;
+  # Mount host project directory for fast iteration
+  fileSystems."/mnt/pane" = {
+    device = "project";
+    fsType = "9p";
+    options = [ "trans=virtio" "version=9p2000.L" "msize=104857600" ];
+  };
 
   hardware.graphics.enable = true;
-
-  # Seat management — needed for Wayland compositors to access input/display
   services.seatd.enable = true;
 
-  # SSH for debugging
+  # SSH for dev access
   services.openssh = {
     enable = true;
     settings.PasswordAuthentication = true;
   };
 
-  # Auto-login, launch cage with foot terminal.
-  # Run pane-comp from the terminal: it connects as a winit client.
-  # (pane-comp winit backend needs a running Wayland session to connect to)
+  # Auto-login into cage + foot
   services.greetd = {
     enable = true;
     settings = {
@@ -55,15 +71,14 @@
     };
   };
 
-  # Put pane-comp on PATH and ensure wayland libs are findable at runtime
-  # (winit loads libwayland-client.so via dlopen)
+  # Runtime library path for wayland/GL (winit dlopen)
   environment.variables.PATH = [ "${pane-comp}/bin" ];
-  environment.variables.LD_LIBRARY_PATH = with pkgs; lib.makeLibraryPath [
+  environment.variables.LD_LIBRARY_PATH = lib.makeLibraryPath (with pkgs; [
     wayland
     libxkbcommon
     libglvnd
     mesa
-  ];
+  ]);
 
   users.users.pane = {
     isNormalUser = true;
@@ -80,8 +95,10 @@
     pkgs.foot
     pkgs.cage
     pkgs.htop
-    pkgs.ncurses    # terminfo databases
+    pkgs.ncurses
     pkgs.less
+    pkgs.gcc        # linker for cargo
+    pkgs.rustup     # rust toolchain
     pane-comp
-  ];
+  ] ++ buildDeps;
 }
