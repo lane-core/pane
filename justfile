@@ -69,12 +69,15 @@ dev: dev-build dev-run
 
 # Regenerate Cargo.lock with all deps (needed after adding pane-comp deps)
 lock-regen:
-    #!/usr/bin/env bash
-    set -euo pipefail
-    sed -i '' 's/members = \["crates\/pane-proto"\]/members = ["crates\/pane-proto", "crates\/pane-comp"]/' Cargo.toml
-    cargo generate-lockfile
-    sed -i '' 's/members = \["crates\/pane-proto", "crates\/pane-comp"\]/members = ["crates\/pane-proto"]/' Cargo.toml
-    echo "Cargo.lock regenerated with all deps"
+    #!/usr/bin/env python3
+    import subprocess, re
+    with open("Cargo.toml") as f: t = f.read()
+    with open("Cargo.toml", "w") as f: f.write(t.replace('members = ["crates/pane-proto"]', 'members = ["crates/pane-proto", "crates/pane-comp"]'))
+    import os; cargo = os.path.expanduser("~/.cargo/bin/cargo")
+    subprocess.run([cargo, "generate-lockfile"], check=True)
+    with open("Cargo.toml") as f: t = f.read()
+    with open("Cargo.toml", "w") as f: f.write(t.replace('members = ["crates/pane-proto", "crates/pane-comp"]', 'members = ["crates/pane-proto"]'))
+    print("Cargo.lock regenerated with all deps")
 
 # --- Spec ---
 
