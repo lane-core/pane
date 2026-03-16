@@ -112,44 +112,46 @@ impl PaneRenderer {
         let pane_w = self.body_cells.width as i32 * self.cell_w;
         let pane_h = self.cell_h + BORDER_PX * 2 + self.body_cells.height as i32 * self.cell_h;
 
-        // Debug: try different Y positions to understand coordinate system
+        // GL Y=0 is bottom of window, Y increases upward.
+        // Layout from top: tag, then borders, then body.
+        // "top" = high Y values.
         let pane_x = 50;
-        let pane_y = 300;
-
-        // --- Tag line background ---
-        solid(frame, Rectangle::new(
-            (pane_x, pane_y).into(),
-            (pane_w + BORDER_PX * 2, self.cell_h).into(),
-        ), TAG_BG)?;
-
-        // --- Beveled borders ---
-        let body_top = pane_y + self.cell_h;
+        let tag_y = window_size.h - 50 - self.cell_h; // 50px from top edge
         let body_area_w = pane_w + BORDER_PX * 2;
         let body_area_h = self.body_cells.height as i32 * self.cell_h + BORDER_PX * 2;
 
-        // Light edge (top + left)
+        // --- Tag line background (topmost) ---
         solid(frame, Rectangle::new(
-            (pane_x, body_top).into(),
+            (pane_x, tag_y).into(),
+            (pane_w + BORDER_PX * 2, self.cell_h).into(),
+        ), TAG_BG)?;
+
+        // --- Beveled borders (below tag) ---
+        let border_top_y = tag_y - BORDER_PX;
+
+        // Light edge (top + left of border area)
+        solid(frame, Rectangle::new(
+            (pane_x, border_top_y).into(),
             (body_area_w, BORDER_PX).into(),
         ), BORDER_LIGHT)?;
         solid(frame, Rectangle::new(
-            (pane_x, body_top).into(),
+            (pane_x, border_top_y - body_area_h + BORDER_PX).into(),
             (BORDER_PX, body_area_h).into(),
         ), BORDER_LIGHT)?;
 
-        // Dark edge (bottom + right)
+        // Dark edge (bottom + right of border area)
         solid(frame, Rectangle::new(
-            (pane_x, body_top + body_area_h - BORDER_PX).into(),
+            (pane_x, border_top_y - body_area_h + BORDER_PX).into(),
             (body_area_w, BORDER_PX).into(),
         ), BORDER_DARK)?;
         solid(frame, Rectangle::new(
-            (pane_x + body_area_w - BORDER_PX, body_top).into(),
+            (pane_x + body_area_w - BORDER_PX, border_top_y - body_area_h + BORDER_PX).into(),
             (BORDER_PX, body_area_h).into(),
         ), BORDER_DARK)?;
 
-        // --- Body background ---
+        // --- Body background (below borders) ---
         let body_x = pane_x + BORDER_PX;
-        let body_y = body_top + BORDER_PX;
+        let body_y = border_top_y - BORDER_PX - self.body_cells.height as i32 * self.cell_h;
         solid(frame, Rectangle::new(
             (body_x, body_y).into(),
             (pane_w, self.body_cells.height as i32 * self.cell_h).into(),
