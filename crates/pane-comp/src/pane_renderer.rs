@@ -109,28 +109,21 @@ impl PaneRenderer {
         _atlas: &GlyphAtlas,
         window_size: Size<i32, Physical>,
     ) -> anyhow::Result<()> {
-        // Coordinate test: four colored squares at known positions
-        // Window is 1272x688.
+        // Coordinate mapping: red at origin, stretching right and up
         let red = Color32F::new(1.0, 0.0, 0.0, 1.0);
         let green = Color32F::new(0.0, 1.0, 0.0, 1.0);
-        let blue = Color32F::new(0.0, 0.0, 1.0, 1.0);
-        let white = Color32F::new(1.0, 1.0, 1.0, 1.0);
+        let yellow = Color32F::new(1.0, 1.0, 0.0, 1.0);
 
-        // Red: (0,0) 100x100 — which corner?
-        solid(frame, Rectangle::new((0, 0).into(), (100, 100).into()), red)?;
-        // Green: (1172,0) 100x100 — which corner?
-        solid(frame, Rectangle::new((1172, 0).into(), (100, 100).into()), green)?;
-        // Blue: (0,588) 100x100 — which corner?
-        solid(frame, Rectangle::new((0, 588).into(), (100, 100).into()), blue)?;
-        // White: (1172,588) 100x100 — which corner?
-        solid(frame, Rectangle::new((1172, 588).into(), (100, 100).into()), white)?;
-
-        // Yellow tag bar in center
-        solid(frame, Rectangle::new((400, 300).into(), (400, 30).into()), TAG_BG)?;
+        // Red: full width, 30px tall, at y=0
+        solid(frame, Rectangle::new((0, 0).into(), (window_size.w, 30).into()), red)?;
+        // Green: full width, 30px tall, at y=100
+        solid(frame, Rectangle::new((0, 100).into(), (window_size.w, 30).into()), green)?;
+        // Yellow: full width, 30px tall, at y=200
+        solid(frame, Rectangle::new((0, 200).into(), (window_size.w, 30).into()), yellow)?;
 
         let pane_w = self.body_cells.width as i32 * self.cell_w;
-        let body_x = 400;
-        let body_y = 330;
+        let body_x = 0;
+        let body_y = 230;
         solid(frame, Rectangle::new(
             (body_x, body_y).into(),
             (pane_w, self.body_cells.height as i32 * self.cell_h).into(),
