@@ -88,6 +88,14 @@ impl PaneRenderer {
             });
         }
 
+        // Fill remaining rows with empty cells
+        let rows_filled = 6;
+        for _ in rows_filled..height {
+            for _ in 0..width {
+                cells.push(Cell::default());
+            }
+        }
+
         let body_cells = CellRegion::new(0, 0, width, height, cells)
             .expect("hardcoded region dimensions are valid");
 
