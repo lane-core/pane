@@ -23,7 +23,8 @@ use glyph_atlas::GlyphAtlas;
 use pane_renderer::PaneRenderer;
 
 /// Background color — dark grey, 90s-inspired
-const BG_COLOR: Color32F = Color32F::new(0.12, 0.12, 0.14, 1.0);
+/// Desktop background — warm light grey, Frutiger Aero era
+const BG_COLOR: Color32F = Color32F::new(0.82, 0.81, 0.78, 1.0);
 
 /// pane desktop environment compositor
 #[derive(Debug, Clone, Bpaf)]

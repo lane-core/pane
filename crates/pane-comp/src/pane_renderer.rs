@@ -10,8 +10,8 @@ use crate::glyph_atlas::GlyphAtlas;
 const TAG_BG: Color32F = Color32F::new(0.95, 0.85, 0.35, 1.0); // BeOS-inspired warm yellow
 const BORDER_LIGHT: Color32F = Color32F::new(0.7, 0.68, 0.62, 1.0);
 const BORDER_DARK: Color32F = Color32F::new(0.25, 0.23, 0.20, 1.0);
-const BODY_BG: Color32F = Color32F::new(0.15, 0.20, 0.35, 1.0); // visible dark blue for testing
-const BODY_FG: [f32; 4] = [0.85, 0.85, 0.80, 1.0];
+const BODY_BG: Color32F = Color32F::new(1.0, 1.0, 1.0, 1.0); // white body, dark text (when rendered)
+const BODY_FG: [f32; 4] = [0.1, 0.1, 0.1, 1.0]; // near-black text on white body
 
 /// Border width in pixels
 const BORDER_PX: i32 = 4;
