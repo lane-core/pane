@@ -117,21 +117,51 @@ impl PaneRenderer {
         // Set full-window damage so draw_solid isn't clipped
         unsafe { FRAME_DAMAGE = Some(Rectangle::from_size(window_size)); }
 
-        // Coordinate mapping: red at origin, stretching right and up
-        let red = Color32F::new(1.0, 0.0, 0.0, 1.0);
-        let green = Color32F::new(0.0, 1.0, 0.0, 1.0);
-        let yellow = Color32F::new(1.0, 1.0, 0.0, 1.0);
-
-        // Red: full width, 30px tall, at y=0
-        solid(frame, Rectangle::new((0, 0).into(), (window_size.w, 30).into()), red)?;
-        // Green: full width, 30px tall, at y=100
-        solid(frame, Rectangle::new((0, 100).into(), (window_size.w, 30).into()), green)?;
-        // Yellow: full width, 30px tall, at y=200
-        solid(frame, Rectangle::new((0, 200).into(), (window_size.w, 30).into()), yellow)?;
-
+        // GL coords: (0,0) = bottom-left, Y increases upward.
+        // Layout from top of window: tag, borders, body.
+        // "top of window" = high Y values.
         let pane_w = self.body_cells.width as i32 * self.cell_w;
-        let body_x = 0;
-        let body_y = 230;
+        let pane_total_w = pane_w + BORDER_PX * 2;
+        let body_h = self.body_cells.height as i32 * self.cell_h;
+        let body_area_h = body_h + BORDER_PX * 2;
+
+        // Center horizontally, position 30px from top
+        let pane_x = (window_size.w - pane_total_w) / 2;
+        let tag_top = window_size.h - 30; // 30px from top of window
+
+        // Tag line: at the top
+        let tag_y = tag_top - self.cell_h;
+        solid(frame, Rectangle::new(
+            (pane_x, tag_y).into(),
+            (pane_total_w, self.cell_h).into(),
+        ), TAG_BG)?;
+
+        // Borders below tag
+        let border_top = tag_y - BORDER_PX;
+
+        // Light edge (top of border area + left)
+        solid(frame, Rectangle::new(
+            (pane_x, border_top).into(),
+            (pane_total_w, BORDER_PX).into(),
+        ), BORDER_LIGHT)?;
+        solid(frame, Rectangle::new(
+            (pane_x, border_top - body_area_h + BORDER_PX).into(),
+            (BORDER_PX, body_area_h).into(),
+        ), BORDER_LIGHT)?;
+
+        // Dark edge (bottom of border area + right)
+        solid(frame, Rectangle::new(
+            (pane_x, border_top - body_area_h + BORDER_PX).into(),
+            (pane_total_w, BORDER_PX).into(),
+        ), BORDER_DARK)?;
+        solid(frame, Rectangle::new(
+            (pane_x + pane_total_w - BORDER_PX, border_top - body_area_h + BORDER_PX).into(),
+            (BORDER_PX, body_area_h).into(),
+        ), BORDER_DARK)?;
+
+        // Body background
+        let body_x = pane_x + BORDER_PX;
+        let body_y = border_top - BORDER_PX - body_h;
         solid(frame, Rectangle::new(
             (body_x, body_y).into(),
             (pane_w, self.body_cells.height as i32 * self.cell_h).into(),
