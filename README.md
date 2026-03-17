@@ -47,6 +47,25 @@ a pane mode wraps a library with domain-specific semantics. plugins
 compose because they operate on the public interface surface. adding
 a plugin is dropping a file. removing it is deleting the file.
 
+communication
+-------------
+
+pane-route is the communication infrastructure. data flows from
+sources to handlers based on content. clicking text, receiving a
+dbus signal, watching a file change, handling a network request —
+these are all instances of the same thing: content arrives, matches
+a rule, dispatches to a handler.
+
+foreign protocols are integrated via bridges — small daemons that
+translate between a foreign protocol and pane's native message
+model. pane-dbus translates dbus signals and method calls. pane-9p
+serves pane state to plan 9 systems. each bridge is a plugin. the
+pane side is always the same typed interface.
+
+start small. the first bridge is text routing from a mouse click.
+the protocol itself is the experiment platform for discovering
+what other bridges make sense.
+
 servers
 -------
 
@@ -54,8 +73,8 @@ small processes, each doing one thing. integrated behavior emerges
 from their sequential composition.
 
     pane-comp       compositor, layout, rendering
-    pane-route      pattern-match text, route to handlers
-    pane-roster     app lifecycle, service registry
+    pane-route      communication infrastructure, content routing
+    pane-roster     app lifecycle, service registry, session state
     pane-store      index file xattrs, emit change notifications
     pane-fs         expose state as filesystem at /srv/pane/
 
@@ -104,8 +123,8 @@ status
 
     pane-proto      done    wire types, state machine, typed views
     pane-comp       wip     compositor skeleton, renders pane chrome
-    pane-shell      spec    VT bridge, semantic text interface
-    pane-route      spec    content routing, pattern matching
+    pane-shell      spec    textual interface layer, terminal bridge
+    pane-route      spec    communication infrastructure, protocol bridges
     pane-roster     spec    app lifecycle, service registry
 
 license
