@@ -44,7 +44,7 @@ clean target="cargo":
 # Run pane-comp in the VM
 run:
     ssh -p 2222 pane@localhost \
-        "WAYLAND_DISPLAY=wayland-0 XDG_RUNTIME_DIR=/run/user/1000 /mnt/pane/target/debug/pane-comp"
+        "WAYLAND_DISPLAY=wayland-0 XDG_RUNTIME_DIR=/run/user/1000 ~/pane/target/debug/pane-comp"
 
 # --- dev ---
 
@@ -54,10 +54,10 @@ dev verb="build-run":
     set -euo pipefail
     case "{{verb}}" in
         setup)     ssh -p 2222 pane@localhost "rustup default stable" ;;
-        build)     ssh -p 2222 pane@localhost "cd /mnt/pane && cargo build -p pane-comp" ;;
+        build)     ssh -p 2222 pane@localhost "cd ~/pane && cargo build -p pane-comp" ;;
         run)       just run ;;
-        build-run) ssh -p 2222 pane@localhost "cd /mnt/pane && cargo build -p pane-comp && WAYLAND_DISPLAY=wayland-0 XDG_RUNTIME_DIR=/run/user/1000 /mnt/pane/target/debug/pane-comp" ;;
-        shell)     ssh -t -p 2222 pane@localhost "cd /mnt/pane && exec bash" ;;
+        build-run) ssh -p 2222 pane@localhost "cd ~/pane && cargo build -p pane-comp && WAYLAND_DISPLAY=wayland-0 XDG_RUNTIME_DIR=/run/user/1000 ~/pane/target/debug/pane-comp" ;;
+        shell)     ssh -t -p 2222 pane@localhost "cd ~/pane && exec bash" ;;
         *)         echo "usage: just dev <setup|build|run|build-run|shell>" ;;
     esac
 

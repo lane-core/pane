@@ -44,10 +44,10 @@ in
   nix.package = pkgs.lix;
 
   # Mount host project directory for fast iteration
-  fileSystems."/mnt/pane" = {
+  fileSystems."/home/pane/pane" = {
     device = "project";
     fsType = "9p";
-    options = [ "trans=virtio" "version=9p2000.L" "msize=104857600" ];
+    options = [ "trans=virtio" "version=9p2000.L" "msize=104857600" "nofail" ];
   };
 
   # Passwordless sudo for dev
