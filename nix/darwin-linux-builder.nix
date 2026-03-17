@@ -10,13 +10,9 @@
 {
   nix.linux-builder = {
     enable = true;
-    maxJobs = 4;
     config = {
       virtualisation.cores = 4;
       virtualisation.memorySize = 4096;
-      # Rosetta disabled — we build native aarch64-linux, not x86_64 via
-      # translation. Enabling Rosetta causes sandbox errors because
-      # /run/rosetta is inaccessible inside the nix build sandbox.
     };
   };
 }

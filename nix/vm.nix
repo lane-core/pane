@@ -39,10 +39,9 @@ in
 {
   system.stateVersion = "25.05";
 
-  # Disable binfmt (builder has Rosetta configured, breaks in QEMU sandbox)
-  boot.binfmt.registrations = lib.mkForce {};
-  nix.settings.extra-platforms = lib.mkForce [];
-  environment.etc."binfmt.d/nixos.conf".enable = lib.mkForce false;
+  # Use Lix instead of CppNix — the host runs Lix, and Lix-produced .drv
+  # files crash CppNix's daemon on the builder, corrupting its SQLite cache.
+  nix.package = pkgs.lix;
 
   # Mount host project directory for fast iteration
   fileSystems."/mnt/pane" = {
@@ -103,7 +102,6 @@ in
   '';
 
   # Runtime library path for wayland/GL (winit dlopen)
-  environment.variables.PATH = [ "${pane-comp}/bin" ];
   environment.variables.LD_LIBRARY_PATH = lib.makeLibraryPath (with pkgs; [
     wayland
     libxkbcommon
