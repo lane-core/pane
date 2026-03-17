@@ -35,15 +35,15 @@ The default palette SHALL be warm, saturated, and workspace-like. Warm grey base
 - **THEN** its border and tag line SHALL shift to a warmer, more saturated accent color distinguishable from unfocused panes
 
 ### Requirement: Typography split
-Widget pane chrome (tag buttons, widget labels, button text) SHALL use Inter (proportional sans-serif). Cell grid pane content SHALL use Iosevka (monospace). Tag line text regions (the editable command area) SHALL use Iosevka. This reflects the natural split: proportional for reading, monospace for working.
+Widget pane chrome (tag buttons, widget labels, button text) SHALL use Inter (proportional sans-serif). Cell grid pane content SHALL use Monoid (monospace). Tag line text regions (the editable command area) SHALL use Monoid. This reflects the natural split: proportional for reading, monospace for working.
 
 **Official fonts:**
 - **Inter** — proportional UI font (widget labels, button text, proportional chrome)
-- **Iosevka** — monospace font (cell grids, tag line text regions, code)
+- **Monoid** — monospace font (cell grids, tag line text regions, code)
 
 #### Scenario: Widget button vs cell grid text
 - **WHEN** a widget pane button labeled "Apply" and a cell grid pane showing `cargo build` are both visible
-- **THEN** "Apply" SHALL be rendered in Inter and `cargo build` SHALL be rendered in Iosevka
+- **THEN** "Apply" SHALL be rendered in Inter and `cargo build` SHALL be rendered in Monoid
 
 ### Requirement: Rounded but not bubbly
 Interactive controls SHALL have rounded corners with a small radius (3-4px). Enough to feel approachable without losing density. Not sharp 90-degree corners (too stark), not pill-shaped (too soft).
