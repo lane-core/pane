@@ -80,7 +80,7 @@ in
     gaps outer 8
 
     # Mount project directory and launch foot
-    exec bash -c 'sudo mount -t 9p -o trans=virtio,version=9p2000.L,msize=104857600 project /home/pane/pane 2>/dev/null; exec ${pkgs.foot}/bin/foot'
+    exec bash -c 'sudo mount -t 9p -o trans=virtio,version=9p2000.L,msize=104857600,access=any project /home/pane/pane 2>/dev/null; exec ${pkgs.foot}/bin/foot'
 
     # Keybindings
     set $mod Mod4
