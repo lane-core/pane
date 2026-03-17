@@ -55,7 +55,8 @@ dev verb="build-run":
         build)     ssh -p 2222 pane@localhost "cd /mnt/pane && cargo build -p pane-comp" ;;
         run)       ssh -p 2222 pane@localhost "WAYLAND_DISPLAY=wayland-0 XDG_RUNTIME_DIR=/run/user/1000 /mnt/pane/target/debug/pane-comp" ;;
         build-run) ssh -p 2222 pane@localhost "cd /mnt/pane && cargo build -p pane-comp && WAYLAND_DISPLAY=wayland-0 XDG_RUNTIME_DIR=/run/user/1000 /mnt/pane/target/debug/pane-comp" ;;
-        *)         echo "usage: just dev <setup|build|run|build-run>" ;;
+        shell)     ssh -t -p 2222 pane@localhost "cd /mnt/pane && exec bash" ;;
+        *)         echo "usage: just dev <setup|build|run|build-run|shell>" ;;
     esac
 
 # --- just spec <verb> ---
