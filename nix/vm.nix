@@ -44,10 +44,11 @@ in
   nix.package = pkgs.lix;
 
   # Mount host project directory for fast iteration
+  systemd.tmpfiles.rules = [ "d /home/pane/pane 0755 pane users -" ];
   fileSystems."/home/pane/pane" = {
     device = "project";
     fsType = "9p";
-    options = [ "trans=virtio" "version=9p2000.L" "msize=104857600" "nofail" ];
+    options = [ "trans=virtio" "version=9p2000.L" "msize=104857600" "nofail" "x-systemd.after=systemd-tmpfiles-setup.service" ];
   };
 
   # Passwordless sudo for dev
