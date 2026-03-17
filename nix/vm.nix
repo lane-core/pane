@@ -50,6 +50,9 @@ in
     options = [ "trans=virtio" "version=9p2000.L" "msize=104857600" ];
   };
 
+  # Passwordless sudo for dev
+  security.sudo.wheelNeedsPassword = false;
+
   hardware.graphics.enable = true;
   services.seatd.enable = true;
 
@@ -101,18 +104,22 @@ in
     output * bg #6644aa solid_color
   '';
 
-  # Runtime library path for wayland/GL (winit dlopen)
-  environment.variables.LD_LIBRARY_PATH = lib.makeLibraryPath (with pkgs; [
-    wayland
-    libxkbcommon
-    libglvnd
-    mesa
-  ]);
+  # Runtime environment
+  environment.variables = {
+    PATH = [ "${pane-comp}/bin" ];
+    TERMINFO_DIRS = "${pkgs.ncurses}/share/terminfo";
+    LD_LIBRARY_PATH = lib.makeLibraryPath (with pkgs; [
+      wayland
+      libxkbcommon
+      libglvnd
+      mesa
+    ]);
+  };
 
   users.users.pane = {
     isNormalUser = true;
     password = "pane";
-    extraGroups = [ "video" "render" "input" ];
+    extraGroups = [ "video" "render" "input" "wheel" ];
     openssh.authorizedKeys.keys = [
       "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIKVSbEBgxXTt3tVDpg98EKR+sTCmacdATBiIQXDZvwi3"
     ];
