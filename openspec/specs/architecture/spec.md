@@ -58,7 +58,18 @@ The fundamental operation is the **cut**: ⟨request | handler⟩. Protocol disp
 
 Monadic patterns are not forced onto imperative operations — cell grid writes, calloop event dispatch, and buffer mutation remain direct. The test: if combinator chaining reads more clearly than sequential statements, use it; if it doesn't, don't.
 
-### 6. Filesystem as Interface
+### 6. Semantic Interfaces
+
+Every interface a pane exposes — filesystem, tag line, protocol messages — SHALL present the abstraction level semantically relevant to its consumer. The same object may be viewed at different levels by different consumers:
+
+- A **human user** sees the semantic level: commands, files, directories, operations.
+- A **pane application** sees a system-service level: state, exit codes, environment, capabilities.
+- The **compositor** sees the rendering level: cells, regions, surfaces — because rendering IS its semantics.
+- A **debugger or admin tool** sees the implementation level: byte streams, buffer state, protocol traces — because introspection IS its purpose.
+
+The abstraction level isn't fixed — it's determined by who's looking and what they need. This operates over a permission gradient from system to user. Implementation details aren't hidden — they're available at the appropriate interface depth for consumers who need them. The principle is: match the interface to the consumer's purpose.
+
+### 7. Filesystem as Interface
 
 State and configuration are filesystem primitives — file content for values, xattrs for metadata, directories for structure. Plugin discovery is via well-known directories watched by pane-notify. The FUSE interface at `/srv/pane/` exposes server state for scripting and debugging. The filesystem is the database, the registry, and the configuration format.
 
