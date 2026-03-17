@@ -31,7 +31,7 @@ test-linux:
 vm-build:
     nix build .#nixosConfigurations.pane-test-vm.config.system.build.vm
 
-# Build VM disk image (first time only)
+# Build VM disk image
 vm-disk:
     nix build .#packages.aarch64-linux.vm-disk -o result-disk
 
@@ -64,6 +64,23 @@ dev-run:
 
 # Build and run in one step
 dev: dev-build dev-run
+
+# --- Clean ---
+
+# Clean cargo build artifacts
+clean:
+    cargo clean
+
+# Clean VM disk image (forces fresh disk on next vm-fresh)
+clean-disk:
+    rm -f nixos.qcow2 result-disk
+
+# Clean nix build results
+clean-nix:
+    rm -f result result-disk
+
+# Clean everything (cargo + VM disk + nix results)
+clean-all: clean clean-disk clean-nix
 
 # --- Lockfile ---
 
