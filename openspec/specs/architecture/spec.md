@@ -75,6 +75,14 @@ State and configuration are filesystem primitives — file content for values, x
 
 **Caching invariant:** Servers cache filesystem state in memory at startup and update only in response to pane-notify events. The render loop and event dispatch never perform filesystem I/O.
 
+### 8. Composable Extension
+
+The system is extended through the same interfaces it uses internally. Routing rules, translators, input methods, and pane modes are all plugins — files in well-known directories, watched by pane-notify, composing through typed interfaces (pane protocol, attrs bag, filesystem).
+
+A pane mode wraps a pane client library (e.g., pane-shell-lib) with domain-specific semantics: a custom tag line, custom filesystem endpoints, custom routing patterns. The terminal emulation is reused; the semantic layer is new. This produces an ecosystem where a "git pane," "mail pane," or "database pane" are thin layers over shared infrastructure — like emacs modes, but with static types, OS-level composition, and no language runtime.
+
+Plugins compose safely because they operate on the public interface surface, not on internal state. The extension surface is the same surface the system itself uses. Adding a plugin is dropping a file in a directory. Removing it is deleting the file.
+
 ## Servers
 
 Each server is a separate process that does exactly one thing. Servers communicate via the inter-server protocol (`PaneMessage<ServerVerb>`) over unix sockets. Infrastructure servers are managed by the init system (s6/runit) and register with pane-roster as a service directory on startup. Servers are built on calloop event loops (Looper pattern).
