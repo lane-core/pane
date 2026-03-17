@@ -1,128 +1,84 @@
 # pane desktop environment
 
-# --- Build ---
+# --- basics ---
 
 # Build pane-proto (works on any platform)
 build:
     cargo build
 
-# Build pane-comp via nix (clean build on linux-builder)
-build-comp:
-    nix build .#packages.aarch64-linux.pane-comp --print-build-logs
-
-# Build everything for linux
-build-linux:
-    nix build .#packages.aarch64-linux.pane-comp --print-build-logs
-    nix build .#packages.aarch64-linux.pane-proto --print-build-logs
-
-# --- Test ---
-
 # Run pane-proto tests
 test:
     cargo test
-
-# Run pane-proto tests via nix (linux)
-test-linux:
-    nix build .#packages.aarch64-linux.pane-proto --print-build-logs
-
-# --- VM ---
-
-# Build the test VM image
-vm-build:
-    nix build .#nixosConfigurations.pane-test-vm.config.system.build.vm
-
-# Build VM disk image
-vm-disk:
-    nix build .#packages.aarch64-linux.vm-disk -o result-disk
-
-# Run the test VM (builds disk if needed)
-vm: vm-build
-    ./nix/run-vm-macos.sh
-
-# Rebuild VM from scratch (fresh disk + reset SSH key)
-vm-fresh: vm-build vm-reset-ssh
-    rm -f nixos.qcow2
-    ./nix/run-vm-macos.sh
-
-# SSH into the running VM
-vm-ssh:
-    ssh -p 2222 pane@localhost
-
-# --- Fast iteration (VM must be running) ---
-
-# Set up rust toolchain in VM (run once after first boot)
-dev-setup:
-    ssh -p 2222 pane@localhost "rustup default stable"
-
-# Incremental cargo build of pane-comp inside the VM
-dev-build:
-    ssh -p 2222 pane@localhost "cd /mnt/pane && cargo build -p pane-comp"
-
-# Run freshly built pane-comp in the VM
-dev-run:
-    ssh -p 2222 pane@localhost "WAYLAND_DISPLAY=wayland-0 XDG_RUNTIME_DIR=/run/user/1000 /mnt/pane/target/debug/pane-comp"
-
-# Build and run in one step
-dev: dev-build dev-run
-
-# --- Clean ---
 
 # Clean cargo build artifacts
 clean:
     cargo clean
 
-# Clean VM disk image (forces fresh disk on next vm-fresh)
-clean-disk:
-    rm -f nixos.qcow2 result-disk
-
-# Rebuild VM disk image from scratch
-refresh-disk: clean-disk vm-disk
-
-# Clean nix build results
-clean-nix:
-    rm -f result result-disk
-
-# Clean everything (cargo + VM disk + nix results)
-clean-all: clean clean-disk clean-nix
-
-# --- Lockfile ---
-
-# Regenerate Cargo.lock with all deps (needed after adding pane-comp deps)
-lock-regen:
+# Regenerate Cargo.lock with all deps
+cargo-lock:
     #!/usr/bin/env python3
-    import subprocess, re
+    import subprocess, os
     with open("Cargo.toml") as f: t = f.read()
     with open("Cargo.toml", "w") as f: f.write(t.replace('members = ["crates/pane-proto"]', 'members = ["crates/pane-proto", "crates/pane-comp"]'))
-    import os; cargo = os.path.expanduser("~/.cargo/bin/cargo")
-    subprocess.run([cargo, "generate-lockfile"], check=True)
+    subprocess.run([os.path.expanduser("~/.cargo/bin/cargo"), "generate-lockfile"], check=True)
     with open("Cargo.toml") as f: t = f.read()
     with open("Cargo.toml", "w") as f: f.write(t.replace('members = ["crates/pane-proto", "crates/pane-comp"]', 'members = ["crates/pane-proto"]'))
     print("Cargo.lock regenerated with all deps")
 
-# --- Spec ---
+# --- just vm <verb> ---
 
-# List active changes
-spec-list:
-    openspec list
+# VM lifecycle management
+vm verb:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    case "{{verb}}" in
+        build)        nix build .#nixosConfigurations.pane-test-vm.config.system.build.vm ;;
+        disk)         nix build .#packages.aarch64-linux.vm-disk -o result-disk ;;
+        fresh)        just vm build && just vm reset-ssh && rm -f nixos.qcow2 && ./nix/run-vm-macos.sh ;;
+        run)          ./nix/run-vm-macos.sh ;;
+        ssh)          ssh -p 2222 pane@localhost ;;
+        reset-ssh)    ssh-keygen -R "[localhost]:2222" 2>/dev/null || true ;;
+        refresh-disk) rm -f nixos.qcow2 result-disk && just vm disk ;;
+        clean)        rm -f nixos.qcow2 result-disk result ;;
+        *)            echo "usage: just vm <build|disk|fresh|run|ssh|reset-ssh|refresh-disk|clean>" ;;
+    esac
 
-# Show change status
-spec-status change:
-    openspec status --change "{{change}}"
+# --- just dev <verb> ---
 
-# Validate all specs
-spec-validate:
-    openspec validate --all
+# Fast iteration (VM must be running)
+dev verb="build-run":
+    #!/usr/bin/env bash
+    set -euo pipefail
+    case "{{verb}}" in
+        setup)     ssh -p 2222 pane@localhost "rustup default stable" ;;
+        build)     ssh -p 2222 pane@localhost "cd /mnt/pane && cargo build -p pane-comp" ;;
+        run)       ssh -p 2222 pane@localhost "WAYLAND_DISPLAY=wayland-0 XDG_RUNTIME_DIR=/run/user/1000 /mnt/pane/target/debug/pane-comp" ;;
+        build-run) ssh -p 2222 pane@localhost "cd /mnt/pane && cargo build -p pane-comp && WAYLAND_DISPLAY=wayland-0 XDG_RUNTIME_DIR=/run/user/1000 /mnt/pane/target/debug/pane-comp" ;;
+        *)         echo "usage: just dev <setup|build|run|build-run>" ;;
+    esac
 
-# --- Utilities ---
+# --- just spec <verb> ---
 
-# Push to origin
-push:
-    git push
+# OpenSpec workflow
+spec verb:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    case "{{verb}}" in
+        list)     openspec list ;;
+        validate) openspec validate --all ;;
+        *)        echo "usage: just spec <list|validate>" ;;
+    esac
 
-# Check what would be committed
-status:
-    git status
+# --- just nix <verb> ---
 
-# Remove stale VM SSH host key (after VM rebuild)
-vm-reset-ssh:
-    ssh-keygen -R "[localhost]:2222"
+# Nix builds (linux-builder)
+nix verb:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    case "{{verb}}" in
+        comp)   nix build .#packages.aarch64-linux.pane-comp --print-build-logs ;;
+        proto)  nix build .#packages.aarch64-linux.pane-proto --print-build-logs ;;
+        all)    just nix comp && just nix proto ;;
+        clean)  rm -f result result-disk ;;
+        *)      echo "usage: just nix <comp|proto|all|clean>" ;;
+    esac
