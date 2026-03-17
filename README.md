@@ -9,6 +9,13 @@ pane
 
 pane is a desktop environment for Linux.
 
+pane is about expressive ways to compose ideas. the system is
+built from a small, principled core — typed protocols, filesystem
+interfaces, composable servers — from which the entire experience
+is derived by first principles. the core can be understood,
+modified, and extended. guard rails for new users. a ladder for
+power users.
+
 it draws from BeOS (integrated servers, kits, replicant-style
 composition), Plan 9 (text as interface, content routing, filesystem
 as API), and modern tiling window managers. the aesthetic is Frutiger
