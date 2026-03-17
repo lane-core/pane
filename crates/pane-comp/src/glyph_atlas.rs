@@ -52,7 +52,7 @@ impl GlyphAtlas {
         // Derive cell metrics from a reference buffer
         let metrics = Metrics::new(font_size, font_size * 1.2);
         let mut buffer = Buffer::new(&mut font_system, metrics);
-        buffer.set_text(&mut font_system, "M", Attrs::new().family(Family::Monospace), Shaping::Advanced);
+        buffer.set_text(&mut font_system, "M", &Attrs::new().family(Family::Monospace), Shaping::Advanced, None);
 
         // Get cell dimensions from font metrics
         let line_height = (font_size * 1.2).ceil() as u16;
@@ -168,8 +168,9 @@ impl GlyphAtlas {
         buffer.set_text(
             &mut self.font_system,
             &s,
-            Attrs::new().family(Family::Monospace),
+            &Attrs::new().family(Family::Monospace),
             Shaping::Advanced,
+            None,
         );
         buffer.shape_until_scroll(&mut self.font_system, false);
 
