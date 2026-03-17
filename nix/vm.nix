@@ -113,6 +113,9 @@ in
     isNormalUser = true;
     password = "pane";
     extraGroups = [ "video" "render" "input" ];
+    openssh.authorizedKeys.keys = [
+      "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIKVSbEBgxXTt3tVDpg98EKR+sTCmacdATBiIQXDZvwi3"
+    ];
   };
 
   fonts.packages = with pkgs; [
