@@ -75,6 +75,9 @@ clean:
 clean-disk:
     rm -f nixos.qcow2 result-disk
 
+# Rebuild VM disk image from scratch
+refresh-disk: clean-disk vm-disk
+
 # Clean nix build results
 clean-nix:
     rm -f result result-disk
