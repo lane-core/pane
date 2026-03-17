@@ -45,11 +45,6 @@ in
 
   # Mount host project directory for fast iteration
   systemd.tmpfiles.rules = [ "d /home/pane/pane 0755 pane users -" ];
-  fileSystems."/home/pane/pane" = {
-    device = "project";
-    fsType = "9p";
-    options = [ "trans=virtio" "version=9p2000.L" "msize=104857600" "nofail" "x-systemd.after=systemd-tmpfiles-setup.service" ];
-  };
 
   # Passwordless sudo for dev
   security.sudo.wheelNeedsPassword = false;
@@ -84,8 +79,8 @@ in
     gaps inner 8
     gaps outer 8
 
-    # Launch foot on startup
-    exec ${pkgs.foot}/bin/foot
+    # Mount project directory and launch foot
+    exec bash -c 'sudo mount -t 9p -o trans=virtio,version=9p2000.L,msize=104857600 project /home/pane/pane 2>/dev/null; exec ${pkgs.foot}/bin/foot'
 
     # Keybindings
     set $mod Mod4
