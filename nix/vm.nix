@@ -126,8 +126,9 @@ in
   };
 
   fonts.packages = with pkgs; [
-    iosevka
-    noto-fonts
+    iosevka       # monospace (cell grids, tag line text regions)
+    inter         # proportional (widget labels, UI chrome)
+    noto-fonts    # fallback/unicode coverage
   ];
 
   environment.systemPackages = [
