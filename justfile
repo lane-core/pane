@@ -33,14 +33,15 @@ vm verb:
     set -euo pipefail
     case "{{verb}}" in
         build)        nix build .#nixosConfigurations.pane-test-vm.config.system.build.vm ;;
+        boot)         just vm reset-ssh && rm -f nixos.qcow2 && ./nix/run-vm-macos.sh ;;
+        fresh)        just vm build && just vm boot ;;
         disk)         nix build .#packages.aarch64-linux.vm-disk -o result-disk ;;
-        fresh)        just vm build && just vm reset-ssh && rm -f nixos.qcow2 && ./nix/run-vm-macos.sh ;;
         run)          ./nix/run-vm-macos.sh ;;
         ssh)          ssh -p 2222 pane@localhost ;;
         reset-ssh)    ssh-keygen -R "[localhost]:2222" 2>/dev/null || true ;;
         refresh-disk) rm -f nixos.qcow2 result-disk && just vm disk ;;
         clean)        rm -f nixos.qcow2 result-disk result ;;
-        *)            echo "usage: just vm <build|disk|fresh|run|ssh|reset-ssh|refresh-disk|clean>" ;;
+        *)            echo "usage: just vm <build|boot|fresh|disk|run|ssh|reset-ssh|refresh-disk|clean>" ;;
     esac
 
 # --- just dev <verb> ---
