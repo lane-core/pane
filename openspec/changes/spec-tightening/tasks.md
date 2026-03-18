@@ -14,8 +14,9 @@
 - [ ] 2.2 Understand per-process namespaces — how bind/mount created composability
 - [ ] 2.3 Understand the plumber — the rule format, the message protocol, how it was used
 - [ ] 2.4 Understand 9P — what it meant to have one protocol for everything
-- [ ] 2.5 Understand how acme's filesystem interface worked in practice
-- [ ] 2.6 How do these ideas inform pane's systems design? Where does pane draw from Plan 9, where does it diverge, and why?
+- [ ] 2.5 Understand Plan 9's distributed network architecture — how `cpu`, `import`, and namespace export made the network transparent, how a terminal could use a remote CPU seamlessly, what this implies for pane in a networked context
+- [ ] 2.6 Understand how acme's filesystem interface worked in practice
+- [ ] 2.7 How do these ideas inform pane's systems design? Where does pane draw from Plan 9, where does it diverge, and why?
 
 ## 3. Research: Session types
 
