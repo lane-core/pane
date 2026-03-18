@@ -6,7 +6,7 @@
 - [ ] 1.4 Understand BFS attributes and BQuery — how metadata-as-first-class changed the UX
 - [ ] 1.5 Understand the replicant/BArchivable system — what it enabled and what it cost
 - [ ] 1.6 Understand BRoster and launch_daemon — the evolution from tracker to supervisor
-- [ ] 1.7 Write a summary of what pane draws from BeOS/Haiku and where it diverges, with specificity
+- [ ] 1.7 How do these ideas inform pane's systems design? Where does pane draw from BeOS/Haiku, where does it diverge, and why?
 
 ## 2. Research: Plan 9
 
@@ -15,15 +15,15 @@
 - [ ] 2.3 Understand the plumber — the rule format, the message protocol, how it was used
 - [ ] 2.4 Understand 9P — what it meant to have one protocol for everything
 - [ ] 2.5 Understand how acme's filesystem interface worked in practice
-- [ ] 2.6 Write a summary of what pane draws from Plan 9 and where it diverges, with specificity
+- [ ] 2.6 How do these ideas inform pane's systems design? Where does pane draw from Plan 9, where does it diverge, and why?
 
 ## 3. Research: Session types
 
 - [ ] 3.1 Read Vasconcelos "Fundamentals of Session Types" — understand the theory from foundations
 - [ ] 3.2 Understand the Caires-Pfenning correspondence (linear logic ↔ session types)
-- [ ] 3.3 Understand how `par` implements session types in Rust — read the source
+- [ ] 3.3 Understand how `par` implements session types in Rust — read the source, understand the design choices
 - [ ] 3.4 Understand what deadlock freedom guarantees and what it costs
-- [ ] 3.5 Write a summary of how session types serve pane's protocol design, with specificity
+- [ ] 3.5 How does committing to `par` and session types inform pane's systems design? What does it enable, what does it constrain, what design possibilities open up?
 
 ## 4. Architecture spec rewrite
 
