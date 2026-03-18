@@ -26,10 +26,10 @@ input. not because it was simple, but because each piece
 reasoned locally while the whole composed globally. the protocol
 was the operating principle, not a global coordinator.
 
-pane extends this with Plan 9's text-as-interface, modern tiling,
-typed protocols grounded in sequent calculus, and a Frutiger Aero
-aesthetic — the polished evolution of 90s desktop design. what if
-Be had continued into the 2000s.
+pane extends this with Plan 9's text-as-interface and filesystem-
+as-API, modern tiling, and a Frutiger Aero aesthetic — the polished
+evolution of 90s desktop design. what if Be had continued into the
+2000s.
 
 design
 ------
