@@ -46,17 +46,19 @@ The system decomposes into small servers (separate processes) and thin client ki
 
 This is the unix/plan9 principle applied at the desktop level: servers are filters/services with clean interfaces, and the user experience is an emergent property of their composition.
 
-### 4. Typed Protocol with Correctness Guarantees
+### 4. Session-Typed Protocols
 
-All communication uses algebraic message types (Rust enums) wrapped in `PaneMessage<T>` — a typed core plus an open-ended attributes bag. The core provides compile-time exhaustiveness checking. The attrs bag provides BMessage-style extensibility. The protocol has a formal state machine. Property-based testing verifies round-trip serialization, state machine invariants, and exhaustive message handling.
+All inter-component communication is described by session types — typed descriptions of entire conversations, not just individual messages. A session type specifies what each party sends and receives, in what order, with what choices. The compiler enforces that both parties follow complementary protocols. Deadlock freedom is guaranteed structurally.
+
+The theoretical foundation is the Caires-Pfenning correspondence between linear logic propositions and session types. The practical foundation is the `par` crate, which implements session types as Rust types using `Send`/`Recv` for sequential exchange, enums for branching, and recursion for looping protocols.
+
+Pane messages are what are sent and received along a session-typed exchange. Each message carries an open attributes bag for BMessage-style extensibility — runtime flexibility where the session type provides compile-time safety.
+
+BeOS's BMessage + BLooper gave self-contained components with message-passing discipline, but correctness was enforced by convention. Session types put that correctness in the compiler — same architecture, same discipline, verified by the machine.
 
 ### 5. Compositional Interfaces
 
-Kits use Rust's native monadic idioms (`Result`/`?`, `Option` combinators, iterator chains) as the primary composition mechanism. Domain types with success/failure shape provide derived combinator APIs (`map`, `and_then`, `unwrap_or`) rather than requiring manual matching. Protocol operation sequences compose via a combinator builder in pane-app. Observable state composes via reactive signals in state-oriented kits.
-
-**Value/Compute polarity.** Protocol types carry polarity, grounded in sequent calculus (Curien & Herbelin's λμμ̃) and Call-by-Push-Value (Levy). Value types are constructed by the sender and inspected by the receiver — requests, cell data, route messages, attr values. Compute types are defined by their behavior when observed — event handlers, protocol continuations. The `Proto<A>` combinator enforces valid composition: Value-after-Value, Value-after-Compute, and Compute-after-Compute compose freely. Compute-after-Value requires explicit synchronization. Event handling has dual representations: the `PaneEvent` enum (Value — for exhaustive matching) and a `PaneHandler` builder (Compute — for declarative dispatch).
-
-The fundamental operation is the **cut**: ⟨request | handler⟩. Protocol dispatch is a cut. Making cuts explicit enables pure-function testing of dispatch without I/O.
+Kits use Rust's native monadic idioms (`Result`/`?`, `Option` combinators, iterator chains) as the primary composition mechanism. Domain types with success/failure shape provide derived combinator APIs. Observable state composes via reactive signals in state-oriented kits.
 
 Monadic patterns are not forced onto imperative operations — cell grid writes, calloop event dispatch, and buffer mutation remain direct. The test: if combinator chaining reads more clearly than sequential statements, use it; if it doesn't, don't.
 
@@ -289,38 +291,53 @@ Kit APIs compose through three layers, each mapped to a crate boundary:
 
 ## Pane Protocol
 
-### Client ↔ Compositor
+### Session Types
 
-Communication between pane-native clients and pane-comp uses four logical channels over a single unix socket connection. A single connection can own multiple panes.
-
-| Channel | Client → Compositor | Compositor → Client |
-|---------|---------------------|---------------------|
-| **body** | write cells (CellGrid) or widget tree (Widget) | — |
-| **tag** | set tag line (structured TagLine) | tag action executed (B2/left-click), tag text routed (B3) |
-| **event** | — | key, mouse, resize, focus, route message, widget events |
-| **ctl** | set name, set dirty/clean, request geometry | close requested, hide, show |
-
-All messages are `PaneMessage<PaneRequest>` or `PaneMessage<PaneEvent>` — typed core wrapped with an open attrs bag. Serialized with postcard.
-
-The protocol state machine:
-
-```
-Disconnected → Active { panes: HashMap<PaneId, PaneKind>, pending_creates: u32 }
-```
-
-Create increments `pending_creates`. `activate(id, kind)` decrements it and inserts into the pane map. Close removes from the pane map. Operations are validated against the pane map and pane kind (WriteCells rejected for Surface panes). `ProtocolState` is local tracking — not serialized, not sent on the wire.
-
-### Inter-Server
-
-Servers communicate via `PaneMessage<ServerVerb>`:
+Every interaction between components is a session — a typed conversation. The session type describes the entire protocol: what each party sends and receives, in what order, with what branches. The `par` crate provides the implementation: `Send<T, S>` and `Recv<T, S>` for sequential exchange, enums for choice, recursion for looping protocols. The compiler enforces that both parties follow complementary protocols. Deadlock freedom is guaranteed structurally.
 
 ```rust
-enum ServerVerb { Query, Notify, Command }
+// Client↔Compositor: the client's view
+type PaneSession = Send<CreatePane,           // send Create
+                   Recv<PaneCreated,          // receive id + kind
+                   PaneActive>>;              // enter active session
+
+enum PaneActive {
+    WriteCells(Send<CellRegion, PaneActive>),
+    SetWidgetTree(Send<WidgetNode, PaneActive>),
+    SetTag(Send<TagLine, PaneActive>),
+    Close,
+}
+
+// The compositor's view is the Dual — derived automatically
+type CompSession = Dual<PaneSession>;
 ```
 
-The verb is the typed core. The attrs bag carries the payload. Type safety is recovered at the kit layer via typed view/builder patterns: each server defines structs that parse/build attrs with compile-time field validation (e.g., `RouteCommand::build().data("parse.c:42").wdir("/src").into_message()`).
+A single connection can host multiple panes. Each pane is a sub-session within the connection.
 
-This is the BMessage model: one envelope, universal routing. Any server can forward, log, or inspect any message without understanding its semantics. The wire format is universal; the access layer is typed.
+### Message Envelope
+
+Pane messages are what are sent and received along a session-typed exchange. Each carries an open attributes bag — key-value pairs that flow through the system for extensibility beyond what the session type prescribes.
+
+Serialized with postcard over unix sockets.
+
+### Inter-Server Sessions
+
+Servers communicate via sessions too. Each server pair defines their conversation:
+
+```rust
+// Route: client sends text, receives result
+type RouteSession = Send<RouteMessage, Recv<RouteResult>>;
+
+// Roster: register, then query/disconnect loop
+type RosterSession = Send<Registration, RosterActive>;
+enum RosterActive {
+    Query(Send<RosterQuery, Recv<RosterResponse, RosterActive>>),
+    RegisterService(Send<ServiceRegistration, RosterActive>),
+    Disconnect,
+}
+```
+
+Typed views and builders remain for ergonomic construction and parsing of message payloads within sessions.
 
 ## Client Classes
 
@@ -377,8 +394,8 @@ The widget content model improves accessibility over cell-grid-only: widget pane
 - **FUSE:** pane-fs at `/srv/pane/`
 - **Init system:** supervision-tree init (s6, runit, or systemd — agnostic by default, opinionated when forced)
 - **Testing:** property-based (proptest) for protocol correctness, integration tests for server composition
-- **Actor model:** Looper/Handler on calloop — each server/connection is a Looper with a typed message queue, Handle<M> for typed actor references
-- **Polarity:** Value/Compute marker traits (from sequent calculus / CBPV)
+- **Session types:** `par` crate — typed conversations between components, deadlock-free by construction
+- **Init abstraction:** pane-init — contractual interface over s6, runit, or systemd
 - **Optics:** `optics` crate for composed access paths into nested attrs (when complexity justifies it)
 - **Widget layout:** taffy (flexbox/grid layout engine, pure computation)
 - **Widget rendering:** femtovg (2D vector graphics on OpenGL via glow — rounded rects, gradients, text)

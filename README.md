@@ -95,15 +95,19 @@ notifications. no config parsers, no SIGHUP, no restart.
 protocol
 --------
 
-typed messages over unix sockets. algebraic types (Rust enums)
-wrapped in a message envelope with an open key-value attributes bag.
-the typed core gives compile-time exhaustiveness. the attrs bag gives
-BMessage-style extensibility. inter-server communication uses the
-same envelope with typed views for field access.
+every interaction between components is a session — a typed
+conversation. the session type describes what each party sends
+and receives, in what order, with what branches. the compiler
+enforces that both parties follow complementary protocols.
+deadlock freedom is guaranteed structurally.
 
-protocol composition is grounded in sequent calculus: Value types
-(constructed data) and Compute types (observed behavior) compose
-with polarity-aware rules enforced at compile time.
+pane messages are what are sent and received along a session-
+typed exchange. each carries an open attributes bag for
+extensibility beyond what the session type prescribes.
+
+BeOS proved that message passing with good conventions produces
+stable concurrent systems. session types put those conventions
+in the compiler.
 
 fonts
 -----
