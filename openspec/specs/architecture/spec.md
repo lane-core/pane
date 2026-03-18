@@ -52,7 +52,7 @@ All inter-component communication is described by session types — typed descri
 
 The theoretical foundation is the Caires-Pfenning correspondence between linear logic propositions and session types. The practical foundation is the `par` crate, which implements session types as Rust types using `Send`/`Recv` for sequential exchange, enums for branching, and recursion for looping protocols.
 
-Pane messages are what are sent and received along a session-typed exchange. Each message carries an open attributes bag for BMessage-style extensibility — runtime flexibility where the session type provides compile-time safety.
+Pane messages travel along session-typed channels. The message model is influenced by BeOS's BMessage — rich, composable data that components can inspect, transform, and forward. The session type governs conversation safety at compile time. The specific message data model will be refined as the implementation develops.
 
 BeOS's BMessage + BLooper gave self-contained components with message-passing discipline, but correctness was enforced by convention. Session types put that correctness in the compiler — same architecture, same discipline, verified by the machine.
 
@@ -314,9 +314,9 @@ type CompSession = Dual<PaneSession>;
 
 A single connection can host multiple panes. Each pane is a sub-session within the connection.
 
-### Message Envelope
+### Message Content
 
-Pane messages are what are sent and received along a session-typed exchange. Each carries an open attributes bag — key-value pairs that flow through the system for extensibility beyond what the session type prescribes.
+Pane messages travel along session-typed channels. The message model is influenced by BMessage — rich, composable, introspectable data that can flow through the system without tight coupling between sender and receiver. The specific serialization and data model will be refined alongside the session type integration.
 
 Serialized with postcard over unix sockets.
 

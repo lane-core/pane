@@ -101,9 +101,10 @@ and receives, in what order, with what branches. the compiler
 enforces that both parties follow complementary protocols.
 deadlock freedom is guaranteed structurally.
 
-pane messages are what are sent and received along a session-
-typed exchange. each carries an open attributes bag for
-extensibility beyond what the session type prescribes.
+pane messages travel along session-typed channels. the message
+model draws from BeOS's BMessage — rich, composable data that
+components can inspect, transform, and forward without coupling
+to each other's internals.
 
 BeOS proved that message passing with good conventions produces
 stable concurrent systems. session types put those conventions
