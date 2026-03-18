@@ -1,127 +1,140 @@
 ## ADDED Requirements
 
-### Requirement: App signatures
-Every pane client SHALL identify itself with a reverse-domain signature string (e.g., `app.pane.shell`, `svc.pane.route`). Infrastructure servers use the `svc.pane.*` prefix. Desktop applications use `app.pane.*` or `app.<vendor>.<name>`. The signature is sent at registration time and used for queries, single-launch enforcement, and session restore.
+### Requirement: App ecology
+pane-roster is the component that makes the app ecology work. It tracks who's alive, knows what they can do, remembers what was running, and facilitates the protocol flows that launch and connect applications. It does this by implementing the same protocol every other component speaks. It's not special — it's just a server that happens to know about other servers.
 
-**Polarity**: Value
-**Crate**: `pane-roster`
-
-#### Scenario: Registration with signature
-- **WHEN** pane-shell connects to pane-roster
-- **THEN** it SHALL send a RosterRegister message with `signature: "app.pane.shell"` and `kind: Application`
-
-#### Scenario: Infrastructure registration
-- **WHEN** pane-route starts and connects to pane-roster
-- **THEN** it SHALL send a RosterRegister message with `signature: "svc.pane.route"` and `kind: Infrastructure`
-
-### Requirement: Service directory for infrastructure
-pane-roster SHALL accept RosterRegister messages from infrastructure servers and maintain a directory of their identities, capabilities, and connection endpoints. Roster SHALL NOT supervise infrastructure servers — the init system does that. When an infrastructure server disconnects (crash or shutdown), roster SHALL remove it from the directory. When it reconnects (after init restarts it), roster SHALL re-add it.
+The design follows BeOS's BRoster: a directory, not a supervisor. Roster watches. It answers queries. It facilitates launches. It does not restart crashed processes — that's pane-init's job (the abstraction over the host init system). When a process dies and pane-init restarts it, the process re-registers with roster. Roster notices and updates its directory.
 
 **Polarity**: Boundary
 **Crate**: `pane-roster`
 
-#### Scenario: Infrastructure query
-- **WHEN** a client queries "where is the router?"
-- **THEN** roster SHALL return the socket path for `svc.pane.route` if registered, or indicate it's not running
+#### Scenario: Steady state
+- **WHEN** the system is running normally
+- **THEN** roster knows every server and app, their signatures, capabilities, and connection endpoints
 
-#### Scenario: Infrastructure crash and restart
-- **WHEN** pane-route crashes and the init system restarts it
-- **THEN** pane-route SHALL re-register with roster, and roster SHALL update its directory
+#### Scenario: Server crash and recovery
+- **WHEN** pane-route crashes
+- **THEN** pane-init restarts it, pane-route re-registers with roster, roster updates its directory — all through the normal protocol, no special crash-handling code
 
-### Requirement: Process supervisor for desktop apps
-pane-roster SHALL launch, monitor, and optionally restart desktop applications. Desktop apps are processes that connect via the pane protocol and create panes. Roster tracks their PID, signature, pane IDs, and exit status.
+### Requirement: App signatures
+Every pane client identifies itself with a reverse-domain signature: `app.pane.shell`, `svc.pane.route`, `app.<vendor>.<name>`. The signature is the identity — used for queries, launch-by-type, single-launch enforcement, session restore, and service discovery.
 
-**Polarity**: Compute (active supervision)
+**Polarity**: Value
 **Crate**: `pane-roster`
 
-#### Scenario: Launch request
-- **WHEN** pane-route requests launching `app.pane.browser` (no listener on "web" port)
-- **THEN** roster SHALL fork/exec the browser, track its PID, and report success
+#### Scenario: Signature as identity
+- **WHEN** any component asks "is the browser running?"
+- **THEN** it queries roster by signature `app.pane.browser`
 
-#### Scenario: App exit tracking
-- **WHEN** a supervised desktop app exits
-- **THEN** roster SHALL detect the exit via SIGCHLD/waitpid and update its state
+### Requirement: Directory queries
+Roster answers queries about the running system:
+- "Is X running?" — by signature
+- "What's running?" — full app list
+- "Where is X?" — connection endpoint for a server
+- "What can handle this content type?" — service registry query
+- "What was I doing?" — recent apps, recent documents
 
-### Requirement: Restart policy
-Desktop apps SHALL have a configurable restart policy per signature: `restart-on-crash` (default), `restart-always`, or `restart-never`. Crash is defined as exit by signal or non-zero exit code. Clean exit is zero exit code or closure via pane protocol CloseRequested.
+These are the same queries BeOS's BRoster provided. They're how the system discovers itself.
 
-Restart uses exponential backoff: 1s, 2s, 4s, 8s, up to 60s maximum. After 5 consecutive crashes without the app surviving for at least 10 seconds, roster SHALL stop restarting and log an error.
+**Crate**: `pane-roster`
 
-**Hazard**: A misconfigured app that crashes immediately can consume resources during the backoff period.
+#### Scenario: Route needs a handler
+- **WHEN** pane-route needs to launch a handler for port "web"
+- **THEN** it queries roster for the app registered to handle that port, roster returns the signature and binary path
+
+#### Scenario: Recent items
+- **WHEN** a user opens a "recent files" panel
+- **THEN** roster provides the recent documents list, each with its associated app signature
+
+### Requirement: Launch facilitation
+Roster facilitates app launches — it knows the binary path for a signature and can exec it. But launching is always the result of a protocol flow: something happened (user action, routing rule match, session restore) → a message flowed through the system → roster was asked to start a process.
+
+Roster does not decide *when* to launch. It provides the *how*. The routing rules, the session restorer, the user's click — these decide when.
 
 **Crate**: `pane-roster`
 
-#### Scenario: Crash restart
-- **WHEN** a desktop app exits with SIGSEGV
-- **THEN** roster SHALL restart it after the current backoff delay
-
-#### Scenario: Clean exit
-- **WHEN** a desktop app exits with code 0
-- **THEN** roster SHALL NOT restart it (under `restart-on-crash` policy)
-
-#### Scenario: Restart backoff exhaustion
-- **WHEN** an app crashes 5 times within 50 seconds
-- **THEN** roster SHALL stop restarting and log "app.pane.foo: restart backoff exhausted"
-
-### Requirement: Single-launch enforcement
-Apps MAY declare single-launch behavior. When a launch request arrives for a signature that is already running with single-launch enabled, roster SHALL NOT launch a new instance. Instead, roster SHALL activate (bring to front) the existing instance and forward the route message to it.
-
-**Crate**: `pane-roster`
+#### Scenario: Launch by content type
+- **WHEN** a routing rule matches a JPEG and specifies `start: "app.pane.imageviewer"`
+- **THEN** pane-route asks roster to launch app.pane.imageviewer, roster looks up the binary path and execs it
 
 #### Scenario: Single-launch redirect
-- **WHEN** a launch request for `app.pane.browser` arrives and an instance is already running with single-launch
-- **THEN** roster SHALL forward the route message to the existing instance instead of launching a new one
-
-#### Scenario: Multi-instance allowed
-- **WHEN** a launch request for `app.pane.shell` arrives (no single-launch)
-- **THEN** roster SHALL launch a new instance regardless of existing instances
+- **WHEN** a launch request arrives for a signature already running with single-launch enabled
+- **THEN** roster activates the existing instance and forwards the message to it
 
 ### Requirement: Service registry
-Desktop apps SHALL be able to register operations they can perform on content types. Each registration includes: `operation` (name), `content_type` (glob pattern), and `description` (human-readable). pane-route queries this registry when matching route messages.
+Apps register operations they can perform: `(operation, content_type pattern, description)`. This is how the system discovers what's possible — not just what's running, but what it can *do*. pane-route queries this registry to extend routing matches with service capabilities.
 
-**Polarity**: Value (registrations are data)
+When an app disconnects, its registrations are removed. When it reconnects, it re-registers. The protocol handles this — no special lifecycle code.
+
+**Polarity**: Value
 **Crate**: `pane-roster`
 
-#### Scenario: Service registration
-- **WHEN** an editor registers `{operation: "format-json", content_type: "application/json", description: "Format JSON content"}`
-- **THEN** roster SHALL store this registration and make it queryable
+#### Scenario: Service discovery
+- **WHEN** pane-route routes `parse.c:42` and finds both a rule match (editor) and a service match (debugger)
+- **THEN** both came from different sources — the rule from a file, the service from roster's registry — but the protocol treats them the same
 
-#### Scenario: Service query
-- **WHEN** pane-route queries "what operations match content_type text/x-rust?"
-- **THEN** roster SHALL return all registrations whose content_type glob matches `text/x-rust`
-
-#### Scenario: Service deregistration on disconnect
-- **WHEN** the editor disconnects
-- **THEN** roster SHALL remove all its service registrations
+#### Scenario: Translator rating
+- **WHEN** multiple translators can handle a content type
+- **THEN** roster provides quality ratings for each, and the best-rated translator is preferred
 
 ### Requirement: App database
-pane-roster SHALL maintain an app database mapping signatures to binary paths, launch arguments, restart policies, and single-launch flags. The database SHALL be stored as files in `~/.config/pane/apps/` (one file per signature) with system defaults at `/etc/pane/apps/`. The format follows filesystem-as-configuration: file content is the binary path, xattrs carry metadata.
+The app database maps signatures to binary paths, launch arguments, and behavioral flags (single-launch). Stored as files in `~/.config/pane/apps/` (user) and `/etc/pane/apps/` (system). File content is the binary path. Xattrs carry metadata. `ls` to discover all registered apps.
 
 **Crate**: `pane-roster`
 
-#### Scenario: Launch by signature
-- **WHEN** roster needs to launch `app.pane.browser`
-- **THEN** it SHALL look up `~/.config/pane/apps/app.pane.browser` (or `/etc/pane/apps/app.pane.browser`), read the binary path from file content, and exec it
-
-#### Scenario: Discoverable apps
+#### Scenario: Discoverable
 - **WHEN** a user runs `ls ~/.config/pane/apps/`
-- **THEN** all registered app signatures SHALL be listed as files
+- **THEN** they see every app signature as a file
 
-### Requirement: Session save and restore
-pane-roster SHALL support saving and restoring the desktop session. Save captures: the list of running desktop apps (signatures + any route messages they were launched with). Restore launches the apps in the saved order. Apps restore their own internal state from their own settings.
+#### Scenario: Install an app
+- **WHEN** a user creates `~/.config/pane/apps/app.custom.tool` with content `/usr/bin/my-tool`
+- **THEN** roster can launch it by signature
 
-Session state SHALL be stored at `~/.config/pane/session/state` using pane-proto serialization (postcard).
+### Requirement: Session state
+Roster saves and restores the desktop session. Save captures the running app list (signatures, route messages they were launched with). Restore launches them in order. Apps restore their own internal state from their own settings — roster doesn't manage app-internal persistence.
+
+Session state at `~/.config/pane/session/state`.
 
 **Crate**: `pane-roster`
 
-#### Scenario: Session save
-- **WHEN** the user initiates session save (or the compositor shuts down cleanly)
-- **THEN** roster SHALL serialize the running app list to `~/.config/pane/session/state`
+#### Scenario: Session round-trip
+- **WHEN** the user has three shell panes and an editor open, saves the session, reboots, and logs in
+- **THEN** roster restores three shells and an editor, each with their tag line state and working directories
 
-#### Scenario: Session restore
-- **WHEN** pane-roster starts and finds `~/.config/pane/session/state`
-- **THEN** roster SHALL launch the saved apps in order
+### Requirement: pane-init contracts
+pane-init is the abstraction layer between pane and the host init system. It defines the contracts roster relies on:
 
-#### Scenario: App not found on restore
-- **WHEN** a saved app signature has no entry in the app database
-- **THEN** roster SHALL log a warning and skip that app
+1. **Restart guarantee**: if a managed process dies, it will be restarted
+2. **Readiness notification**: the init system signals when a process is ready to accept connections
+3. **Dependency ordering**: infrastructure servers start in the right order
+
+pane-init maps these contracts to s6 (readiness via `s6-notifyoncheck`), runit (sv check), or systemd (Type=notify, After=). Roster doesn't know which init system is in use. It sees processes appear and register.
+
+**Crate**: `pane-init`
+
+#### Scenario: Init-agnostic
+- **WHEN** a pane system runs on systemd vs s6
+- **THEN** roster's behavior is identical — processes register the same way regardless of what restarted them
+
+### Requirement: Semantic interface
+Roster's interface at `/srv/pane/roster/` presents semantically:
+
+For a **user**:
+```
+/srv/pane/roster/
+  running/          # list running apps (ls to see signatures)
+  recent/           # recent apps, recent documents
+  launch            # write a signature to launch an app
+```
+
+For a **system service**:
+```
+/srv/pane/roster/
+  services/         # registered operations by content type
+  endpoints/        # connection endpoints for servers
+  session           # save/restore session state
+```
+
+#### Scenario: Launch from shell
+- **WHEN** a user writes `app.pane.browser` to `/srv/pane/roster/launch`
+- **THEN** roster launches the browser

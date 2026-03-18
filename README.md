@@ -16,11 +16,20 @@ is derived by first principles. the core can be understood,
 modified, and extended. guard rails for new users. a ladder for
 power users.
 
-it draws from BeOS (integrated servers, kits, replicant-style
-composition), Plan 9 (text as interface, content routing, filesystem
-as API), and modern tiling window managers. the aesthetic is Frutiger
-Aero — the polished evolution of 90s desktop design. what if Be had
-continued into the 2000s.
+the design bet: if the protocol is right — if each component's
+operational semantics are local and sound — then coordination
+is emergent and the system sustains stability in the face of
+complexity. BeOS proved this: pervasive multithreading forced
+self-contained components, which produced a system that could
+play 30 videos on a Pentium 3 and still respond instantly to
+input. not because it was simple, but because each piece
+reasoned locally while the whole composed globally. the protocol
+was the operating principle, not a global coordinator.
+
+pane extends this with Plan 9's text-as-interface, modern tiling,
+typed protocols grounded in sequent calculus, and a Frutiger Aero
+aesthetic — the polished evolution of 90s desktop design. what if
+Be had continued into the 2000s.
 
 design
 ------

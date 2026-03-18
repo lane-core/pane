@@ -4,7 +4,9 @@
 
 Pane is a Wayland compositor and desktop environment for Linux. It is the foundation for a complete desktop distribution.
 
-Pane combines BeOS's integrated feel with Plan 9's text-as-interface philosophy and modern tiling window manager ideas. The design philosophy extends unix/plan9: powerfully expressive abstractions that are modular and sequential, composing to achieve an integrated user experience. No single component implements "the desktop" — the experience emerges from composition of small, focused servers.
+The design bet: if the protocol is right — if each component's operational semantics are local and sound, if interfaces are semantic, if composition rules are principled — then the system will sustain stability in the face of emergent complexity. This is the lesson of BeOS: build for the hardest case (pervasive concurrency, media as first-class, symmetric multiprocessing) and the resulting architecture is better for every case. BeOS was stable not because it was simple but because each component reasoned locally while the system composed globally. The BMessage/BLooper model forced self-contained operational semantics at every boundary. Coordination was emergent from the protocol, not imposed by a global coordinator.
+
+Pane extends this principle with Plan 9's text-as-interface philosophy, modern tiling window management, and typed protocols grounded in sequent calculus. The protocol is the operating principle. The experience emerges from composition of small, focused servers speaking a shared protocol. No single component implements "the desktop."
 
 ## The Pane Primitive
 
@@ -18,7 +20,7 @@ The **pane** is the universal UI object. Everything — shells, editors, file ma
 
 Pane targets Linux exclusively, tracking the latest stable kernel release. The system leverages Linux-specific capabilities: mount namespaces, user namespaces, fanotify, inotify, xattrs, memfd, pidfd, and seccomp.
 
-**Init system:** Infrastructure servers are managed by a supervision-tree init system. The design is init-system-agnostic by default — s6, runit, and systemd all qualify as supervisors. pane-roster acts as the service directory (infrastructure servers register with it) and as the process supervisor for desktop applications. If a specific feature requires supervision semantics that only one init system provides, the design picks that init system rather than contorting the feature to be agnostic.
+**Init system:** pane-init is an abstraction layer over the host init system. pane defines contractual guarantees it needs (process restart, readiness notification, dependency ordering) and pane-init maps these to the concrete init system (s6, runit, systemd). pane-roster is the app directory — it tracks who's alive and what they can do. It does not supervise processes directly. When a server dies and the init system restarts it, the server re-registers with roster. The init system is an implementation detail behind pane-init's contracts.
 
 **Filesystem:** The target filesystem must support the `user.*` xattr namespace. ext4, btrfs, XFS, and bcachefs all qualify. Advanced filesystem features (snapshots, subvolumes, CoW) are available through an abstraction layer when the filesystem provides them, and degrade gracefully on filesystems that lack them.
 
