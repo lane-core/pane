@@ -6,7 +6,8 @@
 - [ ] 1.4 Understand BFS attributes and BQuery — how metadata-as-first-class changed the UX
 - [ ] 1.5 Understand the replicant/BArchivable system — what it enabled and what it cost
 - [ ] 1.6 Understand BRoster and launch_daemon — the evolution from tracker to supervisor
-- [ ] 1.7 How do these ideas inform pane's systems design? Where does pane draw from BeOS/Haiku, where does it diverge, and why?
+- [ ] 1.7 Understand how Tracker, MIME types, BQuery/BFS, and the mail_daemon worked together for email — each message was a file with typed attributes, Tracker was the mail client, queries were live mailboxes. This is the canonical example of how BeOS's infrastructure composed into a UX that no single component implemented
+- [ ] 1.8 How do these ideas inform pane's systems design? Where does pane draw from BeOS/Haiku, where does it diverge, and why?
 
 ## 2. Research: Plan 9
 
