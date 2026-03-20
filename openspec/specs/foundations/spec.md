@@ -176,7 +176,7 @@ A second tension: the extension model celebrates low-friction composition (drop 
 
 ### The two layers
 
-**The core system layer** — compositor, roster, attribute store, filesystem interface, notification system, watchdog, init abstraction — has an intimate relationship with the host OS. It is compact, efficient, and bulletproof.
+**The core system layer** — compositor, roster, attribute store, filesystem interface, notification system, watchdog, init integration (s6) — has an intimate relationship with the host OS. It is compact, efficient, and bulletproof.
 
 **The outer layer** — clients, modes, translators, bridges, agents, external tools — speaks the protocol. Any participant that can communicate over the protocol can participate fully, regardless of language, location, or nature.
 

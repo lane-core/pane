@@ -37,7 +37,7 @@ These views are projections of the same internal state. When state changes throu
 
 **Tag line.** Editable text that serves as title, command bar, and menu simultaneously. Inspired by acme's tag line — text IS the interface. The tag line is always compositor-rendered (the compositor owns the chrome). Tag line content travels through the pane protocol: the client sends tag content, the compositor renders it. Text in the tag line is actionable: execute (run as command) and route (kit evaluates routing rules for pattern-matched dispatch).
 
-**Body.** The content area. For pane-native clients: a cell grid (text), a widget tree, or a hybrid. For legacy Wayland clients: an opaque wl_surface. The body is always client-rendered — the Wayland model — with visual consistency coming from the shared kits, not from the compositor rendering on behalf of clients.
+**Body.** The content area. For pane-native clients: text, widgets, or a hybrid. For legacy Wayland clients: an opaque wl_surface. The body is always client-rendered — the Wayland model — with visual consistency coming from the shared kits, not from the compositor rendering on behalf of clients.
 
 **Chrome.** Borders, focus indicators, split handles. Always compositor-rendered. The chrome is pane's visual identity — one opinionated look, consistent across all panes regardless of whether their content is native or legacy.
 
@@ -161,6 +161,8 @@ BFS's attribute indexing and query engine, reimplemented in userspace over Linux
 
 **Free attributes:** Certain attributes are always available and always indexed: pane type, creation time, modification time, MIME type. This mirrors BFS's three always-indexed attributes (name, size, last_modified) that ensured basic queries always worked without explicit index creation.
 
+**Target filesystem:** btrfs (primary) or XFS (supported alternative). ext4's xattr size limit (~4KB total per inode) is too restrictive for the filesystem-as-database vision. btrfs supports ~16KB per xattr value with no per-inode total limit; XFS supports 64KB per value with three-tier storage and no total limit. bcachefs is a future option once it matures (2027-2028). ext4 is not supported as an installation target — this is the cost of being opinionated about the base stack. In practice, btrfs is already the default on Fedora and openSUSE.
+
 ### pane-fs — Filesystem Interface
 
 Plan 9's gift: if state is a file, any tool can access it. pane-fs is a FUSE filesystem at `/srv/pane/` that exposes pane state for scripts, remote access, and tools in any language.
@@ -168,6 +170,12 @@ Plan 9's gift: if state is a file, any tool can access it. pane-fs is a FUSE fil
 pane-fs is a translation layer — it converts FUSE operations into pane protocol messages. It is just another client of the pane servers. It has no special privilege and no server logic.
 
 The filesystem provides universality that typed protocols cannot (any language, any tool). The typed protocol provides safety that the filesystem cannot (compile-time verification, session guarantees). Both are needed. The filesystem is the universal FFI; the protocol is the verified channel.
+
+### Notifications
+
+Notifications are panes — not a separate subsystem. A notification is created as a floating pane with attributes (source, timestamp, content, priority). It participates in routing, has a filesystem projection, and can be queried via pane-store. Retention policies, routing to logs, and dismissal are all standard pane operations — no dedicated notification server is needed.
+
+System events that produce notifications (D-Bus signals via pane-dbus, agent mail, build results) create notification panes through the pane protocol. The compositor manages their display (floating, anchored, transient). The pane-store indexes their attributes. The user's routing rules determine what happens to them. This is infrastructure-first design: the notification "feature" emerges from composing existing infrastructure.
 
 ---
 
@@ -185,7 +193,7 @@ pane-media (PipeWire abstraction)
 pane-input (generalized keybinding grammar)
     |
 pane-text (text buffers, structural regexps)
-pane-ui (cell grid, widgets, styling)
+pane-ui (text, widgets, styling)
     |
 pane-app (application lifecycle, looper, routing)
 pane-store-client (attribute access, queries)
@@ -224,9 +232,9 @@ The developer's primary interface for building pane-native applications. Analogo
 
 ### pane-ui — Interface
 
-Cell grid writing helpers, tag line management, styling primitives, layout, widget tree rendering. The rendering infrastructure that all native pane clients share.
+Text rendering, styling primitives, layout, widget rendering. The rendering infrastructure that all native pane clients share. Tag line content is set through the pane-app kit (which provides the API for declaring tag text and actions) and rendered by the compositor (which owns the chrome). pane-ui does not render tag lines — it renders body content.
 
-**Cell grid rendering.** GPU-accelerated text rendering: glyph atlas, instanced rendering. The cell grid is the primary content model for text-oriented panes (shells, editors, logs). Each cell has a character, foreground/background color, and attributes.
+**Text rendering.** GPU-accelerated text rendering with glyph atlas and instanced drawing. Text-oriented panes (shells, editors, logs) are first-class — not trapped inside a terminal emulator but rendered directly by the kit with the same quality as any other content. Client-side rendering means each process manages its own glyph rasterization — this is the standard Wayland cost that every GTK/Qt application already pays. The kit mitigates it through memoization: rasterized glyphs are cached and shared across pane-native processes via shared memory, so the per-process cost is a lookup rather than re-rasterization.
 
 **Widget rendering.** femtovg for 2D vector graphics (rounded rects, gradients, text), taffy for flexbox/grid layout. Widgets have semantic structure (buttons, labels, lists, text inputs) with roles, values, and actions — the accessibility tree is a byproduct of the widget model.
 
@@ -437,6 +445,18 @@ This is not acceptable for a compositor. The strategy:
 
 The session type doesn't model crash because crash is a failure of the protocol's preconditions, not a protocol event. The crash boundary operates outside the session type system — it catches the failure and translates it into a typed cleanup event.
 
+### Error composition
+
+The foundations spec (§6) commits to monadic error composition — failures as values that compose through the same typed channels as the happy path. The architecture realizes this at three levels:
+
+**Application-level errors** are branches in the session type. A request that can fail returns `Result<Success, Error>` as a choice — the sender handles both branches. This is typed, exhaustive, and composable: a pipeline of operations that each return Result composes via and_then/map, with errors propagating through the pipeline until handled.
+
+**Component-level crashes** are caught at session boundaries (the crash handling above). The crash becomes a typed event in the supervisor's protocol — not an exception, not a panic, but a value that the roster and watchdog process through their own typed error paths.
+
+**Recovery strategies** — retry with backoff, fallback to alternative handler, graceful degradation — are themselves composable operations. The pane-app kit provides combinators for common patterns: retry a routing dispatch N times, fall back to a secondary handler, degrade to filesystem-only access if pane-store is unavailable. These compose the same way application-level Results compose — via monadic chaining, not ad-hoc try/catch.
+
+The principle: every error path in the system is typed and composable. An operation either succeeds (producing a value and a continuation) or fails (producing a typed error that propagates through the composition until something handles it). This is the foundations spec's "failures are values, not exceptions" realized at every level of the architecture.
+
 ### Message content
 
 Pane messages are typed Rust enums serialized with postcard (serde-based, varint-encoded, compact). The specific message types are defined in pane-proto and evolve with the implementation.
@@ -609,7 +629,7 @@ Frutiger Aero — what if Be survived into the 2000s and refined alongside early
 - **Beveled borders and visible chrome.** Panes have real borders. Controls look like controls. Structure is always visible. Rounded corners (3-4px radius).
 - **Selective translucency.** Floating elements (scratchpads, popups) are translucent to show context. Translucency where it aids comprehension, not universally.
 - **Warm saturated palette.** Warm grey base, saturated accent colors for focus/dirty/active states.
-- **Typography split.** Proportional sans-serif for widget chrome. Monospace for cell grid content and tag line text. Tag line stays monospace — it's executable text where column alignment matters.
+- **Typography split.** Proportional sans-serif for widget chrome. Monospace for text content and tag lines. Tag line stays monospace — it's executable text where column alignment matters.
 - **One opinionated look.** No theme engine. The aesthetic IS pane's identity. Individual properties configurable (accent color, font size) but not wholesale theme replacement.
 
 ### HiDPI and multi-monitor
@@ -656,7 +676,7 @@ Each phase produces a testable, usable artifact. The ordering follows dependency
 2. **pane-notify** — fanotify/inotify abstraction. Looper integration (calloop for compositor, channels for others).
 
 ### Phase 2: Minimal Compositor
-3. **pane-comp skeleton** — smithay compositor, single hardcoded pane, tag line + cell grid rendering. First pixels on screen. The milestone that proves the rendering pipeline works.
+3. **pane-comp skeleton** — smithay compositor, single hardcoded pane, tag line + text rendering. First pixels on screen. The milestone that proves the rendering pipeline works.
 4. **pane-app kit** — looper abstraction, handler chain, connection management. The kit that application developers program against.
 5. **pane-shell** — PTY bridge client, first usable terminal. The milestone that makes pane a daily driver.
 
@@ -709,8 +729,8 @@ Rust's `#[must_use]` generates warnings for dropped session endpoints, not hard 
 ### Filesystem notification at scale
 fanotify with FAN_MARK_FILESYSTEM watches the entire filesystem for xattr changes. On a system with millions of files, how much event traffic does this generate? Is the filtering (only `FAN_ATTRIB` events, only `user.pane.*` xattrs) sufficient to keep the event rate manageable? Needs measurement on a real system with realistic file counts.
 
-### xattr size limits on ext4
-ext4 limits total xattr names + values to one filesystem block (typically 4KB). If pane stores multiple attributes per file (type, description, icon reference, custom attributes), does this fit? btrfs, XFS, and bcachefs have no such limit. If ext4 is too restrictive, pane may need to recommend btrfs/XFS as the target filesystem or encode multiple attributes in a single xattr value.
+### xattr size limits *(resolved)*
+ext4's 4KB xattr limit is too restrictive. Pane targets btrfs or XFS (both support 64KB per xattr value with no practical total limit). ext4 is not supported as an installation target. This is the cost of an opinionated distribution, and it's a cost worth paying — most desktop Linux users already use btrfs.
 
 ### Widget rendering performance
 femtovg on OpenGL for widget rendering — is this fast enough for complex widget panes (settings panels with dozens of controls, list views with thousands of items)? The alternative is a purpose-built renderer. Needs profiling with realistic widget counts.
@@ -722,7 +742,13 @@ Kakoune's argument for selection-first (visual feedback before commitment) is st
 The `.plan` file declares an agent's permissions, but who audits the declaration? A malicious or poorly-written `.plan` could grant excessive access. The trust model needs to be concrete: who can create agents, who can modify `.plan` files, what are the defaults for new agents, how does the human discover what an agent has done?
 
 ### The two-world problem
-Pane-native clients and legacy Wayland apps are two worlds. The mitigation strategies (good TUI ecosystem, application wrapping, visual theming) are real but may not be sufficient. If pane-native development is not dramatically easier than standard Wayland development, the native ecosystem won't grow. The NeXTSTEP lesson: developer productivity IS user experience. The kits must be so good that building a pane app is the easiest way to build a Linux desktop application.
+Pane-native clients and legacy Wayland apps are two worlds. The mitigation strategy is progressive integration, not an all-or-nothing switch.
+
+A pane application is a `.app` directory — inspired by macOS's application bundles, built on Nix flakes. The directory contains the binary (or wrapper script), integration metadata, pane-specific hooks, and any auxiliary helpers. Installation: paste a flake URL into a system tag line, an installation pane walks you through the process (automated, but rendering progress to the user so they can intervene if needed). The flake is evaluated, the app is installed with its pane integration.
+
+Progressive integration means an application starts as a bare Wayland wrapper and can gain pane-native interfaces incrementally. Each improvement — a tag line configuration, routing rules for its content types, filesystem endpoints for its state, a `.plan`-governed agent companion — is an addition to the `.app` directory, not a rewrite of the application. The framework models user actions as an internal representation with metadata, so that existing applications can be encapsulated in pane's interaction model without requiring their source code to change.
+
+The kits must still be so good that building a pane-native app is the easiest way to build a Linux desktop application. But the architecture accounts for gradual adoption: the ecosystem grows by wrapping first, then deepening integration over time.
 
 ### PipeWire screen capture integration
 pane-comp needs to implement the xdg-desktop-portal ScreenCast D-Bus interface for screen sharing (WebRTC, OBS, etc.). This requires feeding compositor frame data into a PipeWire video source node. The integration between smithay's rendering pipeline and PipeWire's buffer model needs prototyping.
