@@ -97,7 +97,7 @@ The resilience research (circuit breakers, priority queues, Erlang heart pattern
 Composites client surfaces, manages layout, renders chrome. This is the app_server equivalent — the rendering service that every client talks to.
 
 **Responsibilities:**
-- Wayland protocol handling via smithay (xdg-shell, layer-shell, linux-dmabuf, wl_shm, wl_seat, xdg-decoration, fractional-scale, viewporter, presentation-time, input method protocols)
+- Wayland protocol handling via smithay — core: wl_shm, wl_seat, xdg-shell, linux-dmabuf, viewporter, fractional-scale, presentation-time; ext- protocols (cross-compositor, preferred over wlr-): ext-session-lock, ext-idle-notify, ext-image-copy-capture, ext-data-control, ext-color-management (HDR); compositor-specific: layer-shell, xdg-decoration, input method protocols
 - Layout tree: recursive tiling with tag-based visibility (dwm-style bitmask)
 - Surface compositing: composites all client buffers into the output framebuffer
 - Pane protocol server: accepts pane-native client connections over a unix socket, multiple panes per connection
@@ -175,7 +175,7 @@ BFS's attribute indexing and query engine, reimplemented in userspace over Linux
 
 **Free attributes:** Certain attributes are always available and always indexed: pane type, creation time, modification time, MIME type. This mirrors BFS's three always-indexed attributes (name, size, last_modified) that ensured basic queries always worked without explicit index creation.
 
-**Target filesystem:** btrfs (primary) or XFS (supported alternative). ext4's xattr size limit (~4KB total per inode) is too restrictive for the filesystem-as-database vision. btrfs supports ~16KB per xattr value with no per-inode total limit; XFS supports 64KB per value with three-tier storage and no total limit. bcachefs is a future option once it matures (2027-2028). ext4 is not supported as an installation target — this is the cost of being opinionated about the base stack. In practice, btrfs is already the default on Fedora and openSUSE.
+**Target filesystem:** btrfs. No alternatives, no hedging. btrfs supports ~16KB per xattr value with no per-inode total limit — sufficient for pane's metadata. Beyond xattrs, btrfs provides snapshots (system-level rollback beyond Nix generations), CoW (atomic file modifications), transparent compression (zstd), and send/receive (efficient system image transfer) — all of which align with pane's distribution philosophy. ext4's xattr limit (~4KB total) is insufficient. btrfs is already the default on Fedora and openSUSE.
 
 ### pane-fs — Filesystem Interface
 
@@ -262,7 +262,7 @@ Text rendering, styling primitives, layout, widget rendering. The rendering infr
 
 **Text rendering.** GPU-accelerated text rendering with glyph atlas and instanced drawing. Text-oriented panes (shells, editors, logs) are first-class — not trapped inside a terminal emulator but rendered directly by the kit with the same quality as any other content. Client-side rendering means each process manages its own glyph rasterization — this is the standard Wayland cost that every GTK/Qt application already pays. The kit mitigates it through memoization: rasterized glyphs are cached and shared across pane-native processes via shared memory, so the per-process cost is a lookup rather than re-rasterization.
 
-**Widget rendering.** femtovg for 2D vector graphics (rounded rects, gradients, text), taffy for flexbox/grid layout. Widgets have semantic structure (buttons, labels, lists, text inputs) with roles, values, and actions — the accessibility tree is a byproduct of the widget model.
+**Widget rendering.** Vello (GPU-compute 2D rendering via wgpu) for vector graphics, taffy for flexbox/grid layout. Widgets have semantic structure (buttons, labels, lists, text inputs) with roles, values, and actions — the accessibility tree is a byproduct of the widget model.
 
 **The pane visual language.** Beveled borders, subtle gradients, warm saturated palette — the Frutiger Aero aesthetic, built into the kit. A developer using the Interface Kit produces output that looks like a pane application without effort, because the kit encodes the visual language. This is how BeOS achieved its integrated feel and how NeXTSTEP achieved its — not by centralizing rendering, but by providing a kit good enough that everyone used it.
 
@@ -686,12 +686,12 @@ Both of these are things Haiku still struggles with. Pane gets them from the pla
 | **FUSE** | fuser crate | `/srv/pane/` — Plan 9-style filesystem interface. |
 | **Audio/media** | PipeWire | Graph-based media framework. Replaces PulseAudio + JACK. BeOS Media Kit model. |
 | **Widget layout** | taffy | Flexbox/grid layout engine. Pure computation. |
-| **Widget rendering** | femtovg | 2D vector graphics on OpenGL via glow. Rounded rects, gradients, text. |
+| **Widget rendering** | Vello | GPU-compute 2D rendering via wgpu. The forward-looking choice over femtovg (OpenGL). Currently in active development by the Linebender project; will be stable by pane's widget rendering phase. |
 | **Text rendering** | GPU glyph atlas | Instanced rendering. Shared across all pane-native clients via the Interface Kit. |
 | **Input processing** | libinput + xkbcommon | Industry standard. Hardware abstraction and keyboard layout processing. |
 | **D-Bus bridge** | zbus crate | Rust D-Bus implementation. pane-dbus translates at the boundary. |
 | **Process tracking** | pidfd | Race-free process identity. Integrates into epoll for lifecycle monitoring. |
-| **Sandboxing** | seccomp + namespaces | syscall filtering + mount/user namespace isolation. |
+| **Sandboxing** | Landlock (primary) + seccomp (defense-in-depth) | Landlock: unprivileged, filesystem/network/signal scoping, maps 1:1 to `.plan` permissions. seccomp: syscall filtering as second layer. |
 | **Testing** | proptest + in-memory par channels | Property-based tests for protocol correctness. Session types verified in-memory without sockets. |
 
 ---
@@ -728,7 +728,7 @@ In Phase 1, session types define the protocol and verify message shapes at compi
 13. **pane-watchdog** — heartbeat monitoring, escalation.
 
 ### Phase 7: Richness
-14. **Widget rendering** — femtovg + taffy, Frutiger Aero controls.
+14. **Widget rendering** — Vello + taffy, Frutiger Aero controls.
 15. **pane-fs** — FUSE at `/srv/pane/`.
 16. **pane-dbus** — D-Bus bridge (notifications, PipeWire portals, NetworkManager).
 17. **pane-media** — PipeWire kit wrapper.
@@ -767,10 +767,10 @@ Rust's `#[must_use]` generates warnings for dropped session endpoints, not hard 
 fanotify with FAN_MARK_FILESYSTEM watches the entire filesystem for xattr changes. On a system with millions of files, how much event traffic does this generate? Is the filtering (only `FAN_ATTRIB` events, only `user.pane.*` xattrs) sufficient to keep the event rate manageable? Needs measurement on a real system with realistic file counts.
 
 ### xattr size limits *(resolved)*
-ext4's 4KB xattr limit is too restrictive. Pane targets btrfs or XFS (both support 64KB per xattr value with no practical total limit). ext4 is not supported as an installation target. This is the cost of an opinionated distribution, and it's a cost worth paying — most desktop Linux users already use btrfs.
+Pane targets btrfs exclusively. ext4's 4KB xattr limit is too restrictive; btrfs's ~16KB per value with no total limit is sufficient. The opinionated distribution philosophy means we pick one filesystem and commit.
 
 ### Widget rendering performance
-femtovg on OpenGL for widget rendering — is this fast enough for complex widget panes (settings panels with dozens of controls, list views with thousands of items)? The alternative is a purpose-built renderer. Needs profiling with realistic widget counts.
+Vello for widget rendering — GPU-compute via wgpu. Currently in active development (Linebender project). Needs validation: can Vello's rendering model integrate cleanly with smithay's GLES compositor? The wgpu→GLES backend exists but may have constraints. Needs prototyping once widget rendering phase begins.
 
 ### Selection-first vs. verb-first in the Input Kit
 Kakoune's argument for selection-first (visual feedback before commitment) is strong. Vim's verb-first is more efficient for experts. The Input Kit could support both — verb-first in Normal mode with visual selection as alternative. Or it could commit to one model. Needs user testing with both approaches on non-text panes (file manager, process monitor) to determine which generalizes better.
