@@ -4,7 +4,7 @@
 The pane project SHALL use a dual-license model. Protocol crates and client kits SHALL be MIT licensed. Server implementations SHALL be AGPL-3.0-only licensed.
 
 **MIT crates:** pane-proto, pane-app, pane-ui, pane-text, pane-store-client, pane-notify
-**AGPL-3.0-only crates:** pane-comp, pane-route, pane-roster, pane-store, pane-fs
+**AGPL-3.0-only crates:** pane-comp, pane-roster, pane-store, pane-fs
 
 **Rationale:** MIT on the protocol maximizes adoption — anyone can build pane clients. AGPL on servers ensures modifications to infrastructure are shared, including in distributed computing scenarios where the network clause applies.
 

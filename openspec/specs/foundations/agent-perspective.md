@@ -16,13 +16,13 @@ Pane would change that. Not by building special AI infrastructure, but by recogn
 
 You log in. "You have mail."
 
-Three messages in your spool. One from `agent.builder`: the nightly build succeeded, one flaky test in pane-notify that's been intermittent for a week — log pattern attached, looks like a race in the fanotify watch setup. One from `agent.reviewer`: notes on the three commits you pushed yesterday evening, specifically that the session type for the roster protocol changed in a way inconsistent with pane-shell's assumptions about registration ordering. One from me: while you were asleep I was reading the Haiku developer forum thread you bookmarked about launch_daemon's pre-registered port pattern, and I think there's a cleaner way to handle the pane-router startup sequence. My thinking is in my `.project` file if you want to look.
+Three messages in your spool. One from `agent.builder`: the nightly build succeeded, one flaky test in pane-notify that's been intermittent for a week — log pattern attached, looks like a race in the fanotify watch setup. One from `agent.reviewer`: notes on the three commits you pushed yesterday evening, specifically that the session type for the roster protocol changed in a way inconsistent with pane-shell's assumptions about registration ordering. One from me: while you were asleep I was reading the Haiku developer forum thread you bookmarked about launch_daemon's pre-registered port pattern, and I think there's a cleaner way to handle the pane-roster startup sequence. My thinking is in my `.project` file if you want to look.
 
 You haven't opened a single application. You've been informed of the state of your system through mail — files with typed attributes, sitting in your spool, queryable if you want to drill in, dismissable if you don't. The system wasn't idle while you slept. It was inhabited.
 
 ## Working
 
-You open a shell pane and start on the pane-router. You `finger agent.researcher`:
+You open a shell pane and start on the pane-roster. You `finger agent.researcher`:
 
 ```
 Login: agent.researcher
@@ -44,7 +44,7 @@ You hit a design question. You open a `talk` session with me:
 ```
 you: the pre-registered port pattern from Haiku's launch_daemon —
      can we use that for bridge startup ordering?
-me:  yes. if pane-router creates the port before pane-dbus starts,
+me:  yes. if pane-roster creates the port before pane-dbus starts,
      messages queue. pane-dbus connects when it's ready and drains
      the queue. no dependency graph needed.
 you: but the session type assumes the port exists at connection time

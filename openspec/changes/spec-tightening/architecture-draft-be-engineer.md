@@ -1,0 +1,757 @@
+# Pane Architecture Specification
+
+This document describes what pane IS, technically — the engineering decisions that implement the principles in the foundations spec. It is written from the perspective of how the Be engineers would proceed if they were building BeOS's successor on Linux in 2026, knowing what we know now about what worked, what didn't, and what the theoretical work of the last two decades makes possible.
+
+The foundations spec carries the philosophy. This document carries the engineering.
+
+---
+
+## 1. Vision
+
+Pane is a desktop environment, Wayland compositor, and Linux distribution. One thing, not three. The degree of integration is NeXTSTEP-level: the user does not perceive a compositor running on a distro. They perceive pane.
+
+The architecture recovers what made BeOS work — message-passing discipline, per-component threading, infrastructure-first design, the kit as programming model — on a platform where we don't control the kernel. Linux provides the primitives (processes, scheduling, filesystems, devices, networking) and stays out of the way. Pane provides the personality: the protocol, the compositor, the kits, the aesthetic, the extension model.
+
+What session types add to the Be model: compile-time enforcement of the protocol discipline that BeOS achieved by engineering convention. The BMessage `what` code becomes a branch in a session type enum. The convention "send B_REPLY after B_REQUEST_COMPLETED" becomes a type: after `Recv<Request>`, the type is `Send<Reply>`. The guarantee is the same — protocol adherence, no stuck states, local reasoning per component — but the enforcement moves from developer skill to compiler verification.
+
+What Linux adds to the Be model: the entire hardware ecosystem, a battle-tested network stack, compositing for free via Wayland, and 120,000+ packages via Nix. Haiku spent 25 years rebuilding what Be had, plus what Be never got to (package management, networking, POSIX compliance, layout management). Pane sidesteps all of that and focuses entirely on the desktop experience layer.
+
+---
+
+## 2. The Pane Primitive
+
+A pane is the universal object of the system. Every interface — to the user, to the system, to other components, to scripts — is a pane.
+
+### What a pane is
+
+A pane is one object with multiple views:
+
+- **Visual**: tag line + body + chrome, rendered on screen
+- **Protocol**: a session-typed endpoint for communication with the compositor and other components
+- **Filesystem**: a node under `/srv/pane/` exposing state for scripts and tools
+- **Semantic**: roles, values, and actions for accessibility infrastructure
+
+These views are projections of the same internal state. When state changes through one view, others reflect it. The relationship between internal state and each view is governed by optics — composable, bidirectional access paths that satisfy GetPut and PutGet laws up to semantic equality. Violations under failure (a crashed component, a lagging view) are temporary; recovery semantics restore the invariant.
+
+### The three parts of every pane
+
+**Tag line.** Editable text that serves as title, command bar, and menu simultaneously. Inspired by acme's tag line — text IS the interface. The tag line is always compositor-rendered (the compositor owns the chrome). Tag line content travels through the pane protocol: the client sends tag content, the compositor renders it. Text in the tag line is actionable: execute (run as command) and route (kit evaluates routing rules for pattern-matched dispatch).
+
+**Body.** The content area. For pane-native clients: a cell grid (text), a widget tree, or a hybrid. For legacy Wayland clients: an opaque wl_surface. The body is always client-rendered — the Wayland model — with visual consistency coming from the shared kits, not from the compositor rendering on behalf of clients.
+
+**Chrome.** Borders, focus indicators, split handles. Always compositor-rendered. The chrome is pane's visual identity — one opinionated look, consistent across all panes regardless of whether their content is native or legacy.
+
+### Pane composition
+
+Panes compose spatially. Two panes viewed together form a compound structure whose concrete presentation depends on context: on screen, spatial arrangement in the layout tree; on the filesystem, sibling entries under `/srv/pane/`. The layout tree is the compositor's model of this composition — a tree of containers where branches define splits and leaves hold panes.
+
+Panes compose temporally through the protocol. A conversation between a client and the compositor is a session. Multiple panes per connection are sub-sessions. The session type tracks where each conversation is in its lifecycle.
+
+### The pane as filesystem node
+
+Each pane is exposed under `/srv/pane/<id>/` via pane-fs (FUSE). The filesystem representation presents the abstraction level relevant to the consumer:
+
+- `tag` — the tag line content (read/write)
+- `body` — the body content at the semantic level (for a shell: command output; for an editor: file content)
+- `attrs/` — typed attributes (pane type, title, dirty state, working directory)
+- `ctl` — control interface (write commands to manipulate the pane)
+
+The specific tree structure evolves with implementation, but the principle is fixed: pane state is files, and any tool that can read files can inspect pane state.
+
+---
+
+## 3. Server Decomposition
+
+Each server is a separate process. Servers communicate via session-typed protocols over unix sockets. Each server runs its own threaded looper — a thread with a message queue, processing messages sequentially. This is the BLooper model: each looper is an actor with a mailbox, processing one message at a time. Concurrency arises from many loopers running simultaneously, not from concurrency within a looper.
+
+The compositor is the exception: its Wayland core uses calloop for fd polling because smithay requires it. calloop is scoped to the compositor — it does not define the system-wide concurrency model. Other servers use std::thread + channels.
+
+### Why no router server
+
+The original architecture included a central router server (pane-route). This has been eliminated. Here is why.
+
+In BeOS, BMessenger carried messages directly between applications via kernel ports. There was no central message broker. Application A obtained a BMessenger for application B (via BRoster or direct handoff) and sent messages directly. This worked because the messaging infrastructure was in the kernel (ports) and the client-side library (libbe.so). No intermediary could fail.
+
+A central router is a single point of failure for all communication. If it dies, messages stop flowing. The complexity of making it resilient — circuit breakers, priority queues, pre-allocated memory, heartbeat protocols, external watchdog — is real and necessary complexity, but it exists only because we created the single point of failure in the first place. Gassée warned against this: "people developing the system now have to contend with two programming models."
+
+Routing is now a kit-level concern. The pane-app kit loads routing rules from the filesystem, evaluates them locally, queries pane-roster's service registry for multi-match scenarios, and dispatches directly to the handler. Sender to receiver, no intermediary. The kit is a library linked into every pane-native process — it cannot "crash" independently of the process that uses it. One communication model, not two.
+
+What the router was supposed to provide:
+
+| Router responsibility | Where it lives now |
+|---|---|
+| Rule matching and dispatch | pane-app kit (local evaluation) |
+| Content transformation | pane-app kit (local transformation) |
+| Multi-match resolution | pane-app kit queries pane-roster's service registry |
+| Handler health monitoring | Each component monitors its own connections via session liveness |
+| Dead letter handling | Kit logs unroutable messages; agents can monitor the log |
+| System health monitoring | pane-watchdog (minimal external process) |
+| Escalation procedures | pane-watchdog + init system |
+
+The resilience research (circuit breakers, priority queues, Erlang heart patterns) remains valuable — it informs pane-watchdog's design and the kit's error handling. But the resilience is distributed into the right places rather than concentrated in a single server.
+
+### pane-comp — The Compositor
+
+Composites client surfaces, manages layout, renders chrome. This is the app_server equivalent — the rendering service that every client talks to.
+
+**Responsibilities:**
+- Wayland protocol handling via smithay (xdg-shell, layer-shell, linux-dmabuf, wl_shm, wl_seat, xdg-decoration, fractional-scale, viewporter, presentation-time, input method protocols)
+- Layout tree: recursive tiling with tag-based visibility (dwm-style bitmask)
+- Surface compositing: composites all client buffers into the output framebuffer
+- Pane protocol server: accepts pane-native client connections over a unix socket, multiple panes per connection
+- Chrome rendering: tag lines, beveled borders, split handles, focus indicators
+- Input handling: libinput integration, xkbcommon keyboard layout, key binding resolution (in-process — latency-critical)
+- Input dispatch: routes input events to the focused pane via the appropriate protocol (pane protocol for native clients, wl_seat events for legacy clients)
+- Frame timing: coordinates frame callbacks across all clients, submits composited output to DRM/KMS
+
+**Does not contain:** routing logic, application launch logic, file type recognition, attribute indexing, or any server functionality beyond compositing and input. For native panes, a route action sends a TagRoute event to the pane client; the pane-app kit evaluates routing rules and dispatches. For legacy panes, the compositor handles route dispatch through its own kit integration.
+
+**Threading model:** The compositor's main thread runs the calloop event loop. Per-client session handling runs on dedicated threads (one thread per pane-native connection, matching the app_server pattern of one ServerWindow thread per client). DRM page flip completions, libinput events, and timer expirations all feed into calloop. This is the only component where calloop is used — it exists because smithay's Wayland server integration requires it.
+
+**The two-thread pattern:** BeOS had two threads per window — one in the client (BWindow's looper) and one in the server (ServerWindow). Pane preserves this. Each pane-native connection gets a server-side thread that handles protocol messages, and the client runs its own looper thread. Drawing commands flow from client to server asynchronously, and are batched and flushed — the same optimization George Hoffman described in Be Newsletter #2-36. Synchronous calls (anything that needs a response) force a flush and a round-trip. The default is async; sync only when a response is needed.
+
+### pane-watchdog — System Health Monitor
+
+A minimal external process, inspired by Erlang's `heart`. Deliberately simple — the less it does, the harder it is to kill.
+
+**Responsibilities:**
+- Heartbeat monitoring of critical infrastructure (compositor, roster) via direct pipes — not through the pane protocol
+- Detecting unresponsive components via missed heartbeats (3 missed beats at 2-second intervals = 6-second worst-case detection)
+- Triggering escalation on failure: flush journal to disk (pre-opened fd, direct write(2) — no buffered I/O, no path resolution, no allocation), broadcast persist-state alert
+- Notifying the init system to restart failed components
+
+**The external watchdog principle:** The thing being monitored cannot reliably monitor itself. Erlang solves this with heart — a separate C program with its own process, communicating through a pipe with a trivial protocol (length + opcode, 5 messages total). Pane-watchdog follows this pattern. It runs outside the pane server ecosystem. If every pane server dies, pane-watchdog is still running and can trigger recovery.
+
+**What pane-watchdog does NOT do:** routing, message dispatch, application-level functionality, circuit breaker management. It checks pulses and pulls the emergency brake. Nothing else.
+
+### pane-roster — The Application Directory
+
+The component that makes the application ecology work. BeOS's BRoster + registrar, unified.
+
+**Service directory** (for infrastructure servers):
+- Infrastructure servers register on startup: identity, capabilities, communication endpoint
+- Answers queries: "where is the store?", "is the compositor running?"
+- Does NOT restart servers — the init system handles that. When a server crashes and restarts, it re-registers.
+
+**Application lifecycle** (for desktop applications):
+- Facilitates launching applications (launch semantics: single-launch apps deliver the launch message to the existing instance, matching BRoster's B_SINGLE_LAUNCH / B_EXCLUSIVE_LAUNCH / B_MULTIPLE_LAUNCH)
+- Monitors running applications, distinguishes crash from clean exit
+- Session save/restore: serializes running app state, restores on login
+
+**Service registry** (for discoverable operations):
+- Applications register `(content_type_pattern, operation_name, description, quality_rating)` tuples
+- The pane-app kit queries the registry during routing for multi-match scenarios
+- Quality-based selection when multiple handlers match: the Translation Kit pattern. Self-declared quality ratings enable automatic selection without central authority.
+
+**Implementation:** pane-roster is a BServer-pattern looper: its own thread, its own message queue, session-typed conversations with every registered component. Process tracking uses pidfd for race-free liveness detection.
+
+### pane-store — Attribute Store
+
+BFS's attribute indexing and query engine, reimplemented in userspace over Linux xattrs.
+
+**Responsibilities:**
+- Reads and writes extended attributes on files (`user.pane.*` xattr namespace)
+- Maintains an in-memory index over attribute values (rebuilt from xattr scan on startup)
+- Uses fanotify with `FAN_MARK_FILESYSTEM` for mount-wide xattr change detection — one mark covers the entire filesystem, no recursive directory walking
+- Emits change notifications when watched attributes change
+- Provides a query interface over the index (predicate language modeled after BQuery)
+- Supports live queries: a client that subscribes to change notifications and maintains a query result set gets automatic updates when files enter or leave the result set. This is client-side composition, not a server feature — same as BeOS.
+
+**The BFS gap:** Linux xattrs are opaque byte blobs. BFS attributes were typed and the filesystem understood the types. pane-store bridges this gap by encoding type information in attribute naming conventions (`user.pane.type` declares the type of the primary value attribute) and by providing userspace indexing that BFS provided at the filesystem level. Queries are slower than BFS (no kernel-level B+ tree) but more flexible (pane-store can index any attribute dynamically).
+
+**Free attributes:** Certain attributes are always available and always indexed: pane type, creation time, modification time, MIME type. This mirrors BFS's three always-indexed attributes (name, size, last_modified) that ensured basic queries always worked without explicit index creation.
+
+### pane-fs — Filesystem Interface
+
+Plan 9's gift: if state is a file, any tool can access it. pane-fs is a FUSE filesystem at `/srv/pane/` that exposes pane state for scripts, remote access, and tools in any language.
+
+pane-fs is a translation layer — it converts FUSE operations into pane protocol messages. It is just another client of the pane servers. It has no special privilege and no server logic.
+
+The filesystem provides universality that typed protocols cannot (any language, any tool). The typed protocol provides safety that the filesystem cannot (compile-time verification, session guarantees). Both are needed. The filesystem is the universal FFI; the protocol is the verified channel.
+
+---
+
+## 4. Kit Decomposition
+
+Kits are the programming model. Not wrappers over a protocol — they ARE the developer experience. When a developer uses the Interface Kit, they are using a complete UI programming model that happens to communicate with the compositor internally, the same way BeOS's libbe.so presented a coherent world of BWindows and BViews while communicating with app_server through kernel ports.
+
+Developers loved the BeAPI because it was thoughtful — small, composable primitives designed by people who wrote real applications. Schillings: "common things are easy to implement and the programming model is CLEAR." That is the standard. The API is the user interface for developers.
+
+The kit hierarchy is layered, not flat:
+
+```
+pane-ai (agent infrastructure)
+pane-media (PipeWire abstraction)
+pane-input (generalized keybinding grammar)
+    |
+pane-text (text buffers, structural regexps)
+pane-ui (cell grid, widgets, styling)
+    |
+pane-app (application lifecycle, looper, routing)
+pane-store-client (attribute access, queries)
+    |
+pane-proto (wire types, session definitions)
+pane-notify (fanotify/inotify abstraction)
+```
+
+Each kit builds on the ones below it. pane-proto is the foundation — pure types and serialization, analogous to the Support Kit. pane-app is the messaging and lifecycle layer — analogous to the Application Kit. pane-ui is the rendering layer — analogous to the Interface Kit. The hierarchy ensures clean dependency ordering and prevents circular dependencies.
+
+### pane-proto — Foundation
+
+Wire types (message enums, session type definitions), inter-server protocol types, serde derivations, validation. Every other crate depends on this. No runtime dependencies — pure types and serialization.
+
+The session types defined here are the single source of truth for every protocol in the system. When someone changes a protocol (adds a request variant, restructures the handshake), every client that doesn't update fails to compile. Protocol evolution is a refactoring operation, not a debugging expedition.
+
+### pane-app — Application Lifecycle
+
+The developer's primary interface for building pane-native applications. Analogous to BeOS's Application Kit.
+
+**Looper.** A thread with a message queue, processing messages sequentially. This is BLooper in Rust: `std::thread::spawn` a thread that reads from a channel, dispatches to handlers, runs until stopped. The looper is the concurrency primitive — each pane-native application has at least one looper (the app looper), and each window-equivalent has its own looper. Heavy work goes in spawned threads; the looper thread stays responsive.
+
+**Handler.** Processes messages within a looper's context. Handlers chain — if a handler doesn't recognize a message, it passes to the next handler. This is the chain-of-responsibility pattern from BHandler, which gives each handler self-contained logic for the messages it understands.
+
+**Routing.** Built into the kit, not a separate server. The kit:
+- Loads routing rules from the filesystem (`/etc/pane/route/rules/`, `~/.config/pane/route/rules/`), one file per rule
+- Watches rule directories via pane-notify for live updates — drop a file, gain a behavior
+- On route action: evaluates rules locally, transforms content, resolves the target
+- Queries pane-roster's service registry for multi-match scenarios
+- Quality-based selection when multiple handlers match (Translation Kit pattern)
+- Dispatches directly to the handler — sender to receiver, no intermediary
+
+**Connection management.** Session-typed connections to the compositor and other servers. The kit handles reconnection transparently — if a server restarts, the kit detects the session death and reconnects. Messages queue in the kit's send buffer during the reconnection window.
+
+**Application lifecycle.** Registration with pane-roster, launch semantics (single/exclusive/multiple), graceful shutdown.
+
+### pane-ui — Interface
+
+Cell grid writing helpers, tag line management, styling primitives, layout, widget tree rendering. The rendering infrastructure that all native pane clients share.
+
+**Cell grid rendering.** GPU-accelerated text rendering: glyph atlas, instanced rendering. The cell grid is the primary content model for text-oriented panes (shells, editors, logs). Each cell has a character, foreground/background color, and attributes.
+
+**Widget rendering.** femtovg for 2D vector graphics (rounded rects, gradients, text), taffy for flexbox/grid layout. Widgets have semantic structure (buttons, labels, lists, text inputs) with roles, values, and actions — the accessibility tree is a byproduct of the widget model.
+
+**The pane visual language.** Beveled borders, subtle gradients, warm saturated palette — the Frutiger Aero aesthetic, built into the kit. A developer using the Interface Kit produces output that looks like a pane application without effort, because the kit encodes the visual language. This is how BeOS achieved its integrated feel and how NeXTSTEP achieved its — not by centralizing rendering, but by providing a kit good enough that everyone used it.
+
+**Layout management from day one.** Haiku's biggest GUI mistake was deferring layout management. Every application written before the Layout API existed had to be manually migrated. Pane's Interface Kit has layout management (taffy — flexbox/grid) from the beginning. Applications specify relationships ("this goes next to that, this fills remaining space"), not coordinates.
+
+**Frame pacing and buffer management.** The kit manages the double-buffer lifecycle: allocate buffers from shared memory (memfd) or GPU memory (DMA-BUF), render into the back buffer, submit via wl_surface.attach + damage + commit, wait for wl_buffer.release before reusing. All of this is hidden from the developer — they draw; the kit handles the rest.
+
+### pane-text — Text Manipulation
+
+Text buffer data structures and structural regular expressions (sam-style `x/pattern/command`). This kit provides the editing primitives that pane-shell and editor panes compose with.
+
+Sam's structural regular expressions are the key conceptual contribution here. Pike: "the use of regular expressions to describe the structure of a piece of text rather than its contents." The `x` command extracts all matches of a pattern within a selection; `y` operates on the intervals between matches. These compose: `x/\n/ { ... }` iterates over lines; `x/[^ ]+/` iterates over words. The structure is whatever the pattern says it is — no built-in line bias.
+
+### pane-input — Generalized Keybinding
+
+The Input Kit: a composable interaction grammar that works uniformly across all pane types. Vim's compositional structure generalized beyond text editing.
+
+**The grammar engine.** N operators times M objects = N*M interactions. New operators compose with existing objects; new objects compose with existing operators. The grammar has four components:
+
+1. **Operators** (verbs): delete, yank, change, open, route — actions meaningful in context
+2. **Objects** (nouns): word, line, file, widget, pane — addressable units in content
+3. **Motions**: next word, previous file, parent directory — navigation across objects
+4. **Counts**: multipliers on motions
+
+The dot command repeats the last operator + object combination. This is the specific property that makes the grammar qualitatively different from CUA: learning compounds multiplicatively, not additively.
+
+**The keymap hierarchy.** Layered resolution:
+1. System-wide (compositor scope — Super modifier prefix, never conflicts with pane bindings)
+2. Kit-level (common to all panes: navigation, standard operators)
+3. Content-type (text objects for text panes, file objects for file managers)
+4. Pane-local (specific to a pane instance)
+
+This mirrors Emacs's global -> major-mode -> minor-mode -> local chain, translated to pane's content-type system.
+
+**Modes are first-class.** Named modes at every level — compositor modes (resize, layout), pane modes (Normal, Insert), content-type modes. Ephemeral modes (Hydra-style) for rapid command sequences. Mode transitions are visible in the tag line.
+
+**Discoverability.** which-key-style display of available bindings after a prefix or mode switch. The tag line participates: it shows available commands as clickable text. New users click; experienced users type. Progressive disclosure: CUA floor -> which-key discovery -> modal efficiency -> custom grammar extensions.
+
+**Default mode.** Insert-as-default for new panes (matches user expectations from every other application), with explicit Normal mode entry via a configurable key. The grammar is available and discoverable, not hidden.
+
+### pane-store-client — Store Access
+
+Client library for pane-store. Attribute read/write, query building, change notification subscription. Reactive signal composition for live queries — the client subscribes to change notifications and maintains a query result set locally. This is how BeOS's live queries worked: the infrastructure is general-purpose, the composition is client-side.
+
+### pane-media — Media Abstraction
+
+PipeWire already implements the Media Kit's graph-based model at the system level. Pane's media kit is a thin Rust wrapper — not a reimplementation.
+
+The kit wraps PipeWire's client API with pane's session-typed conventions. It exposes the media node graph as pane-visible state (nodes and connections inspectable via pane-fs, parameters as filesystem-based configuration). It delegates all policy to WirePlumber (PipeWire's session manager).
+
+What pane provides that PipeWire alone doesn't: visibility and control through pane's interaction model. Media nodes as panes with tag lines. Routing as visible graph connections. Parameters as files that pane-notify watches. The media graph becomes a first-class part of the desktop experience, not a hidden subsystem.
+
+### pane-ai — Agent Infrastructure
+
+Agents are system users, not applications. They participate through the same protocols, filesystem interfaces, and routing infrastructure as human users, in sandboxed environments with permissions governed by declarative specification.
+
+**Agents as Unix users.** Each agent runs as an actual system user — its own account, its own home directory, its own filesystem view (scoped via Linux user namespaces), its own Nix profile. `who` shows which agents are active. `finger agent.reviewer` shows its specification and current task. Everything an agent does is visible through the same tools you inspect anything else with.
+
+**The `.plan` file.** An agent's behavior — what tools it can use, what panes it can observe, what files it can access — is declared in `.plan`: a human-readable, editable, version-controllable artifact in its home directory. The `.plan` IS the agent's identity. The governance question (who authors and audits it) is resolved by the same mechanisms as any other configuration: filesystem permissions, version control, audit trails.
+
+**Communication through Unix primitives.** The multi-user Unix communication tools — `write`, `talk`, `mail`, `mesg`, `wall` — are paradigmatic examples of the patterns we recover:
+
+- `write`: agent sends a one-liner to your pane (brief, one-directional)
+- `talk`: focused interactive session (split-screen, bidirectional)
+- `mail`: asynchronous, persistent, queryable. Files with typed attributes — agent communication becomes queryable by pane-store, filterable by routing rules
+- `mesg y/n`: one-bit availability protocol. Agent respects `mesg n` by queuing as mail
+- `wall`: broadcast to all inhabitants
+
+These were designed for multi-inhabitant systems. The inhabitants have arrived.
+
+**Local/remote model transparency.** The agent kit provides a uniform interface whether the underlying model runs locally or via remote API. Switching models is a configuration change, not an application change. The routing infrastructure handles dispatch; the session protocol handles the conversation; `.plan` declares which models are available.
+
+---
+
+## 5. The Scripting Protocol
+
+Session types + optics = the recovery of BeOS's most important feature.
+
+### What BeOS had
+
+Every BHandler implemented `ResolveSpecifier()` and `GetSupportedSuites()`. Any running application's state was queryable and modifiable at runtime through a structured protocol. The `hey` command-line tool could script any application:
+
+```
+hey Tracker get Frame of Window 0
+hey StyledEdit set Value of View "textview" of Window 0 to "hello"
+```
+
+This was compositional and dynamic. Each handler peeled off one specifier and forwarded to the next. "Get Frame of Window 1 of Application Tracker" was resolved by Tracker peeling off "Application Tracker" (that's me), forwarding "Window 1" to the window, which peeled it off and forwarded "Frame" to the frame handler.
+
+This was one of BeOS's most important features. Every application was automatable through the same messaging system it used internally.
+
+### How pane recovers it
+
+Session types are the horizontal structure — conversation over time. Optics are the vertical structure — state access at each moment. Together they provide the scripting protocol.
+
+A scripting interaction is a session: send a query (an optic-addressed access into the handler's state), receive a result, optionally loop. "Get property X of object Y" is a lens access. "Set property X to Z" is a lens set. "What properties do you expose?" returns the available optics — discoverability as part of the protocol.
+
+The session type governs conversation safety (you can't send a set before receiving the capabilities). The optics govern state access safety (GetPut, PutGet). Monadic error handling covers the case where a query doesn't resolve.
+
+### The hard problem: dynamic specifier chains
+
+BeOS's scripting protocol resolved specifier chains at runtime. The chain "get Frame of Window 1 of Application Tracker" was resolved by each handler peeling off one specifier and forwarding. This was compositional and dynamic — the structure was only known at runtime.
+
+Optics are typically static. This is the hardest design problem in translating BeOS's scripting to pane's typed world.
+
+The approach: dynamic optic composition at the protocol level. Each handler advertises its available optics (via GetSupportedSuites equivalent). A specifier chain is a sequence of optic accesses. The client constructs the chain; each handler resolves one step and forwards. The session type for each step is known statically (it's always "send specifier, receive result or forward"), but the chain length and specific optics are dynamic.
+
+This is a controlled runtime dynamism within a statically-typed protocol. The session type ensures each step is well-formed. The optic laws ensure each access is consistent. The dynamic composition ensures the full chain works. It's the same pattern as BeOS's ResolveSpecifier — peel, resolve, forward — but with each step type-checked.
+
+The filesystem interface provides the fallback. If the typed scripting protocol is too rigid for a particular use case, the filesystem at `/srv/pane/` provides the same access in a weakly-typed but universally accessible form. Shell scripts use the filesystem; compiled programs use the typed protocol. Both access the same underlying state.
+
+---
+
+## 6. Threading and Concurrency
+
+### The model
+
+Per-component threads with message queues. This is BeOS's BLooper model, realized in Rust.
+
+Each component — each application, each window-equivalent, each server — runs its own thread with its own message queue. Messages are processed sequentially within each component. Concurrency arises from many components running simultaneously, not from concurrency within a component.
+
+This model produced stability in BeOS not despite the complexity of pervasive multithreading but because of it. Message passing eliminated shared mutable state. Per-handler operational semantics eliminated global state entanglement. The protocol replaced the global coordinator. The scheduler had enough thread granularity to maintain responsiveness.
+
+### How it maps to Rust
+
+Rust's ownership system provides compile-time guarantees that BeOS enforced by convention. Send + Sync traits guarantee that data crossing thread boundaries is safe. The `#[must_use]` attribute on session endpoints catches forgotten responses. The borrow checker prevents shared mutable state — the thing BeOS's "Commandment #1" tried to prevent, now enforced by the compiler.
+
+**The looper in Rust:**
+
+```
+// Conceptual — the actual API is the pane-app kit
+let (tx, rx) = std::sync::mpsc::channel();
+std::thread::spawn(move || {
+    while let Ok(msg) = rx.recv() {
+        // Sequential message processing — one at a time
+        handler.message_received(msg);
+    }
+});
+```
+
+No async runtime. No system-wide executor. Just threads and channels. This is simpler than async/await, more predictable, and matches the actor model that BeOS proved works for desktop systems. Async/await would be appropriate for a high-throughput network server; it's wrong for a desktop environment where the concurrency grain is one-thread-per-window and the message rate is modest.
+
+The one exception is the compositor. calloop (an epoll-based event loop) drives the compositor's main thread because smithay requires it for Wayland fd polling. par's session type futures are driven within calloop via its futures executor module. This is an implementation detail of the compositor, not a system-wide pattern.
+
+### The benaphore lesson
+
+Schillings' benaphore (atomic variable + semaphore, fast-path the uncontested case) teaches the right principle: optimize for the common case. In pane's threading model, most lock acquisitions are uncontested (a component accessing its own data from its own thread). Rust's standard library already provides this optimization — `Mutex` uses futex on Linux, which is essentially a benaphore: atomic check first, kernel involvement only on contention.
+
+### What runs on what thread
+
+| Component | Thread model |
+|---|---|
+| Each pane-native connection (server-side) | Dedicated thread |
+| Each pane-native client (client-side looper) | Dedicated thread |
+| Compositor main loop | calloop (single thread, epoll-driven) |
+| pane-roster | Dedicated looper thread |
+| pane-store | Dedicated looper thread + worker threads for initial scan |
+| pane-watchdog | Single thread (deliberately minimal) |
+| pane-fs (FUSE) | Thread pool (FUSE operations may block) |
+
+Pierre Raynaud-Richard measured the cost in Be Newsletter #4-46: ~20KB per thread, ~70KB per window with both client and server threads. Modern Linux threads are comparable. The cost is the tax for concurrency — spend it at the right granularity (per-window, not per-widget).
+
+---
+
+## 7. Protocol Design
+
+### Session types
+
+Every interaction between components is a session — a typed conversation. The session type describes the entire protocol: what each party sends and receives, in what order, with what branches. The compiler enforces that both parties follow complementary protocols (duality). Deadlock freedom is guaranteed by the tree topology constraint.
+
+The `par` crate implements session types in Rust via the Caires-Pfenning/Wadler correspondence between linear logic and concurrent processes. Key properties:
+
+- **Duality is automatic.** `Dual<Recv<A, Recv<B>>>` = `Send<A, Send<B>>`. The compositor's protocol view is derived mechanically from the client's.
+- **Branching uses standard Rust enums.** No special `Choose`/`Offer` types. Enum variants contain session continuations. Pattern matching is exhaustive.
+- **Recursion uses recursive enums.** `Recv`/`Send` wrappers provide the heap indirection (they contain oneshot channels internally).
+- **The server module** handles dynamic numbers of clients with Server/Proxy/Connection, enforcing no-two-in-same-scope for deadlock freedom.
+
+### The transport bridge
+
+Par operates on in-memory `futures::channel::oneshot` pairs. Pane communicates over unix sockets with postcard serialization. The bridge:
+
+**Phase 1 (where we start):** Session types as protocol specification. Define types in par, use them for compile-time checking and in-memory testing. The actual socket transport is a hand-written state machine that mirrors the session type. The session type is the single source of truth — if you change it, the transport code stops compiling because it references the same enums and structs. Par's in-memory channels are used for testing.
+
+**Phase 2 (if warranted):** Adapter layer wrapping par's channels with serialization boundaries. Each send() serializes with postcard and writes to the socket; each recv() reads and deserializes. This preserves par's runtime guarantees but requires bridging par's async model with calloop.
+
+**Phase 3 (aspirational):** Transport-polymorphic session types, like dialectic's Transmitter/Receiver backend trait.
+
+Phase 1 is pragmatic and loses the least. The protocol structure is verified. The transport is pane's own code. The types keep them in sync.
+
+### Async by default
+
+The default interaction is asynchronous. A fire-and-forget operation (send content, continue without waiting) is a `Send` followed by continuation. A request-response is a `Send` followed by a `Recv`. The distinction is in the type.
+
+Fire-and-forget operations can be batched. The kit accumulates async messages and flushes in chunks — the same optimization BeOS's Interface Kit used for drawing commands. George Hoffman (Be Newsletter #2-36): "The Interface Kit caches asynchronous calls and sends them in large chunks at a time. A synchronous call requires that this cache be flushed." Synchronous calls are much slower because they force a flush and a round-trip. The guideline is the same now as it was then: async by default, sync only when you need the response.
+
+### Crash handling
+
+Rust has affine types (values can be dropped), not linear types (values must be used). A crashed client drops its session endpoints. The counterpart's next send/recv panics.
+
+This is not acceptable for a compositor. The strategy:
+
+- Each client session is wrapped with a crash boundary (catch_unwind or equivalent)
+- A dropped session endpoint produces a "session terminated" event, not a panic
+- The compositor cleans up the dead client's panes and continues serving others
+- This is analogous to how BeOS's app_server handled unresponsive windows: discard messages, continue
+
+The session type doesn't model crash because crash is a failure of the protocol's preconditions, not a protocol event. The crash boundary operates outside the session type system — it catches the failure and translates it into a typed cleanup event.
+
+### Message content
+
+Pane messages are typed Rust enums serialized with postcard (serde-based, varint-encoded, compact). The specific message types are defined in pane-proto and evolve with the implementation.
+
+The spirit of BMessage: rich, composable, introspectable data that can flow through the system without tight coupling. BMessage carried typed fields (B_STRING_TYPE, B_INT32_TYPE, etc.) addressable by name. Pane's messages carry typed fields addressable by Rust struct fields — stronger typing (compile-time field access) with the same loose coupling (a handler processes messages it understands and ignores others).
+
+### Heartbeat
+
+Infrastructure servers heartbeat each other on their direct session-typed channels. The heartbeat is a typed message in the session protocol:
+
+- Compositor heartbeats pane-watchdog (interval: 2s, threshold: 3 misses = 6s detection)
+- pane-roster heartbeats pane-watchdog
+- Heartbeat is in-band but distinguishable — a `Heartbeat(sequence_n)` / `HeartbeatAck(sequence_n)` pair
+- pane-watchdog monitors critical infrastructure; ordinary clients are monitored by session liveness (socket errors)
+
+---
+
+## 8. The Composition Model
+
+The design bet: if the infrastructure is right, integrated experiences emerge without being designed top-down.
+
+### The canonical proof: BeOS email
+
+No component in BeOS implemented email. Five general-purpose systems composed:
+
+1. **mail_daemon**: POP/SMTP transport. Wrote message files with typed BFS attributes (MAIL:from, MAIL:subject, MAIL:status, etc.)
+2. **BFS**: stored the attributes, indexed them, evaluated queries against them
+3. **Tracker**: displayed files with attribute columns (it knew nothing about email — it just displayed files)
+4. **BQuery + live queries**: "MAIL:status == New" as a live inbox that updated in real time
+5. **BeMail**: viewed and composed messages (just opened files)
+
+Each was general-purpose. mail_daemon didn't know about Tracker. Tracker didn't know about email. The email UX emerged from the infrastructure. The same infrastructure immediately supported IM, contacts, music libraries — different attributes, same mechanism.
+
+### How pane composes
+
+**Routing composes content with handlers.** Text is activated. The pane-app kit evaluates routing rules locally. Content is transformed (extract filename, line number, URL). The target is resolved via pane-roster's service registry. Dispatch is direct — sender to receiver. Whether the content came from a user action, a D-Bus signal (via pane-dbus bridge), or a filesystem event, the routing is the same.
+
+**Attribute indexing composes metadata with queries.** pane-store indexes file attributes and emits change notifications. A client that subscribes to change notifications and maintains a query result set has a live query — without pane-store implementing "live queries" as a feature. The composition is client-side, exactly as it was in BeOS.
+
+**Filesystem exposure composes system state with tools.** Anything exposed at `/srv/pane/` is scriptable. A shell script that reads `/srv/pane/index` lists all panes. Writing to a pane's control file manipulates it. The filesystem is the universal FFI.
+
+**Session persistence composes lifecycle with state.** The compositor serializes layout. The roster serializes the running app list. Each app serializes its own state. On restart, each component restores its part. No single component owns "the session" — it's emergent from each component following its protocol.
+
+**The translation pattern composes format knowledge with applications.** Following the Translation Kit: translators handle format conversion as a system service. Applications work with interchange formats; translators handle the rest. The number of translators is linear (one per format), not quadratic (one per format pair). Drop a translator binary into `~/.config/pane/translators/`, the whole system gains a format.
+
+### What makes composition work
+
+Five properties, all present in BeOS, all recoverable in pane:
+
+1. **Typed attributes on files, indexed by the filesystem.** Without this, there's no queryable data. Pane: xattrs + pane-store indexing.
+2. **Live queries delivered as messages.** Without this, views are static snapshots. Pane: pane-store change notifications + client-side composition.
+3. **A file manager that displays attributes as columns.** Without this, metadata is invisible. Pane: the file manager pane reads attributes via pane-store-client and displays them.
+4. **A type system connecting files to handlers.** Without this, double-click doesn't know what to open. Pane: routing rules + pane-roster service registry.
+5. **Data producers writing attributes, not managing databases.** Without this, data is locked in proprietary stores. Pane: agents and services write files with attributes; the infrastructure composes the rest.
+
+---
+
+## 9. The Distribution Layer
+
+Pane is a distribution, not a DE on a distro. The integration is NeXTSTEP-level: one thing.
+
+### Nix as build substrate
+
+Nix builds the entire system — kernel through desktop — as a single, transitively-closed derivation. The system closure is one artifact: a Nix derivation whose output contains kernel, initrd, s6 boot scripts, s6-rc compiled service database, `/etc/pane/` defaults, pane server binaries, kit libraries, and a system profile linking to all installed packages.
+
+Nix is not the identity. It is the backstage infrastructure. The user does not interact with Nix to use pane — they interact with pane's interfaces. Nix builds the system and manages its evolution. This is the NeXTSTEP/Mach relationship: Mach provided the right primitives and was otherwise invisible. The identity was in the personality layer.
+
+**The overlay approach.** Pane does not fork nixpkgs. It depends on nixpkgs as a flake input. Pane provides:
+1. An overlay replacing `systemd.lib` with libudev-zero (breaks the transitive systemd dependency chain)
+2. A custom system builder (pane's equivalent of `nixos/`) using s6
+3. Service definitions for pane's infrastructure servers
+4. The pane packages themselves (servers, kits)
+
+The ~120,000 application packages in nixpkgs are used as-is. Zero merge conflicts with upstream. Package updates come for free by bumping the nixpkgs input.
+
+### s6 as init
+
+s6 is the init system. s6-linux-init provides PID 1. s6-svscan supervises service supervisors. s6-rc manages service dependencies via a compiled database.
+
+**The boot sequence:**
+1. Kernel execs `/sbin/init` (s6-linux-init-maker output)
+2. s6-linux-init mounts tmpfs at `/run`, sets up the environment, execs s6-svscan on `/run/service`. s6-svscan becomes PID 1 for the lifetime of the machine.
+3. Early services start (catch-all logger, s6-svscan-log)
+4. rc.init runs as stage 2: mounts filesystems, starts networking, brings up s6-rc
+5. s6-rc activates the service set from the compiled dependency database
+
+**Pre-registered endpoints.** Following Haiku's launch_daemon pattern and systemd's socket activation: communication endpoints (unix sockets) for pane servers are created before the servers start. Messages queue until the server is ready. This eliminates startup ordering as a concern.
+
+With s6, this is achieved via s6-fdholder: a program that holds open file descriptors across process restarts. s6-fdholder creates the sockets at boot; each server retrieves its socket on startup. If a server crashes and restarts, it retrieves the same socket — zero-downtime from the clients' perspective, because their connection endpoint never went away.
+
+**Readiness notification.** Each pane server signals readiness by writing a newline to a designated fd (specified in `notification-fd` in the service directory). s6-supervise catches this, updates status, and broadcasts to subscribers. Dependent services wait for readiness — not just process start. This is correct dependency ordering: "pane-store is ready to serve" not "pane-store's process exists."
+
+**Service definitions.** Each pane server is a longrun with a `run` script, a `notification-fd` file, and s6-rc dependency declarations:
+
+```
+# /etc/s6-rc/source/pane-comp/run
+#!/bin/execlineb -P
+fdmove -c 2 1
+s6-fdholder-retrieve /run/s6-fdholder/s <wayland socket fd>
+exec pane-comp --socket-fd 3
+```
+
+```
+# /etc/s6-rc/source/pane-comp/notification-fd
+3
+```
+
+```
+# /etc/s6-rc/source/pane-comp/dependencies.d/
+pane-roster
+elogind
+```
+
+The s6-rc source directories are Nix derivation outputs. `s6-rc-compile` processes them into a binary database. The entire service graph is a Nix expression.
+
+### Mutable configuration on an immutable base
+
+Pane wants two things: an immutable, reproducible system base (Nix's strength) and writable, live configuration (`/etc/pane/` — filesystem-as-interface commitment).
+
+**The reconciliation:**
+
+1. At build time, Nix produces `/nix/store/<hash>-pane-config/` with all default configs
+2. On first boot (or after `pane-rebuild switch`), an activation script diffs new defaults against `/etc/pane/`:
+   - New keys: added with default values
+   - Changed defaults: updated if user hasn't modified; preserved if user has
+   - Removed keys: flagged for cleanup
+3. `/etc/pane/` is a regular writable directory on a persistent volume
+4. User modifications are tracked via xattr (`user.pane.modified = true`) or a manifest file
+
+Nix owns the defaults. The user owns the overrides. The activation script mediates. This is the Haiku packagefs shine-through pattern: the package layer provides defaults, the writable layer provides overrides.
+
+### Atomic upgrades and rollback
+
+Each `pane-rebuild switch` creates a new Nix generation. The previous generation is preserved. Rollback is one command or one boot menu selection away. Generations are cheap — Nix's content-addressed store deduplicates shared packages.
+
+The s6-rc service transition is: compile new database from new service definitions, run `s6-rc-update` to live-switch. Services restart against the new definitions. No reboot required for most changes.
+
+### Per-user profiles
+
+Each system user (human or agent) has an independent Nix profile. Users install, remove, and rollback packages independently. Packages shared between users are deduplicated in the store.
+
+An agent's environment is declaratively specified: `.plan` describes behavior, Nix profile describes tools. Both are versionable, shareable, reproducible. `nix profile diff-closures` shows exactly what changed — full auditability.
+
+---
+
+## 10. The Aesthetic and Rendering Model
+
+### Client-side rendering, kit-mediated consistency
+
+Pane embraces the Wayland rendering model: each pane renders its own content into buffers. The compositor composites those buffers with its own chrome. Visual consistency comes from the kits, not from centralized rendering.
+
+This is how BeOS worked. App_server composited, but visual consistency came from every application using the Interface Kit. The kit encoded the visual language — fonts, colors, control styles, layout conventions. When every application uses the same kit, they produce the same look without a central authority forcing it.
+
+Pane achieves this identically: the Interface Kit (pane-ui) provides shared rendering infrastructure. Glyph atlas, color palette, control styles, layout primitives. A developer using pane-ui produces output that looks like pane because the kit makes it the path of least resistance. The compositor composites the result and adds chrome — the same division of labor as BeOS's app_server/Interface Kit split.
+
+### The compositor's rendering responsibilities
+
+- Compositing all client buffers into the output framebuffer (via smithay's GLES renderer)
+- Rendering chrome: tag lines (with editable text, cursor, selection), beveled borders, split handles, focus indicators
+- Layout: positioning pane buffers according to the layout tree
+- Presenting the final framebuffer to DRM/KMS via page flip
+
+The compositor gets compositing for free via Wayland/smithay. This is the single largest advantage over Haiku, which has wanted compositing for 15 years and still doesn't have it. Pane starts composited.
+
+### The aesthetic
+
+Frutiger Aero — what if Be survived into the 2000s and refined alongside early Aqua.
+
+- **Depth through lighting.** Subtle vertical gradients on controls. 1px highlight/shadow edges. Matte and solid — not glossy Aqua gel, not flat Metro.
+- **Beveled borders and visible chrome.** Panes have real borders. Controls look like controls. Structure is always visible. Rounded corners (3-4px radius).
+- **Selective translucency.** Floating elements (scratchpads, popups) are translucent to show context. Translucency where it aids comprehension, not universally.
+- **Warm saturated palette.** Warm grey base, saturated accent colors for focus/dirty/active states.
+- **Typography split.** Proportional sans-serif for widget chrome. Monospace for cell grid content and tag line text. Tag line stays monospace — it's executable text where column alignment matters.
+- **One opinionated look.** No theme engine. The aesthetic IS pane's identity. Individual properties configurable (accent color, font size) but not wholesale theme replacement.
+
+### HiDPI and multi-monitor
+
+Pane inherits proper HiDPI from Wayland. Fractional-scale (wp_fractional_scale_v1) provides per-output scale as a fraction with denominator 120. The Interface Kit renders at the scaled resolution and uses viewporter to set the surface destination to the unscaled size. No blurriness, no upscaling artifacts.
+
+Multi-monitor is handled by smithay's DRM backend. Per-output configuration (resolution, position, scale, orientation) via wlr-output-management protocol.
+
+Both of these are things Haiku still struggles with. Pane gets them from the platform.
+
+---
+
+## 11. Technology Choices
+
+| Concern | Choice | Rationale |
+|---|---|---|
+| **Language** | Rust | Ownership gives compile-time threading guarantees that BeOS enforced by convention. Send/Sync are the type-level encoding of "Commandment #1." |
+| **Compositor framework** | smithay | Composable building blocks for Wayland compositors in Rust. Protocol handling, DRM, input, rendering. |
+| **Compositor event loop** | calloop | Epoll-based, callback-oriented. Required by smithay. Scoped to the compositor only. |
+| **Session types** | `par` crate | Linear logic correspondence. Deadlock-free by construction. Enum-based branching. |
+| **Wire format** | postcard | Serde-based, varint-encoded, compact binary. |
+| **Init system** | s6 + s6-rc | Small, composable, readiness-aware. Service directories are derivations. Compiled dependency database. |
+| **Build system** | Nix | Declarative, reproducible, atomic upgrades, rollback. ~120k packages via nixpkgs. |
+| **Filesystem notification** | fanotify + inotify | fanotify for mount-wide (pane-store). inotify for targeted (config, plugins). |
+| **FUSE** | fuser crate | `/srv/pane/` — Plan 9-style filesystem interface. |
+| **Audio/media** | PipeWire | Graph-based media framework. Replaces PulseAudio + JACK. BeOS Media Kit model. |
+| **Widget layout** | taffy | Flexbox/grid layout engine. Pure computation. |
+| **Widget rendering** | femtovg | 2D vector graphics on OpenGL via glow. Rounded rects, gradients, text. |
+| **Text rendering** | GPU glyph atlas | Instanced rendering. Shared across all pane-native clients via the Interface Kit. |
+| **Input processing** | libinput + xkbcommon | Industry standard. Hardware abstraction and keyboard layout processing. |
+| **D-Bus bridge** | zbus crate | Rust D-Bus implementation. pane-dbus translates at the boundary. |
+| **Process tracking** | pidfd | Race-free process identity. Integrates into epoll for lifecycle monitoring. |
+| **Sandboxing** | seccomp + namespaces | syscall filtering + mount/user namespace isolation. |
+| **Testing** | proptest + in-memory par channels | Property-based tests for protocol correctness. Session types verified in-memory without sockets. |
+
+---
+
+## 12. Build Sequence
+
+Each phase produces a testable, usable artifact. The ordering follows dependency: foundations first, then the things that build on them.
+
+### Phase 1: Protocol Foundation
+1. **pane-proto** — message types, session type definitions, property tests. The types that everything else depends on. *Status: built, session type migration in progress.*
+2. **pane-notify** — fanotify/inotify abstraction. Looper integration (calloop for compositor, channels for others).
+
+### Phase 2: Minimal Compositor
+3. **pane-comp skeleton** — smithay compositor, single hardcoded pane, tag line + cell grid rendering. First pixels on screen. The milestone that proves the rendering pipeline works.
+4. **pane-app kit** — looper abstraction, handler chain, connection management. The kit that application developers program against.
+5. **pane-shell** — PTY bridge client, first usable terminal. The milestone that makes pane a daily driver.
+
+### Phase 3: Tiling Desktop
+6. **Layout tree** — tiling with splits, multiple panes, tag-based visibility. Multiple shells on screen.
+7. **Input binding** — compositor-level key bindings, focus management, tag switching.
+
+### Phase 4: Infrastructure
+8. **Routing** — routing rules in the pane-app kit, filesystem-based rule loading, live rule updates.
+9. **pane-roster** — service directory, app lifecycle, service registry.
+10. **pane-store** — attribute indexing, change notifications, queries.
+11. **pane-watchdog** — heartbeat monitoring, escalation.
+
+### Phase 5: Richness
+12. **Widget rendering** — femtovg + taffy, Frutiger Aero controls.
+13. **pane-fs** — FUSE at `/srv/pane/`.
+14. **pane-dbus** — D-Bus bridge (notifications, PipeWire portals, NetworkManager).
+15. **pane-media** — PipeWire kit wrapper.
+
+### Phase 6: Ecosystem
+16. **Legacy Wayland/XWayland** — xdg-shell, xdg-decoration, XWayland integration.
+17. **pane-input kit** — generalized grammar engine, keymap hierarchy, discoverability.
+18. **pane-ai** — agent infrastructure, `.plan` specification, Unix communication patterns.
+
+### Phase 7: Distribution
+19. **Nix system builder** — s6-linux-init, s6-rc service database, kernel, initrd, system closure.
+20. **Binary cache** — Cachix for the libudev-zero overlay and pane packages.
+21. **Installer** — from ISO to running pane system.
+
+The critical path is phases 1-3. Once pane-shell works inside pane-comp with tiling, pane is a usable (if minimal) daily driver. Everything after that is enrichment on a working foundation.
+
+---
+
+## 13. Open Questions
+
+Things the Be engineers would flag as "we need to prototype this before committing."
+
+### Session type transport bridge
+How do par's in-memory channels map to unix sockets with postcard serialization? Phase 1 (session types as specification, transport as separate state machine) is pragmatic, but the seam between typed protocol and untyped transport is where bugs live. Needs a prototype: write one pane-comp <-> pane-shell conversation both ways (par in-memory for testing, socket transport for production) and verify they stay in sync.
+
+### calloop + par integration
+Par is async-native (futures-based). Pane's compositor uses calloop (callback-oriented). calloop's futures executor can drive par futures, but fork_sync (which is synchronous and blocks) needs careful handling in a calloop context. Prototype: drive a par session from within a calloop event loop and measure whether the interaction is clean or requires contortion.
+
+### Dynamic optic composition for scripting
+How do optic-addressed property accesses compose across handler boundaries at runtime? BeOS solved this with ResolveSpecifier, which was compositional and dynamic. Optics are typically static. The runtime chain resolution pattern (peel, resolve, forward) needs a concrete prototype with at least three levels of nesting to prove it works ergonomically.
+
+### The affine/linear gap
+Rust's `#[must_use]` generates warnings for dropped session endpoints, not hard errors. A crashed process drops endpoints silently. The crash boundary (catch_unwind + cleanup) is the mitigation, but it operates outside the type system. Is there a principled way to handle this that doesn't require every session boundary to be wrapped in catch_unwind? Needs investigation once the first real multi-client compositor is running.
+
+### Filesystem notification at scale
+fanotify with FAN_MARK_FILESYSTEM watches the entire filesystem for xattr changes. On a system with millions of files, how much event traffic does this generate? Is the filtering (only `FAN_ATTRIB` events, only `user.pane.*` xattrs) sufficient to keep the event rate manageable? Needs measurement on a real system with realistic file counts.
+
+### xattr size limits on ext4
+ext4 limits total xattr names + values to one filesystem block (typically 4KB). If pane stores multiple attributes per file (type, description, icon reference, custom attributes), does this fit? btrfs, XFS, and bcachefs have no such limit. If ext4 is too restrictive, pane may need to recommend btrfs/XFS as the target filesystem or encode multiple attributes in a single xattr value.
+
+### Widget rendering performance
+femtovg on OpenGL for widget rendering — is this fast enough for complex widget panes (settings panels with dozens of controls, list views with thousands of items)? The alternative is a purpose-built renderer. Needs profiling with realistic widget counts.
+
+### Selection-first vs. verb-first in the Input Kit
+Kakoune's argument for selection-first (visual feedback before commitment) is strong. Vim's verb-first is more efficient for experts. The Input Kit could support both — verb-first in Normal mode with visual selection as alternative. Or it could commit to one model. Needs user testing with both approaches on non-text panes (file manager, process monitor) to determine which generalizes better.
+
+### Agent governance
+The `.plan` file declares an agent's permissions, but who audits the declaration? A malicious or poorly-written `.plan` could grant excessive access. The trust model needs to be concrete: who can create agents, who can modify `.plan` files, what are the defaults for new agents, how does the human discover what an agent has done?
+
+### The two-world problem
+Pane-native clients and legacy Wayland apps are two worlds. The mitigation strategies (good TUI ecosystem, application wrapping, visual theming) are real but may not be sufficient. If pane-native development is not dramatically easier than standard Wayland development, the native ecosystem won't grow. The NeXTSTEP lesson: developer productivity IS user experience. The kits must be so good that building a pane app is the easiest way to build a Linux desktop application.
+
+### PipeWire screen capture integration
+pane-comp needs to implement the xdg-desktop-portal ScreenCast D-Bus interface for screen sharing (WebRTC, OBS, etc.). This requires feeding compositor frame data into a PipeWire video source node. The integration between smithay's rendering pipeline and PipeWire's buffer model needs prototyping.
+
+---
+
+## Sources
+
+### BeOS / Haiku
+- Be Newsletter archive (231 issues, 1995-1999) — design rationale from the engineers who built it
+- Haiku source code (~/src/haiku) — the reference implementation
+- Giampaolo, "Practical File System Design with the Be File System" (1998)
+
+### Session Types
+- Honda, "Types for Dyadic Interaction" (CONCUR 1993)
+- Caires, Pfenning, "Session Types as Intuitionistic Linear Propositions" (CONCUR 2010)
+- Wadler, "Propositions as Sessions" (ICFP 2012)
+- faiface/par crate — session types for Rust
+
+### Systems
+- skarnet.org/software/s6 — process supervision
+- skarnet.org/software/s6-rc — dependency management
+- docs.pipewire.org — media framework
+- wayland-book.com — display protocol
+- github.com/Smithay/smithay — compositor framework
+- nixos.org — build infrastructure
+
+### Design
+- Pike, "Structural Regular Expressions" (1987)
+- Pike, "Acme: A User Interface for Programmers" (1994)
+- Fowler et al., "Exceptional Asynchronous Session Types" (POPL 2019)
+- Erlang/OTP heart module — external watchdog pattern

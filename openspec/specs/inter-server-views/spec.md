@@ -75,7 +75,7 @@ pane-proto SHALL define a `RosterRegister` typed view for infrastructure server 
 **Crate**: `pane-proto::server::roster`
 
 #### Scenario: Infrastructure server registration
-- **WHEN** pane-route starts and registers with pane-roster
+- **WHEN** pane-store starts and registers with pane-roster
 - **THEN** it SHALL send a `PaneMessage<ServerVerb::Notify>` parseable as `RosterRegister` with `kind: "infrastructure"`
 
 ### Requirement: RosterServiceRegister view

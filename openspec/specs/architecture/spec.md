@@ -47,7 +47,7 @@ Pane targets Linux exclusively, tracking the latest stable kernel release. The s
 
 ### 1. Text as Action
 
-Any visible text is potentially executable (this should be presented as hypertext, a concept users are already familiar with. Two fundamental actions exist on text: **execute** (run it as a command) and **route** (send it to the router for pattern-matched dispatch to the appropriate handler). Activate `Makefile:42` anywhere in the system and it opens in the editor at line 42. This collapses toolbars, menus, hyperlinks, and file associations into one mechanism: actionable text and pattern matching. The specific input gestures that trigger execute and route are a design detail — the principle is that these two actions are available on any text, anywhere.
+Any visible text is potentially executable (this should be presented as hypertext, a concept users are already familiar with. Two fundamental actions exist on text: **execute** (run it as a command) and **route** (the kit evaluates routing rules for pattern-matched dispatch to the appropriate handler). Activate `Makefile:42` anywhere in the system and it opens in the editor at line 42. This collapses toolbars, menus, hyperlinks, and file associations into one mechanism: actionable text and pattern matching. The specific input gestures that trigger execute and route are a design detail — the principle is that these two actions are available on any text, anywhere.
 
 ### 2. Visual Consistency Through Shared Infrastructure
 
@@ -169,7 +169,7 @@ The component that makes the app ecology work. Roster tracks who's alive, knows 
 **Service directory** (for infrastructure servers):
 
 - Infrastructure servers register on startup. Roster records identity and capabilities.
-- Answers queries: "where is the router?", "is the store running?"
+- Answers queries: "where is the store?", "is the compositor running?"
 - Roster does not restart servers. When an infrastructure server crashes, the init system (via pane-init) restarts it; the server re-registers with roster.
 
 **App lifecycle** (for desktop applications):
@@ -181,7 +181,7 @@ The component that makes the app ecology work. Roster tracks who's alive, knows 
 **Service registry** (for discoverable operations):
 
 - Apps register `(content_type_pattern, operation_name, description)` tuples
-- Router queries the registry for multi-match scenarios
+- The pane-app kit queries the registry during routing for multi-match scenarios
 - Answers: "what operations are available for this content type?"
 
 Does NOT contain: process supervision of infrastructure servers (that's the init system behind pane-init's contracts).
@@ -245,7 +245,7 @@ The canonical proof is BeOS's email. No component in BeOS implemented email. The
 
 This is what pane aspires to. The servers provide infrastructure: routing, attribute indexing, filesystem exposure, application lifecycle, compositing. The experiences — file management, development workflows, communication, system administration — emerge from how that infrastructure composes.
 
-**Routing composes content with handlers.** Text is activated, the router matches it against rules, and the matched handler receives a resolved message. The router transforms content (extracts filenames, line numbers, URLs), validates paths, and queries the service registry. The pipeline is: content → rules → transformation → dispatch. Whether the content came from a user action, a D-Bus signal, or a filesystem event, the routing is the same.
+**Routing composes content with handlers.** Text is activated, the kit evaluates routing rules locally, and the matched handler receives a resolved message. The kit transforms content (extracts filenames, line numbers, URLs), validates paths, and queries the service registry. The pipeline is: content → rules → transformation → dispatch. Whether the content came from a user action, a D-Bus signal, or a filesystem event, the routing is the same.
 
 **Attribute indexing composes metadata with queries.** pane-store indexes file attributes, emits change notifications, and answers queries. A client that subscribes to change notifications and maintains a query result set has a live query — without pane-store implementing "live queries" as a feature. The composition is client-side.
 
