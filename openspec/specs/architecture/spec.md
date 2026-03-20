@@ -416,15 +416,17 @@ The `par` crate implements session types in Rust via the Caires-Pfenning/Wadler 
 
 ### The transport bridge
 
-Par operates on in-memory `futures::channel::oneshot` pairs. Pane communicates over unix sockets with postcard serialization. The bridge:
+Par operates on in-memory `futures::channel::oneshot` pairs. Pane communicates over unix sockets with postcard serialization. Bridging these is the first and most important engineering problem.
 
-**Phase 1 (where we start):** Session types as protocol specification. Define types in par, use them for compile-time checking and in-memory testing. The actual socket transport is a hand-written state machine that mirrors the session type. The session type is the single source of truth — if you change it, the transport code stops compiling because it references the same enums and structs. Par's in-memory channels are used for testing.
+**The distinction that matters:** Session types verify two things — message *shapes* (the right data in the right types) and conversation *ordering* (the right messages in the right sequence). Shared Rust enums give you the first. Only par's runtime gives you the second.
 
-**Phase 2 (if warranted):** Adapter layer wrapping par's channels with serialization boundaries. Each send() serializes with postcard and writes to the socket; each recv() reads and deserializes. This preserves par's runtime guarantees but requires bridging par's async model with calloop.
+**The target (Phase 2 of the build sequence):** Par session types driven over unix sockets with postcard serialization. Each `send()` serializes and writes to the socket; each `recv()` reads, deserializes, and advances the session state. The session type enforces both shapes and ordering on the wire — not just in tests. This requires bridging par's async model with calloop on the compositor side, which is why the calloop+par integration proof is Phase 2's second milestone.
 
-**Phase 3 (aspirational):** Transport-polymorphic session types, like dialectic's Transmitter/Receiver backend trait.
+**The fallback (if Phase 2 reveals a blocker):** Session types as protocol specification only — define types in par, use them for in-memory testing, implement the wire transport as a hand-written state machine referencing the same enums. This gives shared-type-checking (message shapes verified at compile time) but not session-type-checking (ordering verified by developer discipline, not the compiler). This is the same assurance level BeOS had. It's acceptable as a starting point but not as a permanent state.
 
-Phase 1 is pragmatic and loses the least. The protocol structure is verified. The transport is pane's own code. The types keep them in sync.
+**The aspiration (Phase 3):** Transport-polymorphic session types, like dialectic's Transmitter/Receiver backend trait. A single session type definition that works over in-memory channels, unix sockets, TCP, or any other transport.
+
+The build sequence prioritizes Phase 2 because it determines the guarantee level of every protocol built afterward. Systems work before graphics work.
 
 ### Async by default
 
@@ -673,40 +675,48 @@ Each phase produces a testable, usable artifact. The ordering follows dependency
 
 ### Phase 1: Protocol Foundation
 1. **pane-proto** — message types, session type definitions, property tests. The types that everything else depends on. *Status: built, session type migration in progress.*
-2. **pane-notify** — fanotify/inotify abstraction. Looper integration (calloop for compositor, channels for others).
 
-### Phase 2: Minimal Compositor
-3. **pane-comp skeleton** — smithay compositor, single hardcoded pane, tag line + text rendering. First pixels on screen. The milestone that proves the rendering pipeline works.
-4. **pane-app kit** — looper abstraction, handler chain, connection management. The kit that application developers program against.
-5. **pane-shell** — PTY bridge client, first usable terminal. The milestone that makes pane a daily driver.
+### Phase 2: Transport Bridge (highest priority prototype)
+2. **Session types over unix sockets** — the single most important prototype in the project. Prove that par session types can be driven over unix sockets with postcard serialization: a server-side calloop-driven endpoint talking to a client-side threaded looper, with the session type verified end-to-end. If this works, every protocol built afterward inherits the guarantee. If it doesn't, we discover the constraint before building a mountain of protocol code on a shaky foundation.
+3. **calloop + par integration proof** — drive par session futures from within a calloop event loop. Verify that fork_sync, the server module, and calloop's callback model coexist cleanly. This determines whether the compositor's session handling works as designed.
 
-### Phase 3: Tiling Desktop
-6. **Layout tree** — tiling with splits, multiple panes, tag-based visibility. Multiple shells on screen.
-7. **Input binding** — compositor-level key bindings, focus management, tag switching.
+In Phase 1, session types define the protocol and verify message shapes at compile time. Phase 2 closes the gap: conversation ordering — what is sent when, by whom — is verified on the wire, not just in-memory tests. The systems work comes before the graphics work because the protocol is the foundation everything else stands on.
 
-### Phase 4: Infrastructure
-8. **Routing** — routing rules in the pane-app kit, filesystem-based rule loading, live rule updates.
-9. **pane-roster** — service directory, app lifecycle, service registry.
-10. **pane-store** — attribute indexing, change notifications, queries.
-11. **pane-watchdog** — heartbeat monitoring, escalation.
+### Phase 3: Core Infrastructure
+4. **pane-notify** — fanotify/inotify abstraction. Looper integration (calloop for compositor, channels for others).
+5. **pane-app kit** — looper abstraction, handler chain, routing, connection management. The kit that application developers program against. Built on the verified transport from Phase 2.
 
-### Phase 5: Richness
-12. **Widget rendering** — femtovg + taffy, Frutiger Aero controls.
-13. **pane-fs** — FUSE at `/srv/pane/`.
-14. **pane-dbus** — D-Bus bridge (notifications, PipeWire portals, NetworkManager).
-15. **pane-media** — PipeWire kit wrapper.
+### Phase 4: Minimal Compositor
+6. **pane-comp skeleton** — smithay compositor, single hardcoded pane, tag line + text rendering. First pixels on screen. Now built on session-verified protocols, not hand-written state machines.
+7. **pane-shell** — PTY bridge client, first usable terminal. The milestone that makes pane a daily driver.
 
-### Phase 6: Ecosystem
-16. **Legacy Wayland/XWayland** — xdg-shell, xdg-decoration, XWayland integration.
-17. **pane-input kit** — generalized grammar engine, keymap hierarchy, discoverability.
-18. **pane-ai** — agent infrastructure, `.plan` specification, Unix communication patterns.
+### Phase 5: Tiling Desktop
+8. **Layout tree** — tiling with splits, multiple panes, tag-based visibility. Multiple shells on screen.
+9. **Input binding** — compositor-level key bindings, focus management, tag switching.
 
-### Phase 7: Distribution
-19. **Nix system builder** — s6-linux-init, s6-rc service database, kernel, initrd, system closure.
-20. **Binary cache** — Cachix for the libudev-zero overlay and pane packages.
-21. **Installer** — from ISO to running pane system.
+### Phase 6: Infrastructure
+10. **Routing** — routing rules in the pane-app kit, filesystem-based rule loading, live rule updates.
+11. **pane-roster** — service directory, app lifecycle, service registry.
+12. **pane-store** — attribute indexing, change notifications, queries.
+13. **pane-watchdog** — heartbeat monitoring, escalation.
 
-The critical path is phases 1-3. Once pane-shell works inside pane-comp with tiling, pane is a usable (if minimal) daily driver. Everything after that is enrichment on a working foundation.
+### Phase 7: Richness
+14. **Widget rendering** — femtovg + taffy, Frutiger Aero controls.
+15. **pane-fs** — FUSE at `/srv/pane/`.
+16. **pane-dbus** — D-Bus bridge (notifications, PipeWire portals, NetworkManager).
+17. **pane-media** — PipeWire kit wrapper.
+
+### Phase 8: Ecosystem
+18. **Legacy Wayland/XWayland** — xdg-shell, xdg-decoration, XWayland integration.
+19. **pane-input kit** — generalized grammar engine, keymap hierarchy, discoverability.
+20. **pane-ai** — agent infrastructure, `.plan` specification, Unix communication patterns.
+
+### Phase 9: Distribution
+21. **Nix system builder** — s6-linux-init, s6-rc service database, kernel, initrd, system closure.
+22. **Binary cache** — Cachix for the libudev-zero overlay and pane packages.
+23. **Installer** — from ISO to running pane system.
+
+The critical path is phases 1-5. Phase 2 is the make-or-break: if the transport bridge works, every protocol built afterward is verified end-to-end. If it reveals constraints, we redesign before investing in compositor code. Once pane-shell works inside pane-comp with tiling (end of Phase 5), pane is a usable daily driver with session-verified protocols. Everything after that is enrichment on a sound foundation.
 
 ---
 
@@ -714,8 +724,8 @@ The critical path is phases 1-3. Once pane-shell works inside pane-comp with til
 
 Things the Be engineers would flag as "we need to prototype this before committing."
 
-### Session type transport bridge
-How do par's in-memory channels map to unix sockets with postcard serialization? Phase 1 (session types as specification, transport as separate state machine) is pragmatic, but the seam between typed protocol and untyped transport is where bugs live. Needs a prototype: write one pane-comp <-> pane-shell conversation both ways (par in-memory for testing, socket transport for production) and verify they stay in sync.
+### Session type transport bridge *(promoted to Phase 2 — first milestone)*
+Moved from open question to the build sequence's highest-priority prototype. The transport bridge determines the guarantee level of every protocol built afterward. See §7 (The transport bridge) and §12 (Phase 2).
 
 ### calloop + par integration
 Par is async-native (futures-based). Pane's compositor uses calloop (callback-oriented). calloop's futures executor can drive par futures, but fork_sync (which is synchronous and blocks) needs careful handling in a calloop context. Prototype: drive a par session from within a calloop event loop and measure whether the interaction is clean or requires contortion.
