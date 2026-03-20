@@ -683,7 +683,7 @@ Both of these are things Haiku still struggles with. Pane gets them from the pla
 | **Init system** | s6 + s6-rc | Small, composable, readiness-aware. Service directories are derivations. Compiled dependency database. |
 | **Build system** | Nix | Declarative, reproducible, atomic upgrades, rollback. ~120k packages via nixpkgs. |
 | **Filesystem notification** | fanotify + inotify | fanotify for mount-wide (pane-store). inotify for targeted (config, plugins). |
-| **FUSE** | fuser crate | `/srv/pane/` — Plan 9-style filesystem interface. |
+| **FUSE** | Custom FUSE-over-io_uring module (on `io-uring` crate) | No existing Rust FUSE library supports io_uring. The kernel interface is small (two io_uring subcommands + standard FUSE opcodes); pane-fs needs only a bounded subset. Built directly on `/dev/fuse` + io_uring for maximum performance. |
 | **Audio/media** | PipeWire | Graph-based media framework. Replaces PulseAudio + JACK. BeOS Media Kit model. |
 | **Widget layout** | taffy | Flexbox/grid layout engine. Pure computation. |
 | **Widget rendering** | Vello | GPU-compute 2D rendering via wgpu. The forward-looking choice over femtovg (OpenGL). Currently in active development by the Linebender project; will be stable by pane's widget rendering phase. |
