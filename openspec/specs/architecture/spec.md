@@ -106,9 +106,21 @@ Composites client surfaces, manages layout, renders chrome. This is the app_serv
 
 **Does not contain:** routing logic, application launch logic, file type recognition, attribute indexing, or any server functionality beyond compositing and input. For native panes, a route action sends a TagRoute event to the pane client; the pane-app kit evaluates routing rules and dispatches. For legacy panes, the compositor handles route dispatch through its own kit integration.
 
-**Threading model:** The compositor's main thread runs the calloop event loop. Per-client session handling runs on dedicated threads (one thread per pane-native connection, matching the app_server pattern of one ServerWindow thread per client). DRM page flip completions, libinput events, and timer expirations all feed into calloop. This is the only component where calloop is used — it exists because smithay's Wayland server integration requires it.
+**Threading model — three tiers, faithful to BeOS:** BeOS's app_server had three levels: Desktop (shared state coordinator), ServerApp (one thread per application), ServerWindow (one thread per window). Pane preserves this:
 
-**The two-thread pattern:** BeOS had two threads per window — one in the client (BWindow's looper) and one in the server (ServerWindow). Pane preserves this. Each pane-native connection gets a server-side thread that handles protocol messages, and the client runs its own looper thread. Drawing commands flow from client to server asynchronously, and are batched and flushed — the same optimization George Hoffman described in Be Newsletter #2-36. Synchronous calls (anything that needs a response) force a flush and a round-trip. The default is async; sync only when a response is needed.
+| BeOS | Pane | Role |
+|---|---|---|
+| Desktop | Compositor main thread (calloop) | Shared state, compositing, Wayland protocol, input dispatch |
+| ServerApp | Dispatcher thread (1 per connection) | Demuxes incoming socket messages to per-pane threads |
+| ServerWindow | Pane thread (1 per pane) | Handles session protocol for a single pane |
+
+Each pane gets its own server-side thread — not one thread per connection. A slow pane cannot block its siblings. This is the BeOS guarantee: one ServerWindow thread per window, verified in the Haiku source (`ServerWindow` inherits `MessageLooper`, spawns a dedicated thread on `Run()`).
+
+**Shared state and locking:** The compositor's layout tree is shared state accessed by per-pane threads (to read their position/size) and the main thread (to composite). This mirrors Haiku's `Desktop::fWindowLock` — a reader-writer lock where drawing commands take the read lock (concurrent across panes) and structural changes (move, resize, create/destroy) take the write lock. Per-pane threads process protocol messages and communicate with the main thread via channels; they never touch smithay objects directly (smithay is `!Send` by design, which correctly confines Wayland protocol handling to the main thread).
+
+**Cost:** At 50 panes: 50 pane threads + dispatchers = ~1MB physical memory, ~1.5μs context switch overhead, negligible on 2026 hardware. Pierre Raynaud-Richard's measurements from Be Newsletter #4-46 (~20KB per thread) hold — modern Linux threads are comparable.
+
+**The two-thread pattern:** Each pane has two threads — one client-side (the looper in pane-app) and one server-side (the pane thread in pane-comp). Messages flow from client to server asynchronously and are batched and flushed. Synchronous calls force a flush and round-trip. The default is async; sync only when a response is needed.
 
 ### pane-watchdog — System Health Monitor
 
@@ -169,7 +181,19 @@ Plan 9's gift: if state is a file, any tool can access it. pane-fs is a FUSE fil
 
 pane-fs is a translation layer — it converts FUSE operations into pane protocol messages. It is just another client of the pane servers. It has no special privilege and no server logic.
 
-The filesystem provides universality that typed protocols cannot (any language, any tool). The typed protocol provides safety that the filesystem cannot (compile-time verification, session guarantees). Both are needed. The filesystem is the universal FFI; the protocol is the verified channel.
+The filesystem provides universality that typed protocols cannot (any language, any tool). The typed protocol provides safety that the filesystem cannot (compile-time verification, session guarantees). Both are needed.
+
+**Three-tier access model.** The system offers three access tiers, each appropriate for different consumers and latencies:
+
+| Tier | Mechanism | Latency | Use case |
+|---|---|---|---|
+| **Filesystem** | FUSE at `/srv/pane/` | ~15-30μs per op | Shell scripts, inspection, configuration, event monitoring. Human-speed operations where 30μs is invisible. |
+| **Protocol** | Session-typed unix sockets | ~1.5-3μs per op | Kit-to-server communication, rendering, input dispatch, bulk state queries. Machine-speed operations. |
+| **In-process** | Kit API (direct function calls) | Sub-microsecond | Application logic within a pane-native client. No IPC, no serialization. |
+
+The principle: if you'd be comfortable with 30μs latency and per-file granularity, use the filesystem. If you need machine-speed access with typed guarantees, use the protocol. If you're inside a pane-native client, the kit handles everything — the developer doesn't choose a tier, the kit chooses for them.
+
+FUSE-over-io_uring (Linux 6.14+) halves the overhead and eliminates concurrency bottlenecks via per-CPU queues. Since pane controls its kernel version as a distribution, this is a viable target.
 
 ### Notifications
 
@@ -389,15 +413,16 @@ Schillings' benaphore (atomic variable + semaphore, fast-path the uncontested ca
 
 | Component | Thread model |
 |---|---|
-| Each pane-native connection (server-side) | Dedicated thread |
-| Each pane-native client (client-side looper) | Dedicated thread |
-| Compositor main loop | calloop (single thread, epoll-driven) |
+| Compositor main loop | calloop (single thread, epoll-driven) — smithay, Wayland protocol, compositing, input |
+| Dispatcher (1 per connection) | Dedicated thread — demuxes socket I/O to per-pane threads |
+| Pane thread (1 per pane, server-side) | Dedicated thread — session protocol for one pane |
+| Client looper (1 per pane, client-side) | Dedicated thread — the BLooper equivalent in pane-app |
 | pane-roster | Dedicated looper thread |
 | pane-store | Dedicated looper thread + worker threads for initial scan |
 | pane-watchdog | Single thread (deliberately minimal) |
 | pane-fs (FUSE) | Thread pool (FUSE operations may block) |
 
-Pierre Raynaud-Richard measured the cost in Be Newsletter #4-46: ~20KB per thread, ~70KB per window with both client and server threads. Modern Linux threads are comparable. The cost is the tax for concurrency — spend it at the right granularity (per-window, not per-widget).
+The threading granularity is per-pane, not per-widget. 50 panes = ~100 threads (client + server side) = ~2MB memory. The cost is the tax for concurrency — spend it at the right granularity.
 
 ---
 
