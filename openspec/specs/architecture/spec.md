@@ -16,6 +16,8 @@ What session types add to the Be model: compile-time enforcement of the protocol
 
 What Linux adds to the Be model: the entire hardware ecosystem, a battle-tested network stack, compositing for free via Wayland, and 120,000+ packages via Nix. Haiku spent 25 years rebuilding what Be had, plus what Be never got to (package management, networking, POSIX compliance, layout management). Pane sidesteps all of that and focuses entirely on the desktop experience layer.
 
+**Dependency philosophy.** Pane is a radically opinionated distribution that determines its own dependencies with complete freedom. Convention and legacy do not constrain our choices. We target the latest kernel interfaces, the newest viable subsystems, and the most forward-looking infrastructure when there are significant payoffs for our design model — provided we have reasonable confidence in their future support, or at minimum can maintain them ourselves if needed. FUSE-over-io_uring (Linux 6.14+), bcachefs when it matures, PipeWire over PulseAudio, s6 over systemd — these are not risky bets on bleeding edge. They are the choices of a distribution that is building for the next decade, not accommodating the last one. We are futureproofing, not backward-compatible.
+
 ---
 
 ## 2. The Pane Primitive
@@ -193,7 +195,7 @@ The filesystem provides universality that typed protocols cannot (any language, 
 
 The principle: if you'd be comfortable with 30μs latency and per-file granularity, use the filesystem. If you need machine-speed access with typed guarantees, use the protocol. If you're inside a pane-native client, the kit handles everything — the developer doesn't choose a tier, the kit chooses for them.
 
-FUSE-over-io_uring (Linux 6.14+) halves the overhead and eliminates concurrency bottlenecks via per-CPU queues. Since pane controls its kernel version as a distribution, this is a viable target.
+pane-fs targets FUSE-over-io_uring (Linux 6.14+), which halves the overhead and eliminates concurrency bottlenecks via per-CPU queues. As a distribution that controls its kernel version, pane requires io_uring-backed FUSE — this is not an optional optimization but a baseline expectation.
 
 ### Notifications
 
