@@ -131,28 +131,36 @@ Responsibilities:
 - Input handling: libinput integration, xkbcommon keyboard layout, key binding resolution, pointer acceleration (in-process, not a separate server — latency-critical)
 - Input dispatch: routes keyboard/mouse events to the focused pane
 
-Does NOT contain: routing logic, app launch logic, file type recognition. For native panes, a route action sends a `TagRoute` event to the pane client; the client (via pane-app kit) sends the route message to pane-router. For legacy Wayland panes, pane-comp connects to pane-router directly as a fallback.
+Does NOT contain: routing logic, app launch logic, file type recognition. For native panes, a route action sends a `TagRoute` event to the pane client; the pane-app kit evaluates routing rules locally and dispatches directly to the handler. For legacy Wayland panes, pane-comp handles route dispatch through its own kit integration.
 
-### pane-router — Communication Infrastructure
+### Routing — A Kit Concern, Not a Server
 
-Pane's communication infrastructure — the server and kit that handles how data flows between processes, users, and the system. Encapsulates the variety of protocols by which components communicate, providing typed abstractions over the Linux base that are strictly complementary to existing infrastructure (does not replace sockets, D-Bus, or networking — provides pane-native abstractions over them).
+Content-based routing is built into the pane-app kit, not centralized in a separate server. Components communicate directly via the protocol — sender to receiver — the way BeOS's BMessenger carried messages directly between applications via kernel ports. There is no central routing server whose failure would break all communication.
 
-The core model: data arrives, is matched and transformed by rules, and dispatches to a handler. This applies uniformly whether the data came from a user action on text, an inter-process message, a D-Bus signal, or a filesystem event. One communication model, not two — BeOS learned this the hard way when they tried heterogeneous DSP+CPU processing and abandoned it because "people developing the system now have to contend with two programming models and two pieces of system software and the coordination headaches between them."
+The pane-app kit provides routing as part of its standard functionality:
 
-Responsibilities:
-
-- Maintains named ports (edit, web, image, etc.)
-- Receives route messages (content + source + context + attributes)
-- Matches messages against an ordered rule set, transforms content (extracts substrings, adds attributes, validates paths)
-- Routes matched messages to the appropriate port
-- Applications listen on ports to receive routed messages
+- Loads routing rules from the filesystem (`/etc/pane/route/rules/`, `~/.config/pane/route/rules/`), one file per rule
+- Watches rule directories via pane-notify for live addition/removal — drop a file, gain a behavior; delete it, lose it
+- When a route action is triggered, the kit evaluates rules locally: matches content against the ordered rule set, transforms content (extracts substrings, adds attributes, validates paths), resolves the target
 - Queries pane-roster's service registry for additional matching operations
 - When multiple handlers match: presents options for the user to choose. Single match auto-dispatches.
-- Protocol bridges: foreign protocols are integrated via bridge daemons that translate between a foreign protocol and pane's native message model. pane-dbus translates D-Bus signals and method calls. Each bridge is a plugin. The pane side is always the same typed interface.
+- Dispatches directly to the handler — no intermediary
 
-Routing rules are files in well-known directories (`/etc/pane/route/rules/`, `~/.config/pane/route/rules/`), one file per rule. pane-notify watches these directories for live addition/removal. Drop a file, gain a behavior. Delete it, lose it.
+One communication model, not two — BeOS learned this the hard way when they tried heterogeneous DSP+CPU processing and abandoned it because "people developing the system now have to contend with two programming models and two pieces of system software and the coordination headaches between them."
 
-Does NOT contain: type recognition logic (that's upstream — pane-store identifies types, attaches as attributes, routing rules match on those attributes).
+**Protocol bridges** are standalone daemons, not part of a central router. Each bridge translates between a foreign protocol and pane's native message model. pane-dbus translates D-Bus signals and method calls. Each bridge is a plugin. The pane side is always the same typed interface. Bridges dispatch directly to handlers — they are clients of the protocol like any other participant.
+
+### pane-watchdog — System Health Monitor
+
+A minimal external process that monitors system health. Inspired by Erlang's `heart` — deliberately simple, with a trivial heartbeat protocol. The less it does, the harder it is to kill.
+
+Responsibilities:
+- Heartbeat monitoring of critical components (compositor, roster)
+- Detecting unresponsive components via missed heartbeats
+- Triggering escalation procedures on failure: journal flush, user state backup
+- Notifying the init system to restart failed components
+
+Does NOT contain: routing logic, message dispatch, application-level functionality. The watchdog is infrastructure in the way a hardware watchdog is infrastructure — it checks pulses and pulls the emergency brake. Nothing else.
 
 ### pane-roster — Roster
 
@@ -422,7 +430,7 @@ Each phase produces a testable, usable artifact:
 3. **pane-comp skeleton** — smithay compositor, single hardcoded pane, tag line + cell grid rendering
 4. **pane-shell** — PTY bridge client, first usable terminal
 5. **Layout tree** — tiling with splits, multiple panes, tag-based visibility
-6. **pane-router** — router daemon, pattern matching, port routing, service-aware multi-match
+6. **Routing integration** — routing rules, kit-level dispatch, protocol bridges, service-aware multi-match
 7. **pane-roster** — service directory, app lifecycle, service registry, session management
 8. **pane-store** — attribute indexing, change notifications, queries, in-memory index
 9. **Widget rendering** — femtovg integration, taffy layout, Frutiger Aero controls
