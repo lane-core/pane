@@ -333,7 +333,15 @@ Agents are system users, not applications. They participate through the same pro
 
 These were designed for multi-inhabitant systems. The inhabitants have arrived.
 
-**Local/remote model transparency.** The agent kit provides a uniform interface whether the underlying model runs locally or via remote API. Switching models is a configuration change, not an application change. The routing infrastructure handles dispatch; the session protocol handles the conversation; `.plan` declares which models are available.
+**Local models are first class.** A user running entirely on local models gets the same agent infrastructure, the same `.plan` governance, the same communication patterns, the same scripting protocol integration as a user with API access to frontier models. The system is designed local-first; remote APIs are an enhancement, not a requirement.
+
+Models are managed as a kit concern — discovery, loading, inference, resource scheduling. Models are files on the filesystem, managed through the same infrastructure as everything else. Model format support (GGUF, safetensors, etc.) is extensible via the Translation Kit pattern: drop a model translator, the system gains a format. Resource-aware scheduling ensures inference doesn't starve the compositor or latency-sensitive operations.
+
+**Routing rules as data governance.** The same routing infrastructure that dispatches content to handlers dispatches inference requests to models. Routing rules determine what data is processed locally vs sent to remote APIs — the routing rule IS the privacy policy, expressed declaratively, enforceable by the system, inspectable by the user.
+
+A rule might say: queries touching files under `~/work/` go to the local model. General knowledge questions go to the remote API. Anything containing credentials never leaves the machine. The rules are files in directories — the same extension surface as everything else. The user sees and controls exactly what goes where. When a `.plan` specifies `model: local-only`, Landlock enforcement guarantees no data leaves the system.
+
+**Local/remote as a routing decision, not an application decision.** The agent kit provides a uniform interface regardless of where inference happens. Switching between models is a routing configuration change, not an application change. Users can optimize across model strengths — fast local model for low-latency work, strong remote model for complex reasoning, private local model for sensitive data — with the routing rules governing dispatch and the session protocol governing the conversation. The experience is one continuous interaction with the system.
 
 ---
 
