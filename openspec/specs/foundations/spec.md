@@ -62,6 +62,8 @@ The type system should be strict enough to catch protocol errors at compile time
 
 We acknowledge that building over a GNU/Linux base limits our ability to enforce type safety across a code surface we don't control. The strategy: enforce design principles strictly at the API level for the most critical system processes, and weather the elements gracefully everywhere else.
 
+This creates a tension that deserves naming: the boundary between pane's typed world (session-typed protocols, optics-governed views, monadic error composition) and the untyped world it lives in (D-Bus, PipeWire, the Linux syscall interface, legacy Wayland clients) is where most of pane's day-to-day engineering friction will live. Bridges translate at the boundary, but the bridge is where type safety ends. The mutable specs must define how strictly pane enforces its typed discipline at each boundary, and what "weathering the elements gracefully" means concretely for each external interface.
+
 ---
 
 ## 4. Multiple Views Through Optics
@@ -105,9 +107,11 @@ Building for the hardest case — pervasive concurrency — produces architectur
 
 ### The cost of good abstractions
 
-Every abstraction has a cost. The question is not whether the costs exist but whether the architecture gives more than it costs — in isolation and in aggregate. There is a network effect to good design choices: benefits compound when every component follows the same discipline.
+Every abstraction has a cost, either from implementation-related or conceptual overhead. The question is not whether the costs exist but whether the overall architecture gives more than it costs — in isolation and in aggregate. There is a network effect to good design choices: benefits compound when every component follows the same discipline.
 
-An irony often observed: programmers become so invested in specific implementation choices that they grow susceptible to bad compromises with the overall architecture — compromises they are disinclined to revisit due to sunk cost. The antidote is to value the architecture over any individual component's optimization.
+An irony often observed: programmers become so invested in specific implementation choices that they grow susceptible to bad compromises with the overall architecture — compromises they are disinclined to revisit due to sunk cost. The antidote is to value the architecture over any individual component's optimization. Conceptual overhead is more expensive in the long run than in implementation details, so in the worst case we will opt for what is simpler to understand over what is strictly speaking the fastest implementation.
+
+However this is often a false dichotomy as demonstrated by our practical reference points. The BLooper model is an example of an architecture that is both conceptually simple and efficient in practice. The cost of per-component threading and message queues is outweighed by the benefits of sufficiently localizable reasoning enabled by modularity and compositional design principles enabling uniform interfaces. Consistent interfaces make it easier to reason about how system events and interactions propagate to downstream effects. BeOS proved that this did not need to come at the cost of high performance when they rendered dozens of video windows simultaneously on Pentium 2 and 3 processor systems (!): the system remained responsive and stable; a testament to the efficiency of the architecture and the diligence by which they proceeded in its conception and design.
 
 ---
 
@@ -122,15 +126,17 @@ Recovery is structured:
 - The roster tracks liveness and updates its directory when servers register, restart, or terminate
 - The compositor handles client disappearance at any point in the session protocol
 - Routing is a kit-level concern — no central service whose failure breaks all communication. Components communicate directly, sender to receiver.
-- A minimal watchdog monitors system health via heartbeat. Deliberately simple: the less it does, the harder it is to kill.
+- A minimal watchdog monitors system health via heartbeat. Deliberately simple: the less it does, the harder it is to kill -- this is inspired by Erlang.
 
-The same principle that produces stability in the happy path — local, self-contained operational semantics — also contains failure. A crashed component cannot corrupt another's state because they don't share state. The guiding principle: failures are protocol events that compose monadically, not system events that cascade unpredictably.
+The same principle designed to produce stability and correct program behavior — local, self-contained operational semantics — also must guide our treatment of failure. A crashed component cannot corrupt another's state because they don't share state. The guiding principle: failures are protocol events that compose monadically, not system events that cascade unpredictably.
+
+We assess that one central reason uniformity enabled by consistent interfaces and compositional design patterns leads to robust behavior is that it enables a coherently determined internal representation of system events, such that there are natural ways to proceed forward at all stages of program control flow determined by API usage; it should seldom arise that one has need to treat edge cases that cannot already be accommodated by some combination of the tools given to you by the API.
 
 ### Modularity as resilience
 
-Modular systems design enables graceful response to the ever-changing Linux ecosystem. Traditional monolithic architectures bleed when dependencies shift. We proceed from the wisdom of source-based Linux distributions, whose success we attribute to their systemic embrace of modularity — the lack of opinionation was _their_ uniform design principle. Pane's modularity ought to conform with the Linux ecosystem's inherent modularity, so that evolving alongside it is tractable for both cultural and technical reasons.
+In our specific context, modular systems design and robust failure handling is key to our design strategy of how we gracefully respond to the ever-changing Linux ecosystem. Traditional monolithic architectures bleed when dependencies shift. We ultimately proceed from the wisdom of source-based Linux distributions in this regard, whose success we attribute to their systemic embrace of modularity — the lack of opinionation was _their_ uniform design principle. Pane's modularity ought to conform with the Linux ecosystem's inherent modularity, so that evolving alongside it is tractable for both cultural and technical reasons.
 
-We design our system as a coherent extension of the principles governing our underlying Linux base, rethought to suit the needs of a new generation of users — to break with the misconception that freedom is too difficult to bother with.
+We design our system as a coherent extension of the principles governing our underlying Linux base, rethought to suit the needs of a new generation of users, and seek to break with the misconception that freedom is too difficult to bother with.
 
 ---
 
@@ -140,21 +146,25 @@ To build the right infrastructure is to lay the bedrock for excellent and creati
 
 BeOS's engineers designed infrastructure whose logic made email a natural consequence of composition — no component knew about email, but queries over mail attributes became inboxes, the file manager became the mail client, composing a reply was opening a file. Each component was independently useful; the integration was not brittle.
 
-This connects to the democratic orientation: when the system provides infrastructure rather than finished experiences, users compose their own. The infrastructure is silent on what the user should do. That silence is the space where creativity happens.
+This connects to our democratic orientation that encourages user interaction rather than passive consumption of predesigned experiences: when the system provides flexible infrastructure rather than enforcing a specific experience, users are free to compose their own. The infrastructure is silent on what the user should do -- the pane development team's opinion on what a good interface is under this framework is one among many. That silence is the space where creativity happens.
 
 When a new experience is needed: can it emerge from composing existing infrastructure? If not, is the missing infrastructure general enough to justify building? If so, build the infrastructure. The experience will follow — and if an agent builds the composition on behalf of a user who merely described what they wanted, the infrastructure-first principle extends from developer creativity to user creativity.
 
+We expect that UX patterns we never anticipated will emerge from users building on the infrastructure in ways we cannot imagine now. Our evolving specification must be careful not to preclude this possibility by overcommitting to specific experiences. And once we have actual users, we ought to pay close attention to when their design patterns are superior to the ones we developed in house, and pane ought to evolve in step with the real world usage of the system. To that end, we ought to encourage lively experiment with different UX design patterns, both in our initial development phase and in the post-release ecosystem. We imagine that users may make their own spins on pane as an extension of the nix flake ecosystem. Such developments would entail a rich source of folklore design wisdom to draw upon, and comprise a dynamic and generative feature of the resulting ecosystem.
+
 ---
 
-## 8. Uniformity and the Protocol as Harmonizer
+## 8. The Protocol harmonizes distinct system interfaces
 
 The number of distinct interfaces is the enemy of composition. Plan 9 proved this with 9P; BeOS with BMessage. When everything speaks the same language, composition is natural.
 
 Pane pursues uniformity through one universal object (the pane), one communication model (session-typed protocols with kit-level routing), and common extension mechanisms (filesystem-based, typed interfaces). The protocol harmonizes how different applications — including legacy applications — participate coherently in the user experience. The systems designer is opinionated once; after that, the use to which the infrastructure is put is determined by free experiment.
 
-Bridges translate at the boundaries — strictly complementary to Linux's existing infrastructure. Bridges are where type safety meets its limits: the foreign side is unverified. The mutable specs must define the trust model for bridges.
+Bridges translate at the boundaries — strictly complementary to Linux's existing infrastructure. Bridges are where type safety meets its limits: the foreign side is unverified. The implementation specs must define a trust model for each bridge.
 
-Congruence with existing usage patterns is pivotal — not just as adoption strategy but as design principle. Users curating their pane experience should feel like a natural extension of what they do on their Linux systems already. Showcasing pane's infrastructure through stock plugins for existing tools (editor integrations, shell extensions) builds trust with users who are historically hostile to platforms that smuggle in the downsides of mainstream operating systems. These power users are the most important constituency: they will discover killer apps, stress-test every aspect of the system, and set expectations the project must meet.
+Congruence with existing usage patterns is pivotal — not just as adoption strategy but as a design principle. Users curating their pane-ful experiences should feel like a natural extension of what they already do on their Linux systems all the time. Showcasing pane's infrastructure through stock plugins for existing tools (editor integrations, shell extensions) builds trust with users who are historically hostile to platforms that smuggle in the downsides of mainstream operating systems along with their supposed virtues, establishing that our collaboration with the ecosystem is bidirectional, and that we ultimately seek to offer tools to complement and extend usage patterns already operative in the ecosystem. This is vital, as the power users are a critically important constituency to accomodate. They are the ones who will discover pane's killer apps, stress-test every aspect of the system, and set expectations the project must meet.
+
+The novice-to-power-user pipeline is architectural, not a UX veneer. The conveniences offered to less experienced users are means of expanding the power user base — interfaces that promote tech literacy rather than lull users into complacency, that evoke further possibilities and give users the confidence that the challenge of reaching them is surmountable.
 
 ---
 
@@ -166,9 +176,13 @@ Pane reimagines desktop design from a fork in the road at the turn of the millen
 
 Aesthetic consistency is architectural. Every native pane renders through the same kit infrastructure. The compositor provides uniform chrome. The Input Kit generalizes the keybinding power of the best text editors across every interface.
 
-There is a tension between the opinionated aesthetic and the democratic orientation. The stock aesthetic — one opinionated look, the visual identity IS pane's identity — empowers rather than constrains: users can build alternatives through the kit infrastructure. But we decline to ship a system with no visual identity and call it "customizable." The aesthetic is the first thing a user experiences, and it must be compelling enough to build trust.
+There is a tension between the opinionated aesthetic and the democratic orientation. The stock aesthetic — one opinionated look, the visual identity IS pane's identity — empowers rather than constrains: users can build alternatives through the kit infrastructure. But we decline to ship a system with no visual identity and call it "customizable." The aesthetic is the first thing a user experiences, and it must be compelling enough to build curiosity and interest sufficient to entice adoption from new users.
 
-A second tension: the extension model celebrates low-friction composition (drop a file, gain a behavior), but aesthetic customization demands higher friction (rebuild through the kit). The mutable specs must find where the stock aesthetic retains its identity while customization remains accessible.
+A second tension: the extension model celebrates low-friction composition (drop a file, gain a behavior), but aesthetic customization demands may in principle be higher friction (perhaps requiring the rebuild of components in the kit). The implementation specs must have a rigorous standard of determining the stock aesthetic retains its identity while customization remains accessible.
+
+One unavoidable moderating principle in this task is that each potential for customization needs to be assessed with regard to the level of risk it engenders in the total system; not to gate users who seek to brave the elements, but as a user interface challenge of how to suitably inform users as to the difficulties they may encounter and which they are therefore responsible for navigating. Our end of the bargain is to provide them with usable tools to help them do so as safely as possible, and easy methods of recovery should something go wrong. Modern techniques we inherit from our base such as nix's ability to roll back to previous system states or filesystem-based snapshotting are a powerful tool in this regard. We should seek to leverage such techniques in appropriate combination so that users feel supported in their efforts. We'll know we've succeeded when they sing praises of the confidence they built in the effort.
+
+To sum up: we seek to empower users to customize their system without undue risk of breaking it, but we also seek to be transparent about the risks involved in customization, and to provide users with the tools and information they need to navigate those risks responsibly.
 
 ---
 
@@ -176,7 +190,7 @@ A second tension: the extension model celebrates low-friction composition (drop 
 
 ### The two layers
 
-**The core system layer** — compositor, roster, attribute store, filesystem interface, notification system, watchdog, init integration (s6) — has an intimate relationship with the host OS. It is compact, efficient, and bulletproof.
+**The core system layer** — compositor, roster, attribute store, filesystem interface, notification system, watchdog, init integration (s6) — has an intimate relationship with the host OS. It must be compact, efficient, and bulletproof.
 
 **The outer layer** — clients, modes, translators, bridges, agents, external tools — speaks the protocol. Any participant that can communicate over the protocol can participate fully, regardless of language, location, or nature.
 

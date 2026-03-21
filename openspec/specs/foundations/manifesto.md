@@ -64,6 +64,12 @@ Our aim is not to reinvent yet-another-suite of yet-another-\* tools, to have ou
 
 ---
 
+## On §8: The Power User Pipeline
+
+We wish to set a high bar in the full expectation that power users will leap over it. And there is a false dichotomy we wish to refute: the convention that novice-friendly interfaces must necessarily come at the expense of advanced users. Central to not only our design sensibility, but also our strategy as a whole, is the idea that the conveniences we offer on the part of less experienced users are a means of _expanding_ the power users precisely by obeying the principle that our interfaces ought to promote the increase of tech literacy rather than lull users into complacency. Conveniences should be evocative of further conveniences which they may never have knew they wanted before, and their experience with using the system ought to impress upon them that such improvements to their workflow are close at hand, and give them the confidence that the challenge of building it is surmountable. Thus it should be clear that we do not wish to inconvenience or suppress power users. We seek to grow their ranks.
+
+---
+
 ## On §3: The Rust Analogy for Type System Adoption
 
 There has traditionally been a tension perceived between type safety and good dev UX. Our contention is to structure pane's API such that type-safe design flows with and not against programmer intentions, so long as such intentions are reasonable. We can accomplish this by making more intentions reasonable to execute under such a framework by carefully chosen compromises. That was Rust's strategy, which paid dividends. Affine type systems existed for decades in the arcana of academic programming language research prior, but establishing real-world adoption required not only thoughtful presentation, it also had to be timely, well motivated by the specific challenges of complex software design in a world plagued with security risks owing to a well understood and easily exploitable class of bugs. The result of this confluence of initiative, practical design sensibility, and timing was a robust systems design programming language with a rich and ever growing developer ecosystem, without which our project may not have been possible to write. One could argue that the technology itself is dwarfed by its own userbase. We wager that a similar gesture is possible now in operating system design, whose emergent benefits are yet to be determined.
