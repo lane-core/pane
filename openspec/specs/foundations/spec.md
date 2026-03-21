@@ -44,13 +44,13 @@ The commitment to universality is bold and deliberate. We are willing to break f
 
 The operational semantics of the system are defined by its protocols. Each component's behavior is specified by the messages it sends and receives, the order in which they occur, and the choices that branch the conversation. Coordination emerges from the protocol, not from a global coordinator.
 
-### The BeOS proof
+### The BeOS proof of concept
 
 BeOS proved empirically that message-passing discipline produces robust systems. The BMessage/BLooper model forced every component into self-contained operational semantics: its own thread, its own message queue, communication only via asynchronous messages. Each component could reason locally without accounting for global state. The result was an OS leagues ahead of its contemporaries — not because message passing is inherently safe, but because the model forced a discipline that made local reasoning sufficient.
 
 ### Session types as formalization
 
-Session types formalize exactly this discipline. What BMessage enforced by convention, session types enforce at compile time. The conversation structure — what is sent, in what order, by whom — is verified before the program runs. Deadlock freedom follows from the underlying proof theory (linear logic), not from testing. Pane stands on both: the empirical proof that message-passing discipline works, and the theoretical framework that lets the compiler verify it.
+Session types formalize exactly this discipline. What BMessage enforced by convention, session types enforce at compile time. The conversation structure — what is sent, in what order, by whom — is verified before the program runs. Deadlock freedom follows from the underlying proof theory (session types), not from testing. Pane stands on both: the empirical proof that message-passing discipline works, and the theoretical framework that lets the compiler verify it.
 
 ### Async by default
 

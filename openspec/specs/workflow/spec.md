@@ -6,6 +6,8 @@ Process invariants for how changes to pane are proposed, implemented, verified, 
 
 Development, testing, review, and commit protocols that govern how changes to pane are validated and integrated. These exist because pane is a compositor (crashes take down the display), a protocol system (bugs propagate across process boundaries), and a distro foundation (regressions compound).
 
+These protocols are designed for agent execution. Pane is built by its own inhabitants (see development methodology) — agents working within the system, following its protocols, exercising its infrastructure. The review and commit protocols encode the discipline that makes this safe.
+
 ## Requirements
 
 ### Requirement: Change-driven development
@@ -13,9 +15,6 @@ Development, testing, review, and commit protocols that govern how changes to pa
 All non-trivial work SHALL go through the openspec change workflow: propose → contracts → architecture → tasks → apply → archive. Trivial fixes (typos, single-line bug fixes) may bypass the workflow but MUST still follow the review protocol.
 
 The custom `pane` schema SHALL be used for all changes (`openspec new change --schema pane "<name>"`). Contracts and architecture are parallel — both depend on the proposal but not on each other.
-
-**Polarity**: Boundary
-**Crate**: N/A (process)
 
 #### Scenario: New server requires change proposal
 Adding pane-notify as a crate requires a change proposal, contracts specifying its behavioral requirements, an architecture document with design decisions, and a task list.
@@ -34,8 +33,8 @@ Every commit SHALL require a correctness review before staging.
 
 The threshold is judgment-based: if you'd want a second pair of eyes on it in a human team, use the agent.
 
-#### Scenario: New protocol type triggers agent review
-Adding a new variant to PaneRequest spawns a `feature-dev:code-reviewer` agent before any `git add`.
+#### Scenario: New session type triggers agent review
+Adding a new protocol branch to the pane-comp session type spawns a `feature-dev:code-reviewer` agent before any `git add`.
 
 
 ### Requirement: Review checklist
@@ -45,11 +44,11 @@ The review SHALL verify five items in order:
 1. **Task completion** — diff accomplishes what was requested. Flag claimed-but-missing or present-but-unrequested changes.
 2. **Contract compliance** — cross-reference against `openspec/specs/`, architecture spec, CLAUDE.md. Run `openspec validate --all`.
 3. **Reference accuracy** — every type name, module path, crate reference, or cross-reference in the diff MUST be verified against current codebase state.
-4. **Approach validity** — for non-trivial changes: is this the right approach? Does it respect polarity contracts? Could it fail for reasons not visible in test results?
+4. **Approach validity** — for non-trivial changes: is this the right approach? Does it respect session type contracts? Could it fail for reasons not visible in test results?
 5. **Build and test** — `cargo build && cargo test` MUST pass. New warnings MUST be acknowledged or fixed. Test count MUST not regress.
 
 #### Scenario: Stale module path caught
-A doc comment citing `pane_proto::message::PlumbMessage` (old name) is flagged because the type was renamed to `RouteMessage`.
+A doc comment citing `pane_proto::message::PlumbMessage` is flagged because that type no longer exists — it belongs to a removed inter-server routing model.
 
 
 ### Requirement: Review verdict
@@ -60,16 +59,16 @@ The review SHALL produce one of three verdicts:
 - **PASS with notes** — minor issues that don't block. Notes go in commit message or TODO.md.
 - **REVISE** — issues listed with severity (critical/moderate/minor) and concrete fixes. MUST NOT commit until critical and moderate issues are resolved.
 
-#### Scenario: Critical protocol bug blocks commit
-A review finding that the state machine accepts WriteCells on a Surface pane produces REVISE with severity critical.
+#### Scenario: Session type violation blocks commit
+A review finding that a protocol branch accepts a message variant after a session endpoint has been consumed produces REVISE with severity critical.
 
 
 ### Requirement: Zero-failure test policy
 
 Any test failure SHALL be treated as a regression until proven otherwise. The agent SHALL assume it caused any failure observed during its work. The burden of proof is on the agent to demonstrate a failure is pre-existing (by testing the pre-change state).
 
-#### Scenario: Proptest failure during state machine work
-A proptest failure in `roundtrip_pane_request` during protocol changes is assumed to be caused by those changes. The agent tests the pre-change state before claiming pre-existing.
+#### Scenario: Proptest failure during protocol work
+A proptest failure in session type roundtrip tests during protocol changes is assumed to be caused by those changes. The agent tests the pre-change state before claiming pre-existing.
 
 
 ### Requirement: Discovery-driven restart
@@ -80,8 +79,8 @@ If the new invariant would have changed how the code was structured, restart fro
 
 **Hazard**: Patching forward after discovering a missed invariant produces brittle code that technically works but structurally ignores the constraint.
 
-#### Scenario: New polarity constraint discovered
-Discovering that Async.and_then(Value) requires explicit synchronization triggers a redesign of the Proto combinator, not a local workaround.
+#### Scenario: Session type constraint discovered
+Discovering that a protocol branch requires the server to respond before the client can send the next message — a constraint not captured in the original session type definition — triggers a redesign of the session type, not a workaround in the handler.
 
 
 ### Requirement: Approach-level escalation
@@ -106,10 +105,12 @@ While implementing the cell grid renderer, the agent notices that CellRegion doe
 
 When implementing a task, the agent SHALL read the relevant contracts BEFORE writing code. Contracts define WHAT the system SHALL do. The agent implements THAT, not what seems reasonable without checking.
 
+The architecture is the prompt. Session types constrain what conversations are valid. Optics constrain how state is accessed. The kit APIs constrain what operations are available. An agent working within these constraints has less room to make mistakes — not because it's smarter, but because the design space has been narrowed to the region where correct implementations live (see development methodology).
+
 **Hazard**: Writing code that "seems right" without checking contracts leads to implementations that pass tests but violate invariants not covered by tests.
 
-#### Scenario: Protocol state machine implementation
-Before modifying ProtocolState, the agent reads the pane-protocol contract to verify which transitions are valid, what errors are expected, and what polarity constraints apply.
+#### Scenario: Session type implementation
+Before adding a new protocol branch in pane-comp, the agent reads the session type definition in pane-proto to verify which branches exist, what message types are expected, and what the continuation type is after each exchange.
 
 
 ### Requirement: Filesystem caching invariant enforcement
@@ -122,22 +123,21 @@ Any code that reads configuration or filesystem state in a server's event loop S
 A review catches `std::fs::read_to_string("/etc/pane/comp/font")` inside the frame rendering function. The fix: read on startup and on pane-notify event, cache in memory.
 
 
-### Requirement: Polarity consistency
+### Requirement: Session type consistency
 
-Protocol types SHALL maintain consistent Value/Compute polarity annotations. When a new type is added, it SHALL be annotated with the appropriate polarity trait. When an existing type's polarity semantics change, all consumers SHALL be reviewed for compatibility.
+Protocol types in pane-proto are the single source of truth for every protocol in the system (architecture spec §7). When a new message variant is added to a session type enum, all endpoints implementing the complementary (dual) session type MUST be updated. When a protocol's session structure changes (new branches, reordered exchanges), all consumers MUST be reviewed for compatibility.
 
-**Polarity**: Boundary
-**Crate**: `pane-proto::polarity`
+The compiler enforces this via exhaustive pattern matching and session type duality — a change to one side that isn't reflected in the other fails to compile. The review checklist verifies that the intent behind the change (not just the compilation result) is correct.
 
-#### Scenario: New request variant gets Value annotation
-Adding a new variant to PaneRequest includes `impl Value for PaneRequest` (already blanket) but the review verifies the variant's semantics are Value-compatible (constructed data, not behavior-defined).
+#### Scenario: New protocol branch requires dual update
+Adding a `Resize` branch to the compositor's pane session type requires the pane-app kit's client-side session handling to add the corresponding dual branch. The compiler catches this; the review verifies the semantics are correct.
 
 
-### Requirement: Inter-server protocol discipline
+### Requirement: Message type discipline
 
-Inter-server messages SHALL use `PaneMessage<ServerVerb>` with typed views for field access. Raw attr key access (`msg.attr("key")`) SHALL NOT be used in production code paths — only in typed view `parse()` implementations. This prevents stringly-typed field access from leaking beyond the parsing boundary.
+Pane messages are typed Rust enums serialized with postcard (architecture spec §7). Field access is through Rust struct fields — compile-time verified, no string keys. The review SHALL verify that new message types follow the existing enum conventions and that serialization roundtrips are covered by property tests.
 
-**Hazard**: Direct attr access outside typed views reintroduces the BMessage typo problem that typed views exist to prevent.
+**Hazard**: Adding a message variant without a corresponding proptest roundtrip case means serialization correctness is unverified for that variant.
 
-#### Scenario: Direct attr access in server logic flagged
-A review catches `msg.attr("action").unwrap()` in pane-route's dispatch logic instead of `RouteCommand::parse(&msg)?.action()`. The fix: use the typed view.
+#### Scenario: New message variant missing proptest coverage
+A review catches that a new `TagUpdate` variant was added to the protocol enum but no proptest roundtrip case covers it. The fix: add the variant to the proptest arbitrary implementation.
