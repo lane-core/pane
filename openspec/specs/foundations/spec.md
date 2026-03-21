@@ -4,7 +4,7 @@ This document is the canonical source of truth for the principles that inform pa
 
 We are confident in our design, but uncompromising also means interrogating our own decisions at every stage. These principles are commitments, not dogma. They are held because they have been examined — and they will be examined again if the evidence demands it.
 
-Fuller arguments, historical context, and scenarios that develop these principles are in the companion document (`extended-discussion.md`).
+Fuller arguments, historical context, and scenarios that develop these principles are in the companion document (`manifesto.md`).
 
 ---
 
