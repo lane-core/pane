@@ -33,3 +33,19 @@ Good design → constrained implementation surface → AI produces correct code 
 The modularity commitment (foundations §5, §6, §7) is what makes this cycle possible. Each component is small enough that an AI can hold its entire specification in context. Each interface is typed enough that incorrect usage fails to compile. Each module can be independently verified, refactored, or rewritten without affecting the rest. The architecture is designed to be built by agents — which means it's designed to be built well.
 
 This is not an accident. The same properties that make pane a good environment for AI agents to inhabit (typed protocols, filesystem-native interfaces, declarative specifications, composable extension) are the properties that make pane a good system for AI agents to build. The design philosophy and the development methodology reinforce each other.
+
+## Early Agent Infrastructure as Development Tool
+
+A minimal AI Kit prototype — agent user accounts, `.plan` specifications, message passing, the Unix communication patterns (`write`/`mail`/`mesg`) — should be stood up as soon as the basic pane-app infrastructure exists. Not as a feature to ship, but as a development tool.
+
+Agents participating as system users from the earliest phases enable:
+
+**Continuous integration as continuous habitation.** Rather than CI being a headless test runner that executes a script and reports pass/fail, CI agents are system users that inhabit a running pane instance. They exercise the system the way actual users would — opening panes, routing content, querying attributes, exercising the scripting protocol. Bugs that only manifest under realistic multi-inhabitant usage patterns are caught by agents who produce those patterns naturally.
+
+**Simulated multi-user load from day one.** The per-pane threading model, the session type transport, the roster's liveness tracking — all of these need to be tested under concurrent usage. Agents provide that concurrency without requiring human testers. Five agent users exercising the system simultaneously stress-test the infrastructure that one developer working alone cannot.
+
+**Implementation chores delegated to agents.** An agent with appropriate permissions can run test suites, monitor build output, review protocol compliance, check for session type violations in new code, and mail results to the developer. The Unix communication infrastructure means this doesn't require special CI tooling — it's just agents doing what agents do on a multi-user system.
+
+**The feedback loop tightens.** When the agent infrastructure is part of the development environment, every improvement to the agent model is immediately tested by the agents that use it to help build the system. The agent kit's ergonomics are validated by the agents that depend on it. Problems surface in development, not after release.
+
+This is the development methodology's deepest implication: **pane is developed by its own inhabitants from the earliest possible moment.** The guide agent that helps new users (foundations §1) begins its life as the agent that helps the developer build pane.

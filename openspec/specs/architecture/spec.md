@@ -709,9 +709,10 @@ Each phase produces a testable, usable artifact. The ordering follows dependency
 
 In Phase 1, session types define the protocol and verify message shapes at compile time. Phase 2 closes the gap: conversation ordering — what is sent when, by whom — is verified on the wire, not just in-memory tests. The systems work comes before the graphics work because the protocol is the foundation everything else stands on.
 
-### Phase 3: Core Infrastructure
+### Phase 3: Core Infrastructure + Minimal Agent Prototype
 4. **pane-notify** — fanotify/inotify abstraction. Looper integration (calloop for compositor, channels for others).
 5. **pane-app kit** — looper abstraction, handler chain, routing, connection management. The kit that application developers program against. Built on the verified transport from Phase 2.
+6. **Minimal agent infrastructure** — agent user accounts, `.plan` file convention, message passing over the pane protocol, Unix communication patterns (`write`/`mail`/`mesg`). Not the full AI Kit — just enough for agents to participate as system users. From this point on, agents inhabit the system under development: running tests, monitoring builds, exercising protocols under multi-user load. Pane is developed by its own inhabitants.
 
 ### Phase 4: Minimal Compositor
 6. **pane-comp skeleton** — smithay compositor, single hardcoded pane, tag line + text rendering. First pixels on screen. Now built on session-verified protocols, not hand-written state machines.
