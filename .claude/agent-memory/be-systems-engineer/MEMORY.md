@@ -8,3 +8,4 @@
 - [project_overall_assessment.md](project_overall_assessment.md) — Final spec assessment (2026-03-20): design sound, key risks are optics concreteness, AI Kit scope, bus factor; strategic advice for shipping
 - [project_smithay_assessment.md](project_smithay_assessment.md) — Smithay viability assessment (2026-03-20): use it fully for Wayland plumbing, build personality on top, rendering split is fine, from-scratch costs 12-24 months
 - [project_session_type_assessment.md](project_session_type_assessment.md) — Session type build-vs-buy (2026-03-20): recommends custom minimal typestate over par/dialectic; par panics on drop, no transport; dialectic requires async; custom fits calloop + crash handling
+- [project_codebase_assessment.md](project_codebase_assessment.md) — Codebase assessment (2026-03-21): two crates, ~50% of pane-proto stale, pane-comp is demo only, refactor proposal written
