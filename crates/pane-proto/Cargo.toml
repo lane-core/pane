@@ -2,14 +2,13 @@
 name = "pane-proto"
 version = "0.1.0"
 edition = "2021"
-description = "Wire types, serialization, and protocol state machine for the pane desktop environment"
+description = "Wire types and session protocol definitions for the pane desktop environment"
 license = "MIT"
 
 [dependencies]
 serde = { version = "1", features = ["derive"] }
 postcard = { version = "1", features = ["alloc"] }
 bitflags = { version = "2", features = ["serde"] }
-optics = "0.3"
 
 [dev-dependencies]
 proptest = "1"

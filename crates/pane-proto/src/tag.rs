@@ -1,6 +1,5 @@
 use serde::{Deserialize, Serialize};
 
-use crate::polarity::Value;
 
 /// Structured tag line data. The compositor renders this differently
 /// depending on the pane kind: monospace text for cell grids,
@@ -52,5 +51,3 @@ pub enum BuiltInAction {
     Redo,
 }
 
-impl Value for TagLine {}
-impl Value for TagAction {}
