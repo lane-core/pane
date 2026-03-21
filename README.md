@@ -7,121 +7,96 @@ pane
 >
 > — Franz Kafka, "Absent-minded Window-gazing"
 
-pane is a desktop environment for Linux.
+pane is a desktop environment, compositor, and distribution for
+Linux. one thing, not three.
 
-pane is about expressive ways to compose ideas. the system is
-built from a small, principled core — typed protocols, filesystem
-interfaces, composable servers — from which the entire experience
-is derived by first principles. the core can be understood,
-modified, and extended. guard rails for new users. a ladder for
-power users.
+the design recovers what made BeOS work — message-passing discipline,
+per-component threading, infrastructure-first composition — on a
+modern Linux base with session types providing compile-time
+verification of the protocol discipline BeOS achieved by convention.
 
-the design bet: if the protocol is right — if each component's
-operational semantics are local and sound — then coordination
-is emergent and the system sustains stability in the face of
-complexity. BeOS proved this: pervasive multithreading forced
-self-contained components, which produced a system that could
-play 30 videos on a Pentium 3 and still respond instantly to
-input. not because it was simple, but because each piece
-reasoned locally while the whole composed globally. the protocol
-was the operating principle, not a global coordinator.
-
-pane extends this with Plan 9's text-as-interface and filesystem-
-as-API, modern tiling, and a Frutiger Aero aesthetic — the polished
-evolution of 90s desktop design. what if Be had continued into the
-2000s.
+everything is a pane. every pane has a tag line (title, command
+bar, and menu in one), a body (text, widgets, or a legacy
+surface), and a session-typed protocol connection. panes compose
+spatially and through the protocol. the system's power derives
+from the uniformity of this single object.
 
 design
 ------
 
-everything is a pane. every pane has a tag line (title, command bar,
-and menu in one) and a body (text, widgets, or a legacy surface).
-there are no toolbars, no menus, no button widgets in the traditional
-sense. text is the interface. middle-click executes. right-click routes.
+every pane is one object with many views: a visual display
+to the user, a protocol endpoint to other components, a
+filesystem node at /srv/pane/ for scripts and tools, a
+semantic object for accessibility. the views are projections
+of the same state, kept consistent by optics discipline.
 
-the compositor renders everything. clients describe content; the
-compositor draws it. one renderer, one visual language, one interaction
-model. that is where the integrated feel comes from.
+the system is extended through the same interfaces it uses
+internally. a routing rule is a file. a translator is a binary
+in a directory. a pane mode wraps a library with domain-specific
+semantics. adding a plugin is dropping a file. removing it is
+deleting the file.
 
-every interface — filesystem, tag line, protocol — presents the
-abstraction level relevant to its consumer. a human user sees commands
-and output. a system service sees state and capabilities. the compositor
-sees cells and surfaces. a debugger sees byte streams and buffers.
-the level is not fixed; it is determined by who is looking and what
-they need.
-
-the system is extended through the same interfaces it uses internally.
-a routing rule is a file. a translator is a binary in a directory.
-a pane mode wraps a library with domain-specific semantics. plugins
-compose because they operate on the public interface surface. adding
-a plugin is dropping a file. removing it is deleting the file.
-
-communication
--------------
-
-pane-route is the communication infrastructure. data flows from
-sources to handlers based on content. clicking text, receiving a
-dbus signal, watching a file change, handling a network request —
-these are all instances of the same thing: content arrives, matches
-a rule, dispatches to a handler.
-
-foreign protocols are integrated via bridges — small daemons that
-translate between a foreign protocol and pane's native message
-model. pane-dbus translates dbus signals and method calls. pane-9p
-serves pane state to plan 9 systems. each bridge is a plugin. the
-pane side is always the same typed interface.
-
-start small. the first bridge is text routing from a mouse click.
-the protocol itself is the experiment platform for discovering
-what other bridges make sense.
-
-servers
--------
-
-small processes, each doing one thing. integrated behavior emerges
-from their sequential composition.
-
-    pane-comp       compositor, layout, rendering
-    pane-route      communication infrastructure, content routing
-    pane-roster     app lifecycle, service registry, session state
-    pane-store      index file xattrs, emit change notifications
-    pane-fs         expose state as filesystem at /srv/pane/
-
-configuration is files. plugin discovery is directories. the
-filesystem is the database, the registry, and the configuration
-format. servers cache state in memory and update on change
-notifications. no config parsers, no SIGHUP, no restart.
+agents are system users, not applications. they have accounts,
+home directories, .plan files. they communicate through the
+same protocols and filesystem interfaces as human users.
 
 protocol
 --------
 
-every interaction between components is a session — a typed
-conversation. the session type describes what each party sends
-and receives, in what order, with what branches. the compiler
-enforces that both parties follow complementary protocols.
-deadlock freedom is guaranteed structurally.
+every interaction is a session — a typed conversation verified
+at compile time. the session type describes what each party sends
+and receives, in what order, with what branches. deadlock freedom
+is guaranteed structurally. async by default; sync only when a
+response is needed.
 
-pane messages travel along session-typed channels. the message
-model draws from BeOS's BMessage — rich, composable data that
-components can inspect, transform, and forward without coupling
-to each other's internals.
+routing is a kit-level concern, not a central server. the kit
+evaluates rules locally and dispatches directly — sender to
+receiver, the way BeOS's BMessenger worked. no intermediary.
 
-BeOS proved that message passing with good conventions produces
-stable concurrent systems. session types put those conventions
-in the compiler.
+servers
+-------
+
+small processes, each doing one thing.
+
+    pane-comp       compositor, layout, chrome
+    pane-roster     app lifecycle, service registry
+    pane-store      attribute indexing, change notifications
+    pane-fs         FUSE at /srv/pane/
+    pane-watchdog   heartbeat monitor, escalation
+
+configuration is files. plugin discovery is directories.
+no config parsers, no SIGHUP, no restart.
+
+kits
+----
+
+kits are the programming model, not wrappers over a protocol.
+
+    pane-proto      wire types, session definitions
+    pane-app        looper, handler, routing, lifecycle
+    pane-ui         text rendering, widgets, styling, layout
+    pane-text       text buffers, structural regular expressions
+    pane-input      generalized keybinding grammar
+    pane-media      PipeWire abstraction
+    pane-ai         agent infrastructure
+
+stack
+-----
+
+    Rust            core system layer
+    smithay         Wayland compositor
+    s6              init and service supervision
+    Nix             build system and package management
+    btrfs           target filesystem
+    Landlock        agent sandboxing
+    PipeWire        audio and media
+    Vello           widget rendering (wgpu)
 
 fonts
 -----
 
-    Inter       proportional, ui chrome
-    Monoid      monospace, cell grids and code
-
-requirements
-------------
-
-    Linux (latest stable kernel)
-    Rust (stable)
-    wayland, libinput, libxkbcommon, mesa (for pane-comp)
+    Inter           proportional, ui chrome
+    Monoid          monospace, text content and code
 
 building
 --------
@@ -129,17 +104,8 @@ building
     just build              # pane-proto (any platform)
     just build comp         # pane-comp (linux, via nix)
     just test               # run tests
-    just vm fresh           # boot NixOS test VM
+    just vm fresh           # boot test VM
     just dev                # build + run in VM
-
-status
-------
-
-    pane-proto      done    wire types, state machine, typed views
-    pane-comp       wip     compositor skeleton, renders pane chrome
-    pane-shell      spec    textual interface layer, terminal bridge
-    pane-route      spec    communication infrastructure, protocol bridges
-    pane-roster     spec    app lifecycle, service registry
 
 license
 -------
