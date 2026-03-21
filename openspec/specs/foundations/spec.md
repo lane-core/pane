@@ -77,7 +77,7 @@ Every read-write interface to a pane should satisfy:
 
 These hold up to semantic equality. Violations are either intentionally lossy (documented) or bugs.
 
-Under failure — a component crash, a lagging view — lens laws may be temporarily violated. This is the cost of robustness (§6): the system continues through failure, and views may briefly disagree. The mutable specs must define recovery semantics.
+Under failure — a component crash, a lagging view — lens laws may be temporarily violated. This is the cost of robustness (§6): the system continues through failure, and views may briefly disagree. Thus we must put careful thought into our recovery semantics.
 
 ### Composition
 

@@ -230,3 +230,35 @@ calloop SHALL be used only for the compositor's main thread (Wayland fd polling,
 #### Scenario: Pane threads use channels
 - **WHEN** a per-pane thread receives a protocol message or sends a response
 - **THEN** it SHALL use channel-based communication, not calloop event sources
+
+### Requirement: Tag-based visibility
+
+Each pane SHALL have a tag bitmask. The compositor SHALL display panes matching the currently selected tags. A pane can appear in multiple tag sets. Multiple tags can be viewed simultaneously (bitwise OR).
+
+#### Scenario: Tag switching
+- **WHEN** the user switches from tag 1 to tag 2
+- **THEN** panes tagged with bitmask including tag 2 SHALL be displayed and tag-1-only panes SHALL be hidden
+
+#### Scenario: Multi-tag view
+- **WHEN** the user selects tags 1 and 3 simultaneously
+- **THEN** all panes whose tag bitmask intersects with (1 | 3) SHALL be displayed
+
+### Requirement: Heartbeat and crash handling
+
+The compositor SHALL heartbeat pane-watchdog at regular intervals. The compositor SHALL wrap each client session with a crash boundary so that a crashed client produces a typed "session terminated" event, not a panic. The compositor SHALL clean up dead clients' panes and continue serving others.
+
+#### Scenario: Client crash
+- **WHEN** a pane-native client process is killed mid-session
+- **THEN** the compositor SHALL detect the dropped session, remove the client's panes from the layout, and continue without interruption
+
+#### Scenario: Watchdog heartbeat
+- **WHEN** the compositor is running normally
+- **THEN** it SHALL send heartbeat messages to pane-watchdog at the configured interval
+
+### Requirement: Frame timing
+
+The compositor SHALL coordinate frame callbacks across all clients and submit composited output to DRM/KMS via page flip. Frame timing SHALL use the presentation-time protocol to provide accurate feedback to clients.
+
+#### Scenario: Frame pacing
+- **WHEN** a client commits a new buffer
+- **THEN** the compositor SHALL composite it in the next frame and send a frame callback when the client may render again

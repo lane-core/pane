@@ -1,7 +1,7 @@
 ## ADDED Requirements
 
 ### Requirement: FUSE service at /srv/pane/
-pane-fs SHALL expose compositor, plumber, and configuration state as a FUSE filesystem mounted at `/srv/pane/`. pane-fs SHALL be a separate server process that communicates with other pane servers via the socket protocol. pane-fs is a translation layer — it converts FUSE operations into pane protocol messages. It is just another client of the pane servers. It has no special privilege and no server logic.
+pane-fs SHALL expose pane state as a FUSE filesystem mounted at `/srv/pane/`. pane-fs SHALL be a separate server process that communicates with other pane servers via the socket protocol. pane-fs is a translation layer — it converts FUSE operations into pane protocol messages. It is just another client of the pane servers. It has no special privilege and no server logic.
 
 #### Scenario: Mount point available
 - **WHEN** pane-fs starts
@@ -61,7 +61,7 @@ The tree does not expose rendering internals (cell grids, glyph data, buffer sta
 - **THEN** events SHALL arrive as one JSON object per line
 
 ### Requirement: Format per endpoint
-Each filesystem node SHALL use the representation natural to its data. Plain text for text data (tag, body). One value per file for attributes (attrs/). Line commands for control files (ctl). JSONL for event streams (event, plumb ports).
+Each filesystem node SHALL use the representation natural to its data. Plain text for text data (tag, body). One value per file for attributes (attrs/). Line commands for control files (ctl). JSONL for event streams (event).
 
 #### Scenario: Attribute write
 - **WHEN** `echo "new title" > /srv/pane/1/attrs/title` is executed
@@ -77,21 +77,3 @@ pane-fs SHALL expose a pane index at `/srv/pane/index`.
 #### Scenario: Directory listing
 - **WHEN** `ls /srv/pane/` is executed
 - **THEN** each pane SHALL appear as a directory entry by its ID
-
-### Requirement: Plumber filesystem interface
-pane-fs SHALL expose plumber ports under `/srv/pane/plumb/`. Writing to `send` SHALL route a plumb message. Reading from a named port SHALL stream matched messages as JSONL.
-
-#### Scenario: Plumb from shell
-- **WHEN** a user writes a plumb message to `/srv/pane/plumb/send`
-- **THEN** the plumber SHALL receive and route it
-
-### Requirement: Configuration filesystem interface
-pane-fs SHALL expose server configuration under `/srv/pane/config/` mirroring the structure of `/etc/pane/`. Reading a config file SHALL return the current value. Writing SHALL update the value and trigger the relevant server to reload via pane-notify.
-
-#### Scenario: Read config via FUSE
-- **WHEN** `cat /srv/pane/config/comp/font` is executed
-- **THEN** the current compositor font name SHALL be returned
-
-#### Scenario: Write config via FUSE
-- **WHEN** `echo "JetBrains Mono" > /srv/pane/config/comp/font` is executed
-- **THEN** the compositor SHALL pick up the font change

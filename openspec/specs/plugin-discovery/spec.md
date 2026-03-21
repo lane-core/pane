@@ -32,7 +32,7 @@ System-wide equivalents SHALL exist under `/etc/pane/` with user directories tak
 
 #### Scenario: Install a .app directory
 - **WHEN** a `.app` directory is placed in `~/.config/pane/apps/`
-- **THEN** pane-roster SHALL detect it, register the application's metadata, and make it launchable
+- **THEN** pane-roster SHALL detect it via pane-notify, register the application's metadata (launch semantics, content types, quality ratings), and make it launchable. Roster owns `.app` discovery because app lifecycle and launch semantics are roster concerns.
 
 ### Requirement: Translation Kit pattern for translators
 Translators SHALL follow the Translation Kit pattern from the architecture spec (§4 pane-app, §8 Composition Model). Each translator declares:
