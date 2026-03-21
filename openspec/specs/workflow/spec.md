@@ -133,6 +133,19 @@ The compiler enforces this via exhaustive pattern matching and session type dual
 Adding a `Resize` branch to the compositor's pane session type requires the pane-app kit's client-side session handling to add the corresponding dual branch. The compiler catches this; the review verifies the semantics are correct.
 
 
+### Requirement: README accuracy after major changes
+
+After each major change to the codebase — new crates, removed crates, changed build sequence, new technology choices, milestone completions — the agent or developer SHALL assess whether README.md needs updating. The README is the project's public face and the first thing a potential contributor reads. If it describes capabilities that don't exist or omits capabilities that do, it undermines trust.
+
+#### Scenario: New crate added
+- **WHEN** a new crate is added to the workspace (e.g., pane-session for the transport bridge)
+- **THEN** the developer SHALL check whether the README's kit/server listing, stack section, or building instructions need updating
+
+#### Scenario: Milestone completed
+- **WHEN** a build sequence phase is completed (e.g., Phase 2 transport bridge proven)
+- **THEN** the developer SHALL update the README to reflect the new project state
+
+
 ### Requirement: Message type discipline
 
 Pane messages are typed Rust enums serialized with postcard (architecture spec §7). Field access is through Rust struct fields — compile-time verified, no string keys. The review SHALL verify that new message types follow the existing enum conventions and that serialization roundtrips are covered by property tests.
