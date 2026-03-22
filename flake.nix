@@ -35,6 +35,11 @@
         targets = [ ];
       };
 
+      # macOS-only deps
+      darwinDeps = pkgs: [
+        pkgs.libiconv
+      ];
+
       # Common dev deps (all platforms)
       commonDeps = pkgs: [
         (rustToolchain pkgs)
@@ -76,7 +81,8 @@
             name = "pane-dev";
 
             nativeBuildInputs = commonDeps pkgs
-              ++ pkgs.lib.optionals isLinux (linuxDeps pkgs);
+              ++ pkgs.lib.optionals isLinux (linuxDeps pkgs)
+              ++ pkgs.lib.optionals pkgs.stdenv.isDarwin (darwinDeps pkgs);
 
             # pkg-config needs to find the linux libs
             PKG_CONFIG_PATH = pkgs.lib.optionalString isLinux
@@ -96,9 +102,9 @@
                 echo "  Linux: pane-comp builds available"
                 echo "  cargo build  — builds all crates"
               '' else ''
-                echo "  macOS: pane-proto only (pane-comp requires Linux)"
-                echo "  cargo build  — builds pane-proto"
-                echo "  cargo test   — runs pane-proto tests"
+                echo "  macOS: pane-proto + pane-session (pane-comp requires Linux)"
+                echo "  cargo build  — builds pane-proto, pane-session"
+                echo "  cargo test   — runs all tests"
               ''}
             '';
           };
@@ -120,7 +126,7 @@
             # Override workspace members to include pane-comp on Linux
             postPatch = ''
               substituteInPlace Cargo.toml \
-                --replace-fail 'members = ["crates/pane-proto"]' 'members = ["crates/pane-proto", "crates/pane-comp"]'
+                --replace-fail 'members = ["crates/pane-proto", "crates/pane-session"]' 'members = ["crates/pane-proto", "crates/pane-session", "crates/pane-comp"]'
             '';
 
             nativeBuildInputs = [
