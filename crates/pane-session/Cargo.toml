@@ -11,3 +11,4 @@ postcard = { version = "1", features = ["alloc"] }
 
 [dev-dependencies]
 proptest = "1"
+tempfile = "3"

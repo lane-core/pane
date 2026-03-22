@@ -44,9 +44,12 @@ impl<S, T: Transport> std::fmt::Debug for Chan<S, T> {
 }
 
 impl<S, T: Transport> Chan<S, T> {
-    /// Create a new channel with the given transport.
-    /// Internal — users create channels via `Transport::connect()` or `Transport::pair()`.
-    pub(crate) fn new(transport: T) -> Self {
+    /// Create a new channel with the given transport and initial session type.
+    ///
+    /// The caller is responsible for ensuring the session type matches
+    /// what the peer expects. For in-memory testing, use `memory::pair()`
+    /// which creates correctly-typed pairs automatically.
+    pub fn new(transport: T) -> Self {
         Chan {
             transport,
             _session: PhantomData,
