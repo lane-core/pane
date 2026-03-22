@@ -9,3 +9,4 @@
 - [project_smithay_assessment.md](project_smithay_assessment.md) — Smithay viability assessment (2026-03-20): use it fully for Wayland plumbing, build personality on top, rendering split is fine, from-scratch costs 12-24 months
 - [project_session_type_assessment.md](project_session_type_assessment.md) — Session type build-vs-buy (2026-03-20): recommends custom minimal typestate over par/dialectic; par panics on drop, no transport; dialectic requires async; custom fits calloop + crash handling
 - [project_codebase_assessment.md](project_codebase_assessment.md) — Codebase assessment (2026-03-21): two crates, ~50% of pane-proto stale, pane-comp is demo only, refactor proposal written
+- [project_session_crate_review.md](project_session_crate_review.md) — pane-session code review (2026-03-22): typestate correct, crash safety holds, calloop needs rework (blocking mode, no max msg size, framing duplication)

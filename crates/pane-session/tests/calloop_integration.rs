@@ -8,11 +8,6 @@ use pane_session::calloop::{SessionSource, SessionEvent, write_message};
 use pane_session::transport::unix::UnixTransport;
 use pane_session::types::{Send, Recv, End, Chan};
 
-/// Phase 2 acceptance criterion:
-///
-/// A calloop-driven "compositor" main thread communicates with a
-/// threaded "client" over a unix socket, with crash recovery.
-
 type ClientProtocol = Send<String, Recv<u64, End>>;
 
 #[test]
@@ -21,7 +16,6 @@ fn calloop_receives_session_message() {
     let sock_path = dir.path().join("calloop-test.sock");
     let listener = UnixListener::bind(&sock_path).unwrap();
 
-    // Client thread — session-typed send
     let path = sock_path.clone();
     let client_handle = thread::spawn(move || {
         let stream = UnixStream::connect(&path).unwrap();
@@ -34,7 +28,6 @@ fn calloop_receives_session_message() {
         client.close();
     });
 
-    // Compositor side — calloop event loop
     let (stream, _) = listener.accept().unwrap();
     let source = SessionSource::new(stream.try_clone().unwrap()).unwrap();
     let response_stream = stream;
@@ -49,23 +42,19 @@ fn calloop_receives_session_message() {
                     let msg: String = postcard::from_bytes(&bytes).unwrap();
                     assert_eq!(msg, "hello from calloop test");
 
-                    // Send response
                     let response = postcard::to_allocvec(&(msg.len() as u64)).unwrap();
                     write_message(&response_stream, &response).unwrap();
 
                     *got_message = true;
                     Ok(PostAction::Remove)
                 }
-                SessionEvent::Disconnected => {
-                    Ok(PostAction::Remove)
-                }
+                SessionEvent::Disconnected => Ok(PostAction::Remove),
             }
         })
         .unwrap();
 
     let mut got_message = false;
     event_loop.dispatch(Duration::from_secs(2), &mut got_message).unwrap();
-
     assert!(got_message, "calloop should have received the session message");
     client_handle.join().unwrap();
 }
@@ -76,7 +65,6 @@ fn calloop_handles_client_crash() {
     let sock_path = dir.path().join("calloop-crash.sock");
     let listener = UnixListener::bind(&sock_path).unwrap();
 
-    // Client — sends one message then crashes
     let path = sock_path.clone();
     let client_handle = thread::spawn(move || {
         let stream = UnixStream::connect(&path).unwrap();
@@ -85,11 +73,11 @@ fn calloop_handles_client_crash() {
         let client: Chan<CrashProtocol, _> = Chan::new(transport);
 
         let client = client.send("before crash".to_string()).unwrap();
-        drop(client); // crash
+        drop(client);
     });
 
     let (stream, _) = listener.accept().unwrap();
-    client_handle.join().unwrap(); // wait for crash
+    client_handle.join().unwrap();
 
     let source = SessionSource::new(stream).unwrap();
 
@@ -113,12 +101,8 @@ fn calloop_handles_client_crash() {
         .unwrap();
 
     let mut state = (0u32, false);
-    // First dispatch: reads the buffered message
     event_loop.dispatch(Duration::from_secs(1), &mut state).unwrap();
-    // Second dispatch: detects disconnect (EOF on next read)
-    event_loop.dispatch(Duration::from_millis(100), &mut state).unwrap();
 
     assert_eq!(state.0, 1, "should have received one message before crash");
     assert!(state.1, "should have detected disconnect");
-    // Key: we got here without panicking.
 }
