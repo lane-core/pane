@@ -8,6 +8,7 @@ license = "MIT"
 [dependencies]
 serde = { version = "1", features = ["derive"] }
 postcard = { version = "1", features = ["alloc"] }
+calloop = "0.14.4"
 
 [dev-dependencies]
 proptest = "1"

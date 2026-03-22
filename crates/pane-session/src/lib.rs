@@ -16,6 +16,7 @@ pub mod types;
 pub mod dual;
 pub mod error;
 pub mod transport;
+pub mod calloop;
 
 pub use types::{Send, Recv, End, Chan};
 pub use dual::Dual;
