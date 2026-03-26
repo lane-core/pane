@@ -34,6 +34,8 @@ Consider notifications. In conventional desktops, a notification is a transient 
 
 Panes compose. Two panes viewed together form a compound structure — tensored up to a notion of abstraction whose concrete presentation depends on observational context. On screen, spatial arrangement; on the filesystem, directory inhabitants. The interactions that transform pane state are the morphisms. Those familiar with contemporary algebra will recognize panes as objects in a category, with spatial composition as a monoidal product — but the principle requires no formalism: panes compose spatially, and interactions transform their state.
 
+The optics discipline (§4) applies to composition structure, not only to individual pane state. If two panes are in a composition relationship — a split, a stack, a group — that relationship is visible through every view: as spatial arrangement on screen, as directory structure under `/srv/pane/`, as sub-session nesting in the protocol, as a containment relation in the accessibility tree. The representations differ — each view expresses the relationship in its own terms — but the structural fact that the relationship exists is consistent across all of them. A relationship visible in one view and absent from another is a bug, not a feature gap.
+
 The pane as universal object coexists with Linux's own universal abstraction: the file descriptor. Pane layers a richer object model over it, with the filesystem projection as the bridge. This creates a seam: for host-level tools, the file is primary and the pane is a view; for pane-native participants, the pane is primary and the file is a projection. The implementation specs must establish conventions for which direction governs in each context.
 
 The commitment to universality is bold and deliberate. We are willing to break from conventional design patterns to discover what fidelity to this vision brings.
@@ -84,6 +86,8 @@ Under failure — a component crash, a lagging view — lens laws may be tempora
 ### Composition
 
 Optics compose. The projection from internal state to protocol messages, composed with the projection from protocol to filesystem representation, gives the composite projection from internal state to filesystem. This mirrors the architecture: the filesystem interface composes two optics rather than having privileged access.
+
+The lens laws extend to composition structure. GetPut and PutGet govern not only the state of individual panes but the relationships between them. Read a composition relationship through the filesystem view and write it back unchanged — the layout tree is unchanged. Create a split through the protocol and read the filesystem — the split is there. Violations under failure are temporary, subject to the same recovery semantics as individual-state violations. Intentionally lossy projections — a view that elides nesting depth, a protocol that batches structural changes — are documented, not silent. The invariant is: every view agrees on what compositions exist, even when they represent those compositions differently.
 
 ### Session types + optics = the scripting protocol
 

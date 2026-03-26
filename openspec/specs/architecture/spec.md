@@ -49,6 +49,8 @@ Panes compose spatially. Two panes viewed together form a compound structure who
 
 Panes compose temporally through the protocol. A conversation between a client and the compositor is a session. Multiple panes per connection are sub-sessions. The session type tracks where each conversation is in its lifecycle.
 
+**Compositional equivalence.** The layout tree, pane-fs, and the pane protocol must encode composition relationships consistently. A split in the layout tree has a corresponding directory in pane-fs and emits structural events through the protocol. No composition primitive exists in one view without a representation in the others. Concretely: introducing a new composition mode (tabbed stacking, linked groups, transient overlays) requires filesystem and protocol representations before it ships. The test is automation-complete: for any composition relationship, a script must be able to discover that it exists, query its properties, and dissolve it through the standard protocol without special-case APIs.
+
 ### The pane as filesystem node
 
 Each pane is exposed under `/srv/pane/<id>/` via pane-fs (FUSE). The filesystem representation presents the abstraction level relevant to the consumer:
@@ -59,6 +61,8 @@ Each pane is exposed under `/srv/pane/<id>/` via pane-fs (FUSE). The filesystem 
 - `ctl` — control interface (write commands to manipulate the pane)
 
 The specific tree structure evolves with implementation, but the principle is fixed: pane state is files, and any tool that can read files can inspect pane state.
+
+**Composition in the filesystem.** When panes are composed, pane-fs reflects the composition structure as directory nesting. A split containing panes A and B appears as a directory under `/srv/pane/` with its own `attrs/` (encoding orientation, ratio, and split type) and child entries `A/` and `B/`. Independent panes are top-level entries; composed panes are nested under their container. The filesystem tree mirrors the layout tree's nesting — not as a consequence of the compositional equivalence invariant, but as the filesystem's native expression of it. Reparenting a pane (moving it into or out of a split) changes its position in the filesystem hierarchy. Tools that walk `/srv/pane/` see composition structure directly; they do not need to reconstruct it from per-pane geometry attributes.
 
 ---
 
