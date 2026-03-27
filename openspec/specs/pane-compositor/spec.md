@@ -112,7 +112,7 @@ Per-pane threads communicate with the main thread via channels for operations th
 
 Recursive tiling with tag-based visibility (dwm-style bitmask). The layout tree is the compositor's model of pane composition — a tree of containers where branches define splits and leaves hold panes.
 
-Spatial composition of panes is represented as tree structure. Two panes viewed together form a compound structure whose concrete presentation is their arrangement in the layout tree. On the filesystem, this same structure appears as sibling entries under `/srv/pane/`.
+Spatial composition of panes is represented as tree structure. Two panes viewed together form a compound structure whose concrete presentation is their arrangement in the layout tree. On the filesystem, this same structure appears as sibling entries under `/pane/`.
 
 ---
 
@@ -133,7 +133,7 @@ The compositor participates in a system-wide three-tier access model for pane st
 
 | Tier | Mechanism | Latency | Use case |
 |---|---|---|---|
-| **Filesystem** | pane-fs (FUSE at `/srv/pane/`) | ~15-30us per op | Shell scripts, inspection, configuration, event monitoring. Human-speed operations. |
+| **Filesystem** | pane-fs (FUSE at `/pane/`) | ~15-30us per op | Shell scripts, inspection, configuration, event monitoring. Human-speed operations. |
 | **Protocol** | Session-typed unix sockets | ~1.5-3us per op | Kit-to-compositor communication, rendering, input dispatch, bulk state queries. Machine-speed operations. |
 | **In-process** | Kit API (direct function calls) | Sub-microsecond | Application logic within a pane-native client. No IPC, no serialization. |
 

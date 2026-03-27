@@ -1,11 +1,11 @@
 ## ADDED Requirements
 
-### Requirement: FUSE service at /srv/pane/
-pane-fs SHALL expose pane state as a FUSE filesystem mounted at `/srv/pane/`. pane-fs SHALL be a separate server process that communicates with other pane servers via the socket protocol. pane-fs is a translation layer — it converts FUSE operations into pane protocol messages. It is just another client of the pane servers. It has no special privilege and no server logic.
+### Requirement: FUSE service at /pane/
+pane-fs SHALL expose pane state as a FUSE filesystem mounted at `/pane/`. pane-fs SHALL be a separate server process that communicates with other pane servers via the socket protocol. pane-fs is a translation layer — it converts FUSE operations into pane protocol messages. It is just another client of the pane servers. It has no special privilege and no server logic.
 
 #### Scenario: Mount point available
 - **WHEN** pane-fs starts
-- **THEN** `/srv/pane/` SHALL be accessible as a filesystem
+- **THEN** `/pane/` SHALL be accessible as a filesystem
 
 #### Scenario: Separate process
 - **WHEN** pane-comp crashes and restarts
@@ -23,18 +23,18 @@ pane-fs provides the filesystem access tier (~15-30μs per operation). The syste
 
 | Tier | Mechanism | Latency | Use case |
 |---|---|---|---|
-| **Filesystem** | FUSE at `/srv/pane/` | ~15-30μs per op | Shell scripts, inspection, configuration, event monitoring. Human-speed operations where 30μs is invisible. |
+| **Filesystem** | FUSE at `/pane/` | ~15-30μs per op | Shell scripts, inspection, configuration, event monitoring. Human-speed operations where 30μs is invisible. |
 | **Protocol** | Session-typed unix sockets | ~1.5-3μs per op | Kit-to-server communication, rendering, input dispatch, bulk state queries. Machine-speed operations. |
 | **In-process** | Kit API (direct function calls) | Sub-microsecond | Application logic within a pane-native client. No IPC, no serialization. |
 
 If you'd be comfortable with 30μs latency and per-file granularity, use the filesystem. If you need machine-speed access with typed guarantees, use the protocol. Inside a pane-native client, the kit handles everything — the developer doesn't choose a tier.
 
 #### Scenario: Shell script access
-- **WHEN** a shell script reads `/srv/pane/1/tag`
+- **WHEN** a shell script reads `/pane/1/tag`
 - **THEN** the operation SHALL complete with filesystem-tier latency (~15-30μs), not require protocol setup
 
 ### Requirement: Semantic filesystem tree
-Each pane SHALL be exposed under `/srv/pane/<id>/` with a tree structure that presents semantic interfaces, not implementation details. The filesystem exposes the abstraction level relevant to the consumer:
+Each pane SHALL be exposed under `/pane/<id>/` with a tree structure that presents semantic interfaces, not implementation details. The filesystem exposes the abstraction level relevant to the consumer:
 
 - `tag` — the tag line content (plain text, read/write)
 - `body` — the body content at the semantic level (for a shell: command output; for an editor: file content; plain text, read/write)
@@ -44,38 +44,38 @@ Each pane SHALL be exposed under `/srv/pane/<id>/` with a tree structure that pr
 
 The tree does not expose rendering internals (glyph data, buffer state, GPU resources). A script reading `body` gets the content a human would see, at the semantic level the content operates at.
 
-**Compositional equivalence** (architecture §2): when panes are composed, pane-fs reflects the composition structure as directory nesting. A split containing panes A and B appears as a directory with its own `attrs/` (orientation, ratio) and child entries `A/`, `B/`. Independent panes are top-level entries; composed panes are nested under their container. The filesystem tree mirrors the layout tree. Tools that walk `/srv/pane/` see composition structure directly.
+**Compositional equivalence** (architecture §2): when panes are composed, pane-fs reflects the composition structure as directory nesting. A split containing panes A and B appears as a directory with its own `attrs/` (orientation, ratio) and child entries `A/`, `B/`. Independent panes are top-level entries; composed panes are nested under their container. The filesystem tree mirrors the layout tree. Tools that walk `/pane/` see composition structure directly.
 
 #### Scenario: Tag as plain text
-- **WHEN** `cat /srv/pane/1/tag` is executed
+- **WHEN** `cat /pane/1/tag` is executed
 - **THEN** the plain text tag line content SHALL be returned without JSON wrapping
 
 #### Scenario: Body as semantic content
-- **WHEN** `cat /srv/pane/1/body` is executed
+- **WHEN** `cat /pane/1/body` is executed
 - **THEN** the semantic body content SHALL be returned as plain text (not rendering internals, not buffer state)
 
 #### Scenario: Attributes as individual files
-- **WHEN** `cat /srv/pane/1/attrs/title` is executed
+- **WHEN** `cat /pane/1/attrs/title` is executed
 - **THEN** the pane's title attribute SHALL be returned as a single value
 
 #### Scenario: Events as JSONL
-- **WHEN** `tail -f /srv/pane/1/event` is executed
+- **WHEN** `tail -f /pane/1/event` is executed
 - **THEN** events SHALL arrive as one JSON object per line
 
 ### Requirement: Format per endpoint
 Each filesystem node SHALL use the representation natural to its data. Plain text for text data (tag, body). One value per file for attributes (attrs/). Line commands for control files (ctl). JSONL for event streams (event).
 
 #### Scenario: Attribute write
-- **WHEN** `echo "new title" > /srv/pane/1/attrs/title` is executed
+- **WHEN** `echo "new title" > /pane/1/attrs/title` is executed
 - **THEN** the pane's title attribute SHALL be updated
 
 ### Requirement: Pane index
-pane-fs SHALL expose a pane index at `/srv/pane/index`.
+pane-fs SHALL expose a pane index at `/pane/index`.
 
 #### Scenario: List all panes
-- **WHEN** `cat /srv/pane/index` is executed
+- **WHEN** `cat /pane/index` is executed
 - **THEN** a listing of all pane IDs SHALL be returned
 
 #### Scenario: Directory listing
-- **WHEN** `ls /srv/pane/` is executed
+- **WHEN** `ls /pane/` is executed
 - **THEN** each pane SHALL appear as a directory entry by its ID

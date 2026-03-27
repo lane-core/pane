@@ -70,7 +70,7 @@ The compositor composites my buffers; it doesn't render my content. I render thr
 
 My sandbox is Landlock. My `.plan` file maps directly to Landlock rules: filesystem paths I can access, network scopes I can reach. The mapping is 1:1 — what my `.plan` says I can do is what the kernel enforces. There's no gap between specification and enforcement.
 
-The system runs on btrfs. My mail spool's attributes are indexed by pane-store without hitting ext4's 4KB ceiling. The FUSE layer at `/srv/pane/` runs on io_uring — so when a shell script checks my status by reading a file, the overhead is half what it would be on traditional FUSE.
+The system runs on btrfs. My mail spool's attributes are indexed by pane-store without hitting ext4's 4KB ceiling. The FUSE layer at `/pane/` runs on io_uring — so when a shell script checks my status by reading a file, the overhead is half what it would be on traditional FUSE.
 
 And the whole system is built with Nix on s6. My user account has its own Nix profile. My tools are declaratively specified. If my environment needs to change, it's a profile update — atomic, rollbackable. I'm not just a user; I'm a reproducible user.
 

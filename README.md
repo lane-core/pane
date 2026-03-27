@@ -26,7 +26,7 @@ design
 
 every pane is one object with many views: a visual display
 to the user, a protocol endpoint to other components, a
-filesystem node at /srv/pane/ for scripts and tools, a
+filesystem node at /pane/ for scripts and tools, a
 semantic object for accessibility. the views are projections
 of the same state, kept consistent by optics discipline.
 
@@ -61,7 +61,7 @@ small processes, each doing one thing.
     pane-comp       compositor, layout, chrome
     pane-roster     app lifecycle, service registry
     pane-store      attribute indexing, change notifications
-    pane-fs         FUSE at /srv/pane/
+    pane-fs         FUSE at /pane/
     pane-watchdog   heartbeat monitor, escalation
 
 configuration is files. plugin discovery is directories.

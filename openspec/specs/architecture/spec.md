@@ -30,7 +30,7 @@ A pane is one object with multiple views:
 
 - **Visual**: tag line + body + chrome, rendered on screen
 - **Protocol**: a session-typed endpoint for communication with the compositor and other components
-- **Filesystem**: a node under `/srv/pane/` exposing state for scripts and tools
+- **Filesystem**: a node under `/pane/` exposing state for scripts and tools
 - **Semantic**: roles, values, and actions for accessibility infrastructure
 
 These views are projections of the same internal state. When state changes through one view, others reflect it. The relationship between internal state and each view is governed by optics — composable, bidirectional access paths that satisfy GetPut and PutGet laws up to semantic equality. Violations under failure (a crashed component, a lagging view) are temporary; recovery semantics restore the invariant.
@@ -45,7 +45,7 @@ These views are projections of the same internal state. When state changes throu
 
 ### Pane composition
 
-Panes compose spatially. Two panes viewed together form a compound structure whose concrete presentation depends on context: on screen, spatial arrangement in the layout tree; on the filesystem, sibling entries under `/srv/pane/`. The layout tree is the compositor's model of this composition — a tree of containers where branches define splits and leaves hold panes.
+Panes compose spatially. Two panes viewed together form a compound structure whose concrete presentation depends on context: on screen, spatial arrangement in the layout tree; on the filesystem, sibling entries under `/pane/`. The layout tree is the compositor's model of this composition — a tree of containers where branches define splits and leaves hold panes.
 
 Panes compose temporally through the protocol. A conversation between a client and the compositor is a session. Multiple panes per connection are sub-sessions. The session type tracks where each conversation is in its lifecycle.
 
@@ -53,7 +53,7 @@ Panes compose temporally through the protocol. A conversation between a client a
 
 ### The pane as filesystem node
 
-Each pane is exposed under `/srv/pane/<id>/` via pane-fs (FUSE). The filesystem representation presents the abstraction level relevant to the consumer:
+Each pane is exposed under `/pane/<id>/` via pane-fs (FUSE). The filesystem representation presents the abstraction level relevant to the consumer:
 
 - `tag` — the tag line content (read/write)
 - `body` — the body content at the semantic level (for a shell: command output; for an editor: file content)
@@ -62,7 +62,7 @@ Each pane is exposed under `/srv/pane/<id>/` via pane-fs (FUSE). The filesystem 
 
 The specific tree structure evolves with implementation, but the principle is fixed: pane state is files, and any tool that can read files can inspect pane state.
 
-**Composition in the filesystem.** When panes are composed, pane-fs reflects the composition structure as directory nesting. A split containing panes A and B appears as a directory under `/srv/pane/` with its own `attrs/` (encoding orientation, ratio, and split type) and child entries `A/` and `B/`. Independent panes are top-level entries; composed panes are nested under their container. The filesystem tree mirrors the layout tree's nesting — not as a consequence of the compositional equivalence invariant, but as the filesystem's native expression of it. Reparenting a pane (moving it into or out of a split) changes its position in the filesystem hierarchy. Tools that walk `/srv/pane/` see composition structure directly; they do not need to reconstruct it from per-pane geometry attributes.
+**Composition in the filesystem.** When panes are composed, pane-fs reflects the composition structure as directory nesting. A split containing panes A and B appears as a directory under `/pane/` with its own `attrs/` (encoding orientation, ratio, and split type) and child entries `A/` and `B/`. Independent panes are top-level entries; composed panes are nested under their container. The filesystem tree mirrors the layout tree's nesting — not as a consequence of the compositional equivalence invariant, but as the filesystem's native expression of it. Reparenting a pane (moving it into or out of a split) changes its position in the filesystem hierarchy. Tools that walk `/pane/` see composition structure directly; they do not need to reconstruct it from per-pane geometry attributes.
 
 ---
 
@@ -190,7 +190,7 @@ BFS's attribute indexing and query engine, reimplemented in userspace over Linux
 
 ### pane-fs — Filesystem Interface
 
-Plan 9's gift: if state is a file, any tool can access it. pane-fs is a FUSE filesystem at `/srv/pane/` that exposes pane state for scripts, remote access, and tools in any language.
+Plan 9's gift: if state is a file, any tool can access it. pane-fs is a FUSE filesystem at `/pane/` that exposes pane state for scripts, remote access, and tools in any language.
 
 pane-fs is a translation layer — it converts FUSE operations into pane protocol messages. It is just another client of the pane servers. It has no special privilege and no server logic.
 
@@ -200,7 +200,7 @@ The filesystem provides universality that typed protocols cannot (any language, 
 
 | Tier | Mechanism | Latency | Use case |
 |---|---|---|---|
-| **Filesystem** | FUSE at `/srv/pane/` | ~15-30μs per op | Shell scripts, inspection, configuration, event monitoring. Human-speed operations where 30μs is invisible. |
+| **Filesystem** | FUSE at `/pane/` | ~15-30μs per op | Shell scripts, inspection, configuration, event monitoring. Human-speed operations where 30μs is invisible. |
 | **Protocol** | Session-typed unix sockets | ~1.5-3μs per op | Kit-to-server communication, rendering, input dispatch, bulk state queries. Machine-speed operations. |
 | **In-process** | Kit API (direct function calls) | Sub-microsecond | Application logic within a pane-native client. No IPC, no serialization. |
 
@@ -401,7 +401,7 @@ The approach: dynamic optic composition at the protocol level. Each handler adve
 
 This is a controlled runtime dynamism within a statically-typed protocol. The session type ensures each step is well-formed. The optic laws ensure each access is consistent. The dynamic composition ensures the full chain works. It's the same pattern as BeOS's ResolveSpecifier — peel, resolve, forward — but with each step type-checked.
 
-The filesystem interface provides the fallback. If the typed scripting protocol is too rigid for a particular use case, the filesystem at `/srv/pane/` provides the same access in a weakly-typed but universally accessible form. Shell scripts use the filesystem; compiled programs use the typed protocol. Both access the same underlying state.
+The filesystem interface provides the fallback. If the typed scripting protocol is too rigid for a particular use case, the filesystem at `/pane/` provides the same access in a weakly-typed but universally accessible form. Shell scripts use the filesystem; compiled programs use the typed protocol. Both access the same underlying state.
 
 ---
 
@@ -567,7 +567,7 @@ Each was general-purpose. mail_daemon didn't know about Tracker. Tracker didn't 
 
 **Attribute indexing composes metadata with queries.** pane-store indexes file attributes and emits change notifications. A client that subscribes to change notifications and maintains a query result set has a live query — without pane-store implementing "live queries" as a feature. The composition is client-side, exactly as it was in BeOS.
 
-**Filesystem exposure composes system state with tools.** Anything exposed at `/srv/pane/` is scriptable. A shell script that reads `/srv/pane/index` lists all panes. Writing to a pane's control file manipulates it. The filesystem is the universal FFI.
+**Filesystem exposure composes system state with tools.** Anything exposed at `/pane/` is scriptable. A shell script that reads `/pane/index` lists all panes. Writing to a pane's control file manipulates it. The filesystem is the universal FFI.
 
 **Session persistence composes lifecycle with state.** The compositor serializes layout. The roster serializes the running app list. Each app serializes its own state. On restart, each component restores its part. No single component owns "the session" — it's emergent from each component following its protocol.
 
@@ -772,7 +772,7 @@ In Phase 1, session types define the protocol and verify message shapes at compi
 
 ### Phase 7: Richness
 14. **Widget rendering** — Vello + taffy, Frutiger Aero controls.
-15. **pane-fs** — FUSE at `/srv/pane/`.
+15. **pane-fs** — FUSE at `/pane/`.
 16. **pane-dbus** — D-Bus bridge (notifications, PipeWire portals, NetworkManager).
 17. **pane-media** — PipeWire kit wrapper.
 

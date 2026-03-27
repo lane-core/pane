@@ -226,7 +226,7 @@ In pane, these responsibilities are handled differently:
 | B_ABOUT_REQUESTED | Routing rule: "about" action dispatches to the app's about handler |
 | B_ARGV_RECEIVED | `App::connect_with` handles re-delivery through pane-roster |
 | B_REFS_RECEIVED | Routing rule: file type dispatch to the appropriate pane |
-| Scripting root | The filesystem at `/srv/pane/` is the root of the scripting hierarchy |
+| Scripting root | The filesystem at `/pane/` is the root of the scripting hierarchy |
 | App-wide messages | Per-pane handlers or a shared state Arc |
 
 The app object doesn't need its own message loop because per-pane loopers handle all the message processing, and inter-pane coordination goes through shared state (Arc<Mutex<T>>) or the compositor. This is simpler and eliminates the "where does this message go?" confusion that BeOS developers regularly encountered.
@@ -643,7 +643,7 @@ BHandler's `SetNextHandler()` created a chain where unrecognized messages propag
 
 In pane:
 
-- Scripting delegation goes through the filesystem hierarchy (`/srv/pane/<id>/attrs/title`), not through a handler chain. The pane-fs FUSE layer handles specifier resolution. This is strictly more powerful than BHandler chaining because it works across process boundaries and is accessible from any language.
+- Scripting delegation goes through the filesystem hierarchy (`/pane/<id>/attrs/title`), not through a handler chain. The pane-fs FUSE layer handles specifier resolution. This is strictly more powerful than BHandler chaining because it works across process boundaries and is accessible from any language.
 
 - Cross-cutting concerns (logging, metrics, input preprocessing) are better served by filter functions registered on the looper. See section 5 (Filters).
 
@@ -1005,11 +1005,11 @@ pub struct ContentHandler {
 
 BeOS's scripting protocol was one of its most important features: every application was automatable through the same messaging system it used internally. `hey` from the command line could query or modify any running application's state. The protocol was based on property specifiers (like an address path), resolved through the handler chain via `ResolveSpecifier`.
 
-Pane's scripting goes through the filesystem. The pane-fs FUSE mount at `/srv/pane/` exposes every pane's state as files and directories. This is strictly more powerful than BeOS's scripting protocol:
+Pane's scripting goes through the filesystem. The pane-fs FUSE mount at `/pane/` exposes every pane's state as files and directories. This is strictly more powerful than BeOS's scripting protocol:
 
 - **Any language.** BeOS scripting required constructing BMessages. Pane scripting works with `cat`, `echo`, `jq`, or any tool that reads and writes files.
 - **Cross-process.** No need for a BMessenger targeting a specific team and handler. The filesystem is the namespace.
-- **Discoverable.** `ls /srv/pane/3/attrs/` shows all queryable properties. No equivalent of `GetSupportedSuites` needed -- the filesystem *is* the suite listing.
+- **Discoverable.** `ls /pane/3/attrs/` shows all queryable properties. No equivalent of `GetSupportedSuites` needed -- the filesystem *is* the suite listing.
 
 ### How the kit participates
 
@@ -1062,7 +1062,7 @@ Applications declare what properties they expose. This is the `GetSupportedSuite
 impl Pane {
     /// Declare scriptable properties for this pane.
     ///
-    /// These become visible under `/srv/pane/<id>/attrs/` as files.
+    /// These become visible under `/pane/<id>/attrs/` as files.
     /// When pane-fs receives a read/write on one of these files, the
     /// kit delivers it as a ScriptQuery event.
     ///
@@ -1092,19 +1092,19 @@ On pane, the `hey` equivalent is standard Unix tools:
 ```sh
 # BeOS:  hey StyledEdit get Title of Window 0
 # Pane:
-cat /srv/pane/3/attrs/title
+cat /pane/3/attrs/title
 
 # BeOS:  hey StyledEdit set Title of Window 0 to "New Title"
 # Pane:
-echo "New Title" > /srv/pane/3/attrs/title
+echo "New Title" > /pane/3/attrs/title
 
 # BeOS:  hey StyledEdit count Window
 # Pane:
-ls /srv/pane/ | wc -l
+ls /pane/ | wc -l
 
 # BeOS:  hey StyledEdit getsuites of Window 0
 # Pane:
-ls /srv/pane/3/attrs/
+ls /pane/3/attrs/
 ```
 
 No special tool. No special protocol. Just files. This is Plan 9's gift to the Be model: the namespace *is* the scripting interface.

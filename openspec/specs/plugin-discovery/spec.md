@@ -1,7 +1,7 @@
 ## ADDED Requirements
 
 ### Requirement: Filesystem-based plugin registration
-Components that support extensibility SHALL discover plugins by scanning well-known directories. Adding a file or directory to the well-known location SHALL register the plugin. Removing it SHALL unregister it. The pane-app kit uses pane-notify (fanotify/inotify abstraction) to watch these directories for live discovery — this is a kit-level concern, not a server-level one. Each process that needs plugin awareness loads and watches its own relevant directories. Installed plugins and their metadata are visible through pane-fs at `/srv/pane/` alongside pane state.
+Components that support extensibility SHALL discover plugins by scanning well-known directories. Adding a file or directory to the well-known location SHALL register the plugin. Removing it SHALL unregister it. The pane-app kit uses pane-notify (fanotify/inotify abstraction) to watch these directories for live discovery — this is a kit-level concern, not a server-level one. Each process that needs plugin awareness loads and watches its own relevant directories. Installed plugins and their metadata are visible through pane-fs at `/pane/` alongside pane state.
 
 #### Scenario: Add translator
 - **WHEN** a translator binary is placed in `~/.config/pane/translators/`
