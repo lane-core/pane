@@ -26,16 +26,22 @@
 //! }
 //! ```
 
+pub mod app;
+pub mod connection;
 pub mod error;
 pub mod event;
 pub mod filter;
 pub mod handler;
-pub mod tag;
 pub mod looper;
+pub mod mock;
+pub mod pane;
+pub mod tag;
 
+pub use app::App;
 pub use error::{Error, ConnectError, PaneError, Result};
 pub use event::PaneEvent;
 pub use filter::{Filter, FilterAction};
 pub use handler::Handler;
+pub use pane::Pane;
 pub use tag::{Tag, CommandBuilder, cmd};
 pub use pane_proto::tag::BuiltIn;
