@@ -12,7 +12,7 @@
 #
 # SSH:
 #   ssh -p 2222 pane@localhost  (password: pane)
-{ pane-comp }:
+{ ... }:
 { pkgs, lib, ... }:
 
 let
@@ -102,7 +102,6 @@ in
 
   # Runtime environment
   environment.variables = {
-    PATH = [ "${pane-comp}/bin" ];
     TERMINFO_DIRS = "${pkgs.ncurses}/share/terminfo";
     LD_LIBRARY_PATH = lib.makeLibraryPath (with pkgs; [
       wayland
@@ -135,6 +134,5 @@ in
     pkgs.less
     pkgs.gcc        # linker for cargo
     pkgs.rustup     # rust toolchain
-    pane-comp
   ] ++ buildDeps;
 }

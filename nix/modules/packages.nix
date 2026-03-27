@@ -17,6 +17,13 @@
     darwinModules.linux-builder = import ../darwin-linux-builder.nix;
 
     # NixOS VM for testing pane-comp visually
-    # Defined lazily — only evaluates when accessed, not during flake check
+    # Note: this requires aarch64-linux packages which only build on Linux.
+    # Access via: nix build .#nixosConfigurations.pane-test-vm.config.system.build.vm
+    nixosConfigurations.pane-test-vm = inputs.nixpkgs.lib.nixosSystem {
+      system = "aarch64-linux";
+      modules = [
+        (import ../vm.nix {})
+      ];
+    };
   };
 }
