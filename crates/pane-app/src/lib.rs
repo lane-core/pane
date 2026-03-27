@@ -28,9 +28,14 @@
 
 pub mod error;
 pub mod event;
+pub mod filter;
+pub mod handler;
 pub mod tag;
+pub mod looper;
 
 pub use error::{Error, ConnectError, PaneError, Result};
 pub use event::PaneEvent;
+pub use filter::{Filter, FilterAction};
+pub use handler::Handler;
 pub use tag::{Tag, CommandBuilder, cmd};
 pub use pane_proto::tag::BuiltIn;
