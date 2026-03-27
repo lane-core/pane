@@ -105,23 +105,25 @@ fn arb_mouse_event() -> impl Strategy<Value = MouseEvent> {
         .prop_map(|(col, row, kind, modifiers)| MouseEvent { col, row, kind, modifiers })
 }
 
-fn arb_tag_action() -> impl Strategy<Value = pane_proto::tag::TagAction> {
-    (".*", prop_oneof![
-        Just(pane_proto::tag::TagCommand::BuiltIn(pane_proto::tag::BuiltInAction::Del)),
-        Just(pane_proto::tag::TagCommand::BuiltIn(pane_proto::tag::BuiltInAction::Get)),
-        ".*".prop_map(pane_proto::tag::TagCommand::Shell),
-        ".*".prop_map(pane_proto::tag::TagCommand::Route),
-    ]).prop_map(|(label, command)| pane_proto::tag::TagAction { label, command })
+fn arb_command_action() -> impl Strategy<Value = pane_proto::tag::CommandAction> {
+    prop_oneof![
+        Just(pane_proto::tag::CommandAction::BuiltIn(pane_proto::tag::BuiltIn::Close)),
+        Just(pane_proto::tag::CommandAction::BuiltIn(pane_proto::tag::BuiltIn::Copy)),
+        ".*".prop_map(pane_proto::tag::CommandAction::Client),
+        ".*".prop_map(pane_proto::tag::CommandAction::Route),
+    ]
 }
 
-fn arb_tag_line() -> impl Strategy<Value = pane_proto::tag::TagLine> {
-    (
-        ".*",
-        proptest::collection::vec(arb_tag_action(), 0..=3),
-        proptest::collection::vec(arb_tag_action(), 0..=3),
-    ).prop_map(|(name, actions, user_actions)| pane_proto::tag::TagLine {
-        name, actions, user_actions,
-    })
+fn arb_command() -> impl Strategy<Value = pane_proto::tag::Command> {
+    (".*", ".*", proptest::option::of(".*"), arb_command_action())
+        .prop_map(|(name, description, shortcut, action)| pane_proto::tag::Command {
+            name, description, shortcut, action,
+        })
+}
+
+fn arb_pane_title() -> impl Strategy<Value = pane_proto::tag::PaneTitle> {
+    (".*", proptest::option::of(".*"))
+        .prop_map(|(text, short)| pane_proto::tag::PaneTitle { text, short })
 }
 
 fn arb_attr_value() -> impl Strategy<Value = AttrValue> {
@@ -158,10 +160,17 @@ proptest! {
     }
 
     #[test]
-    fn roundtrip_tag_line(tag in arb_tag_line()) {
-        let bytes = serialize(&tag).unwrap();
-        let decoded: pane_proto::tag::TagLine = deserialize(&bytes).unwrap();
-        prop_assert_eq!(tag, decoded);
+    fn roundtrip_pane_title(title in arb_pane_title()) {
+        let bytes = serialize(&title).unwrap();
+        let decoded: pane_proto::tag::PaneTitle = deserialize(&bytes).unwrap();
+        prop_assert_eq!(title, decoded);
+    }
+
+    #[test]
+    fn roundtrip_command(cmd in arb_command()) {
+        let bytes = serialize(&cmd).unwrap();
+        let decoded: pane_proto::tag::Command = deserialize(&bytes).unwrap();
+        prop_assert_eq!(cmd, decoded);
     }
 
     #[test]

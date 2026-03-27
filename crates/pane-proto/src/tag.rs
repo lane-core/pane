@@ -1,53 +1,77 @@
 use serde::{Deserialize, Serialize};
 
-
-/// Structured tag line data. The compositor renders this differently
-/// depending on the pane kind: monospace text for cell grids,
-/// graphical tab + buttons for widget panes.
+/// The pane's at-rest identity. Displayed in the floating tab or
+/// tiled name strip.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct TagLine {
-    /// Pane identity (path, name, title).
-    pub name: String,
-    /// Built-in actions (Del, Snarf, Get, Put, etc.).
-    pub actions: Vec<TagAction>,
-    /// User-defined actions (right of the |).
-    pub user_actions: Vec<TagAction>,
+pub struct PaneTitle {
+    /// The display name shown in the tab/strip.
+    pub text: String,
+    /// Short form for narrow contexts. If None, the compositor
+    /// truncates `text` with an ellipsis.
+    pub short: Option<String>,
 }
 
-/// A single action in the tag line.
+/// The set of commands a pane offers through its command surface.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub struct CommandVocabulary {
+    /// Grouped commands. Each group is a category shown as a section
+    /// header in the empty-query browsable list.
+    pub groups: Vec<CommandGroup>,
+}
+
+/// A named group of commands.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct TagAction {
-    /// Display label.
+pub struct CommandGroup {
+    /// Category label ("Layout", "Content", etc.).
     pub label: String,
-    /// What happens on execution (B2-click or left-click).
-    pub command: TagCommand,
+    /// Commands in this group, displayed in order.
+    pub commands: Vec<Command>,
 }
 
-/// What a tag action does when executed.
+/// A single command in the vocabulary.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub enum TagCommand {
+pub struct Command {
+    /// The command name as the user types it. Unique within the vocabulary.
+    pub name: String,
+    /// Human-readable description shown in completions.
+    pub description: String,
+    /// Keyboard shortcut displayed alongside the command (e.g., "Ctrl+S").
+    pub shortcut: Option<String>,
+    /// What happens when executed.
+    pub action: CommandAction,
+}
+
+/// What a command does when executed.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub enum CommandAction {
     /// Built-in compositor action.
-    BuiltIn(BuiltInAction),
-    /// Run as shell command.
-    Shell(String),
-    /// Send as route message.
+    BuiltIn(BuiltIn),
+    /// Sent to the client's handler as a command_executed event.
+    Client(String),
+    /// Dispatched through the routing infrastructure.
     Route(String),
 }
 
-/// Built-in compositor actions available in the tag line.
+/// Built-in compositor actions.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-pub enum BuiltInAction {
+pub enum BuiltIn {
     /// Close this pane.
-    Del,
+    Close,
     /// Copy selection to clipboard.
-    Snarf,
-    /// Reload/refresh pane content.
-    Get,
-    /// Save pane content.
-    Put,
+    Copy,
+    /// Paste from clipboard.
+    Paste,
     /// Undo last action.
     Undo,
     /// Redo last undone action.
     Redo,
 }
 
+/// A completion entry returned by the pane's completion provider.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Completion {
+    /// The completion text to insert.
+    pub text: String,
+    /// Description shown alongside.
+    pub description: Option<String>,
+}
