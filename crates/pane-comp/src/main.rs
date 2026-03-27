@@ -1,30 +1,29 @@
+mod cell;
 mod glyph_atlas;
 mod pane_renderer;
+mod state;
 
 use std::time::Duration;
 
 use smithay::{
     backend::{
-        renderer::{
-            gles::GlesRenderer,
-            Frame, Renderer,
-            Color32F,
-        },
+        renderer::gles::GlesRenderer,
         winit::{self, WinitEvent},
     },
     output::{Mode, Output, PhysicalProperties, Subpixel},
-    utils::{Rectangle, Size, Transform},
+    utils::{Size, Transform},
 };
-use anyhow::{Context, Result};
+use calloop::{EventLoop, timer::{Timer, TimeoutAction}};
+use anyhow::Result;
 use bpaf::Bpaf;
 use tracing::{info, warn};
 
 use glyph_atlas::GlyphAtlas;
 use pane_renderer::PaneRenderer;
+use state::CompState;
 
-/// Background color — dark grey, 90s-inspired
-/// Desktop background — warm light grey, Frutiger Aero era
-const BG_COLOR: Color32F = Color32F::new(0.82, 0.81, 0.78, 1.0);
+/// Target frame interval (~60fps)
+const FRAME_INTERVAL: Duration = Duration::from_millis(16);
 
 /// pane desktop environment compositor
 #[derive(Debug, Clone, Bpaf)]
@@ -65,12 +64,11 @@ fn main() {
 }
 
 fn run(opts: &Opts) -> Result<()> {
-    // Log Wayland environment for debugging
     info!("WAYLAND_DISPLAY={:?}", std::env::var("WAYLAND_DISPLAY").ok());
     info!("XDG_RUNTIME_DIR={:?}", std::env::var("XDG_RUNTIME_DIR").ok());
-    info!("DISPLAY={:?}", std::env::var("DISPLAY").ok());
 
-    let (mut backend, mut winit_evt): (smithay::backend::winit::WinitGraphicsBackend<GlesRenderer>, _) =
+    // --- smithay winit backend ---
+    let (mut backend, winit_evt): (smithay::backend::winit::WinitGraphicsBackend<GlesRenderer>, _) =
         winit::init()
             .map_err(|e| anyhow::anyhow!("winit backend init: {e:?}"))?;
 
@@ -94,7 +92,7 @@ fn run(opts: &Opts) -> Result<()> {
     output.change_current_state(Some(mode), Some(Transform::Normal), None, Some((0, 0).into()));
     output.set_preferred(mode);
 
-    // Initialize glyph atlas
+    // --- glyph atlas ---
     let mut atlas = GlyphAtlas::new(opts.font_size)?;
     let renderer = backend.renderer();
     atlas.load_ascii(renderer)?;
@@ -106,23 +104,41 @@ fn run(opts: &Opts) -> Result<()> {
     );
 
     let pane_renderer = PaneRenderer::new(&atlas);
+    let cell_width = atlas.cell_width();
+    let cell_height = atlas.cell_height();
 
-    let mut current_size = size;
-    let mut running = true;
+    // --- compositor state ---
+    let mut comp_state = CompState {
+        backend,
+        output,
+        size: Size::from((size.w as i32, size.h as i32)),
+        atlas,
+        pane_renderer,
+        running: true,
+        cell_width,
+        cell_height,
+    };
 
-    while running {
+    // --- calloop event loop ---
+    let mut event_loop: EventLoop<'_, CompState> =
+        EventLoop::try_new().map_err(|e| anyhow::anyhow!("calloop init: {e}"))?;
+
+    let loop_handle = event_loop.handle();
+
+    // Frame timer — triggers rendering at ~60fps
+    let timer = Timer::from_duration(FRAME_INTERVAL);
+    loop_handle.insert_source(timer, move |_deadline, _metadata, state: &mut CompState| {
+        // Dispatch pending winit events
         winit_evt.dispatch_new_events(|event| match event {
             WinitEvent::Resized { size: new_size, .. } => {
-                current_size = new_size;
+                state.size = Size::from((new_size.w as i32, new_size.h as i32));
                 let new_mode = Mode {
-                    size: (new_size.w as i32, new_size.h as i32).into(),
+                    size: state.size,
                     refresh: 60_000,
                 };
-                output.change_current_state(Some(new_mode), None, None, None);
-                let (cols, rows) = (
-                    new_size.w as u16 / atlas.cell_width(),
-                    new_size.h as u16 / atlas.cell_height(),
-                );
+                state.output.change_current_state(Some(new_mode), None, None, None);
+                let cols = new_size.w as u16 / state.cell_width;
+                let rows = new_size.h as u16 / state.cell_height;
                 info!("resized: {}x{} px, {}x{} cells", new_size.w, new_size.h, cols, rows);
             }
             WinitEvent::Input(_) => {}
@@ -130,38 +146,27 @@ fn run(opts: &Opts) -> Result<()> {
             WinitEvent::Redraw => {}
             WinitEvent::CloseRequested => {
                 info!("close requested");
-                running = false;
+                state.running = false;
             }
         });
 
-        if !running {
-            break;
+        if !state.running {
+            return TimeoutAction::Drop;
         }
 
-        // Render
-        let output_size = Size::from((current_size.w as i32, current_size.h as i32));
-        let output_rect = Rectangle::from_size(output_size);
+        // Render frame
+        state.render_frame();
 
-        {
-            let (renderer, mut target) = backend.bind()
-                .map_err(|e| anyhow::anyhow!("bind: {e}"))?;
-            let mut frame = renderer.render(&mut target, output_size, Transform::Normal)
-                .map_err(|e| anyhow::anyhow!("render: {e}"))?;
-            frame.clear(BG_COLOR, &[output_rect])
-                .map_err(|e| anyhow::anyhow!("clear: {e}"))?;
+        // Reschedule for next frame
+        TimeoutAction::ToDuration(FRAME_INTERVAL)
+    }).map_err(|e| anyhow::anyhow!("timer source: {e}"))?;
 
-            if let Err(e) = pane_renderer.render(&mut frame, &atlas, output_size) {
-                warn!("pane render error: {e}");
-            }
+    info!("entering calloop event loop");
 
-            frame.finish()
-                .map_err(|e| anyhow::anyhow!("finish: {e}"))?;
-        }
-
-        backend.submit(Some(&[output_rect]))
-            .map_err(|e| anyhow::anyhow!("submit: {e}"))?;
-
-        std::thread::sleep(Duration::from_millis(16));
+    // Run the event loop
+    while comp_state.running {
+        event_loop.dispatch(Some(Duration::from_millis(100)), &mut comp_state)
+            .map_err(|e| anyhow::anyhow!("calloop dispatch: {e}"))?;
     }
 
     info!("compositor exiting cleanly");
