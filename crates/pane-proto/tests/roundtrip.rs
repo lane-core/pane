@@ -186,6 +186,35 @@ proptest! {
         let decoded: AttrValue = deserialize(&bytes).unwrap();
         prop_assert_eq!(val, decoded);
     }
+
+    #[test]
+    fn roundtrip_pane_geometry(
+        width in any::<u32>(),
+        height in any::<u32>(),
+        cols in any::<u16>(),
+        rows in any::<u16>(),
+    ) {
+        let geom = pane_proto::PaneGeometry { width, height, cols, rows };
+        let bytes = serialize(&geom).unwrap();
+        let decoded: pane_proto::PaneGeometry = deserialize(&bytes).unwrap();
+        prop_assert_eq!(geom, decoded);
+    }
+
+    #[test]
+    fn roundtrip_client_hello(sig in ".*", ver in any::<u32>()) {
+        let hello = pane_proto::ClientHello { signature: sig, version: ver };
+        let bytes = serialize(&hello).unwrap();
+        let decoded: pane_proto::ClientHello = deserialize(&bytes).unwrap();
+        prop_assert_eq!(hello, decoded);
+    }
+
+    #[test]
+    fn roundtrip_server_hello(comp in ".*", ver in any::<u32>()) {
+        let hello = pane_proto::ServerHello { compositor: comp, version: ver };
+        let bytes = serialize(&hello).unwrap();
+        let decoded: pane_proto::ServerHello = deserialize(&bytes).unwrap();
+        prop_assert_eq!(hello, decoded);
+    }
 }
 
 #[test]
@@ -194,4 +223,29 @@ fn fkey_validation() {
     assert!(event::FKey::try_from(24).is_ok());
     assert!(event::FKey::try_from(0).is_err());
     assert!(event::FKey::try_from(25).is_err());
+}
+
+#[test]
+fn key_event_is_escape() {
+    let esc = pane_proto::KeyEvent {
+        key: pane_proto::Key::Named(pane_proto::event::NamedKey::Escape),
+        modifiers: pane_proto::event::Modifiers::empty(),
+        state: pane_proto::event::KeyState::Press,
+    };
+    assert!(esc.is_escape());
+
+    let not_esc = pane_proto::KeyEvent {
+        key: pane_proto::Key::Char('a'),
+        modifiers: pane_proto::event::Modifiers::empty(),
+        state: pane_proto::event::KeyState::Press,
+    };
+    assert!(!not_esc.is_escape());
+
+    // Release of Escape is not "is_escape" (only press)
+    let esc_release = pane_proto::KeyEvent {
+        key: pane_proto::Key::Named(pane_proto::event::NamedKey::Escape),
+        modifiers: pane_proto::event::Modifiers::empty(),
+        state: pane_proto::event::KeyState::Release,
+    };
+    assert!(!esc_release.is_escape());
 }

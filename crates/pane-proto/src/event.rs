@@ -90,6 +90,13 @@ pub struct KeyEvent {
     pub state: KeyState,
 }
 
+impl KeyEvent {
+    /// True if this is an Escape key press.
+    pub fn is_escape(&self) -> bool {
+        self.key == Key::Named(NamedKey::Escape) && self.state == KeyState::Press
+    }
+}
+
 /// Mouse button identifier.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum MouseButton {
