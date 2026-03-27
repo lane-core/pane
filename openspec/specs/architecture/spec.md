@@ -192,6 +192,8 @@ BFS's attribute indexing and query engine, reimplemented in userspace over Linux
 
 Plan 9's gift: if state is a file, any tool can access it. pane-fs is a FUSE filesystem at `/pane/` that exposes pane state for scripts, remote access, and tools in any language.
 
+**Two filesystem namespaces.** `/pane/` is the user-facing interface — the public projection of system state that scripts, tools, and agents interact with. `/srv/pane/` is the internal system directory where the Nix flake governing the pane installation lives — system infrastructure, not user interface. The distinction mirrors the principle: `/pane/` is a view (a projection of running state, maintained by pane-fs), `/srv/pane/` is the source of truth for the system's own configuration and identity (managed by Nix, immutable except through `pane-rebuild`).
+
 pane-fs is a translation layer — it converts FUSE operations into pane protocol messages. It is just another client of the pane servers. It has no special privilege and no server logic.
 
 The filesystem provides universality that typed protocols cannot (any language, any tool). The typed protocol provides safety that the filesystem cannot (compile-time verification, session guarantees). Both are needed.
