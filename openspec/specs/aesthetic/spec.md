@@ -25,7 +25,7 @@ The pane desktop environment SHALL follow a Frutiger Aero visual design philosop
 
 ### Requirement: Kit-mediated aesthetic enforcement
 
-Visual consistency SHALL be achieved through the kit, not through centralized rendering. The pane-ui kit encodes the visual language — palette, control styles, depth treatment, spacing, typographic rules — so that any developer using the kit produces output conforming to pane's aesthetic without effort. This is how BeOS achieved its integrated feel: not by centralizing rendering in app_server, but by providing an Interface Kit good enough that everyone used it.
+Visual consistency SHALL be achieved through the kit, not through centralized rendering (see architecture §10 for the rendering model, pane-compositor spec for chrome responsibilities). The pane-ui kit encodes the visual language — palette, control styles, depth treatment, spacing, typographic rules — so that any developer using the kit produces output conforming to pane's aesthetic without effort. This is how BeOS achieved its integrated feel: not by centralizing rendering in app_server, but by providing an Interface Kit good enough that everyone used it.
 
 **The rendering split:**
 - **Compositor-rendered (chrome):** tag lines, beveled borders, split handles, focus indicators. The compositor owns the chrome — pane's visual identity is consistent across all panes regardless of whether their content is native or legacy.

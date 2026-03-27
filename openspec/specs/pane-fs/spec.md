@@ -44,6 +44,8 @@ Each pane SHALL be exposed under `/srv/pane/<id>/` with a tree structure that pr
 
 The tree does not expose rendering internals (glyph data, buffer state, GPU resources). A script reading `body` gets the content a human would see, at the semantic level the content operates at.
 
+**Compositional equivalence** (architecture §2): when panes are composed, pane-fs reflects the composition structure as directory nesting. A split containing panes A and B appears as a directory with its own `attrs/` (orientation, ratio) and child entries `A/`, `B/`. Independent panes are top-level entries; composed panes are nested under their container. The filesystem tree mirrors the layout tree. Tools that walk `/srv/pane/` see composition structure directly.
+
 #### Scenario: Tag as plain text
 - **WHEN** `cat /srv/pane/1/tag` is executed
 - **THEN** the plain text tag line content SHALL be returned without JSON wrapping

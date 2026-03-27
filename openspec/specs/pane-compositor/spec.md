@@ -143,7 +143,7 @@ The compositor is the protocol tier's primary server. pane-fs is a translation l
 
 ## 8. HiDPI and Multi-Monitor
 
-Fractional-scale (wp_fractional_scale_v1) provides per-output scale as a fraction with denominator 120. The Interface Kit renders at the scaled resolution and uses viewporter to set the surface destination to the unscaled size. No blurriness, no upscaling artifacts.
+Fractional-scale (wp_fractional_scale_v1) provides per-output scale as a fraction with denominator 120. pane-ui renders at the scaled resolution and uses viewporter to set the surface destination to the unscaled size. No blurriness, no upscaling artifacts.
 
 Multi-monitor is handled by smithay's DRM backend. Per-output configuration (resolution, position, scale, orientation) via wlr-output-management protocol.
 
@@ -154,6 +154,8 @@ Multi-monitor is handled by smithay's DRM backend. Per-output configuration (res
 **Does not contain:** routing logic, application launch logic, file type recognition, attribute indexing, or any server functionality beyond compositing and input.
 
 For native panes, a route action sends a TagRoute event to the pane client; the pane-app kit evaluates routing rules and dispatches. For legacy panes, the compositor handles route dispatch through its own kit integration.
+
+**Dependencies:** pane-notify for config reactivity (compositor watches `/etc/pane/comp/` for live configuration changes). pane-roster for service registration (compositor registers on startup, heartbeats pane-watchdog). pane-session for session-typed client connections. Compositional equivalence invariant (architecture §2): the layout tree must be consistent with pane-fs directory nesting and protocol session structure.
 
 ---
 

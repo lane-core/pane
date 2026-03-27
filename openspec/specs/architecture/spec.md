@@ -211,7 +211,7 @@ System events that produce notifications (D-Bus signals via pane-dbus, agent mai
 
 ## 4. Kit Decomposition
 
-Kits are the programming model. Not wrappers over a protocol — they ARE the developer experience. When a developer uses the Interface Kit, they are using a complete UI programming model that happens to communicate with the compositor internally, the same way BeOS's libbe.so presented a coherent world of BWindows and BViews while communicating with app_server through kernel ports.
+Kits are the programming model. Not wrappers over a protocol — they ARE the developer experience. When a developer uses the Interface Kit (pane-ui), they are using a complete UI programming model that happens to communicate with the compositor internally, the same way BeOS's libbe.so presented a coherent world of BWindows and BViews while communicating with app_server through kernel ports.
 
 Developers loved the BeAPI because it was thoughtful — small, composable primitives designed by people who wrote real applications. Schillings: "common things are easy to implement and the programming model is CLEAR." That is the standard. The API is the user interface for developers.
 
@@ -268,9 +268,9 @@ Text rendering, styling primitives, layout, widget rendering. The rendering infr
 
 **Widget rendering.** Vello (GPU-compute 2D rendering via wgpu) for vector graphics, taffy for flexbox/grid layout. Widgets have semantic structure (buttons, labels, lists, text inputs) with roles, values, and actions — the accessibility tree is a byproduct of the widget model.
 
-**The pane visual language.** Beveled borders, subtle gradients, warm saturated palette — the Frutiger Aero aesthetic, built into the kit. A developer using the Interface Kit produces output that looks like a pane application without effort, because the kit encodes the visual language. This is how BeOS achieved its integrated feel and how NeXTSTEP achieved its — not by centralizing rendering, but by providing a kit good enough that everyone used it.
+**The pane visual language.** Beveled borders, subtle gradients, warm saturated palette — the Frutiger Aero aesthetic, built into the kit. A developer using pane-ui produces output that looks like a pane application without effort, because the kit encodes the visual language. This is how BeOS achieved its integrated feel and how NeXTSTEP achieved its — not by centralizing rendering, but by providing a kit good enough that everyone used it.
 
-**Layout management from day one.** Haiku's biggest GUI mistake was deferring layout management. Every application written before the Layout API existed had to be manually migrated. Pane's Interface Kit has layout management (taffy — flexbox/grid) from the beginning. Applications specify relationships ("this goes next to that, this fills remaining space"), not coordinates.
+**Layout management from day one.** Haiku's biggest GUI mistake was deferring layout management. Every application written before the Layout API existed had to be manually migrated. pane-ui has layout management (taffy — flexbox/grid) from the beginning. Applications specify relationships ("this goes next to that, this fills remaining space"), not coordinates.
 
 **Frame pacing and buffer management.** The kit manages the double-buffer lifecycle: allocate buffers from shared memory (memfd) or GPU memory (DMA-BUF), render into the back buffer, submit via wl_surface.attach + damage + commit, wait for wl_buffer.release before reusing. All of this is hidden from the developer — they draw; the kit handles the rest.
 
@@ -444,7 +444,7 @@ The threading granularity is per-pane, not per-widget. 50 panes = ~100 threads (
 
 ### Session types
 
-Every interaction between components is a session — a typed conversation. The session type describes the entire protocol: what each party sends and receives, in what order, with what branches. The compiler enforces that both parties follow complementary protocols (duality). Deadlock freedom is guaranteed by the tree topology constraint.
+Every interaction between components is a typed protocol. Structured phases (handshake, negotiation, teardown) use session types — typed descriptions of entire conversations where the compiler enforces that both parties follow complementary protocols (duality). The active phase uses typed message enums with event-driven dispatch — both sides send when ready, with exhaustive `match` guaranteeing every variant is handled. See "Protocol phasing" below for the three-phase model.
 
 Pane uses a custom session type implementation — a typestate `Chan<S, Transport>` designed for pane's exact needs. The theoretical basis is the Caires-Pfenning/Wadler correspondence between linear logic and concurrent processes. Key properties:
 
@@ -688,7 +688,7 @@ Frutiger Aero — what if Be survived into the 2000s and refined alongside early
 
 ### HiDPI and multi-monitor
 
-Pane inherits proper HiDPI from Wayland. Fractional-scale (wp_fractional_scale_v1) provides per-output scale as a fraction with denominator 120. The Interface Kit renders at the scaled resolution and uses viewporter to set the surface destination to the unscaled size. No blurriness, no upscaling artifacts.
+Pane inherits proper HiDPI from Wayland. Fractional-scale (wp_fractional_scale_v1) provides per-output scale as a fraction with denominator 120. pane-ui renders at the scaled resolution and uses viewporter to set the surface destination to the unscaled size. No blurriness, no upscaling artifacts.
 
 Multi-monitor is handled by smithay's DRM backend. Per-output configuration (resolution, position, scale, orientation) via wlr-output-management protocol.
 
@@ -712,7 +712,7 @@ Both of these are things Haiku still struggles with. Pane gets them from the pla
 | **Audio/media** | PipeWire | Graph-based media framework. Replaces PulseAudio + JACK. BeOS Media Kit model. |
 | **Widget layout** | taffy | Flexbox/grid layout engine. Pure computation. |
 | **Widget rendering** | Vello | GPU-compute 2D rendering via wgpu. The forward-looking choice over femtovg (OpenGL). Currently in active development by the Linebender project; will be stable by pane's widget rendering phase. |
-| **Text rendering** | GPU glyph atlas | Instanced rendering. Shared across all pane-native clients via the Interface Kit. |
+| **Text rendering** | GPU glyph atlas | Instanced rendering. Shared across all pane-native clients via pane-ui. |
 | **Input processing** | libinput + xkbcommon | Industry standard. Hardware abstraction and keyboard layout processing. |
 | **D-Bus bridge** | zbus crate | Rust D-Bus implementation. pane-dbus translates at the boundary. |
 | **Process tracking** | pidfd | Race-free process identity. Integrates into epoll for lifecycle monitoring. |
