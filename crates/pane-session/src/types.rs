@@ -15,6 +15,22 @@ pub struct Send<A, S>(PhantomData<(A, S)>);
 /// In linear logic: A ⅋ S (par — input A, continue as S).
 pub struct Recv<A, S>(PhantomData<(A, S)>);
 
+/// A session type representing "this endpoint selects one of two continuations."
+///
+/// In linear logic: A ⊕ B (plus — internal choice, the selector decides).
+pub struct Select<L, R>(PhantomData<(L, R)>);
+
+/// A session type representing "this endpoint receives the peer's selection."
+///
+/// In linear logic: A & B (with — external choice, the offerer handles both).
+pub struct Branch<L, R>(PhantomData<(L, R)>);
+
+/// The result of receiving a branch selection from the peer.
+pub enum Offer<L, R> {
+    Left(L),
+    Right(R),
+}
+
 /// A session type representing "session terminated."
 ///
 /// In linear logic: 1 (unit — close).
@@ -95,11 +111,89 @@ where
     }
 }
 
+// --- Branching (Select/Branch) ---
+
+impl<L, R, T: Transport> Chan<Select<L, R>, T> {
+    /// Select the left branch and advance to continuation L.
+    /// Sends a 0x00 tag byte to the peer.
+    pub fn select_left(mut self) -> Result<Chan<L, T>, SessionError> {
+        self.transport.send_raw(&[0x00])?;
+        Ok(self.advance())
+    }
+
+    /// Select the right branch and advance to continuation R.
+    /// Sends a 0x01 tag byte to the peer.
+    pub fn select_right(mut self) -> Result<Chan<R, T>, SessionError> {
+        self.transport.send_raw(&[0x01])?;
+        Ok(self.advance())
+    }
+}
+
+impl<L, R, T: Transport> Chan<Branch<L, R>, T> {
+    /// Receive the peer's branch selection.
+    /// Returns `Offer::Left(chan)` or `Offer::Right(chan)` depending on
+    /// the peer's choice. The caller must handle both cases — Rust's
+    /// exhaustive match enforces this.
+    pub fn offer(mut self) -> Result<Offer<Chan<L, T>, Chan<R, T>>, SessionError> {
+        let tag = self.transport.recv_raw()?;
+        match tag.as_slice() {
+            [0x00] => Ok(Offer::Left(self.advance())),
+            [0x01] => Ok(Offer::Right(self.advance())),
+            _ => Err(SessionError::Io(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                format!("invalid branch tag: expected 0x00 or 0x01, got {:?}", tag),
+            ))),
+        }
+    }
+}
+
+// --- Combinators ---
+
+impl<A, B, S, T> Chan<Send<A, Recv<B, S>>, T>
+where
+    A: Serialize,
+    B: DeserializeOwned,
+    T: Transport,
+{
+    /// Send a value, receive a response, and advance — the request-response
+    /// pattern in one call. This is `BMessenger::SendMessage(&msg, &reply)`
+    /// translated to session types.
+    ///
+    /// ```text
+    /// // Before: 4 lines, 2 rebindings
+    /// let chan = chan.send(request)?;
+    /// let (response, chan) = chan.recv()?;
+    ///
+    /// // After: 1 line
+    /// let (response, chan) = chan.request(value)?;
+    /// ```
+    pub fn request(self, value: A) -> Result<(B, Chan<S, T>), SessionError> {
+        let chan = self.send(value)?;
+        chan.recv()
+    }
+}
+
+// --- Session termination ---
+
 impl<T: Transport> Chan<End, T> {
-    /// Close the session. Consumes the channel.
+    /// Close the session, dropping the transport.
+    /// Use when the session is complete and the transport is no longer needed.
     pub fn close(self) {
-        // Transport is dropped, closing the underlying connection.
-        // No message sent — End is a type-level marker, not a wire message.
         drop(self);
+    }
+
+    /// Complete the session and reclaim the underlying transport.
+    /// Use for phase transitions: the session-typed handshake ends,
+    /// and the transport continues into the active phase with typed
+    /// enum messaging.
+    ///
+    /// ```text
+    /// // Handshake complete → active phase
+    /// let transport = chan.finish();
+    /// let stream = transport.into_stream();
+    /// let source = SessionSource::new(stream)?;
+    /// ```
+    pub fn finish(self) -> T {
+        self.transport
     }
 }

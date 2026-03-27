@@ -18,6 +18,6 @@ pub mod error;
 pub mod transport;
 pub mod calloop;
 
-pub use types::{Send, Recv, End, Chan};
+pub use types::{Send, Recv, Select, Branch, Offer, End, Chan};
 pub use dual::Dual;
 pub use error::SessionError;
