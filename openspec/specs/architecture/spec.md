@@ -41,7 +41,7 @@ These views are projections of the same internal state. When state changes throu
 
 **Body.** The content area. For pane-native clients: text, widgets, or a hybrid. For legacy Wayland clients: an opaque wl_surface. The body is always client-rendered — the Wayland model — with visual consistency coming from the shared kits, not from the compositor rendering on behalf of clients.
 
-**Chrome.** Borders, focus indicators, split handles. Always compositor-rendered via smithay's GLES renderer (the compositor's own rendering engine — distinct from Vello, which is the client-side widget rendering engine). The chrome is pane's visual identity — one opinionated look, consistent across all panes regardless of whether their content is native or legacy.
+**Chrome.** Tag lines, borders, focus indicators, split handles. Always compositor-rendered via smithay's GLES renderer (the compositor's own rendering engine — distinct from Vello, which is the client-side widget rendering engine). The chrome is pane's visual identity — one opinionated look, consistent across all panes regardless of whether their content is native or legacy.
 
 ### Pane composition
 
@@ -456,19 +456,29 @@ Pane uses a custom session type implementation — a typestate `Chan<S, Transpor
 
 The formal session type primitives are verified in Lean/Agda. Par and dialectic are design references, not dependencies.
 
-### The transport bridge
+### The transport bridge *(Phase 2 — complete)*
 
-Par operates on in-memory `futures::channel::oneshot` pairs. Pane communicates over unix sockets with postcard serialization. Bridging these is the first and most important engineering problem.
+The custom `Chan<S, T>` implementation bridges session types to unix sockets directly. Each `send()` serializes with postcard and writes to the socket; each `recv()` reads, deserializes, and advances the typestate. The session type enforces both message shapes (via Rust enums) and conversation ordering (via typestate advancement) on the wire — not just in tests.
 
-**The distinction that matters:** Session types verify two things — message *shapes* (the right data in the right types) and conversation *ordering* (the right messages in the right sequence). Shared Rust enums give you the first. Only par's runtime gives you the second.
+The transport is parameterized: `UnixTransport` for production (length-prefixed postcard over unix domain sockets), `MemoryTransport` for testing (mpsc channels). Both implement the same `Transport` trait. Crash safety is proven: a dropped peer produces `Err(SessionError::Disconnected)`, not a panic.
 
-**The target (Phase 2 of the build sequence):** Par session types driven over unix sockets with postcard serialization. Each `send()` serializes and writes to the socket; each `recv()` reads, deserializes, and advances the session state. The session type enforces both shapes and ordering on the wire — not just in tests. This requires bridging par's async model with calloop on the compositor side, which is why the calloop+par integration proof is Phase 2's second milestone.
+The compositor side integrates with calloop via `SessionSource` — a calloop `EventSource` with a non-blocking accumulation buffer. The socket fd is registered for readiness notification; messages are read without blocking mode toggling. `MAX_MESSAGE_SIZE` (16MB) guards against malicious length prefixes.
 
-**The fallback (if Phase 2 reveals a blocker):** Session types as protocol specification only — define types in par, use them for in-memory testing, implement the wire transport as a hand-written state machine referencing the same enums. This gives shared-type-checking (message shapes verified at compile time) but not session-type-checking (ordering verified by developer discipline, not the compiler). This is the same assurance level BeOS had. It's acceptable as a starting point but not as a permanent state.
+**Event actor validation.** Fowler and Hu's Maty (OOPSLA) proves that event-driven actors participating in multiple sessions through a single event loop are deadlock-free across sessions, provided handlers terminate. Pane's compositor — a calloop event loop with per-client `SessionSource` registrations — is this model. Each connected client is a session. The calloop callback is Maty's handler. The compositor never blocks on a single client; it processes whichever session has a pending message. This is the same architecture BeOS's app_server proved empirically (one Desktop thread multiplexing N ServerWindows), now proven formally.
 
-**The aspiration (Phase 3):** Transport-polymorphic session types, like dialectic's Transmitter/Receiver backend trait. A single session type definition that works over in-memory channels, unix sockets, TCP, or any other transport.
+**Why binary session types suffice despite multiparty interactions.** The compositor mediates N client sessions, but N is dynamic and there is no meaningful global type spanning all client interactions. Maty handles the same pattern — the paper's ID server and chat server both service N clients — not through N-party type constructors but through repeated binary session registration, with the actor's internal state mediating cross-session coordination. Pane follows this exactly: each compositor-client relationship is a binary session; the compositor's shared state (layout tree, focus tracking) coordinates between them.
 
-The build sequence prioritizes Phase 2 because it determines the guarantee level of every protocol built afterward. Systems work before graphics work.
+**Active phase decomposition.** The pane protocol has a nondeterminism problem: during the active phase, either side can send at any time. The resolution follows Maty's chat server pattern: session types for structured phases (handshake, negotiation, teardown), typed message enums for the bidirectional repeating phase. Session types govern where ordering matters; typed enums with exhaustive matching govern where bidirectional freedom matters.
+
+### Protocol phasing
+
+The pane protocol decomposes into three phases, each with a typing strategy matched to its structure.
+
+**Handshake (session-typed).** Client sends `ClientHello`; compositor responds with `ServerHello`; client sends capabilities; compositor selects accept or reject via `Select`/`Branch`. The session type captures the sequence and branching exhaustively. After the handshake reaches `End`, the caller recovers the transport via `finish()` for the next phase.
+
+**Active (typed enums, event-driven).** Both sides communicate via typed message enums on the same socket. Each direction has its own enum (`ClientToComp`, `CompToClient`). Both sides send when ready. The compositor dispatches via calloop handler; the client dispatches via its looper thread. Rust's exhaustive `match` guarantees every variant is handled. No session-type ordering constraint — the guarantee is type safety of each individual message, not sequencing.
+
+**Teardown (session-typed or crash boundary).** Graceful: active phase enums include `RequestClose` / `CloseAck`. Crash: socket drops, `SessionEvent::Disconnected` fires. Cleanup proceeds identically minus the acknowledgment. This is Maty's affine session model: a session can be abandoned at any point, and the surviving party handles cancellation through its error path.
 
 ### Async by default
 
@@ -693,7 +703,7 @@ Both of these are things Haiku still struggles with. Pane gets them from the pla
 | **Language** | Rust | Ownership gives compile-time threading guarantees that BeOS enforced by convention. Send/Sync are the type-level encoding of "Commandment #1." |
 | **Compositor framework** | smithay | Composable building blocks for Wayland compositors in Rust. Protocol handling, DRM, input, rendering. |
 | **Compositor event loop** | calloop | Epoll-based, callback-oriented. Required by smithay. Scoped to the compositor only. |
-| **Session types** | Custom typestate `Chan<S, Transport>` | Transport-aware, crash-safe (Err not panic), calloop-compatible. Primitives verified in Lean/Agda. Par and dialectic as design references. |
+| **Session types** | `pane-session` crate: custom typestate `Chan<S, Transport>` | Transport-aware, crash-safe (Err not panic), calloop-compatible. Primitives verified in Lean/Agda. Par and dialectic as design references. |
 | **Wire format** | postcard | Serde-based, varint-encoded, compact binary. |
 | **Init system** | s6 + s6-rc | Small, composable, readiness-aware. Service directories are derivations. Compiled dependency database. |
 | **Build system** | Nix | Declarative, reproducible, atomic upgrades, rollback. ~120k packages via nixpkgs. |
@@ -707,7 +717,7 @@ Both of these are things Haiku still struggles with. Pane gets them from the pla
 | **D-Bus bridge** | zbus crate | Rust D-Bus implementation. pane-dbus translates at the boundary. |
 | **Process tracking** | pidfd | Race-free process identity. Integrates into epoll for lifecycle monitoring. |
 | **Sandboxing** | Landlock (primary) + seccomp (defense-in-depth) | Landlock: unprivileged, filesystem/network/signal scoping, maps 1:1 to `.plan` permissions. seccomp: syscall filtering as second layer. |
-| **Testing** | proptest + in-memory par channels | Property-based tests for protocol correctness. Session types verified in-memory without sockets. |
+| **Testing** | proptest + pane-session MemoryTransport | Property-based tests for protocol correctness. Session types verified in-memory without sockets. |
 
 ---
 
@@ -770,8 +780,8 @@ Things the Be engineers would flag as "we need to prototype this before committi
 ### Session type transport bridge *(promoted to Phase 2 — first milestone)*
 Moved from open question to the build sequence's highest-priority prototype. The transport bridge determines the guarantee level of every protocol built afterward. See §7 (The transport bridge) and §12 (Phase 2).
 
-### calloop + par integration
-Pane's custom session types are fd-based, not async/futures-based. The compositor registers session socket fds with calloop as event sources — callback-driven, no executor needed. This is a deliberate departure from par (which is async-native) and the reason for the custom implementation. The calloop integration prototype (Phase 2, item 3) validates this design.
+### calloop + session type integration *(Phase 2 — complete)*
+Pane's custom session types are fd-based, not async/futures-based. The compositor registers session socket fds with calloop as event sources — callback-driven, no executor needed. `SessionSource` provides non-blocking accumulation with `SessionEvent::Message` / `SessionEvent::Disconnected` dispatch. Validated by Phase 2 prototype: 10 tests passing including crash recovery.
 
 ### Dynamic optic composition for scripting
 How do optic-addressed property accesses compose across handler boundaries at runtime? BeOS solved this with ResolveSpecifier, which was compositional and dynamic. Optics are typically static. The runtime chain resolution pattern (peel, resolve, forward) needs a concrete prototype with at least three levels of nesting to prove it works ergonomically.
@@ -820,6 +830,8 @@ pane-comp needs to implement the xdg-desktop-portal ScreenCast D-Bus interface f
 - Caires, Pfenning, "Session Types as Intuitionistic Linear Propositions" (CONCUR 2010)
 - Wadler, "Propositions as Sessions" (ICFP 2012)
 - faiface/par crate — session types for Rust (design reference, not a dependency)
+- boltlabs-inc/dialectic — transport-polymorphic session types (design reference)
+- Fowler & Hu, "Speak Now: Safe Actor Programming with Multiparty Session Types" (OOPSLA) — event actor model validating calloop architecture
 - boltlabs-inc/dialectic — transport-polymorphic session types (design reference)
 
 ### Systems

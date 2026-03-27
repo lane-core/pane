@@ -98,7 +98,7 @@ During pane-comp implementation, a reviewer identifies that the glyph atlas appr
 When an agent notices something that should be fixed but isn't part of the current task, it SHALL add it to TODO.md with a brief description, severity, and enough context for someone to pick it up later. The agent SHALL NOT fix it inline — capture and move on.
 
 #### Scenario: Agent notices missing validation during renderer work
-While implementing the cell grid renderer, the agent notices that CellRegion doesn't validate width > 0. It adds a TODO.md entry and continues with the renderer.
+While implementing the text renderer, the agent notices that a glyph region doesn't validate width > 0. It adds a TODO.md entry and continues with the renderer.
 
 
 ### Requirement: Contract-first implementation

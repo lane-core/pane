@@ -52,7 +52,7 @@ BeOS proved empirically that message-passing discipline produces robust systems.
 
 ### Session types as formalization
 
-Session types formalize exactly this discipline. What BMessage enforced by convention, session types enforce at compile time. The conversation structure — what is sent, in what order, by whom — is verified before the program runs. Deadlock freedom follows from the underlying proof theory (session types), not from testing. Pane stands on both: the empirical proof that message-passing discipline works, and the theoretical framework that lets the compiler verify it.
+Session types formalize exactly this discipline. What BMessage enforced by convention, session types enforce at compile time. The conversation structure — what is sent, in what order, by whom — is verified before the program runs. Deadlock freedom follows from the underlying proof theory (session types), not from testing. Pane stands on both: the empirical proof that message-passing discipline works, and the theoretical framework that lets the compiler verify it. Fowler and Hu's event actor model (Maty, OOPSLA) provides a third leg: formal proof that an event-loop-based actor servicing multiple sessions is deadlock-free across those sessions — validating the architectural pattern BeOS's app_server proved empirically.
 
 ### Async by default
 

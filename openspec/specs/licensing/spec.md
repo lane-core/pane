@@ -3,7 +3,7 @@
 ### Requirement: Dual license split
 The pane project SHALL use a dual-license model. Kit crates (libraries linked into client processes) SHALL be MIT licensed. Server crates (infrastructure processes) SHALL be AGPL-3.0-only licensed.
 
-**MIT crates (kits and protocol):** pane-proto, pane-app, pane-ui, pane-text, pane-input, pane-store-client, pane-media, pane-ai, pane-notify
+**MIT crates (kits and protocol):** pane-proto, pane-session, pane-app, pane-ui, pane-text, pane-input, pane-store-client, pane-media, pane-ai, pane-notify
 **AGPL-3.0-only crates (servers):** pane-comp, pane-roster, pane-store, pane-fs, pane-watchdog, pane-dbus
 
 **Rationale:** MIT on kits and protocol maximizes adoption — anyone can build pane clients, and the kits ARE the developer experience. AGPL on servers ensures modifications to infrastructure are shared, including in distributed computing scenarios where the network clause applies.

@@ -42,7 +42,7 @@ Each pane SHALL be exposed under `/srv/pane/<id>/` with a tree structure that pr
 - `ctl` — control interface (line commands, write-only)
 - `event` — event stream (JSONL, read-only, blocking)
 
-The tree does not expose rendering internals (cell grids, glyph data, buffer state). A script reading `body` gets the content a human would see, at the semantic level the content operates at.
+The tree does not expose rendering internals (glyph data, buffer state, GPU resources). A script reading `body` gets the content a human would see, at the semantic level the content operates at.
 
 #### Scenario: Tag as plain text
 - **WHEN** `cat /srv/pane/1/tag` is executed
@@ -50,7 +50,7 @@ The tree does not expose rendering internals (cell grids, glyph data, buffer sta
 
 #### Scenario: Body as semantic content
 - **WHEN** `cat /srv/pane/1/body` is executed
-- **THEN** the semantic body content SHALL be returned as plain text (not a cell grid, not rendering state)
+- **THEN** the semantic body content SHALL be returned as plain text (not rendering internals, not buffer state)
 
 #### Scenario: Attributes as individual files
 - **WHEN** `cat /srv/pane/1/attrs/title` is executed
