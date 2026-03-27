@@ -37,7 +37,15 @@ These views are projections of the same internal state. When state changes throu
 
 ### The three parts of every pane
 
-**Tag line.** Editable text that serves as title, command bar, and menu simultaneously. Inspired by acme's tag line — text IS the interface. The tag line is always compositor-rendered (the compositor owns the chrome). Tag line content travels through the pane protocol: the client sends tag content, the compositor renders it. Text in the tag line is actionable: execute (run as command) and route (kit evaluates routing rules for pattern-matched dispatch).
+**Tag line.** A modal command surface that serves as identity, command bar, and discovery mechanism for a pane. The tag line is always compositor-rendered (the compositor owns the chrome). Tag line content travels through the pane protocol: the client declares a title and a command vocabulary; the compositor renders the chrome and manages the activation lifecycle.
+
+The tag line has two states:
+
+**At rest.** The tag line shows the pane's identity — its title. Floating panes display a BeOS-style tab: compact, colored, asymmetric, sitting on the pane border — identity at a glance, a grab handle for movement, minimal cognitive load. The tab carries a small command indicator glyph that signals the command surface exists. Tiled panes display a thin name strip at the top edge — enough for identity, not a command bar. Without this strip, tiled panes lose identity and warmth.
+
+**Activated.** The user triggers the command surface (activation key, click on the indicator, or compositor binding). A cursor appears in the tab (floating) or the strip expands into a command input field (tiled). The user types commands. A completion dropdown appears, populated by the pane's command vocabulary. Enter executes. Escape dismisses instantly, unconditionally. Empty-query mode (activation with no input) shows a browsable, categorized list of all available commands — the which-key discovery pattern and the menu-bar safety net.
+
+**Opt-in.** A pane without a tag line is a component — meant to be interacted with through its parent's tag or its own content area. The developer decides which panes have tags. A container pane (whose body is other panes) may have a tag for layout commands while its children have tags for content commands. Scope is indicated visually when activated; the default targets the leaf, with an explicit gesture to reach the container level.
 
 **Body.** The content area. For pane-native clients: text, widgets, or a hybrid. For legacy Wayland clients: an opaque wl_surface. The body is always client-rendered — the Wayland model — with visual consistency coming from the shared kits, not from the compositor rendering on behalf of clients.
 

@@ -13,42 +13,37 @@ This spec defines the API in terms of actual Rust type signatures. It is a compo
 This is the litmus test. A minimal pane-native application that connects to the compositor, creates a pane with a tag line, handles input events, and exits cleanly.
 
 ```rust
-use pane_app::{App, Pane, PaneEvent};
-use pane_proto::tag::{TagLine, TagAction, TagCommand, BuiltInAction};
+use pane_app::{App, Tag, cmd, BuiltIn};
 
 fn main() -> pane_app::Result<()> {
     let app = App::connect("com.example.hello")?;
 
-    let pane = app.create_pane(TagLine {
-        name: "Hello".into(),
-        actions: vec![TagAction {
-            label: "Del".into(),
-            command: TagCommand::BuiltIn(BuiltInAction::Del),
-        }],
-        user_actions: vec![],
-    })?;
+    let pane = app.create_pane(
+        Tag::new("Hello").commands(vec![
+            cmd("close", "Close this pane")
+                .shortcut("Alt+W")
+                .built_in(BuiltIn::Close),
+        ]),
+    )?;
 
     pane.run(|event| match event {
-        PaneEvent::Key(key) => {
-            if key.key == pane_proto::Key::Named(pane_proto::NamedKey::Escape) {
-                return Ok(false); // stop the loop
-            }
-            Ok(true)
-        }
-        PaneEvent::Close => Ok(false),
+        pane_app::PaneEvent::Key(key) if key.is_escape() => Ok(false),
+        pane_app::PaneEvent::Close => Ok(false),
         _ => Ok(true),
     })
 }
 ```
 
-Fourteen lines of application logic. No threads, no channels, no session types, no transport unwrapping. The kit handles all of that. This is the BApplication("application/x-vnd.Be-SOME") / BWindow / Run() experience translated to Rust.
+Fourteen lines. The tag is declared as a title ("Hello") with one command (close). At rest, the pane shows a tab labeled "Hello" with a close widget and a `:` indicator. Hitting the activation key opens the command surface; typing "close" or browsing the empty-query list shows the close command with its Alt+W shortcut.
 
 What happens underneath:
 
-1. `App::connect` opens a unix socket to pane-comp, runs the session-typed handshake (ClientHello -> ServerHello -> Capabilities -> Branch), registers with pane-roster, and stores the active-phase transport.
-2. `app.create_pane` sends a CreatePane request over the active-phase protocol, receives a PaneId and an initial Resize, spawns a per-pane looper thread with its own sub-session, and returns a Pane handle.
+1. `App::connect` opens a unix socket to pane-comp, runs the session-typed handshake (ClientHello → ServerHello → Capabilities → Branch), registers with pane-roster, and stores the active-phase transport.
+2. `app.create_pane` sends a CreatePane request over the active-phase protocol, receives a PaneId and an initial Resize, spawns a per-pane looper thread with its own sub-session, and returns a Pane handle. The `Tag` is sent to the compositor, which renders the tab chrome.
 3. `pane.run` enters the pane's message loop on the per-pane thread, dispatching CompToClient messages to the closure. Returning `Ok(false)` sends RequestClose and exits the loop.
 4. When all panes are closed, `App` sends a graceful disconnect and drops the connection.
+
+A pane with no commands: `app.create_pane(Tag::new("Status"))`. A component pane with no tag line at all: `app.create_pane(None)`.
 
 The developer does not need to know any of this. The 14 lines above are the complete, working application.
 
@@ -1300,7 +1295,7 @@ pane-app
 
 pane-app depends on pane-session but does not re-export it. Developers writing pane-native applications never need to add pane-session to their Cargo.toml. The session types are an implementation detail of the kit, not part of its public API.
 
-pane-proto is re-exported selectively -- the event types, tag types, and key/mouse types are part of the developer's API. The wire serialization functions are not.
+pane-proto is re-exported selectively — the event types and key/mouse types are part of the developer's API. The wire serialization functions are not. The old `TagLine`/`TagAction`/`TagCommand` types in pane-proto are superseded by the `Tag` builder and `Command`/`CommandVocabulary` types described in the revised tag line spec (`tagline-revised-spec.md`). pane-proto's tag module will be rewritten to carry the wire representation of the new types (`PaneTitle`, `CommandVocabulary`, `Command`, `Completion`).
 
 ---
 
