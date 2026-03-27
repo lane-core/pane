@@ -62,6 +62,12 @@ impl MockCompositor {
         self.log.clone()
     }
 
+    /// Get a sender for injecting events directly into the client connection.
+    /// Use this to send CompToClient messages from test code.
+    pub fn sender(&self) -> mpsc::Sender<CompToClient> {
+        self.conn.sender.clone()
+    }
+
     /// Run the mock compositor. Processes messages until the connection closes.
     pub fn run(mut self) {
         let default_geometry = PaneGeometry {
@@ -95,9 +101,13 @@ impl MockCompositor {
                     let mut remaining = Vec::new();
                     for (target, event) in self.injections.drain(..) {
                         if target == id {
-                            // Small delay to let the kit set up the pane
-                            std::thread::sleep(Duration::from_millis(50));
-                            let _ = self.conn.sender.send(event);
+                            // Send on a separate thread with delay to ensure
+                            // the kit has time to register the pane's channel
+                            let sender = self.conn.sender.clone();
+                            std::thread::spawn(move || {
+                                std::thread::sleep(Duration::from_millis(200));
+                                let _ = sender.send(event);
+                            });
                         } else {
                             remaining.push((target, event));
                         }
