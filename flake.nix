@@ -26,6 +26,7 @@
         ./nix/modules/devshell.nix
         ./nix/modules/pre-commit.nix
         ./nix/modules/packages.nix
+        ./nix/modules/compositor.nix
       ];
     };
 }
