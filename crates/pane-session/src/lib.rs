@@ -17,6 +17,8 @@ pub mod dual;
 pub mod error;
 pub mod transport;
 pub mod calloop;
+#[macro_use]
+pub mod macros;
 
 pub use types::{Send, Recv, Select, Branch, Offer, End, Chan};
 pub use dual::Dual;
