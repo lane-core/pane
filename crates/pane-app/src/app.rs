@@ -1,11 +1,10 @@
 //! The application entry point.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 use std::sync::mpsc;
 use std::sync::{Arc, Mutex, atomic::{AtomicUsize, Ordering}};
 use std::thread;
 
-use pane_proto::message::PaneId;
 use pane_proto::protocol::{ClientToComp, CompToClient, CreatePaneTag};
 
 use crate::connection::Connection;
@@ -24,7 +23,7 @@ pub struct App {
     /// forwards CompToClient messages to the right pane's channel.
     pane_channels: Arc<Mutex<HashMap<u64, mpsc::Sender<CompToClient>>>>,
     /// Oneshot channels for pending create_pane responses.
-    pending_creates: Arc<Mutex<Vec<mpsc::Sender<CompToClient>>>>,
+    pending_creates: Arc<Mutex<VecDeque<mpsc::Sender<CompToClient>>>>,
     /// Application signature.
     signature: String,
     /// Live pane count.
@@ -45,8 +44,8 @@ impl App {
         let comp_tx = conn.sender;
         let pane_channels: Arc<Mutex<HashMap<u64, mpsc::Sender<CompToClient>>>> =
             Arc::new(Mutex::new(HashMap::new()));
-        let pending_creates: Arc<Mutex<Vec<mpsc::Sender<CompToClient>>>> =
-            Arc::new(Mutex::new(Vec::new()));
+        let pending_creates: Arc<Mutex<VecDeque<mpsc::Sender<CompToClient>>>> =
+            Arc::new(Mutex::new(VecDeque::new()));
 
         // Spawn the dispatcher thread — reads from compositor, routes to panes
         let channels = pane_channels.clone();
@@ -63,7 +62,7 @@ impl App {
                 // Check if this is a PaneCreated response to a pending create
                 if let CompToClient::PaneCreated { .. } = &msg {
                     let mut pending = creates.lock().unwrap();
-                    if let Some(oneshot) = pending.pop() {
+                    if let Some(oneshot) = pending.pop_front() {
                         let _ = oneshot.send(msg);
                         continue;
                     }
@@ -94,13 +93,25 @@ impl App {
     ///
     /// Blocks until the compositor responds with PaneCreated or
     /// times out after 5 seconds.
-    pub fn create_pane(&self, tag: impl Into<Option<Tag>>) -> Result<Pane> {
-        let tag = tag.into();
-        let wire_tag = tag.map(|t| t.into_wire());
+    pub fn create_pane(&self, tag: Tag) -> Result<Pane> {
+        let wire_tag = Some(tag.into_wire());
+        self.create_pane_inner(wire_tag)
+    }
+
+    /// Create a component pane with no tag line.
+    ///
+    /// Component panes have no title or command surface — they are
+    /// building blocks meant to be interacted with through their
+    /// parent pane's tag or their own content area.
+    pub fn create_component_pane(&self) -> Result<Pane> {
+        self.create_pane_inner(None)
+    }
+
+    fn create_pane_inner(&self, wire_tag: Option<CreatePaneTag>) -> Result<Pane> {
 
         // Set up oneshot for the PaneCreated response
         let (create_tx, create_rx) = mpsc::channel();
-        self.pending_creates.lock().unwrap().push(create_tx);
+        self.pending_creates.lock().unwrap().push_back(create_tx);
 
         // Send CreatePane to compositor
         self.comp_tx.send(ClientToComp::CreatePane { tag: wire_tag })

@@ -18,10 +18,12 @@ use crate::error::Result;
 use crate::event::PaneEvent;
 use crate::filter::FilterChain;
 use crate::handler::Handler;
+use crate::proxy::PaneProxy;
 
 /// Run the event loop with a closure handler.
 ///
-/// The closure receives a PaneEvent and returns:
+/// The closure receives a PaneProxy (for sending messages back to the
+/// compositor) and a PaneEvent, and returns:
 /// - Ok(true) to continue
 /// - Ok(false) to exit
 /// - Err to exit with error
@@ -29,29 +31,29 @@ pub fn run_closure(
     pane_id: PaneId,
     receiver: mpsc::Receiver<CompToClient>,
     mut filters: FilterChain,
-    mut handler: impl FnMut(PaneEvent) -> Result<bool>,
+    proxy: PaneProxy,
+    mut handler: impl FnMut(&PaneProxy, PaneEvent) -> Result<bool>,
 ) -> Result<()> {
     loop {
         let msg = match receiver.recv() {
             Ok(msg) => msg,
             Err(_) => {
-                // Channel closed — compositor or dispatcher died
-                let _ = handler(PaneEvent::Disconnected);
+                let _ = handler(&proxy, PaneEvent::Disconnected);
                 return Ok(());
             }
         };
 
         let event = match PaneEvent::from_comp(&msg, pane_id) {
             Some(e) => e,
-            None => continue, // not for this pane, or internal message
+            None => continue,
         };
 
         let event = match filters.apply(event) {
             Some(e) => e,
-            None => continue, // consumed by filter
+            None => continue,
         };
 
-        let keep_going = handler(event)?;
+        let keep_going = handler(&proxy, event)?;
         if !keep_going {
             return Ok(());
         }
@@ -63,13 +65,14 @@ pub fn run_handler(
     pane_id: PaneId,
     receiver: mpsc::Receiver<CompToClient>,
     mut filters: FilterChain,
+    proxy: PaneProxy,
     mut handler: impl Handler,
 ) -> Result<()> {
     loop {
         let msg = match receiver.recv() {
             Ok(msg) => msg,
             Err(_) => {
-                let _ = handler.disconnected();
+                let _ = handler.disconnected(&proxy);
                 return Ok(());
             }
         };
@@ -84,7 +87,7 @@ pub fn run_handler(
             None => continue,
         };
 
-        let keep_going = dispatch_to_handler(&mut handler, event)?;
+        let keep_going = dispatch_to_handler(&mut handler, &proxy, event)?;
         if !keep_going {
             return Ok(());
         }
@@ -92,21 +95,21 @@ pub fn run_handler(
 }
 
 /// Dispatch a single PaneEvent to the appropriate Handler method.
-fn dispatch_to_handler(handler: &mut impl Handler, event: PaneEvent) -> Result<bool> {
+fn dispatch_to_handler(handler: &mut impl Handler, proxy: &PaneProxy, event: PaneEvent) -> Result<bool> {
     match event {
-        PaneEvent::Ready(geom) => handler.ready(geom),
-        PaneEvent::Resize(geom) => handler.resized(geom),
-        PaneEvent::Focus => handler.focused(),
-        PaneEvent::Blur => handler.blurred(),
-        PaneEvent::Key(key) => handler.key(key),
-        PaneEvent::Mouse(mouse) => handler.mouse(mouse),
-        PaneEvent::Close => handler.close_requested(),
-        PaneEvent::CommandActivated => handler.command_activated(),
-        PaneEvent::CommandDismissed => handler.command_dismissed(),
+        PaneEvent::Ready(geom) => handler.ready(proxy, geom),
+        PaneEvent::Resize(geom) => handler.resized(proxy, geom),
+        PaneEvent::Focus => handler.focused(proxy),
+        PaneEvent::Blur => handler.blurred(proxy),
+        PaneEvent::Key(key) => handler.key(proxy, key),
+        PaneEvent::Mouse(mouse) => handler.mouse(proxy, mouse),
+        PaneEvent::Close => handler.close_requested(proxy),
+        PaneEvent::CommandActivated => handler.command_activated(proxy),
+        PaneEvent::CommandDismissed => handler.command_dismissed(proxy),
         PaneEvent::CommandExecuted { command, args } =>
-            handler.command_executed(&command, &args),
+            handler.command_executed(proxy, &command, &args),
         PaneEvent::CompletionRequest { token, input } =>
-            handler.completion_request(token, &input),
-        PaneEvent::Disconnected => handler.disconnected(),
+            handler.completion_request(proxy, token, &input),
+        PaneEvent::Disconnected => handler.disconnected(proxy),
     }
 }

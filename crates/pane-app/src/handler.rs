@@ -2,6 +2,7 @@ use pane_proto::event::{KeyEvent, MouseEvent};
 use pane_proto::protocol::PaneGeometry;
 
 use crate::error::Result;
+use crate::proxy::PaneProxy;
 
 /// Trait for structured pane event handling.
 ///
@@ -22,68 +23,69 @@ use crate::error::Result;
 /// - `Err(e)` — exit the event loop with an error
 pub trait Handler: Send + 'static {
     /// Called once when the pane is ready (initial geometry received).
-    fn ready(&mut self, _geometry: PaneGeometry) -> Result<bool> {
+    /// The PaneProxy allows sending messages back to the compositor.
+    fn ready(&mut self, _proxy: &PaneProxy, _geometry: PaneGeometry) -> Result<bool> {
         Ok(true)
     }
 
     /// The pane was resized.
-    fn resized(&mut self, _geometry: PaneGeometry) -> Result<bool> {
+    fn resized(&mut self, _proxy: &PaneProxy, _geometry: PaneGeometry) -> Result<bool> {
         Ok(true)
     }
 
     /// The pane gained focus.
-    fn focused(&mut self) -> Result<bool> {
+    fn focused(&mut self, _proxy: &PaneProxy) -> Result<bool> {
         Ok(true)
     }
 
     /// The pane lost focus.
-    fn blurred(&mut self) -> Result<bool> {
+    fn blurred(&mut self, _proxy: &PaneProxy) -> Result<bool> {
         Ok(true)
     }
 
     /// Keyboard input.
-    fn key(&mut self, _event: KeyEvent) -> Result<bool> {
+    fn key(&mut self, _proxy: &PaneProxy, _event: KeyEvent) -> Result<bool> {
         Ok(true)
     }
 
     /// Mouse input.
-    fn mouse(&mut self, _event: MouseEvent) -> Result<bool> {
+    fn mouse(&mut self, _proxy: &PaneProxy, _event: MouseEvent) -> Result<bool> {
         Ok(true)
     }
 
     /// The command surface was activated.
-    fn command_activated(&mut self) -> Result<bool> {
+    fn command_activated(&mut self, _proxy: &PaneProxy) -> Result<bool> {
         Ok(true)
     }
 
     /// The command surface was dismissed.
-    fn command_dismissed(&mut self) -> Result<bool> {
+    fn command_dismissed(&mut self, _proxy: &PaneProxy) -> Result<bool> {
         Ok(true)
     }
 
     /// A command was executed from the command surface.
-    fn command_executed(&mut self, _command: &str, _args: &str) -> Result<bool> {
+    fn command_executed(&mut self, _proxy: &PaneProxy, _command: &str, _args: &str) -> Result<bool> {
         Ok(true)
     }
 
     /// The compositor requests completions for the command input.
-    fn completion_request(&mut self, _token: u64, _input: &str) -> Result<bool> {
+    fn completion_request(&mut self, _proxy: &PaneProxy, _token: u64, _input: &str) -> Result<bool> {
         Ok(true)
     }
 
     /// The compositor requests this pane to close.
     /// Default: accept the close (return Ok(false) to stop the loop).
-    fn close_requested(&mut self) -> Result<bool> {
+    fn close_requested(&mut self, _proxy: &PaneProxy) -> Result<bool> {
         Ok(false)
     }
 
     /// The connection to the compositor was lost.
-    fn disconnected(&mut self) -> Result<bool> {
+    fn disconnected(&mut self, _proxy: &PaneProxy) -> Result<bool> {
         Ok(false)
     }
 
     /// Catch-all for events not handled by other methods.
-    fn unhandled(&mut self) -> Result<bool> {
+    fn unhandled(&mut self, _proxy: &PaneProxy) -> Result<bool> {
         Ok(true)
     }
 }

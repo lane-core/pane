@@ -13,6 +13,7 @@ use crate::event::PaneEvent;
 use crate::filter::FilterChain;
 use crate::handler::Handler;
 use crate::looper;
+use crate::proxy::PaneProxy;
 
 /// Handle to a pane in the compositor.
 ///
@@ -75,10 +76,17 @@ impl Pane {
     ///     _ => Ok(true),
     /// })
     /// ```
-    pub fn run(self, handler: impl FnMut(PaneEvent) -> Result<bool>) -> Result<()> {
-        let Pane { id, receiver, filters, comp_tx, pane_count, .. } = self;
+    /// Get a PaneProxy for this pane. The proxy can be cloned and
+    /// sent to other threads for sending messages to the compositor.
+    pub fn proxy(&self) -> PaneProxy {
+        PaneProxy::new(self.id, self.comp_tx.clone())
+    }
 
-        let result = looper::run_closure(id, receiver, filters, handler);
+    pub fn run(self, handler: impl FnMut(&PaneProxy, PaneEvent) -> Result<bool>) -> Result<()> {
+        let Pane { id, receiver, filters, comp_tx, pane_count, .. } = self;
+        let proxy = PaneProxy::new(id, comp_tx.clone());
+
+        let result = looper::run_closure(id, receiver, filters, proxy, handler);
 
         let _ = comp_tx.send(ClientToComp::RequestClose { pane: id });
         pane_count.fetch_sub(1, Ordering::Relaxed);
@@ -94,8 +102,9 @@ impl Pane {
     /// ```
     pub fn run_with(self, handler: impl Handler) -> Result<()> {
         let Pane { id, receiver, filters, comp_tx, pane_count, .. } = self;
+        let proxy = PaneProxy::new(id, comp_tx.clone());
 
-        let result = looper::run_handler(id, receiver, filters, handler);
+        let result = looper::run_handler(id, receiver, filters, proxy, handler);
 
         let _ = comp_tx.send(ClientToComp::RequestClose { pane: id });
         pane_count.fetch_sub(1, Ordering::Relaxed);

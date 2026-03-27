@@ -49,7 +49,7 @@ impl MockCompositor {
 
     /// Schedule a Close event for the first pane created, after a delay.
     /// Convenience for the hello-pane test.
-    pub fn close_first_pane_after(&mut self, delay: Duration) {
+    pub fn close_first_pane_after(&mut self, _delay: Duration) {
         // We'll handle this specially in run()
         self.injections.push((
             PaneId::new(NonZeroU32::new(1).unwrap()),

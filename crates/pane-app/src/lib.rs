@@ -18,7 +18,7 @@
 //!                 .built_in(BuiltIn::Close),
 //!         ]),
 //!     )?;
-//!     pane.run(|event| match event {
+//!     pane.run(|_proxy, event| match event {
 //!         pane_app::PaneEvent::Key(key) if key.is_escape() => Ok(false),
 //!         pane_app::PaneEvent::Close => Ok(false),
 //!         _ => Ok(true),
@@ -35,6 +35,7 @@ pub mod handler;
 pub mod looper;
 pub mod mock;
 pub mod pane;
+pub mod proxy;
 pub mod routing;
 pub mod scripting;
 pub mod tag;
@@ -45,6 +46,7 @@ pub use event::PaneEvent;
 pub use filter::{Filter, FilterAction};
 pub use handler::Handler;
 pub use pane::Pane;
+pub use proxy::PaneProxy;
 pub use routing::{RouteTable, RouteResult, RouteCandidate};
 pub use scripting::{PropertyDecl, ScriptQuery, ScriptOp, ScriptReplyToken};
 pub use tag::{Tag, CommandBuilder, cmd};

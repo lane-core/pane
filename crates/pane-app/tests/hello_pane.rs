@@ -40,7 +40,7 @@ fn hello_pane_lifecycle() {
     });
 
     eprintln!("[test] entering pane.run()");
-    pane.run(|event| {
+    pane.run(|_proxy, event| {
         eprintln!("[run] received event: {:?}", event);
         match event {
             PaneEvent::Key(key) if key.is_escape() => Ok(false),

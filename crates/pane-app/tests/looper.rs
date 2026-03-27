@@ -2,18 +2,20 @@ use std::num::NonZeroU32;
 use std::sync::mpsc;
 use std::sync::{Arc, Mutex};
 
-use pane_app::{PaneEvent, Handler, Filter, FilterAction};
+use pane_app::{PaneEvent, Handler, Filter, FilterAction, PaneProxy};
 use pane_app::error::Result;
 use pane_proto::event::{KeyEvent, Key, NamedKey, Modifiers, KeyState};
 use pane_proto::message::PaneId;
-use pane_proto::protocol::{CompToClient, PaneGeometry};
+use pane_proto::protocol::{ClientToComp, CompToClient, PaneGeometry};
 
 fn pane_id(n: u32) -> PaneId {
     PaneId::new(NonZeroU32::new(n).unwrap())
 }
 
-fn geom() -> PaneGeometry {
-    PaneGeometry { width: 800, height: 600, cols: 80, rows: 24 }
+fn make_proxy(id: PaneId) -> PaneProxy {
+    // Create a dummy proxy for testing — the sender goes nowhere
+    let (tx, _rx) = mpsc::channel::<ClientToComp>();
+    PaneProxy::new(id, tx)
 }
 
 fn escape_key() -> CompToClient {
@@ -37,12 +39,13 @@ fn close_msg() -> CompToClient {
 fn closure_receives_key_and_exits() {
     let (tx, rx) = mpsc::channel();
     let filters = pane_app::filter::FilterChain::new();
+    let proxy = make_proxy(pane_id(1));
 
     tx.send(escape_key()).unwrap();
-    drop(tx); // close channel after one message
+    drop(tx);
 
     let mut got_key = false;
-    pane_app::looper::run_closure(pane_id(1), rx, filters, |event| {
+    pane_app::looper::run_closure(pane_id(1), rx, filters, proxy, |_proxy, event| {
         if let PaneEvent::Key(k) = &event {
             if k.is_escape() {
                 got_key = true;
@@ -59,12 +62,13 @@ fn closure_receives_key_and_exits() {
 fn closure_handles_close() {
     let (tx, rx) = mpsc::channel();
     let filters = pane_app::filter::FilterChain::new();
+    let proxy = make_proxy(pane_id(1));
 
     tx.send(close_msg()).unwrap();
     drop(tx);
 
     let mut got_close = false;
-    pane_app::looper::run_closure(pane_id(1), rx, filters, |event| {
+    pane_app::looper::run_closure(pane_id(1), rx, filters, proxy, |_proxy, event| {
         if matches!(event, PaneEvent::Close) {
             got_close = true;
             return Ok(false);
@@ -79,16 +83,16 @@ fn closure_handles_close() {
 fn closure_handles_channel_close_as_disconnect() {
     let (tx, rx) = mpsc::channel::<CompToClient>();
     let filters = pane_app::filter::FilterChain::new();
+    let proxy = make_proxy(pane_id(1));
 
-    // Drop sender immediately — simulates compositor death
     drop(tx);
 
     let mut got_disconnect = false;
-    pane_app::looper::run_closure(pane_id(1), rx, filters, |event| {
+    pane_app::looper::run_closure(pane_id(1), rx, filters, proxy, |_proxy, event| {
         if matches!(event, PaneEvent::Disconnected) {
             got_disconnect = true;
         }
-        Ok(true) // doesn't matter, loop exits on channel close
+        Ok(true)
     }).unwrap();
 
     assert!(got_disconnect);
@@ -98,15 +102,14 @@ fn closure_handles_channel_close_as_disconnect() {
 fn closure_ignores_wrong_pane_id() {
     let (tx, rx) = mpsc::channel();
     let filters = pane_app::filter::FilterChain::new();
+    let proxy = make_proxy(pane_id(1));
 
-    // Send a message for pane 2, but looper runs for pane 1
     tx.send(CompToClient::Focus { pane: pane_id(2) }).unwrap();
-    // Then send close for pane 1
     tx.send(close_msg()).unwrap();
     drop(tx);
 
     let mut events_received = 0;
-    pane_app::looper::run_closure(pane_id(1), rx, filters, |event| {
+    pane_app::looper::run_closure(pane_id(1), rx, filters, proxy, |_proxy, event| {
         events_received += 1;
         if matches!(event, PaneEvent::Close) {
             return Ok(false);
@@ -114,7 +117,6 @@ fn closure_ignores_wrong_pane_id() {
         Ok(true)
     }).unwrap();
 
-    // Should only receive the Close, not the Focus (wrong pane)
     assert_eq!(events_received, 1);
 }
 
@@ -138,15 +140,15 @@ fn filter_consumes_event() {
     let (tx, rx) = mpsc::channel();
     let mut filters = pane_app::filter::FilterChain::new();
     filters.add(ConsumeEscapeFilter);
+    let proxy = make_proxy(pane_id(1));
 
-    // Send escape (will be consumed) then close (will reach handler)
     tx.send(escape_key()).unwrap();
     tx.send(close_msg()).unwrap();
     drop(tx);
 
     let mut got_escape = false;
     let mut got_close = false;
-    pane_app::looper::run_closure(pane_id(1), rx, filters, |event| {
+    pane_app::looper::run_closure(pane_id(1), rx, filters, proxy, |_proxy, event| {
         match event {
             PaneEvent::Key(ref k) if k.is_escape() => got_escape = true,
             PaneEvent::Close => {
@@ -169,34 +171,34 @@ struct TestHandler {
 }
 
 impl Handler for TestHandler {
-    fn ready(&mut self, _geom: PaneGeometry) -> Result<bool> {
+    fn ready(&mut self, _proxy: &PaneProxy, _geom: PaneGeometry) -> Result<bool> {
         self.log.lock().unwrap().push("ready".into());
         Ok(true)
     }
 
-    fn focused(&mut self) -> Result<bool> {
+    fn focused(&mut self, _proxy: &PaneProxy) -> Result<bool> {
         self.log.lock().unwrap().push("focused".into());
         Ok(true)
     }
 
-    fn blurred(&mut self) -> Result<bool> {
+    fn blurred(&mut self, _proxy: &PaneProxy) -> Result<bool> {
         self.log.lock().unwrap().push("blurred".into());
         Ok(true)
     }
 
-    fn key(&mut self, event: KeyEvent) -> Result<bool> {
+    fn key(&mut self, _proxy: &PaneProxy, event: KeyEvent) -> Result<bool> {
         self.log.lock().unwrap().push(format!("key:{:?}", event.key));
         Ok(true)
     }
 
-    fn command_executed(&mut self, command: &str, args: &str) -> Result<bool> {
+    fn command_executed(&mut self, _proxy: &PaneProxy, command: &str, args: &str) -> Result<bool> {
         self.log.lock().unwrap().push(format!("cmd:{}:{}", command, args));
         Ok(true)
     }
 
-    fn close_requested(&mut self) -> Result<bool> {
+    fn close_requested(&mut self, _proxy: &PaneProxy) -> Result<bool> {
         self.log.lock().unwrap().push("close".into());
-        Ok(false) // accept close
+        Ok(false)
     }
 }
 
@@ -205,6 +207,7 @@ fn handler_dispatches_to_correct_methods() {
     let (tx, rx) = mpsc::channel();
     let filters = pane_app::filter::FilterChain::new();
     let log = Arc::new(Mutex::new(Vec::new()));
+    let proxy = make_proxy(pane_id(1));
 
     let handler = TestHandler { log: log.clone() };
 
@@ -218,7 +221,7 @@ fn handler_dispatches_to_correct_methods() {
     tx.send(close_msg()).unwrap();
     drop(tx);
 
-    pane_app::looper::run_handler(pane_id(1), rx, filters, handler).unwrap();
+    pane_app::looper::run_handler(pane_id(1), rx, filters, proxy, handler).unwrap();
 
     let log = log.lock().unwrap();
     assert_eq!(*log, vec!["focused", "blurred", "cmd:save:foo.rs", "close"]);
