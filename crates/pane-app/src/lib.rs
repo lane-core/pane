@@ -35,6 +35,8 @@ pub mod handler;
 pub mod looper;
 pub mod mock;
 pub mod pane;
+pub mod routing;
+pub mod scripting;
 pub mod tag;
 
 pub use app::App;
@@ -43,5 +45,7 @@ pub use event::PaneEvent;
 pub use filter::{Filter, FilterAction};
 pub use handler::Handler;
 pub use pane::Pane;
+pub use routing::{RouteTable, RouteResult, RouteCandidate};
+pub use scripting::{PropertyDecl, ScriptQuery, ScriptOp, ScriptReplyToken};
 pub use tag::{Tag, CommandBuilder, cmd};
 pub use pane_proto::tag::BuiltIn;
