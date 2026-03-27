@@ -6,9 +6,8 @@ use std::sync::Arc;
 
 use pane_proto::message::PaneId;
 use pane_proto::protocol::{ClientToComp, CompToClient, PaneGeometry};
-use pane_proto::tag::{PaneTitle, CommandVocabulary};
 
-use crate::error::{PaneError, Result};
+use crate::error::Result;
 use crate::event::PaneEvent;
 use crate::filter::FilterChain;
 use crate::handler::Handler;
@@ -25,6 +24,7 @@ pub struct Pane {
     receiver: mpsc::Receiver<CompToClient>,
     comp_tx: mpsc::Sender<ClientToComp>,
     pane_count: Arc<AtomicUsize>,
+    done_signal: Arc<(std::sync::Mutex<()>, std::sync::Condvar)>,
     filters: FilterChain,
 }
 
@@ -35,6 +35,7 @@ impl Pane {
         receiver: mpsc::Receiver<CompToClient>,
         comp_tx: mpsc::Sender<ClientToComp>,
         pane_count: Arc<AtomicUsize>,
+        done_signal: Arc<(std::sync::Mutex<()>, std::sync::Condvar)>,
     ) -> Self {
         Pane {
             id,
@@ -42,6 +43,7 @@ impl Pane {
             receiver,
             comp_tx,
             pane_count,
+            done_signal,
             filters: FilterChain::new(),
         }
     }
@@ -83,13 +85,15 @@ impl Pane {
     }
 
     pub fn run(self, handler: impl FnMut(&PaneHandle, PaneEvent) -> Result<bool>) -> Result<()> {
-        let Pane { id, receiver, filters, comp_tx, pane_count, .. } = self;
-        let proxy = PaneHandle::new(id, comp_tx.clone());
+        let Pane { id, receiver, filters, comp_tx, pane_count, done_signal, .. } = self;
+        let handle = PaneHandle::new(id, comp_tx.clone());
 
-        let result = looper::run_closure(id, receiver, filters, proxy, handler);
+        let result = looper::run_closure(id, receiver, filters, handle, handler);
 
         let _ = comp_tx.send(ClientToComp::RequestClose { pane: id });
-        pane_count.fetch_sub(1, Ordering::Relaxed);
+        if pane_count.fetch_sub(1, Ordering::Relaxed) == 1 {
+            done_signal.1.notify_all();
+        }
 
         result
     }
@@ -101,42 +105,22 @@ impl Pane {
     /// pane.run_with(Weather { city: "SF".into(), data: None })
     /// ```
     pub fn run_with(self, handler: impl Handler) -> Result<()> {
-        let Pane { id, receiver, filters, comp_tx, pane_count, .. } = self;
-        let proxy = PaneHandle::new(id, comp_tx.clone());
+        let Pane { id, receiver, filters, comp_tx, pane_count, done_signal, .. } = self;
+        let handle = PaneHandle::new(id, comp_tx.clone());
 
-        let result = looper::run_handler(id, receiver, filters, proxy, handler);
+        let result = looper::run_handler(id, receiver, filters, handle, handler);
 
         let _ = comp_tx.send(ClientToComp::RequestClose { pane: id });
-        pane_count.fetch_sub(1, Ordering::Relaxed);
+        if pane_count.fetch_sub(1, Ordering::Relaxed) == 1 {
+            done_signal.1.notify_all();
+        }
 
         result
     }
 
-    /// Update the pane's title.
-    pub fn set_title(&self, title: PaneTitle) -> Result<()> {
-        self.comp_tx.send(ClientToComp::SetTitle {
-            pane: self.id,
-            title,
-        }).map_err(|_| PaneError::Disconnected)?;
-        Ok(())
-    }
-
-    /// Update the pane's command vocabulary.
-    pub fn set_vocabulary(&self, vocabulary: CommandVocabulary) -> Result<()> {
-        self.comp_tx.send(ClientToComp::SetVocabulary {
-            pane: self.id,
-            vocabulary,
-        }).map_err(|_| PaneError::Disconnected)?;
-        Ok(())
-    }
-
-    /// Update the pane's body content.
-    pub fn set_content(&self, content: &[u8]) -> Result<()> {
-        self.comp_tx.send(ClientToComp::SetContent {
-            pane: self.id,
-            content: content.to_vec(),
-        }).map_err(|_| PaneError::Disconnected)?;
-        Ok(())
-    }
+    // Note: set_title, set_vocabulary, set_content live on PaneHandle,
+    // not Pane. Pane is consumed by run(), so these can't be called
+    // during the event loop. Use pane.proxy() before run() or the
+    // &PaneHandle passed to your handler/closure.
 }
 

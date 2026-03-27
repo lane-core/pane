@@ -72,8 +72,10 @@ kits
 
 kits are the programming model, not wrappers over a protocol.
 
-    pane-proto      wire types, session definitions
-    pane-app        looper, handler, routing, lifecycle
+    pane-proto      wire types, protocol enums, session definitions
+    pane-session    session-typed channels (Chan<S, Transport>)
+    pane-app        application kit: App, Pane, PaneHandle, Handler
+    pane-notify     filesystem notification (fanotify/inotify)
     pane-ui         text rendering, widgets, styling, layout
     pane-text       text buffers, structural regular expressions
     pane-input      generalized keybinding grammar
@@ -101,11 +103,13 @@ fonts
 building
 --------
 
-    just build              # pane-proto (any platform)
-    just build comp         # pane-comp (linux, via nix)
-    just test               # run tests
-    just vm fresh           # boot test VM
-    just dev                # build + run in VM
+    direnv allow            # activate nix dev shell (first time)
+    just build              # build all crates
+    just test               # run all tests (60+)
+    just test-crate pane-app   # test a specific crate
+    just lint               # clippy
+    just fmt                # rustfmt + nixfmt
+    just doc                # generate API docs
 
 license
 -------

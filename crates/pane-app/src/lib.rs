@@ -27,13 +27,13 @@
 //! ```
 
 pub mod app;
-pub mod connection;
+pub(crate) mod connection;
 pub mod error;
 pub mod event;
 pub mod filter;
 pub mod handler;
 pub mod looper;
-pub mod mock;
+pub mod mock; // pub for integration tests
 pub mod pane;
 pub mod proxy;
 pub mod routing;

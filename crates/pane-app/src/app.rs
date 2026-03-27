@@ -28,6 +28,8 @@ pub struct App {
     signature: String,
     /// Live pane count.
     pane_count: Arc<AtomicUsize>,
+    /// Signal for wait() — notified when pane_count reaches 0.
+    done_signal: Arc<(Mutex<()>, std::sync::Condvar)>,
     /// Dispatcher thread handle.
     _dispatcher: thread::JoinHandle<()>,
 }
@@ -85,6 +87,7 @@ impl App {
             pending_creates,
             signature: signature.to_string(),
             pane_count: Arc::new(AtomicUsize::new(0)),
+            done_signal: Arc::new((Mutex::new(()), std::sync::Condvar::new())),
             _dispatcher: dispatcher,
         })
     }
@@ -137,14 +140,17 @@ impl App {
             pane_rx,
             self.comp_tx.clone(),
             self.pane_count.clone(),
+            self.done_signal.clone(),
         ))
     }
 
     /// Wait until all panes are closed.
     pub fn wait(&self) {
-        while self.pane_count.load(Ordering::Relaxed) > 0 {
-            std::thread::sleep(std::time::Duration::from_millis(50));
-        }
+        let (lock, cvar) = &*self.done_signal;
+        let guard = lock.lock().unwrap();
+        let _guard = cvar.wait_while(guard, |_| {
+            self.pane_count.load(Ordering::Relaxed) > 0
+        }).unwrap();
     }
 }
 
