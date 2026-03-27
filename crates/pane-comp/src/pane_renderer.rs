@@ -1,4 +1,4 @@
-use pane_proto::cell::{Cell, CellAttrs, CellRegion};
+use crate::cell::{Cell, CellAttrs, CellRegion};
 use pane_proto::color::{Color, NamedColor};
 use smithay::backend::renderer::gles::GlesFrame;
 use smithay::utils::{Physical, Rectangle, Size};
