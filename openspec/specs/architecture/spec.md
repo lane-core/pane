@@ -763,8 +763,27 @@ In Phase 1, session types define the protocol and verify message shapes at compi
 
 ### Phase 3: Core Infrastructure + Minimal Agent Prototype
 4. **pane-notify** — fanotify/inotify abstraction. Looper integration (calloop for compositor, channels for others).
-5. **pane-app kit** — looper abstraction, handler chain, routing, connection management. The kit that application developers program against. Built on the verified transport from Phase 2.
-6. **Minimal agent infrastructure** — agent user accounts, `.plan` file convention, message passing over the pane protocol, Unix communication patterns (`write`/`mail`/`mesg`). Not the full AI Kit — just enough for agents to participate as system users. From this point on, agents inhabit the system under development: running tests, monitoring builds, exercising protocols under multi-user load. Pane is developed by its own inhabitants.
+5. **pane-app kit** — looper abstraction, handler chain, routing, connection management. The kit that application developers program against. Built on the verified transport from Phase 2. The `Tag::new().commands()` builder API, the `Handler` trait, the `cmd()` convenience constructors.
+6. **Minimal agent prototype** — proving that agents can participate as system users, not building agent-specific infrastructure.
+
+**Phase 3 agent scope and acceptance criteria.** The agent prototype is approximately zero pane-specific code. It validates the architecture's core claim — that agents are Unix users who participate through existing infrastructure — without building any agent-specific kit or service.
+
+What's in:
+- Agent user accounts (`useradd agent.builder`, home directory, Nix profile)
+- A `.plan` file in each agent's home directory (human-readable, the convention, no enforcement)
+- Build results mailed as files with `user.pane.*` xattrs in a spool directory (standard mail, queryable by pane-store when it exists in Phase 6)
+- Scheduled tasks via cron (nightly build, source monitoring)
+- `who` shows agents, `finger agent.builder` shows its `.plan`
+
+What's deferred:
+- pane-ai kit (Phase 8)
+- Memory consolidation protocol, vector search, embedding lifecycle (Phase 6+ when pane-store exists)
+- Landlock sandboxing enforcement (Phase 8)
+- `.plan` governance model (Phase 8)
+- Agent-to-agent communication over pane protocol (Phase 8 — for now, agents use `mail`)
+- Local model inference, routing-rules-as-data-governance (Phase 8)
+
+**Done looks like:** `agent.builder` exists as a Unix user. It runs a nightly build via cron. It mails results to the developer. `who` and `finger` work. The system has multiple inhabitants before it has a single external user. Nothing about this requires pane to be running — the agent infrastructure is Unix infrastructure.
 
 ### Phase 4: Minimal Compositor
 6. **pane-comp skeleton** — smithay compositor, single hardcoded pane, tag line + text rendering. First pixels on screen. Now built on session-verified protocols, not hand-written state machines.
