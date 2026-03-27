@@ -1,7 +1,7 @@
-//! PaneProxy — a lightweight, cloneable handle for sending messages
+//! PaneHandle — a lightweight, cloneable handle for sending messages
 //! to the compositor from within event handlers.
 //!
-//! This is the BMessenger pattern: the proxy doesn't own the pane,
+//! This is the BMessenger pattern: the handle doesn't own the pane,
 //! it just knows how to send messages on its behalf. Pass it to
 //! spawned threads for async work (network fetches, computation).
 
@@ -19,15 +19,15 @@ use crate::error::{PaneError, Result};
 /// Use this inside event handlers and spawned threads to update
 /// pane state without owning the Pane itself.
 #[derive(Clone)]
-pub struct PaneProxy {
+pub struct PaneHandle {
     pub(crate) id: PaneId,
     pub(crate) sender: mpsc::Sender<ClientToComp>,
 }
 
-impl PaneProxy {
-    /// Create a PaneProxy from an ID and sender.
+impl PaneHandle {
+    /// Create a PaneHandle from an ID and sender.
     pub fn new(id: PaneId, sender: mpsc::Sender<ClientToComp>) -> Self {
-        PaneProxy { id, sender }
+        PaneHandle { id, sender }
     }
 
     /// The pane's compositor-assigned ID.
@@ -68,9 +68,9 @@ impl PaneProxy {
     }
 }
 
-impl std::fmt::Debug for PaneProxy {
+impl std::fmt::Debug for PaneHandle {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("PaneProxy")
+        f.debug_struct("PaneHandle")
             .field("id", &self.id)
             .finish()
     }

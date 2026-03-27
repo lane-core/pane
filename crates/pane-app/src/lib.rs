@@ -46,7 +46,7 @@ pub use event::PaneEvent;
 pub use filter::{Filter, FilterAction};
 pub use handler::Handler;
 pub use pane::Pane;
-pub use proxy::PaneProxy;
+pub use proxy::PaneHandle;
 pub use routing::{RouteTable, RouteResult, RouteCandidate};
 pub use scripting::{PropertyDecl, ScriptQuery, ScriptOp, ScriptReplyToken};
 pub use tag::{Tag, CommandBuilder, cmd};

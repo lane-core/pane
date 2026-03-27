@@ -2,7 +2,7 @@ use std::num::NonZeroU32;
 use std::sync::mpsc;
 use std::sync::{Arc, Mutex};
 
-use pane_app::{PaneEvent, Handler, Filter, FilterAction, PaneProxy};
+use pane_app::{PaneEvent, Handler, Filter, FilterAction, PaneHandle};
 use pane_app::error::Result;
 use pane_proto::event::{KeyEvent, Key, NamedKey, Modifiers, KeyState};
 use pane_proto::message::PaneId;
@@ -12,10 +12,10 @@ fn pane_id(n: u32) -> PaneId {
     PaneId::new(NonZeroU32::new(n).unwrap())
 }
 
-fn make_proxy(id: PaneId) -> PaneProxy {
+fn make_proxy(id: PaneId) -> PaneHandle {
     // Create a dummy proxy for testing — the sender goes nowhere
     let (tx, _rx) = mpsc::channel::<ClientToComp>();
-    PaneProxy::new(id, tx)
+    PaneHandle::new(id, tx)
 }
 
 fn escape_key() -> CompToClient {
@@ -171,32 +171,32 @@ struct TestHandler {
 }
 
 impl Handler for TestHandler {
-    fn ready(&mut self, _proxy: &PaneProxy, _geom: PaneGeometry) -> Result<bool> {
+    fn ready(&mut self, _proxy: &PaneHandle, _geom: PaneGeometry) -> Result<bool> {
         self.log.lock().unwrap().push("ready".into());
         Ok(true)
     }
 
-    fn focused(&mut self, _proxy: &PaneProxy) -> Result<bool> {
+    fn focused(&mut self, _proxy: &PaneHandle) -> Result<bool> {
         self.log.lock().unwrap().push("focused".into());
         Ok(true)
     }
 
-    fn blurred(&mut self, _proxy: &PaneProxy) -> Result<bool> {
+    fn blurred(&mut self, _proxy: &PaneHandle) -> Result<bool> {
         self.log.lock().unwrap().push("blurred".into());
         Ok(true)
     }
 
-    fn key(&mut self, _proxy: &PaneProxy, event: KeyEvent) -> Result<bool> {
+    fn key(&mut self, _proxy: &PaneHandle, event: KeyEvent) -> Result<bool> {
         self.log.lock().unwrap().push(format!("key:{:?}", event.key));
         Ok(true)
     }
 
-    fn command_executed(&mut self, _proxy: &PaneProxy, command: &str, args: &str) -> Result<bool> {
+    fn command_executed(&mut self, _proxy: &PaneHandle, command: &str, args: &str) -> Result<bool> {
         self.log.lock().unwrap().push(format!("cmd:{}:{}", command, args));
         Ok(true)
     }
 
-    fn close_requested(&mut self, _proxy: &PaneProxy) -> Result<bool> {
+    fn close_requested(&mut self, _proxy: &PaneHandle) -> Result<bool> {
         self.log.lock().unwrap().push("close".into());
         Ok(false)
     }

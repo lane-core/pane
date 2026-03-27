@@ -18,11 +18,11 @@ use crate::error::Result;
 use crate::event::PaneEvent;
 use crate::filter::FilterChain;
 use crate::handler::Handler;
-use crate::proxy::PaneProxy;
+use crate::proxy::PaneHandle;
 
 /// Run the event loop with a closure handler.
 ///
-/// The closure receives a PaneProxy (for sending messages back to the
+/// The closure receives a PaneHandle (for sending messages back to the
 /// compositor) and a PaneEvent, and returns:
 /// - Ok(true) to continue
 /// - Ok(false) to exit
@@ -31,8 +31,8 @@ pub fn run_closure(
     pane_id: PaneId,
     receiver: mpsc::Receiver<CompToClient>,
     mut filters: FilterChain,
-    proxy: PaneProxy,
-    mut handler: impl FnMut(&PaneProxy, PaneEvent) -> Result<bool>,
+    proxy: PaneHandle,
+    mut handler: impl FnMut(&PaneHandle, PaneEvent) -> Result<bool>,
 ) -> Result<()> {
     loop {
         let msg = match receiver.recv() {
@@ -65,7 +65,7 @@ pub fn run_handler(
     pane_id: PaneId,
     receiver: mpsc::Receiver<CompToClient>,
     mut filters: FilterChain,
-    proxy: PaneProxy,
+    proxy: PaneHandle,
     mut handler: impl Handler,
 ) -> Result<()> {
     loop {
@@ -95,7 +95,7 @@ pub fn run_handler(
 }
 
 /// Dispatch a single PaneEvent to the appropriate Handler method.
-fn dispatch_to_handler(handler: &mut impl Handler, proxy: &PaneProxy, event: PaneEvent) -> Result<bool> {
+fn dispatch_to_handler(handler: &mut impl Handler, proxy: &PaneHandle, event: PaneEvent) -> Result<bool> {
     match event {
         PaneEvent::Ready(geom) => handler.ready(proxy, geom),
         PaneEvent::Resize(geom) => handler.resized(proxy, geom),
