@@ -3,3 +3,4 @@
 result
 nixos.qcow2
 result-disk
+.direnv/
