@@ -10,7 +10,7 @@ use calloop::{EventSource, Poll, PostAction, Readiness, Token, TokenFactory};
 use calloop::generic::Generic;
 use calloop::Interest;
 
-use crate::transport::unix::MAX_MESSAGE_SIZE;
+use crate::framing::MAX_MESSAGE_SIZE;
 
 /// Events produced by a SessionSource.
 #[derive(Debug)]
@@ -67,11 +67,7 @@ impl SessionSource {
 
 /// Send a length-prefixed message on a unix stream.
 pub fn write_message(stream: &UnixStream, data: &[u8]) -> io::Result<()> {
-    let mut s = stream;
-    let len = (data.len() as u32).to_le_bytes();
-    s.write_all(&len)?;
-    s.write_all(data)?;
-    s.flush()
+    crate::framing::write_framed(&mut &*stream, data)
 }
 
 /// Try to read available bytes into the buffer, returning how many were read.

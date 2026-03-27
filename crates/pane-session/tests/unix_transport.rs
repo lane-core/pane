@@ -172,3 +172,35 @@ fn unix_socket_server_panic_recovery() {
         result.as_ref().map(|v| format!("{:?}", v.0))
     );
 }
+
+/// Security: oversized length prefix is rejected, not allocated.
+#[test]
+fn unix_socket_rejects_oversized_message() {
+    let dir = tempfile::tempdir().unwrap();
+    let sock_path = dir.path().join("pane-test-oversize.sock");
+    let listener = UnixListener::bind(&sock_path).unwrap();
+
+    // Malicious sender: writes a length prefix claiming 4GB
+    let path = sock_path.clone();
+    let sender_handle = thread::spawn(move || {
+        let mut stream = UnixStream::connect(&path).unwrap();
+        use std::io::Write;
+        // Write a 4-byte length prefix of 0xFFFFFFFF (4GB)
+        stream.write_all(&0xFFFF_FFFFu32.to_le_bytes()).unwrap();
+        stream.flush().unwrap();
+    });
+
+    let (stream, _) = listener.accept().unwrap();
+    let transport = UnixTransport::from_stream(stream);
+    let server: Chan<Recv<String, End>, _> = Chan::new(transport);
+
+    let result = server.recv();
+    // Should be an I/O error (InvalidData), not an allocation attempt
+    assert!(result.is_err());
+    match result.unwrap_err() {
+        SessionError::Io(e) => assert_eq!(e.kind(), std::io::ErrorKind::InvalidData),
+        other => panic!("expected Io(InvalidData), got {:?}", other),
+    }
+
+    sender_handle.join().unwrap();
+}

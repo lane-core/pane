@@ -15,6 +15,7 @@
 pub mod types;
 pub mod dual;
 pub mod error;
+pub mod framing;
 pub mod transport;
 pub mod calloop;
 #[macro_use]
