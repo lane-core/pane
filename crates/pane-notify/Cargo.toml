@@ -1,0 +1,21 @@
+[package]
+name = "pane-notify"
+version = "0.1.0"
+edition = "2021"
+description = "Filesystem notification abstraction for the pane desktop environment. Selects fanotify or inotify based on watch scope."
+license = "MIT"
+
+[target.'cfg(target_os = "linux")'.dependencies]
+# fanotify and inotify are Linux-only syscalls
+# On non-Linux (macOS dev), we provide a stub that uses polling
+
+[dependencies]
+# calloop is optional — only the compositor needs the EventSource impl
+calloop = { version = "0.14.4", optional = true }
+
+[features]
+default = []
+calloop = ["dep:calloop"]
+
+[dev-dependencies]
+tempfile = "3"
