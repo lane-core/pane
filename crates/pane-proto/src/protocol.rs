@@ -112,6 +112,28 @@ pub enum CompToClient {
     },
 }
 
+impl CompToClient {
+    /// Extract the PaneId from any variant.
+    /// Every CompToClient message carries a PaneId — this is guaranteed
+    /// by the enum's structure, not by convention.
+    pub fn pane_id(&self) -> PaneId {
+        match self {
+            CompToClient::PaneCreated { pane, .. } => *pane,
+            CompToClient::Resize { pane, .. } => *pane,
+            CompToClient::Focus { pane } => *pane,
+            CompToClient::Blur { pane } => *pane,
+            CompToClient::Key { pane, .. } => *pane,
+            CompToClient::Mouse { pane, .. } => *pane,
+            CompToClient::Close { pane } => *pane,
+            CompToClient::CloseAck { pane } => *pane,
+            CompToClient::CommandActivated { pane } => *pane,
+            CompToClient::CommandDismissed { pane } => *pane,
+            CompToClient::CommandExecuted { pane, .. } => *pane,
+            CompToClient::CompletionRequest { pane, .. } => *pane,
+        }
+    }
+}
+
 // --- Handshake types ---
 
 /// Client hello — sent as the first message in the session-typed handshake.

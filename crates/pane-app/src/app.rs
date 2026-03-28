@@ -71,12 +71,10 @@ impl App {
                 }
 
                 // Route to the correct pane's channel
-                let pane_id = extract_pane_id(&msg);
-                if let Some(id) = pane_id {
-                    let channels = channels.lock().unwrap();
-                    if let Some(tx) = channels.get(&id) {
-                        let _ = tx.send(msg);
-                    }
+                let id = msg.pane_id().get() as u64;
+                let channels = channels.lock().unwrap();
+                if let Some(tx) = channels.get(&id) {
+                    let _ = tx.send(msg);
                 }
             }
         });
@@ -129,7 +127,12 @@ impl App {
             _ => return Err(PaneError::Refused.into()),
         };
 
-        // Create the per-pane channel and register it
+        // Register the per-pane channel IMMEDIATELY after receiving PaneCreated.
+        // There is a small race window between the dispatcher forwarding PaneCreated
+        // and this registration — events arriving in that window are dropped.
+        // The proper fix (Stage 3) is to have the dispatcher pre-register the channel
+        // or buffer events for unknown pane IDs. For now, the window is microseconds
+        // and only affects events sent by the compositor in the same batch as PaneCreated.
         let (pane_tx, pane_rx) = mpsc::channel();
         self.pane_channels.lock().unwrap().insert(pane_id.get() as u64, pane_tx);
         self.pane_count.fetch_add(1, Ordering::Relaxed);
@@ -154,20 +157,3 @@ impl App {
     }
 }
 
-/// Extract the PaneId from a CompToClient message.
-fn extract_pane_id(msg: &CompToClient) -> Option<u64> {
-    match msg {
-        CompToClient::PaneCreated { pane, .. } => Some(pane.get() as u64),
-        CompToClient::Resize { pane, .. } => Some(pane.get() as u64),
-        CompToClient::Focus { pane } => Some(pane.get() as u64),
-        CompToClient::Blur { pane } => Some(pane.get() as u64),
-        CompToClient::Key { pane, .. } => Some(pane.get() as u64),
-        CompToClient::Mouse { pane, .. } => Some(pane.get() as u64),
-        CompToClient::Close { pane } => Some(pane.get() as u64),
-        CompToClient::CloseAck { pane } => Some(pane.get() as u64),
-        CompToClient::CommandActivated { pane } => Some(pane.get() as u64),
-        CompToClient::CommandDismissed { pane } => Some(pane.get() as u64),
-        CompToClient::CommandExecuted { pane, .. } => Some(pane.get() as u64),
-        CompToClient::CompletionRequest { pane, .. } => Some(pane.get() as u64),
-    }
-}
