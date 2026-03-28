@@ -43,39 +43,30 @@ pub enum PaneEvent {
 
 impl PaneEvent {
     /// Convert a CompToClient message to a PaneEvent for the given pane.
-    /// Returns None if the message is for a different pane, or if it's
-    /// a message type that the kit handles internally (PaneCreated, CloseAck).
-    /// Convert a CompToClient wire message to a PaneEvent for the given pane.
+    /// Takes ownership to avoid cloning — the message comes from recv().
     /// Returns None if the message is for a different pane or handled internally.
-    pub fn from_comp(msg: &CompToClient, pane: PaneId) -> Option<PaneEvent> {
+    pub fn from_comp(msg: CompToClient, pane: PaneId) -> Option<PaneEvent> {
         match msg {
-            CompToClient::Resize { pane: p, geometry } if *p == pane =>
-                Some(PaneEvent::Resize(*geometry)),
-            CompToClient::Focus { pane: p } if *p == pane =>
+            CompToClient::Resize { pane: p, geometry } if p == pane =>
+                Some(PaneEvent::Resize(geometry)),
+            CompToClient::Focus { pane: p } if p == pane =>
                 Some(PaneEvent::Focus),
-            CompToClient::Blur { pane: p } if *p == pane =>
+            CompToClient::Blur { pane: p } if p == pane =>
                 Some(PaneEvent::Blur),
-            CompToClient::Key { pane: p, event } if *p == pane =>
-                Some(PaneEvent::Key(event.clone())),
-            CompToClient::Mouse { pane: p, event } if *p == pane =>
-                Some(PaneEvent::Mouse(event.clone())),
-            CompToClient::Close { pane: p } if *p == pane =>
+            CompToClient::Key { pane: p, event } if p == pane =>
+                Some(PaneEvent::Key(event)),
+            CompToClient::Mouse { pane: p, event } if p == pane =>
+                Some(PaneEvent::Mouse(event)),
+            CompToClient::Close { pane: p } if p == pane =>
                 Some(PaneEvent::Close),
-            CompToClient::CommandActivated { pane: p } if *p == pane =>
+            CompToClient::CommandActivated { pane: p } if p == pane =>
                 Some(PaneEvent::CommandActivated),
-            CompToClient::CommandDismissed { pane: p } if *p == pane =>
+            CompToClient::CommandDismissed { pane: p } if p == pane =>
                 Some(PaneEvent::CommandDismissed),
-            CompToClient::CommandExecuted { pane: p, command, args } if *p == pane =>
-                Some(PaneEvent::CommandExecuted {
-                    command: command.clone(),
-                    args: args.clone(),
-                }),
-            CompToClient::CompletionRequest { pane: p, token, input } if *p == pane =>
-                Some(PaneEvent::CompletionRequest {
-                    token: *token,
-                    input: input.clone(),
-                }),
-            // PaneCreated and CloseAck are handled internally by the kit
+            CompToClient::CommandExecuted { pane: p, command, args } if p == pane =>
+                Some(PaneEvent::CommandExecuted { command, args }),
+            CompToClient::CompletionRequest { pane: p, token, input } if p == pane =>
+                Some(PaneEvent::CompletionRequest { token, input }),
             _ => None,
         }
     }

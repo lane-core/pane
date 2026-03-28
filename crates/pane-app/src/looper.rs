@@ -16,6 +16,7 @@ use pane_proto::protocol::CompToClient;
 
 use crate::error::Result;
 use crate::event::PaneEvent;
+use crate::exit::ExitReason;
 use crate::filter::FilterChain;
 use crate::handler::Handler;
 use crate::proxy::PaneHandle;
@@ -33,20 +34,22 @@ pub fn run_closure(
     mut filters: FilterChain,
     proxy: PaneHandle,
     mut handler: impl FnMut(&PaneHandle, PaneEvent) -> Result<bool>,
-) -> Result<()> {
+) -> std::result::Result<ExitReason, crate::error::Error> {
     loop {
         let msg = match receiver.recv() {
             Ok(msg) => msg,
             Err(_) => {
                 let _ = handler(&proxy, PaneEvent::Disconnected);
-                return Ok(());
+                return Ok(ExitReason::Disconnected);
             }
         };
 
-        let event = match PaneEvent::from_comp(&msg, pane_id) {
+        let event = match PaneEvent::from_comp(msg, pane_id) {
             Some(e) => e,
             None => continue,
         };
+
+        let is_close = matches!(event, PaneEvent::Close);
 
         let event = match filters.apply(event) {
             Some(e) => e,
@@ -55,7 +58,11 @@ pub fn run_closure(
 
         let keep_going = handler(&proxy, event)?;
         if !keep_going {
-            return Ok(());
+            return Ok(if is_close {
+                ExitReason::CompositorClose
+            } else {
+                ExitReason::HandlerExit
+            });
         }
     }
 }
@@ -67,20 +74,22 @@ pub fn run_handler(
     mut filters: FilterChain,
     proxy: PaneHandle,
     mut handler: impl Handler,
-) -> Result<()> {
+) -> std::result::Result<ExitReason, crate::error::Error> {
     loop {
         let msg = match receiver.recv() {
             Ok(msg) => msg,
             Err(_) => {
                 let _ = handler.disconnected(&proxy);
-                return Ok(());
+                return Ok(ExitReason::Disconnected);
             }
         };
 
-        let event = match PaneEvent::from_comp(&msg, pane_id) {
+        let event = match PaneEvent::from_comp(msg, pane_id) {
             Some(e) => e,
             None => continue,
         };
+
+        let is_close = matches!(event, PaneEvent::Close);
 
         let event = match filters.apply(event) {
             Some(e) => e,
@@ -89,7 +98,11 @@ pub fn run_handler(
 
         let keep_going = dispatch_to_handler(&mut handler, &proxy, event)?;
         if !keep_going {
-            return Ok(());
+            return Ok(if is_close {
+                ExitReason::CompositorClose
+            } else {
+                ExitReason::HandlerExit
+            });
         }
     }
 }

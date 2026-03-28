@@ -19,7 +19,7 @@ fn from_comp_resize_matching_pane() {
         pane: pane_id(1),
         geometry: test_geometry(),
     };
-    let event = PaneEvent::from_comp(&msg, pane_id(1));
+    let event = PaneEvent::from_comp(msg, pane_id(1));
     assert!(matches!(event, Some(PaneEvent::Resize(_))));
 }
 
@@ -29,7 +29,7 @@ fn from_comp_resize_wrong_pane() {
         pane: pane_id(1),
         geometry: test_geometry(),
     };
-    let event = PaneEvent::from_comp(&msg, pane_id(2));
+    let event = PaneEvent::from_comp(msg, pane_id(2));
     assert!(event.is_none());
 }
 
@@ -41,7 +41,7 @@ fn from_comp_key_event() {
         state: KeyState::Press,
     };
     let msg = CompToClient::Key { pane: pane_id(3), event: key.clone() };
-    let event = PaneEvent::from_comp(&msg, pane_id(3));
+    let event = PaneEvent::from_comp(msg, pane_id(3));
     match event {
         Some(PaneEvent::Key(k)) => {
             assert!(k.is_escape());
@@ -53,7 +53,7 @@ fn from_comp_key_event() {
 #[test]
 fn from_comp_close() {
     let msg = CompToClient::Close { pane: pane_id(1) };
-    let event = PaneEvent::from_comp(&msg, pane_id(1));
+    let event = PaneEvent::from_comp(msg, pane_id(1));
     assert!(matches!(event, Some(PaneEvent::Close)));
 }
 
@@ -64,7 +64,7 @@ fn from_comp_command_executed() {
         command: "save".into(),
         args: "".into(),
     };
-    let event = PaneEvent::from_comp(&msg, pane_id(1));
+    let event = PaneEvent::from_comp(msg, pane_id(1));
     match event {
         Some(PaneEvent::CommandExecuted { command, args }) => {
             assert_eq!(command, "save");
@@ -81,6 +81,6 @@ fn from_comp_pane_created_returns_none() {
         pane: pane_id(1),
         geometry: test_geometry(),
     };
-    let event = PaneEvent::from_comp(&msg, pane_id(1));
+    let event = PaneEvent::from_comp(msg, pane_id(1));
     assert!(event.is_none());
 }

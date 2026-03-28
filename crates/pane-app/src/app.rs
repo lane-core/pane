@@ -5,6 +5,7 @@ use std::sync::mpsc;
 use std::sync::{Arc, Mutex, atomic::{AtomicUsize, Ordering}};
 use std::thread;
 
+use pane_proto::message::PaneId;
 use pane_proto::protocol::{ClientToComp, CompToClient, CreatePaneTag};
 
 use crate::connection::Connection;
@@ -21,7 +22,7 @@ pub struct App {
     comp_tx: mpsc::Sender<ClientToComp>,
     /// Per-pane channels, keyed by PaneId. The dispatcher thread
     /// forwards CompToClient messages to the right pane's channel.
-    pane_channels: Arc<Mutex<HashMap<u64, mpsc::Sender<CompToClient>>>>,
+    pane_channels: Arc<Mutex<HashMap<PaneId, mpsc::Sender<CompToClient>>>>,
     /// Oneshot channels for pending create_pane responses.
     pending_creates: Arc<Mutex<VecDeque<mpsc::Sender<CompToClient>>>>,
     /// Application signature.
@@ -44,7 +45,7 @@ impl App {
     /// Connect using a test connection (for MockCompositor).
     pub fn connect_test(signature: &str, conn: Connection) -> std::result::Result<Self, ConnectError> {
         let comp_tx = conn.sender;
-        let pane_channels: Arc<Mutex<HashMap<u64, mpsc::Sender<CompToClient>>>> =
+        let pane_channels: Arc<Mutex<HashMap<PaneId, mpsc::Sender<CompToClient>>>> =
             Arc::new(Mutex::new(HashMap::new()));
         let pending_creates: Arc<Mutex<VecDeque<mpsc::Sender<CompToClient>>>> =
             Arc::new(Mutex::new(VecDeque::new()));
@@ -71,7 +72,7 @@ impl App {
                 }
 
                 // Route to the correct pane's channel
-                let id = msg.pane_id().get() as u64;
+                let id = msg.pane_id();
                 let channels = channels.lock().unwrap();
                 if let Some(tx) = channels.get(&id) {
                     let _ = tx.send(msg);
@@ -134,7 +135,7 @@ impl App {
         // or buffer events for unknown pane IDs. For now, the window is microseconds
         // and only affects events sent by the compositor in the same batch as PaneCreated.
         let (pane_tx, pane_rx) = mpsc::channel();
-        self.pane_channels.lock().unwrap().insert(pane_id.get() as u64, pane_tx);
+        self.pane_channels.lock().unwrap().insert(pane_id, pane_tx);
         self.pane_count.fetch_add(1, Ordering::Relaxed);
 
         Ok(Pane::new(

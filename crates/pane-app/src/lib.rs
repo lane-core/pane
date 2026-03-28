@@ -30,6 +30,7 @@ pub mod app;
 pub(crate) mod connection;
 pub mod error;
 pub mod event;
+pub mod exit;
 pub mod filter;
 pub mod handler;
 pub mod looper;

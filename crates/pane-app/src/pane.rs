@@ -84,18 +84,30 @@ impl Pane {
         PaneHandle::new(self.id, self.comp_tx.clone())
     }
 
-    pub fn run(self, handler: impl FnMut(&PaneHandle, PaneEvent) -> Result<bool>) -> Result<()> {
-        let Pane { id, receiver, filters, comp_tx, pane_count, done_signal, .. } = self;
+    pub fn run(self, mut handler: impl FnMut(&PaneHandle, PaneEvent) -> Result<bool>) -> Result<()> {
+        let Pane { id, geometry, receiver, filters, comp_tx, pane_count, done_signal, .. } = self;
         let handle = PaneHandle::new(id, comp_tx.clone());
 
-        let result = looper::run_closure(id, receiver, filters, handle, handler);
+        // Synthesize Ready as the first event (like BWindow B_WINDOW_ACTIVATED)
+        let keep_going = handler(&handle, PaneEvent::Ready(geometry))?;
+        if !keep_going {
+            pane_count.fetch_sub(1, Ordering::Relaxed);
+            if pane_count.load(Ordering::Relaxed) == 0 {
+                done_signal.1.notify_all();
+            }
+            return Ok(());
+        }
 
-        let _ = comp_tx.send(ClientToComp::RequestClose { pane: id });
+        let exit = looper::run_closure(id, receiver, filters, handle, handler)?;
+
+        if exit.should_request_close() {
+            let _ = comp_tx.send(ClientToComp::RequestClose { pane: id });
+        }
         if pane_count.fetch_sub(1, Ordering::Relaxed) == 1 {
             done_signal.1.notify_all();
         }
 
-        result
+        Ok(())
     }
 
     /// Run the event loop with a Handler trait implementation.
@@ -104,18 +116,30 @@ impl Pane {
     /// ```ignore
     /// pane.run_with(Weather { city: "SF".into(), data: None })
     /// ```
-    pub fn run_with(self, handler: impl Handler) -> Result<()> {
-        let Pane { id, receiver, filters, comp_tx, pane_count, done_signal, .. } = self;
+    pub fn run_with(self, mut handler: impl Handler) -> Result<()> {
+        let Pane { id, geometry, receiver, filters, comp_tx, pane_count, done_signal, .. } = self;
         let handle = PaneHandle::new(id, comp_tx.clone());
 
-        let result = looper::run_handler(id, receiver, filters, handle, handler);
+        // Synthesize Ready as the first event
+        let keep_going = handler.ready(&handle, geometry)?;
+        if !keep_going {
+            pane_count.fetch_sub(1, Ordering::Relaxed);
+            if pane_count.load(Ordering::Relaxed) == 0 {
+                done_signal.1.notify_all();
+            }
+            return Ok(());
+        }
 
-        let _ = comp_tx.send(ClientToComp::RequestClose { pane: id });
+        let exit = looper::run_handler(id, receiver, filters, handle, handler)?;
+
+        if exit.should_request_close() {
+            let _ = comp_tx.send(ClientToComp::RequestClose { pane: id });
+        }
         if pane_count.fetch_sub(1, Ordering::Relaxed) == 1 {
             done_signal.1.notify_all();
         }
 
-        result
+        Ok(())
     }
 
     // Note: set_title, set_vocabulary, set_content live on PaneHandle,
