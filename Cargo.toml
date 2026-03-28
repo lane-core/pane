@@ -1,6 +1,6 @@
 [workspace]
 resolver = "2"
-members = ["crates/pane-proto", "crates/pane-session", "crates/pane-notify", "crates/pane-app"]
+members = ["crates/pane-proto", "crates/pane-session", "crates/pane-notify", "crates/pane-app", "crates/pane-comp"]
 
 # pane-comp requires Linux (wayland, libinput). Build explicitly:
 #   cargo build -p pane-comp  (on Linux only)

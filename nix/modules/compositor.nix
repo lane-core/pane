@@ -1,9 +1,12 @@
 # pane-comp: Linux-only compositor package
-# Built via the linux-builder from macOS:
+# Uses rustPlatform.buildRustPackage directly (not rust-flake/crane)
+# because the Wayland deps need explicit pkg-config configuration.
+#
+# Build from macOS via linux-builder:
 #   nix build .#packages.aarch64-linux.pane-comp
 { inputs, ... }:
 {
-  perSystem = { pkgs, lib, system, self', ... }:
+  perSystem = { pkgs, lib, system, ... }:
     let
       isLinux = pkgs.stdenv.isLinux;
 
@@ -18,34 +21,18 @@
     in
     {
       packages = lib.optionalAttrs isLinux {
-        pane-comp = pkgs.rustPlatform.buildRustPackage {
+        pane-comp = lib.mkForce (pkgs.rustPlatform.buildRustPackage {
           pname = "pane-comp";
           version = "0.1.0";
-          src = lib.fileset.toSource {
-            root = ../../.;
-            fileset = lib.fileset.unions [
-              ../../Cargo.toml
-              ../../Cargo.lock
-              ../../crates
-            ];
-          };
-
+          src = ../../.;
           cargoLock.lockFile = ../../Cargo.lock;
-
-          # Add pane-comp to the workspace for the Linux build
-          postPatch = ''
-            substituteInPlace Cargo.toml \
-              --replace-fail \
-              'members = ["crates/pane-proto", "crates/pane-session", "crates/pane-notify", "crates/pane-app"]' \
-              'members = ["crates/pane-proto", "crates/pane-session", "crates/pane-notify", "crates/pane-app", "crates/pane-comp"]'
-          '';
 
           nativeBuildInputs = [ pkgs.pkg-config ];
           buildInputs = linuxBuildInputs;
 
           cargoBuildFlags = [ "-p" "pane-comp" ];
           cargoTestFlags = [ "-p" "pane-comp" ];
-        };
+        });
       };
     };
 }

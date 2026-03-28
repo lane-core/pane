@@ -68,7 +68,7 @@ fn run(opts: &Opts) -> Result<()> {
     info!("XDG_RUNTIME_DIR={:?}", std::env::var("XDG_RUNTIME_DIR").ok());
 
     // --- smithay winit backend ---
-    let (mut backend, winit_evt): (smithay::backend::winit::WinitGraphicsBackend<GlesRenderer>, _) =
+    let (mut backend, mut winit_evt): (smithay::backend::winit::WinitGraphicsBackend<GlesRenderer>, _) =
         winit::init()
             .map_err(|e| anyhow::anyhow!("winit backend init: {e:?}"))?;
 

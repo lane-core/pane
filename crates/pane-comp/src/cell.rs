@@ -1,7 +1,6 @@
 use serde::{Deserialize, Serialize};
 
-use crate::color::Color;
-use crate::polarity::Value;
+use pane_proto::color::Color;
 
 bitflags::bitflags! {
     /// Text attributes for a cell.
@@ -37,8 +36,6 @@ impl Default for Cell {
         }
     }
 }
-
-impl Value for Cell {}
 
 /// Error when constructing a CellRegion with inconsistent dimensions.
 #[derive(Debug, Clone, PartialEq, Eq)]
