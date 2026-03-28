@@ -1,6 +1,7 @@
 mod cell;
 mod glyph_atlas;
 mod pane_renderer;
+mod server;
 mod state;
 
 use std::time::Duration;
@@ -107,6 +108,14 @@ fn run(opts: &Opts) -> Result<()> {
     let cell_width = atlas.cell_width();
     let cell_height = atlas.cell_height();
 
+    // --- protocol server ---
+    let runtime_dir = std::env::var("XDG_RUNTIME_DIR")
+        .map_err(|_| anyhow::anyhow!("XDG_RUNTIME_DIR not set"))?;
+    let (protocol_server, listener) = server::ProtocolServer::new(std::path::Path::new(&runtime_dir))
+        .map_err(|e| anyhow::anyhow!("protocol server: {e}"))?;
+
+    let (handshake_tx, handshake_rx) = std::sync::mpsc::channel();
+
     // --- compositor state ---
     let mut comp_state = CompState {
         backend,
@@ -117,6 +126,8 @@ fn run(opts: &Opts) -> Result<()> {
         running: true,
         cell_width,
         cell_height,
+        server: protocol_server,
+        handshake_rx,
     };
 
     // --- calloop event loop ---
@@ -124,6 +135,46 @@ fn run(opts: &Opts) -> Result<()> {
         EventLoop::try_new().map_err(|e| anyhow::anyhow!("calloop init: {e}"))?;
 
     let loop_handle = event_loop.handle();
+
+    // --- listener socket (accepts new client connections) ---
+    let generic_listener = calloop::generic::Generic::new(
+        listener,
+        calloop::Interest::READ,
+        calloop::Mode::Level,
+    );
+    let generic_listener: calloop::generic::Generic<std::os::unix::net::UnixListener> = generic_listener;
+
+    let hs_sender = handshake_tx;
+    loop_handle.insert_source(generic_listener, move |_event, listener, state: &mut CompState| {
+        // Accept all pending connections
+        loop {
+            let result: std::io::Result<_> = listener.accept();
+            match result {
+                Ok((stream, _addr)) => {
+                    info!("new client connection");
+                    let client_id = state.server.alloc_client_id();
+                    let sender = hs_sender.clone();
+
+                    std::thread::spawn(move || {
+                        match server::run_server_handshake(stream) {
+                            Ok(stream) => {
+                                let _ = sender.send((client_id, stream));
+                            }
+                            Err(e) => {
+                                warn!("handshake failed: {}", e);
+                            }
+                        }
+                    });
+                }
+                Err(ref e) if e.kind() == std::io::ErrorKind::WouldBlock => break,
+                Err(e) => {
+                    warn!("accept error: {}", e);
+                    break;
+                }
+            }
+        }
+        Ok(calloop::PostAction::Continue)
+    }).map_err(|e| anyhow::anyhow!("listener source: {e}"))?;
 
     // Frame timer — triggers rendering at ~60fps
     let timer = Timer::from_duration(FRAME_INTERVAL);
@@ -153,6 +204,10 @@ fn run(opts: &Opts) -> Result<()> {
         if !state.running {
             return TimeoutAction::Drop;
         }
+
+        // Poll for completed handshakes and process client messages
+        state.poll_handshakes();
+        state.process_client_messages();
 
         // Render frame
         state.render_frame();

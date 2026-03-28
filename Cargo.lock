@@ -1402,10 +1402,19 @@ dependencies = [
  "calloop 0.14.4",
  "cosmic-text",
  "pane-proto",
+ "pane-session",
  "serde",
  "smithay",
  "tracing",
  "tracing-subscriber",
+]
+
+[[package]]
+name = "pane-hello"
+version = "0.1.0"
+dependencies = [
+ "pane-app",
+ "pane-proto",
 ]
 
 [[package]]

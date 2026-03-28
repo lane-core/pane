@@ -1,0 +1,8 @@
+[package]
+name = "pane-hello"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+pane-app = { path = "../pane-app" }
+pane-proto = { path = "../pane-proto" }

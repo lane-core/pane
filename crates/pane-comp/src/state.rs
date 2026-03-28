@@ -18,6 +18,7 @@ use smithay::{
 
 use crate::glyph_atlas::GlyphAtlas;
 use crate::pane_renderer::PaneRenderer;
+use crate::server::ProtocolServer;
 
 /// Background color — warm light grey, Frutiger Aero era
 const BG_COLOR: Color32F = Color32F::new(0.82, 0.81, 0.78, 1.0);
@@ -40,6 +41,10 @@ pub struct CompState {
     /// Cell dimensions from the atlas.
     pub cell_width: u16,
     pub cell_height: u16,
+    /// Protocol server — client connections and pane state.
+    pub server: ProtocolServer,
+    /// Completed handshakes waiting to be registered with calloop.
+    pub handshake_rx: std::sync::mpsc::Receiver<(usize, std::os::unix::net::UnixStream)>,
 }
 
 impl CompState {
@@ -71,6 +76,91 @@ impl CompState {
 
         if let Err(e) = self.backend.submit(Some(&[output_rect])) {
             tracing::warn!("submit error: {e}");
+        }
+    }
+}
+
+impl CompState {
+    /// Poll for completed handshakes and register new clients.
+    /// Called from the frame timer callback (every ~16ms).
+    pub fn poll_handshakes(&mut self) {
+        while let Ok((client_id, stream)) = self.handshake_rx.try_recv() {
+            let write_stream = match stream.try_clone() {
+                Ok(s) => s,
+                Err(e) => {
+                    tracing::warn!("clone stream for client {}: {}", client_id, e);
+                    continue;
+                }
+            };
+
+            // Spawn a read pump thread (same pattern as kit's from_unix_stream)
+            let (msg_tx, msg_rx) = std::sync::mpsc::channel();
+            let read_stream = stream;
+
+            std::thread::spawn(move || {
+                use pane_session::framing::read_framed;
+                loop {
+                    match read_framed(&mut &read_stream) {
+                        Ok(bytes) => {
+                            match pane_proto::deserialize::<pane_proto::protocol::ClientToComp>(&bytes) {
+                                Ok(msg) => {
+                                    if msg_tx.send(msg).is_err() { break; }
+                                }
+                                Err(_) => break,
+                            }
+                        }
+                        Err(_) => break,
+                    }
+                }
+            });
+
+            self.server.clients.insert(client_id, crate::server::ClientSession {
+                stream: write_stream,
+                panes: Vec::new(),
+                msg_rx: Some(msg_rx),
+            });
+
+            tracing::info!("client {} registered", client_id);
+        }
+    }
+
+    /// Process pending messages from all connected clients.
+    /// Called from the frame timer callback.
+    pub fn process_client_messages(&mut self) {
+        use pane_proto::protocol::PaneGeometry;
+
+        let geometry = PaneGeometry {
+            width: self.size.w as u32,
+            height: self.size.h as u32,
+            cols: self.size.w as u16 / self.cell_width,
+            rows: self.size.h as u16 / self.cell_height,
+        };
+
+        // Collect messages first to avoid borrow conflict with server
+        let mut messages = Vec::new();
+        let mut disconnected = Vec::new();
+
+        for (&client_id, client) in &self.server.clients {
+            if let Some(ref rx) = client.msg_rx {
+                loop {
+                    match rx.try_recv() {
+                        Ok(msg) => messages.push((client_id, msg)),
+                        Err(std::sync::mpsc::TryRecvError::Empty) => break,
+                        Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                            disconnected.push(client_id);
+                            break;
+                        }
+                    }
+                }
+            }
+        }
+
+        for (client_id, msg) in messages {
+            self.server.handle_message(client_id, msg, geometry);
+        }
+
+        for id in disconnected {
+            self.server.remove_client(id);
         }
     }
 }
