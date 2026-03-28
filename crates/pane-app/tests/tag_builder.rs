@@ -76,3 +76,28 @@ fn cmd_route_action() {
     let c = cmd("open", "Open file").route("edit $file");
     assert!(matches!(c.action, CommandAction::Route(ref s) if s == "edit $file"));
 }
+
+// --- P2-4: Tag/Command builder edge cases ---
+
+#[test]
+fn tag_empty_commands() {
+    let tag = Tag::new("Empty").commands(vec![]);
+    let wire = tag.into_wire();
+    // Empty commands should produce one group with zero commands
+    assert_eq!(wire.vocabulary.groups.len(), 1);
+    assert_eq!(wire.vocabulary.groups[0].commands.len(), 0);
+}
+
+#[test]
+fn cmd_no_shortcut() {
+    let c = cmd("save", "Save file").client("save");
+    assert!(c.shortcut.is_none());
+}
+
+#[test]
+fn tag_unicode_title() {
+    let tag = Tag::new("日本語テスト").short("テスト");
+    let wire = tag.into_wire();
+    assert_eq!(wire.title.text, "日本語テスト");
+    assert_eq!(wire.title.short, Some("テスト".to_string()));
+}

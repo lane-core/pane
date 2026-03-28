@@ -84,3 +84,69 @@ fn from_comp_pane_created_returns_none() {
     let event = PaneEvent::from_comp(msg, pane_id(1));
     assert!(event.is_none());
 }
+
+// --- P2-2: Complete PaneEvent variant coverage ---
+
+#[test]
+fn from_comp_focus() {
+    let msg = CompToClient::Focus { pane: pane_id(1) };
+    assert!(matches!(PaneEvent::from_comp(msg, pane_id(1)), Some(PaneEvent::Focus)));
+}
+
+#[test]
+fn from_comp_blur() {
+    let msg = CompToClient::Blur { pane: pane_id(1) };
+    assert!(matches!(PaneEvent::from_comp(msg, pane_id(1)), Some(PaneEvent::Blur)));
+}
+
+#[test]
+fn from_comp_mouse() {
+    use pane_proto::event::{MouseEvent, MouseButton, MouseEventKind, Modifiers};
+    let msg = CompToClient::Mouse {
+        pane: pane_id(1),
+        event: MouseEvent {
+            col: 10, row: 5,
+            kind: MouseEventKind::Press(MouseButton::Left),
+            modifiers: Modifiers::empty(),
+        },
+    };
+    assert!(matches!(PaneEvent::from_comp(msg, pane_id(1)), Some(PaneEvent::Mouse(_))));
+}
+
+#[test]
+fn from_comp_command_activated() {
+    let msg = CompToClient::CommandActivated { pane: pane_id(1) };
+    assert!(matches!(PaneEvent::from_comp(msg, pane_id(1)), Some(PaneEvent::CommandActivated)));
+}
+
+#[test]
+fn from_comp_command_dismissed() {
+    let msg = CompToClient::CommandDismissed { pane: pane_id(1) };
+    assert!(matches!(PaneEvent::from_comp(msg, pane_id(1)), Some(PaneEvent::CommandDismissed)));
+}
+
+#[test]
+fn from_comp_completion_request() {
+    let msg = CompToClient::CompletionRequest {
+        pane: pane_id(1),
+        token: 42,
+        input: "hel".into(),
+    };
+    match PaneEvent::from_comp(msg, pane_id(1)) {
+        Some(PaneEvent::CompletionRequest { token, input }) => {
+            assert_eq!(token, 42);
+            assert_eq!(input, "hel");
+        }
+        other => panic!("expected CompletionRequest, got {:?}", other),
+    }
+}
+
+#[test]
+fn from_comp_all_variants_wrong_pane_returns_none() {
+    let wrong = pane_id(99);
+    assert!(PaneEvent::from_comp(CompToClient::Focus { pane: pane_id(1) }, wrong).is_none());
+    assert!(PaneEvent::from_comp(CompToClient::Blur { pane: pane_id(1) }, wrong).is_none());
+    assert!(PaneEvent::from_comp(CompToClient::Close { pane: pane_id(1) }, wrong).is_none());
+    assert!(PaneEvent::from_comp(CompToClient::CommandActivated { pane: pane_id(1) }, wrong).is_none());
+    assert!(PaneEvent::from_comp(CompToClient::CommandDismissed { pane: pane_id(1) }, wrong).is_none());
+}
