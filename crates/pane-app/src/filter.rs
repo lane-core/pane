@@ -20,12 +20,26 @@ pub trait Filter: Send + 'static {
     /// Process an event. Return `Pass(event)` to continue dispatch
     /// (possibly with a modified event), or `Consume` to swallow it.
     fn filter(&mut self, event: PaneEvent) -> FilterAction;
+
+    /// Whether this filter is interested in this event type.
+    /// Returns true by default (filter sees everything). Override
+    /// to skip events your filter doesn't care about — a key-remap
+    /// filter can return false for mouse events, etc.
+    fn wants(&self, _event: &PaneEvent) -> bool {
+        true
+    }
 }
 
 /// An ordered chain of filters. Events pass through each filter
 /// in sequence; any filter can consume the event.
 pub struct FilterChain {
     filters: Vec<Box<dyn Filter>>,
+}
+
+impl Default for FilterChain {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl FilterChain {
@@ -41,6 +55,9 @@ impl FilterChain {
     /// event if it survived, or None if any filter consumed it.
     pub fn apply(&mut self, mut event: PaneEvent) -> Option<PaneEvent> {
         for filter in &mut self.filters {
+            if !filter.wants(&event) {
+                continue;
+            }
             match filter.filter(event) {
                 FilterAction::Pass(e) => event = e,
                 FilterAction::Consume => return None,

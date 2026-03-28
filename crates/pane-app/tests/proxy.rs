@@ -142,3 +142,40 @@ fn pane_handle_debug_includes_id() {
     let debug = format!("{:?}", handle);
     assert!(debug.contains("7"), "debug output should include pane ID: {}", debug);
 }
+
+// --- Commit 3: Self-delivery tests ---
+
+#[test]
+fn post_event_without_looper_returns_error() {
+    let (tx, _rx) = mpsc::channel::<ClientToComp>();
+    let handle = PaneHandle::new(pane_id(1), tx);
+    // No looper_tx attached — post_event should fail
+    let result = handle.post_event(pane_app::PaneEvent::Focus);
+    assert!(result.is_err(), "post_event without looper should return Disconnected");
+}
+
+// Happy-path self-delivery is tested in looper.rs via self_delivery_reaches_handler,
+// self_delivery_interleaved_with_comp, and self_delivery_filters_apply, which exercise
+// the full LooperMessage pipeline. with_looper() is pub(crate) so we can't construct
+// a looper-attached PaneHandle from integration tests directly.
+
+// --- Commit 4: Timer tests ---
+// Timer methods require a looper channel (with_looper is pub(crate)), so we can only
+// test the error case here. The happy path would require either exposing with_looper
+// or testing through the full Pane lifecycle.
+
+#[test]
+fn post_delayed_without_looper_returns_error() {
+    let (tx, _rx) = mpsc::channel::<ClientToComp>();
+    let handle = PaneHandle::new(pane_id(1), tx);
+    let result = handle.post_delayed(pane_app::PaneEvent::Focus, std::time::Duration::from_millis(10));
+    assert!(result.is_err(), "post_delayed without looper should return Disconnected");
+}
+
+#[test]
+fn post_periodic_without_looper_returns_error() {
+    let (tx, _rx) = mpsc::channel::<ClientToComp>();
+    let handle = PaneHandle::new(pane_id(1), tx);
+    let result = handle.post_periodic(pane_app::PaneEvent::Focus, std::time::Duration::from_millis(10));
+    assert!(result.is_err(), "post_periodic without looper should return Disconnected");
+}

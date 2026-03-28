@@ -75,6 +75,7 @@ pub struct CommandBuilder {
     name: String,
     description: String,
     shortcut: Option<String>,
+    enabled: bool,
 }
 
 /// Create a command builder with the given name and description.
@@ -89,6 +90,7 @@ pub fn cmd(name: impl Into<String>, description: impl Into<String>) -> CommandBu
         name: name.into(),
         description: description.into(),
         shortcut: None,
+        enabled: true,
     }
 }
 
@@ -99,6 +101,12 @@ impl CommandBuilder {
         self
     }
 
+    /// Set whether this command is enabled (default: true).
+    pub fn enabled(mut self, enabled: bool) -> Self {
+        self.enabled = enabled;
+        self
+    }
+
     /// The command is handled by the client's Handler.
     pub fn client(self, data: impl Into<String>) -> Command {
         Command {
@@ -106,6 +114,7 @@ impl CommandBuilder {
             description: self.description,
             shortcut: self.shortcut,
             action: CommandAction::Client(data.into()),
+            enabled: self.enabled,
         }
     }
 
@@ -116,6 +125,7 @@ impl CommandBuilder {
             description: self.description,
             shortcut: self.shortcut,
             action: CommandAction::BuiltIn(action),
+            enabled: self.enabled,
         }
     }
 
@@ -126,6 +136,7 @@ impl CommandBuilder {
             description: self.description,
             shortcut: self.shortcut,
             action: CommandAction::Route(expr.into()),
+            enabled: self.enabled,
         }
     }
 }

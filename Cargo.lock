@@ -1421,6 +1421,7 @@ name = "pane-proto"
 version = "0.1.0"
 dependencies = [
  "bitflags 2.11.0",
+ "pane-session",
  "postcard",
  "proptest",
  "serde",

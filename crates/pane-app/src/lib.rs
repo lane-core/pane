@@ -34,6 +34,7 @@ pub mod exit;
 pub mod filter;
 pub mod handler;
 pub mod looper;
+pub(crate) mod looper_message;
 pub mod mock; // pub for integration tests
 pub mod pane;
 pub mod proxy;
@@ -41,13 +42,18 @@ pub mod routing;
 pub mod scripting;
 pub mod tag;
 
+// Re-export for integration tests that construct looper channels directly.
+#[doc(hidden)]
+pub use looper_message::LooperMessage;
+
 pub use app::App;
+pub use connection::{HandshakeResult, run_client_handshake};
 pub use error::{Error, ConnectError, PaneError, Result};
 pub use event::PaneEvent;
 pub use filter::{Filter, FilterAction};
 pub use handler::Handler;
 pub use pane::Pane;
-pub use proxy::PaneHandle;
+pub use proxy::{PaneHandle, TimerToken};
 pub use routing::{RouteTable, RouteResult, RouteCandidate};
 pub use scripting::{PropertyDecl, ScriptQuery, ScriptOp, ScriptReplyToken};
 pub use tag::{Tag, CommandBuilder, cmd};

@@ -175,6 +175,42 @@ pub struct Rejected {
     pub reason: String,
 }
 
+// --- Session-typed handshake protocol ---
+//
+// The three-phase protocol model:
+//   Phase 1: Session-typed handshake (these type aliases)
+//   Phase 2: Typed enum active phase (ClientToComp / CompToClient)
+//   Phase 3: Session-typed teardown (future)
+//
+// The handshake uses session types to enforce the correct message
+// ordering at compile time. After the handshake completes, `finish()`
+// reclaims the transport for the active phase.
+
+use pane_session::types::{Send, Recv, Branch, End};
+
+/// The client's view of the handshake protocol.
+///
+/// ```text
+/// Client                    Server
+///   ── ClientHello ────────→
+///   ←──────────── ServerHello ──
+///   ── ClientCaps ─────────→
+///   ←── Branch ────────────→
+///       ├─ Accepted (end)
+///       └─ Rejected (end)
+/// ```
+pub type ClientHandshake = Send<ClientHello,
+    Recv<ServerHello,
+        Send<ClientCaps,
+            Branch<
+                Recv<Accepted, End>,
+                Recv<Rejected, End>,
+            >>>>;
+
+/// The server's view of the handshake (dual of ClientHandshake).
+/// Automatically derived: Send↔Recv, Select↔Branch.
+pub type ServerHandshake = <ClientHandshake as pane_session::dual::HasDual>::Dual;
+
 // --- Supporting types ---
 
 /// Pane geometry as reported by the compositor.

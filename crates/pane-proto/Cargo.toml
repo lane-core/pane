@@ -9,6 +9,7 @@ license = "MIT"
 serde = { version = "1", features = ["derive"] }
 postcard = { version = "1", features = ["alloc"] }
 bitflags = { version = "2", features = ["serde"] }
+pane-session = { path = "../pane-session" }
 
 [dev-dependencies]
 proptest = "1"

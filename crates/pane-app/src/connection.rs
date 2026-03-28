@@ -3,7 +3,9 @@
 
 use std::sync::mpsc;
 
-use pane_proto::protocol::{ClientToComp, CompToClient};
+use pane_proto::protocol::{ClientToComp, CompToClient, ClientHello, ClientCaps, Accepted};
+use pane_session::types::{Chan, Offer};
+use pane_session::transport::Transport;
 
 /// A bidirectional connection to the compositor.
 /// Abstracted over transport so the kit can be tested without
@@ -36,4 +38,47 @@ pub fn test_pair() -> (Connection, MockConnection) {
 pub struct MockConnection {
     pub sender: mpsc::Sender<CompToClient>,
     pub receiver: mpsc::Receiver<ClientToComp>,
+}
+
+/// Result of a successful client handshake.
+pub struct HandshakeResult {
+    /// Capabilities accepted by the server.
+    pub accepted: Accepted,
+}
+
+/// Run the client side of the session-typed handshake.
+///
+/// Sends ClientHello, receives ServerHello, sends ClientCaps,
+/// and waits for the server's Accept/Reject decision.
+pub fn run_client_handshake<T: Transport>(
+    chan: Chan<pane_proto::protocol::ClientHandshake, T>,
+    signature: &str,
+) -> Result<HandshakeResult, crate::error::Error> {
+    use crate::error::{ConnectError, Error};
+
+    let chan = chan.send(ClientHello {
+        signature: signature.to_string(),
+        version: 1,
+    }).map_err(|e| Error::Connect(ConnectError::Transport(e)))?;
+
+    let (_server_hello, chan) = chan.recv()
+        .map_err(|e| Error::Connect(ConnectError::Transport(e)))?;
+
+    let chan = chan.send(ClientCaps { caps: vec![] })
+        .map_err(|e| Error::Connect(ConnectError::Transport(e)))?;
+
+    match chan.offer().map_err(|e| Error::Connect(ConnectError::Transport(e)))? {
+        Offer::Left(chan) => {
+            let (accepted, chan) = chan.recv()
+                .map_err(|e| Error::Connect(ConnectError::Transport(e)))?;
+            chan.close();
+            Ok(HandshakeResult { accepted })
+        }
+        Offer::Right(chan) => {
+            let (rejected, chan) = chan.recv()
+                .map_err(|e| Error::Connect(ConnectError::Transport(e)))?;
+            chan.close();
+            Err(Error::Connect(ConnectError::Rejected(rejected.reason)))
+        }
+    }
 }

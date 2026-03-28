@@ -39,6 +39,9 @@ pub struct Command {
     pub shortcut: Option<String>,
     /// What happens when executed.
     pub action: CommandAction,
+    /// Whether this command is currently available. Disabled commands
+    /// appear grayed out in the command surface (BMenuItem::SetEnabled).
+    pub enabled: bool,
 }
 
 /// What a command does when executed.

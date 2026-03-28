@@ -39,6 +39,7 @@ fn from_comp_key_event() {
         key: Key::Named(NamedKey::Escape),
         modifiers: Modifiers::empty(),
         state: KeyState::Press,
+        timestamp: None,
     };
     let msg = CompToClient::Key { pane: pane_id(3), event: key.clone() };
     let event = PaneEvent::from_comp(msg, pane_id(3));
@@ -108,6 +109,7 @@ fn from_comp_mouse() {
             col: 10, row: 5,
             kind: MouseEventKind::Press(MouseButton::Left),
             modifiers: Modifiers::empty(),
+            timestamp: None,
         },
     };
     assert!(matches!(PaneEvent::from_comp(msg, pane_id(1)), Some(PaneEvent::Mouse(_))));

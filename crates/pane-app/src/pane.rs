@@ -5,13 +5,14 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
 
 use pane_proto::message::PaneId;
-use pane_proto::protocol::{ClientToComp, CompToClient, PaneGeometry};
+use pane_proto::protocol::{ClientToComp, PaneGeometry};
 
 use crate::error::Result;
 use crate::event::PaneEvent;
 use crate::filter::FilterChain;
 use crate::handler::Handler;
 use crate::looper;
+use crate::looper_message::LooperMessage;
 use crate::proxy::PaneHandle;
 
 /// Handle to a pane in the compositor.
@@ -21,8 +22,9 @@ use crate::proxy::PaneHandle;
 pub struct Pane {
     id: PaneId,
     geometry: PaneGeometry,
-    receiver: mpsc::Receiver<CompToClient>,
+    receiver: mpsc::Receiver<LooperMessage>,
     comp_tx: mpsc::Sender<ClientToComp>,
+    looper_tx: mpsc::Sender<LooperMessage>,
     pane_count: Arc<AtomicUsize>,
     done_signal: Arc<(std::sync::Mutex<()>, std::sync::Condvar)>,
     filters: FilterChain,
@@ -32,8 +34,9 @@ impl Pane {
     pub(crate) fn new(
         id: PaneId,
         geometry: PaneGeometry,
-        receiver: mpsc::Receiver<CompToClient>,
+        receiver: mpsc::Receiver<LooperMessage>,
         comp_tx: mpsc::Sender<ClientToComp>,
+        looper_tx: mpsc::Sender<LooperMessage>,
         pane_count: Arc<AtomicUsize>,
         done_signal: Arc<(std::sync::Mutex<()>, std::sync::Condvar)>,
     ) -> Self {
@@ -42,6 +45,7 @@ impl Pane {
             geometry,
             receiver,
             comp_tx,
+            looper_tx,
             pane_count,
             done_signal,
             filters: FilterChain::new(),
@@ -63,30 +67,32 @@ impl Pane {
         self.filters.add(filter);
     }
 
+    /// Get a PaneHandle for this pane. The handle can be cloned and
+    /// sent to other threads for sending messages to the compositor
+    /// or posting events back to the pane's own looper.
+    pub fn proxy(&self) -> PaneHandle {
+        PaneHandle::new(self.id, self.comp_tx.clone())
+            .with_looper(self.looper_tx.clone())
+    }
+
     /// Run the event loop with a closure handler on the current thread.
     ///
-    /// The closure receives a `PaneEvent` and returns:
+    /// The closure receives a `&PaneHandle` and a `PaneEvent`, and returns:
     /// - `Ok(true)` — continue
     /// - `Ok(false)` — exit (sends RequestClose)
     /// - `Err(e)` — exit with error
     ///
     /// This is the hello-pane pattern:
     /// ```ignore
-    /// pane.run(|event| match event {
+    /// pane.run(|proxy, event| match event {
     ///     PaneEvent::Key(key) if key.is_escape() => Ok(false),
     ///     PaneEvent::Close => Ok(false),
     ///     _ => Ok(true),
     /// })
     /// ```
-    /// Get a PaneHandle for this pane. The proxy can be cloned and
-    /// sent to other threads for sending messages to the compositor.
-    pub fn proxy(&self) -> PaneHandle {
-        PaneHandle::new(self.id, self.comp_tx.clone())
-    }
-
     pub fn run(self, mut handler: impl FnMut(&PaneHandle, PaneEvent) -> Result<bool>) -> Result<()> {
-        let Pane { id, geometry, receiver, filters, comp_tx, pane_count, done_signal, .. } = self;
-        let handle = PaneHandle::new(id, comp_tx.clone());
+        let Pane { id, geometry, receiver, filters, comp_tx, looper_tx, pane_count, done_signal, .. } = self;
+        let handle = PaneHandle::new(id, comp_tx.clone()).with_looper(looper_tx);
 
         // Synthesize Ready as the first event (like BWindow B_WINDOW_ACTIVATED)
         let keep_going = handler(&handle, PaneEvent::Ready(geometry))?;
@@ -117,8 +123,8 @@ impl Pane {
     /// pane.run_with(Weather { city: "SF".into(), data: None })
     /// ```
     pub fn run_with(self, mut handler: impl Handler) -> Result<()> {
-        let Pane { id, geometry, receiver, filters, comp_tx, pane_count, done_signal, .. } = self;
-        let handle = PaneHandle::new(id, comp_tx.clone());
+        let Pane { id, geometry, receiver, filters, comp_tx, looper_tx, pane_count, done_signal, .. } = self;
+        let handle = PaneHandle::new(id, comp_tx.clone()).with_looper(looper_tx);
 
         // Synthesize Ready as the first event
         let keep_going = handler.ready(&handle, geometry)?;

@@ -88,6 +88,8 @@ pub struct KeyEvent {
     pub key: Key,
     pub modifiers: Modifiers,
     pub state: KeyState,
+    /// Event timestamp in microseconds since epoch. `None` for synthesized events.
+    pub timestamp: Option<u64>,
 }
 
 impl KeyEvent {
@@ -124,4 +126,6 @@ pub struct MouseEvent {
     pub row: u16,
     pub kind: MouseEventKind,
     pub modifiers: Modifiers,
+    /// Event timestamp in microseconds since epoch. `None` for synthesized events.
+    pub timestamp: Option<u64>,
 }

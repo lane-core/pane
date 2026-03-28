@@ -76,8 +76,8 @@ fn arb_key() -> impl Strategy<Value = Key> {
 }
 
 fn arb_key_event() -> impl Strategy<Value = KeyEvent> {
-    (arb_key(), arb_modifiers(), prop_oneof![Just(event::KeyState::Press), Just(event::KeyState::Release)])
-        .prop_map(|(key, modifiers, state)| KeyEvent { key, modifiers, state })
+    (arb_key(), arb_modifiers(), prop_oneof![Just(event::KeyState::Press), Just(event::KeyState::Release)], proptest::option::of(any::<u64>()))
+        .prop_map(|(key, modifiers, state, timestamp)| KeyEvent { key, modifiers, state, timestamp })
 }
 
 fn arb_mouse_button() -> impl Strategy<Value = MouseButton> {
@@ -101,8 +101,8 @@ fn arb_mouse_event_kind() -> impl Strategy<Value = MouseEventKind> {
 }
 
 fn arb_mouse_event() -> impl Strategy<Value = MouseEvent> {
-    (any::<u16>(), any::<u16>(), arb_mouse_event_kind(), arb_modifiers())
-        .prop_map(|(col, row, kind, modifiers)| MouseEvent { col, row, kind, modifiers })
+    (any::<u16>(), any::<u16>(), arb_mouse_event_kind(), arb_modifiers(), proptest::option::of(any::<u64>()))
+        .prop_map(|(col, row, kind, modifiers, timestamp)| MouseEvent { col, row, kind, modifiers, timestamp })
 }
 
 fn arb_command_action() -> impl Strategy<Value = pane_proto::tag::CommandAction> {
@@ -115,9 +115,9 @@ fn arb_command_action() -> impl Strategy<Value = pane_proto::tag::CommandAction>
 }
 
 fn arb_command() -> impl Strategy<Value = pane_proto::tag::Command> {
-    (".*", ".*", proptest::option::of(".*"), arb_command_action())
-        .prop_map(|(name, description, shortcut, action)| pane_proto::tag::Command {
-            name, description, shortcut, action,
+    (".*", ".*", proptest::option::of(".*"), arb_command_action(), any::<bool>())
+        .prop_map(|(name, description, shortcut, action, enabled)| pane_proto::tag::Command {
+            name, description, shortcut, action, enabled,
         })
 }
 
@@ -130,8 +130,65 @@ fn arb_attr_value() -> impl Strategy<Value = AttrValue> {
     prop_oneof![
         ".*".prop_map(AttrValue::String),
         any::<i64>().prop_map(AttrValue::Int),
+        any::<f64>().prop_filter("not NaN", |f| !f.is_nan()).prop_map(AttrValue::Float),
         any::<bool>().prop_map(AttrValue::Bool),
         proptest::collection::vec(any::<u8>(), 0..=16).prop_map(AttrValue::Bytes),
+    ]
+}
+
+fn arb_completion() -> impl Strategy<Value = pane_proto::tag::Completion> {
+    (".*", proptest::option::of(".*"))
+        .prop_map(|(text, description)| pane_proto::tag::Completion { text, description })
+}
+
+fn arb_command_group() -> impl Strategy<Value = pane_proto::tag::CommandGroup> {
+    (".*", proptest::collection::vec(arb_command(), 0..=3))
+        .prop_map(|(label, commands)| pane_proto::tag::CommandGroup { label, commands })
+}
+
+fn arb_command_vocabulary() -> impl Strategy<Value = pane_proto::tag::CommandVocabulary> {
+    proptest::collection::vec(arb_command_group(), 0..=3)
+        .prop_map(|groups| pane_proto::tag::CommandVocabulary { groups })
+}
+
+fn arb_create_pane_tag() -> impl Strategy<Value = pane_proto::protocol::CreatePaneTag> {
+    (arb_pane_title(), arb_command_vocabulary())
+        .prop_map(|(title, vocabulary)| pane_proto::protocol::CreatePaneTag { title, vocabulary })
+}
+
+fn arb_pane_geometry() -> impl Strategy<Value = pane_proto::PaneGeometry> {
+    (any::<u32>(), any::<u32>(), any::<u16>(), any::<u16>())
+        .prop_map(|(width, height, cols, rows)| pane_proto::PaneGeometry { width, height, cols, rows })
+}
+
+fn arb_client_to_comp() -> impl Strategy<Value = pane_proto::protocol::ClientToComp> {
+    use pane_proto::protocol::ClientToComp;
+    prop_oneof![
+        proptest::option::of(arb_create_pane_tag()).prop_map(|tag| ClientToComp::CreatePane { tag }),
+        arb_pane_id().prop_map(|pane| ClientToComp::RequestClose { pane }),
+        (arb_pane_id(), arb_pane_title()).prop_map(|(pane, title)| ClientToComp::SetTitle { pane, title }),
+        (arb_pane_id(), arb_command_vocabulary()).prop_map(|(pane, vocabulary)| ClientToComp::SetVocabulary { pane, vocabulary }),
+        (arb_pane_id(), proptest::collection::vec(any::<u8>(), 0..=32)).prop_map(|(pane, content)| ClientToComp::SetContent { pane, content }),
+        (arb_pane_id(), any::<u64>(), proptest::collection::vec(arb_completion(), 0..=3))
+            .prop_map(|(pane, token, completions)| ClientToComp::CompletionResponse { pane, token, completions }),
+    ]
+}
+
+fn arb_comp_to_client() -> impl Strategy<Value = pane_proto::protocol::CompToClient> {
+    use pane_proto::protocol::CompToClient;
+    prop_oneof![
+        (arb_pane_id(), arb_pane_geometry()).prop_map(|(pane, geometry)| CompToClient::PaneCreated { pane, geometry }),
+        (arb_pane_id(), arb_pane_geometry()).prop_map(|(pane, geometry)| CompToClient::Resize { pane, geometry }),
+        arb_pane_id().prop_map(|pane| CompToClient::Focus { pane }),
+        arb_pane_id().prop_map(|pane| CompToClient::Blur { pane }),
+        (arb_pane_id(), arb_key_event()).prop_map(|(pane, event)| CompToClient::Key { pane, event }),
+        (arb_pane_id(), arb_mouse_event()).prop_map(|(pane, event)| CompToClient::Mouse { pane, event }),
+        arb_pane_id().prop_map(|pane| CompToClient::Close { pane }),
+        arb_pane_id().prop_map(|pane| CompToClient::CloseAck { pane }),
+        arb_pane_id().prop_map(|pane| CompToClient::CommandActivated { pane }),
+        arb_pane_id().prop_map(|pane| CompToClient::CommandDismissed { pane }),
+        (arb_pane_id(), ".*", ".*").prop_map(|(pane, command, args)| CompToClient::CommandExecuted { pane, command, args }),
+        (arb_pane_id(), any::<u64>(), ".*").prop_map(|(pane, token, input)| CompToClient::CompletionRequest { pane, token, input }),
     ]
 }
 
@@ -215,6 +272,20 @@ proptest! {
         let decoded: pane_proto::ServerHello = deserialize(&bytes).unwrap();
         prop_assert_eq!(hello, decoded);
     }
+
+    #[test]
+    fn roundtrip_client_to_comp(msg in arb_client_to_comp()) {
+        let bytes = serialize(&msg).unwrap();
+        let decoded: pane_proto::protocol::ClientToComp = deserialize(&bytes).unwrap();
+        prop_assert_eq!(msg, decoded);
+    }
+
+    #[test]
+    fn roundtrip_comp_to_client(msg in arb_comp_to_client()) {
+        let bytes = serialize(&msg).unwrap();
+        let decoded: pane_proto::protocol::CompToClient = deserialize(&bytes).unwrap();
+        prop_assert_eq!(msg, decoded);
+    }
 }
 
 #[test]
@@ -231,6 +302,7 @@ fn key_event_is_escape() {
         key: pane_proto::Key::Named(pane_proto::event::NamedKey::Escape),
         modifiers: pane_proto::event::Modifiers::empty(),
         state: pane_proto::event::KeyState::Press,
+        timestamp: None,
     };
     assert!(esc.is_escape());
 
@@ -238,6 +310,7 @@ fn key_event_is_escape() {
         key: pane_proto::Key::Char('a'),
         modifiers: pane_proto::event::Modifiers::empty(),
         state: pane_proto::event::KeyState::Press,
+        timestamp: None,
     };
     assert!(!not_esc.is_escape());
 
@@ -246,6 +319,36 @@ fn key_event_is_escape() {
         key: pane_proto::Key::Named(pane_proto::event::NamedKey::Escape),
         modifiers: pane_proto::event::Modifiers::empty(),
         state: pane_proto::event::KeyState::Release,
+        timestamp: None,
     };
     assert!(!esc_release.is_escape());
+}
+
+#[test]
+fn roundtrip_key_event_with_timestamp() {
+    let event = pane_proto::KeyEvent {
+        key: pane_proto::Key::Char('x'),
+        modifiers: pane_proto::event::Modifiers::empty(),
+        state: pane_proto::event::KeyState::Press,
+        timestamp: Some(1711612800_000_000),
+    };
+    let bytes = serialize(&event).unwrap();
+    let decoded: pane_proto::KeyEvent = deserialize(&bytes).unwrap();
+    assert_eq!(event, decoded);
+    assert_eq!(decoded.timestamp, Some(1711612800_000_000));
+}
+
+#[test]
+fn roundtrip_command_enabled_false() {
+    let cmd = pane_proto::tag::Command {
+        name: "disabled-cmd".into(),
+        description: "A disabled command".into(),
+        shortcut: None,
+        action: pane_proto::tag::CommandAction::Client("noop".into()),
+        enabled: false,
+    };
+    let bytes = serialize(&cmd).unwrap();
+    let decoded: pane_proto::tag::Command = deserialize(&bytes).unwrap();
+    assert_eq!(cmd, decoded);
+    assert!(!decoded.enabled);
 }

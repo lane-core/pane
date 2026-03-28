@@ -7,7 +7,7 @@ use pane_proto::protocol::{CompToClient, PaneGeometry};
 /// This is flatter than `CompToClient` — PaneId is stripped (the kit
 /// demuxes before the developer sees events), and nested structures
 /// are eliminated. The developer matches on this enum directly.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub enum PaneEvent {
     /// The pane is ready (initial geometry received).
     Ready(PaneGeometry),

@@ -10,6 +10,7 @@ use pane_proto::protocol::{ClientToComp, CompToClient, CreatePaneTag};
 
 use crate::connection::Connection;
 use crate::error::{ConnectError, PaneError, Result};
+use crate::looper_message::LooperMessage;
 use crate::pane::Pane;
 use crate::tag::Tag;
 
@@ -21,8 +22,9 @@ pub struct App {
     /// Sender to the compositor (active-phase messages).
     comp_tx: mpsc::Sender<ClientToComp>,
     /// Per-pane channels, keyed by PaneId. The dispatcher thread
-    /// forwards CompToClient messages to the right pane's channel.
-    pane_channels: Arc<Mutex<HashMap<PaneId, mpsc::Sender<CompToClient>>>>,
+    /// forwards CompToClient messages (wrapped as LooperMessage) to
+    /// the right pane's channel.
+    pane_channels: Arc<Mutex<HashMap<PaneId, mpsc::Sender<LooperMessage>>>>,
     /// Oneshot channels for pending create_pane responses.
     pending_creates: Arc<Mutex<VecDeque<mpsc::Sender<CompToClient>>>>,
     /// Application signature.
@@ -45,7 +47,7 @@ impl App {
     /// Connect using a test connection (for MockCompositor).
     pub fn connect_test(signature: &str, conn: Connection) -> std::result::Result<Self, ConnectError> {
         let comp_tx = conn.sender;
-        let pane_channels: Arc<Mutex<HashMap<PaneId, mpsc::Sender<CompToClient>>>> =
+        let pane_channels: Arc<Mutex<HashMap<PaneId, mpsc::Sender<LooperMessage>>>> =
             Arc::new(Mutex::new(HashMap::new()));
         let pending_creates: Arc<Mutex<VecDeque<mpsc::Sender<CompToClient>>>> =
             Arc::new(Mutex::new(VecDeque::new()));
@@ -71,11 +73,11 @@ impl App {
                     }
                 }
 
-                // Route to the correct pane's channel
+                // Route to the correct pane's channel (wrap as LooperMessage)
                 let id = msg.pane_id();
                 let channels = channels.lock().unwrap();
                 if let Some(tx) = channels.get(&id) {
-                    let _ = tx.send(msg);
+                    let _ = tx.send(LooperMessage::FromComp(msg));
                 }
             }
         });
@@ -134,8 +136,8 @@ impl App {
         // The proper fix (Stage 3) is to have the dispatcher pre-register the channel
         // or buffer events for unknown pane IDs. For now, the window is microseconds
         // and only affects events sent by the compositor in the same batch as PaneCreated.
-        let (pane_tx, pane_rx) = mpsc::channel();
-        self.pane_channels.lock().unwrap().insert(pane_id, pane_tx);
+        let (pane_tx, pane_rx) = mpsc::channel::<LooperMessage>();
+        self.pane_channels.lock().unwrap().insert(pane_id, pane_tx.clone());
         self.pane_count.fetch_add(1, Ordering::Relaxed);
 
         Ok(Pane::new(
@@ -143,6 +145,7 @@ impl App {
             geometry,
             pane_rx,
             self.comp_tx.clone(),
+            pane_tx,
             self.pane_count.clone(),
             self.done_signal.clone(),
         ))

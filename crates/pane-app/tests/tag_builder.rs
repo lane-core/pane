@@ -101,3 +101,17 @@ fn tag_unicode_title() {
     assert_eq!(wire.title.text, "日本語テスト");
     assert_eq!(wire.title.short, Some("テスト".to_string()));
 }
+
+// --- Commit 1: Command enabled/disabled ---
+
+#[test]
+fn cmd_enabled_default_true() {
+    let c = cmd("save", "Save file").client("save");
+    assert!(c.enabled);
+}
+
+#[test]
+fn cmd_enabled_false() {
+    let c = cmd("undo", "Undo").enabled(false).client("undo");
+    assert!(!c.enabled);
+}

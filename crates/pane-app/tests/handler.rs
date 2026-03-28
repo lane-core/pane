@@ -5,7 +5,7 @@
 use std::num::NonZeroU32;
 use std::sync::mpsc;
 
-use pane_app::{PaneHandle, Handler};
+use pane_app::{PaneHandle, Handler, LooperMessage};
 use pane_app::error::Result;
 use pane_proto::event::{KeyEvent, Key, Modifiers, KeyState};
 use pane_proto::message::PaneId;
@@ -18,6 +18,10 @@ fn pane_id(n: u32) -> PaneId {
 fn make_handle(id: PaneId) -> (PaneHandle, mpsc::Receiver<ClientToComp>) {
     let (tx, rx) = mpsc::channel();
     (PaneHandle::new(id, tx), rx)
+}
+
+fn send_comp(tx: &mpsc::Sender<LooperMessage>, msg: CompToClient) {
+    tx.send(LooperMessage::FromComp(msg)).unwrap();
 }
 
 /// A Handler with NO overrides — uses all defaults.
@@ -37,11 +41,11 @@ impl Handler for NeverCloseHandler {
 #[test]
 fn handler_default_close_returns_false() {
     // Default close_requested returns Ok(false) — the loop should exit
-    let (tx, rx) = mpsc::channel();
+    let (tx, rx) = mpsc::channel::<LooperMessage>();
     let filters = pane_app::filter::FilterChain::new();
     let (handle, _comp_rx) = make_handle(pane_id(1));
 
-    tx.send(CompToClient::Close { pane: pane_id(1) }).unwrap();
+    send_comp(&tx, CompToClient::Close { pane: pane_id(1) });
     drop(tx);
 
     pane_app::looper::run_handler(pane_id(1), rx, filters, handle, DefaultHandler).unwrap();
@@ -51,20 +55,21 @@ fn handler_default_close_returns_false() {
 #[test]
 fn handler_default_key_returns_true() {
     // Default key returns Ok(true) — the loop should continue
-    let (tx, rx) = mpsc::channel();
+    let (tx, rx) = mpsc::channel::<LooperMessage>();
     let filters = pane_app::filter::FilterChain::new();
     let (handle, _comp_rx) = make_handle(pane_id(1));
 
     // Send a key, then a close to terminate
-    tx.send(CompToClient::Key {
+    send_comp(&tx, CompToClient::Key {
         pane: pane_id(1),
         event: KeyEvent {
             key: Key::Char('a'),
             modifiers: Modifiers::empty(),
             state: KeyState::Press,
+            timestamp: None,
         },
-    }).unwrap();
-    tx.send(CompToClient::Close { pane: pane_id(1) }).unwrap();
+    });
+    send_comp(&tx, CompToClient::Close { pane: pane_id(1) });
     drop(tx);
 
     pane_app::looper::run_handler(pane_id(1), rx, filters, handle, DefaultHandler).unwrap();
@@ -74,7 +79,7 @@ fn handler_default_key_returns_true() {
 #[test]
 fn handler_default_disconnect_returns_false() {
     // Default disconnected returns Ok(false)
-    let (tx, rx) = mpsc::channel::<CompToClient>();
+    let (tx, rx) = mpsc::channel::<LooperMessage>();
     let filters = pane_app::filter::FilterChain::new();
     let (handle, _comp_rx) = make_handle(pane_id(1));
 
@@ -86,12 +91,12 @@ fn handler_default_disconnect_returns_false() {
 #[test]
 fn handler_override_close_to_continue() {
     // NeverCloseHandler overrides close to return Ok(true) — loop continues
-    let (tx, rx) = mpsc::channel();
+    let (tx, rx) = mpsc::channel::<LooperMessage>();
     let filters = pane_app::filter::FilterChain::new();
     let (handle, _comp_rx) = make_handle(pane_id(1));
 
     // Send close (handler will ignore it), then drop to disconnect
-    tx.send(CompToClient::Close { pane: pane_id(1) }).unwrap();
+    send_comp(&tx, CompToClient::Close { pane: pane_id(1) });
     drop(tx);
 
     pane_app::looper::run_handler(pane_id(1), rx, filters, handle, NeverCloseHandler).unwrap();
