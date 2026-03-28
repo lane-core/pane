@@ -60,6 +60,20 @@ BeOS proved empirically that message-passing discipline produces robust systems.
 
 Session types formalize exactly this discipline. What BMessage enforced by convention, session types enforce at compile time. The conversation structure — what is sent, in what order, by whom — is verified before the program runs. Deadlock freedom follows from the underlying proof theory (session types), not from testing. Pane stands on both: the empirical proof that message-passing discipline works, and the theoretical framework that lets the compiler verify it. Fowler and Hu's event actor model (Maty, OOPSLA) provides a third leg: formal proof that an event-loop-based actor servicing multiple sessions is deadlock-free across those sessions — validating the architectural pattern BeOS's app_server proved empirically.
 
+The concrete session-typed handshake in pane is defined by `ClientHandshake` and `ServerHandshake` type aliases in pane-proto, composing `Send`/`Recv`/`Branch`/`End` primitives from pane-session. `ServerHandshake` is the dual of `ClientHandshake`, computed automatically — the compiler enforces that both sides agree on the conversation structure.
+
+### Protocol phasing
+
+The session protocol decomposes into three phases:
+
+1. **Handshake** (session-typed): Client and server negotiate identity and capabilities. The conversation structure is verified at compile time. `finish()` reclaims the transport for the next phase.
+
+2. **Active** (typed enums): Both sides communicate freely with typed message enums (`ClientToComp`, `CompToClient`). Ordering is not constrained; individual message types are type-safe. Rust's exhaustive `match` guarantees every variant is handled.
+
+3. **Teardown** (graceful or crash): Either party can terminate. Graceful termination involves `RequestClose`/`CloseAck`. Crash results in `SessionError::Disconnected` — a typed error, not a panic.
+
+This three-phase model appears throughout pane's protocols and is the conceptual backbone of the system's reliability.
+
 ### Async by default
 
 The default interaction is asynchronous. Synchronous interactions are explicit in the session type — visible in the protocol definition, not hidden in runtime behavior. Asynchronous messages can be batched; synchronous interactions force a flush. The default should be async; sync only when a response is needed.

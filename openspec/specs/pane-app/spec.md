@@ -360,23 +360,58 @@ impl Pane {
     pub fn spawn_with<H: Handler + Send + 'static>(self, handler: H) -> PaneHandle { .. }
 }
 
-/// A handle to a spawned pane's thread.
+/// A lightweight, cloneable handle for sending messages to the compositor
+/// and posting events to the pane's own looper. The BMessenger equivalent.
 ///
-/// Can be used to join the thread or to send messages to the pane's looper.
-pub struct PaneHandle {
-    thread: JoinHandle<Result<()>>,
-    sender: Sender<ClientToComp>,
-}
+/// Use inside event handlers and spawned threads to update pane state
+/// without owning the Pane itself. Clone freely — each clone sends to
+/// the same channels.
+#[derive(Clone)]
+pub struct PaneHandle { .. }
 
 impl PaneHandle {
-    /// Wait for the pane to close.
-    pub fn join(self) -> Result<()> { .. }
+    /// The pane's compositor-assigned ID.
+    pub fn id(&self) -> PaneId { .. }
 
-    /// Post a message to the pane's looper from another thread.
+    // --- Compositor-bound messages ---
+
+    /// Update the pane's title.
+    pub fn set_title(&self, title: PaneTitle) -> Result<()> { .. }
+
+    /// Update the pane's command vocabulary.
+    pub fn set_vocabulary(&self, vocabulary: CommandVocabulary) -> Result<()> { .. }
+
+    /// Update the pane's body content.
+    pub fn set_content(&self, content: &[u8]) -> Result<()> { .. }
+
+    /// Respond to a completion request.
+    pub fn set_completions(&self, token: u64, completions: Vec<Completion>) -> Result<()> { .. }
+
+    // --- Self-delivery (BLooper::PostMessage) ---
+
+    /// Post an event to this pane's own looper.
     ///
-    /// This is the BLooper::PostMessage equivalent -- safe cross-thread
-    /// message delivery without locking.
-    pub fn post(&self, msg: ClientToComp) -> Result<()> { .. }
+    /// The BLooper::PostMessage equivalent. Worker threads (network,
+    /// computation) post results back to the event loop for sequential
+    /// processing. The event goes through the same filter chain and
+    /// handler dispatch as compositor events.
+    pub fn post_event(&self, event: PaneEvent) -> Result<()> { .. }
+
+    /// Post an event after a delay (BMessageRunner single-shot).
+    pub fn post_delayed(&self, event: PaneEvent, delay: Duration) -> Result<()> { .. }
+
+    /// Post an event repeatedly at an interval (BMessageRunner periodic).
+    ///
+    /// Returns a TimerToken for cancellation. First delivery after
+    /// one interval. The timer stops when cancelled or when the pane exits.
+    pub fn post_periodic(&self, event: PaneEvent, interval: Duration) -> Result<TimerToken> { .. }
+}
+
+/// Token for cancelling a periodic timer. Call cancel() explicitly.
+pub struct TimerToken { .. }
+
+impl TimerToken {
+    pub fn cancel(&self) { .. }
 }
 ```
 
@@ -390,24 +425,11 @@ impl Pane {
     /// Get the current geometry.
     pub fn geometry(&self) -> PaneGeometry { .. }
 
-    /// Update the tag line.
-    ///
-    /// The compositor re-renders the chrome with the new tag content.
-    /// This is asynchronous -- the call returns immediately.
-    pub fn set_tag(&self, tag: TagLine) -> Result<()> { .. }
+    /// Get a PaneHandle for this pane.
+    pub fn proxy(&self) -> PaneHandle { .. }
 
-    /// Send content to the body.
-    ///
-    /// What "content" means depends on the pane type. For a text pane,
-    /// this is text data. For a widget pane, this is a rendered buffer.
-    /// The body content type is negotiated during pane creation.
-    pub fn set_content(&self, content: &[u8]) -> Result<()> { .. }
-
-    /// Request the compositor to close this pane.
-    ///
-    /// The compositor sends a Close event back. The handler should
-    /// return `Ok(false)` on receiving PaneEvent::Close.
-    pub fn request_close(&self) -> Result<()> { .. }
+    /// Add a filter to the pane's filter chain.
+    pub fn add_filter(&mut self, filter: impl Filter) { .. }
 }
 ```
 
@@ -650,62 +672,73 @@ The chain-of-responsibility pattern is not needed when you have exhaustive enum 
 
 BLooper had two levels of message filtering: per-handler filters and "common" looper-wide filters. BMessageFilter was a small subclassable object that could inspect, modify, or consume messages before they reached their handler. William Adams (Be Newsletter #2-36): "You didn't have to sub-class the BLooper or BHandler classes. You did have to sub-class BMessageFilter, but in a growing system, sub-classing a nice small object that is unlikely to change is probably easier than sub-classing a highly active object like BWindow or BApplication."
 
-Pane preserves the concept but uses closures instead of subclassing.
+Pane preserves the concept but uses a trait instead of subclassing. The trait approach gives both the ergonomics of closures (implement only what you need) and the extensibility of named types.
 
 ```rust
-/// A filter applied to events before they reach the handler.
+/// A message filter that intercepts events before the handler sees them.
 ///
-/// Filters can inspect, modify, or consume events. They run in
-/// registration order. If a filter returns `FilterAction::Consume`,
-/// the event is not delivered to subsequent filters or the handler.
-///
-/// Filters run on the pane's looper thread -- the same thread safety
-/// rules apply. Keep them fast.
-pub type Filter = Box<dyn FnMut(&mut PaneEvent) -> FilterAction + Send>;
+/// Filters run in registration order. A consumed event skips all
+/// remaining filters and the handler.
+pub trait Filter: Send + 'static {
+    /// Process an event. Return Pass(event) to continue dispatch
+    /// (possibly with a modified event), or Consume to swallow it.
+    fn filter(&mut self, event: PaneEvent) -> FilterAction;
 
-/// What to do after a filter runs.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    /// Whether this filter is interested in this event type.
+    /// Returns true by default (filter sees everything). Override
+    /// to skip events your filter doesn't care about — a key-remap
+    /// filter can return false for mouse events.
+    fn wants(&self, _event: &PaneEvent) -> bool { true }
+}
+
 pub enum FilterAction {
-    /// Pass the event to the next filter / handler.
-    Pass,
-    /// Consume the event. No further processing.
+    /// Pass the event through (possibly modified).
+    Pass(PaneEvent),
+    /// Consume the event — the handler never sees it.
     Consume,
 }
 
 impl Pane {
     /// Add a filter that runs before the handler sees events.
-    ///
-    /// Filters are applied in registration order. This is the
-    /// BLooper::AddCommonFilter equivalent.
-    ///
-    /// Returns a FilterId that can be used to remove the filter later.
-    pub fn add_filter(&mut self, filter: Filter) -> FilterId { .. }
-
-    /// Remove a previously-added filter.
-    pub fn remove_filter(&mut self, id: FilterId) { .. }
+    pub fn add_filter(&mut self, filter: impl Filter) { .. }
 }
 ```
+
+The `wants()` method is a performance optimization. Most filters only care about one event type — a key remapper doesn't need to see mouse events, a rate limiter doesn't need to see focus changes. When `wants()` returns false, the filter is skipped for that event.
 
 ### Example: input logging filter
 
 ```rust
-pane.add_filter(Box::new(|event| {
-    if let PaneEvent::Key(ref key) = event {
-        tracing::debug!(?key, "input");
+struct LogFilter;
+
+impl Filter for LogFilter {
+    fn filter(&mut self, event: PaneEvent) -> FilterAction {
+        if let PaneEvent::Key(ref key) = event {
+            tracing::debug!(?key, "input");
+        }
+        FilterAction::Pass(event)
     }
-    FilterAction::Pass
-}));
+}
+
+pane.add_filter(LogFilter);
 ```
 
 ### Example: key remapping filter
 
 ```rust
-pane.add_filter(Box::new(|event| {
-    if let PaneEvent::Key(ref mut key) = event {
-        // Remap Ctrl+H to Backspace
-        if key.modifiers.contains(Modifiers::CTRL) && key.key == Key::Char('h') {
-            key.key = Key::Named(NamedKey::Backspace);
-            key.modifiers.remove(Modifiers::CTRL);
+struct RemapFilter;
+
+impl Filter for RemapFilter {
+    fn wants(&self, event: &PaneEvent) -> bool {
+        matches!(event, PaneEvent::Key(_))
+    }
+
+    fn filter(&mut self, mut event: PaneEvent) -> FilterAction {
+        if let PaneEvent::Key(ref mut key) = event {
+            // Remap Ctrl+H to Backspace
+            if key.modifiers.contains(Modifiers::CTRL) && key.key == Key::Char('h') {
+                key.key = Key::Named(NamedKey::Backspace);
+                key.modifiers.remove(Modifiers::CTRL);
         }
     }
     FilterAction::Pass
@@ -720,25 +753,29 @@ The looper is the per-pane message loop. It is not a public type -- developers i
 
 ### How it works
 
-When `Pane::run` or `Pane::spawn` is called, the kit creates a looper on the appropriate thread (current or spawned). The looper:
+When `Pane::run` or `Pane::run_with` is called, the kit creates a looper on the current thread. The looper:
 
-1. Establishes the pane's sub-session. The compositor assigns a per-pane channel (multiplexed over the connection's unix socket by pane ID prefix). The looper reads from this channel.
+1. Reads from a unified `LooperMessage` channel that carries both compositor messages (`FromComp(CompToClient)`) and self-delivered events (`Posted(PaneEvent)`). The dispatcher thread routes compositor messages to per-pane channels; worker threads and timers post directly via `PaneHandle::post_event()`.
 
-2. Calls `Handler::ready()` (or a no-op for the closure API).
+2. Synthesizes `PaneEvent::Ready(geometry)` as the first event (before entering the loop).
 
-3. Enters the message loop:
+3. Enters the message loop with drain-and-coalesce:
    ```
    loop {
-       let raw = read_message()?;            // block on sub-session channel
-       let event = deserialize(raw)?;         // postcard -> PaneEvent
-       let event = apply_filters(event);      // run filter chain
-       if event is consumed { continue }
-       let keep_going = handler(event)?;      // dispatch to handler
-       if !keep_going { break }
+       let msg = recv()?;                    // block on unified channel
+       let batch = drain_and_coalesce(msg);  // drain remaining, coalesce Resize/MouseMove
+       for event in batch {
+           let event = apply_filters(event); // run filter chain (wants + filter)
+           if event is consumed { continue }
+           let keep_going = handler(event)?; // dispatch to handler
+           if !keep_going { break }
+       }
    }
    ```
 
-4. On exit, sends RequestClose to the compositor, waits for CloseAck, decrements the pane count, and returns.
+4. On exit: if the handler chose to exit (not compositor-initiated close), sends `RequestClose` to the compositor. Decrements the pane count. If count reaches zero, signals the app's `wait()` condvar.
+
+The coalescing rules: Resize events keep only the last geometry. MouseMove events keep only the last position. All other events are delivered in order. This is the BWindow::DispatchMessage optimization — intermediate resize geometries during a drag are meaningless if they haven't been drawn.
 
 ### Threading model
 

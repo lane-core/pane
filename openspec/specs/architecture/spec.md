@@ -253,9 +253,9 @@ Each kit builds on the ones below it. pane-proto is the foundation — pure type
 
 ### pane-proto — Foundation
 
-Wire types (message enums, session type definitions), inter-server protocol types, serde derivations, validation. Every other crate depends on this. No runtime dependencies — pure types and serialization.
+Wire types (message enums, session type definitions), inter-server protocol types, serde derivations, validation. Every other crate depends on this. Depends on pane-session for session type primitives.
 
-The session types defined here are the single source of truth for every protocol in the system. When someone changes a protocol (adds a request variant, restructures the handshake), every client that doesn't update fails to compile. Protocol evolution is a refactoring operation, not a debugging expedition.
+The session types defined here are the single source of truth for every protocol in the system. `ClientHandshake` and `ServerHandshake` are type aliases composing pane-session's `Send`/`Recv`/`Branch`/`End` primitives with pane-proto's handshake messages. When someone changes a protocol (adds a request variant, restructures the handshake), every client that doesn't update fails to compile. Protocol evolution is a refactoring operation, not a debugging expedition.
 
 ### pane-app — Application Lifecycle
 
@@ -263,7 +263,19 @@ The developer's primary interface for building pane-native applications. Analogo
 
 **Looper.** A thread with a message queue, processing messages sequentially. This is BLooper in Rust: `std::thread::spawn` a thread that reads from a channel, dispatches to handlers, runs until stopped. The looper is the concurrency primitive — each pane-native application has at least one looper (the app looper), and each window-equivalent has its own looper. Heavy work goes in spawned threads; the looper thread stays responsive.
 
-**Handler.** Processes messages within a looper's context. Handlers chain — if a handler doesn't recognize a message, it passes to the next handler. This is the chain-of-responsibility pattern from BHandler, which gives each handler self-contained logic for the messages it understands.
+The looper receives from a unified `LooperMessage` channel that carries both compositor messages (`FromComp`) and self-delivered events (`Posted`). Both paths run through the same filter chain and handler dispatch.
+
+**Self-delivery (PostMessage).** `PaneHandle::post_event()` posts a `PaneEvent` to the pane's own looper from any thread. This is `BLooper::PostMessage` — the mechanism for worker threads to deliver results back to the event loop for sequential processing. The PaneHandle is cloneable and `Send`; pass it to spawned threads for async work, post results back when done.
+
+**Message coalescing.** After each blocking `recv()`, the looper drains all queued messages and coalesces them before dispatch. Resize events keep only the last geometry. MouseMove events keep only the last position. All other events are delivered in order. This is the BWindow::DispatchMessage optimization — a drag-resize generates dozens of intermediate geometries, but the handler sees only the final one.
+
+**Timer events.** `PaneHandle::post_delayed(event, duration)` delivers an event after a delay. `PaneHandle::post_periodic(event, interval)` delivers repeatedly, returning a `TimerToken` for cancellation. This is BMessageRunner — the standard mechanism for periodic updates (weather refresh, cursor blink, auto-save). Timers deliver through the self-delivery channel, so timer events are processed sequentially by the looper like any other event.
+
+**Handler.** Processes messages within a looper's context. The `Handler` trait has typed methods for each event kind (`ready`, `key`, `mouse`, `close_requested`, etc.) — what BWindow::DispatchMessage did internally, exposed as the API surface. Rust's exhaustive matching ensures no event variant is silently dropped.
+
+**Filters.** `Filter` trait with `filter(event) → Pass(event) | Consume` and optional `wants(&event) → bool` for selective matching. Filters run in registration order; any filter can transform or swallow an event. The `wants()` method is a performance optimization — a key-remapping filter skips mouse events entirely.
+
+**Command vocabulary.** Each pane declares its commands via the tag builder. Commands have a name, description, shortcut, action, and `enabled: bool` flag. Disabled commands appear greyed out in the command surface — the `BMenuItem::SetEnabled` pattern. The vocabulary can be updated at any time via `PaneHandle::set_vocabulary()`.
 
 **Routing.** Built into the kit, not a separate server. The kit:
 - Loads routing rules from the filesystem (`/etc/pane/route/rules/`, `~/.config/pane/route/rules/`), one file per rule
@@ -503,7 +515,22 @@ The pane protocol decomposes into three phases, each with a typing strategy matc
 
 **Handshake (session-typed).** Client sends `ClientHello`; compositor responds with `ServerHello`; client sends capabilities; compositor selects accept or reject via `Select`/`Branch`. The session type captures the sequence and branching exhaustively. After the handshake reaches `End`, the caller recovers the transport via `finish()` for the next phase.
 
+The handshake protocol is defined as type aliases in pane-proto:
+
+```
+ClientHandshake = Send<ClientHello, Recv<ServerHello, Send<ClientCaps,
+    Branch<Recv<Accepted, End>, Recv<Rejected, End>>>>>
+
+ServerHandshake = Dual<ClientHandshake>
+    // = Recv<ClientHello, Send<ServerHello, Recv<ClientCaps,
+    //     Select<Send<Accepted, End>, Send<Rejected, End>>>>>
+```
+
+These are the single source of truth for handshake ordering. `ServerHandshake` is computed automatically via the `HasDual` trait — Send↔Recv, Select↔Branch. If someone restructures the handshake, every participant that doesn't update fails to compile.
+
 **Active (typed enums, event-driven).** Both sides communicate via typed message enums on the same socket. Each direction has its own enum (`ClientToComp`, `CompToClient`). Both sides send when ready. The compositor dispatches via calloop handler; the client dispatches via its looper thread. Rust's exhaustive `match` guarantees every variant is handled. No session-type ordering constraint — the guarantee is type safety of each individual message, not sequencing.
+
+Input events (`Key`, `Mouse`) carry `timestamp: Option<u64>` in microseconds since epoch — the single source of truth for event ordering and latency measurement. `None` for synthesized events (self-delivery, test injection).
 
 **Teardown (session-typed or crash boundary).** Graceful: active phase enums include `RequestClose` / `CloseAck`. Crash: socket drops, `SessionEvent::Disconnected` fires. Cleanup proceeds identically minus the acknowledgment. This is Maty's affine session model: a session can be abandoned at any point, and the surviving party handles cancellation through its error path.
 
