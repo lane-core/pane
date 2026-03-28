@@ -205,12 +205,24 @@ fn run(opts: &Opts) -> Result<()> {
             return TimeoutAction::Drop;
         }
 
-        // Poll for completed handshakes and process client messages
+        // --- Frame budget telemetry ---
+        let frame_start = std::time::Instant::now();
+
         state.poll_handshakes();
         state.process_client_messages();
 
-        // Render frame
+        let protocol_elapsed = frame_start.elapsed();
+
         state.render_frame();
+
+        let total_elapsed = frame_start.elapsed();
+        if total_elapsed.as_millis() > 8 {
+            // Warn when frame work exceeds half the budget (8ms of 16ms)
+            warn!("frame budget: protocol {}ms + render {}ms = {}ms",
+                protocol_elapsed.as_millis(),
+                (total_elapsed - protocol_elapsed).as_millis(),
+                total_elapsed.as_millis());
+        }
 
         // Reschedule for next frame
         TimeoutAction::ToDuration(FRAME_INTERVAL)

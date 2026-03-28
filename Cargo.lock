@@ -1402,6 +1402,7 @@ dependencies = [
  "calloop 0.14.4",
  "cosmic-text",
  "pane-proto",
+ "pane-server",
  "pane-session",
  "serde",
  "smithay",
@@ -1434,6 +1435,15 @@ dependencies = [
  "postcard",
  "proptest",
  "serde",
+]
+
+[[package]]
+name = "pane-server"
+version = "0.1.0"
+dependencies = [
+ "pane-proto",
+ "pane-session",
+ "tracing",
 ]
 
 [[package]]

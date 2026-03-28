@@ -1,0 +1,11 @@
+[package]
+name = "pane-server"
+version = "0.1.0"
+edition = "2021"
+description = "Compositor protocol server — socket listener, handshake, client message routing. No rendering dependencies."
+license = "AGPL-3.0-only"
+
+[dependencies]
+pane-proto = { path = "../pane-proto" }
+pane-session = { path = "../pane-session" }
+tracing = "0.1"
