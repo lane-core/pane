@@ -47,7 +47,7 @@ pub mod tag;
 pub use looper_message::LooperMessage;
 
 pub use app::App;
-pub use connection::{HandshakeResult, run_client_handshake};
+pub use connection::{run_client_handshake, HandshakeResult};
 pub use error::{Error, ConnectError, PaneError, Result};
 pub use event::PaneEvent;
 pub use filter::{Filter, FilterAction};

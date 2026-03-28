@@ -1,7 +1,9 @@
 //! Connection to the compositor — either a real unix socket or
 //! an in-memory channel for testing.
 
+use std::os::unix::net::UnixStream;
 use std::sync::mpsc;
+use std::thread;
 
 use pane_proto::protocol::{ClientToComp, CompToClient, ClientHello, ClientCaps, Accepted};
 use pane_session::types::{Chan, Offer};
@@ -41,19 +43,87 @@ pub struct MockConnection {
 }
 
 /// Result of a successful client handshake.
-pub struct HandshakeResult {
+pub struct HandshakeResult<T> {
     /// Capabilities accepted by the server.
     pub accepted: Accepted,
+    /// The transport, reclaimed via finish() for active-phase reuse.
+    pub transport: T,
+}
+
+/// Bridge a unix stream into a typed Connection.
+///
+/// Spawns two pump threads:
+/// - Read pump: reads framed CompToClient from the stream, deserializes, sends to mpsc
+/// - Write pump: reads ClientToComp from mpsc, serializes, writes framed to stream
+///
+/// The Connection's sender/receiver are the typed mpsc endpoints.
+/// The pump threads exit when either the stream or the mpsc channels close.
+pub fn from_unix_stream(stream: UnixStream) -> Connection {
+    let read_stream = stream.try_clone().expect("clone unix stream for read pump");
+    let shutdown_stream = stream.try_clone().expect("clone unix stream for shutdown");
+    let write_stream = stream;
+
+    let (client_tx, write_rx) = mpsc::channel::<ClientToComp>();
+    let (read_tx, client_rx) = mpsc::channel::<CompToClient>();
+
+    // Read pump: stream → deserialize → mpsc
+    thread::spawn(move || {
+        use pane_session::framing::read_framed;
+        loop {
+            match read_framed(&mut &read_stream) {
+                Ok(bytes) => {
+                    match pane_proto::deserialize::<CompToClient>(&bytes) {
+                        Ok(msg) => {
+                            if read_tx.send(msg).is_err() { break; }
+                        }
+                        Err(_) => break,
+                    }
+                }
+                Err(_) => break,
+            }
+        }
+    });
+
+    // Write pump: mpsc → serialize → stream
+    // When all senders drop (App closes), the for loop ends and we
+    // shut down the socket to unblock the read pump.
+    thread::spawn(move || {
+        use pane_session::framing::write_framed;
+        for msg in write_rx {
+            match pane_proto::serialize(&msg) {
+                Ok(bytes) => {
+                    if write_framed(&mut &write_stream, &bytes).is_err() { break; }
+                }
+                Err(_) => break,
+            }
+        }
+        // All senders dropped — connection closing. Shut down the socket
+        // to unblock the read pump and the remote server.
+        let _ = shutdown_stream.shutdown(std::net::Shutdown::Both);
+    });
+
+    Connection {
+        sender: client_tx,
+        receiver: client_rx,
+    }
 }
 
 /// Run the client side of the session-typed handshake.
 ///
 /// Sends ClientHello, receives ServerHello, sends ClientCaps,
 /// and waits for the server's Accept/Reject decision.
+/// Run the client side of the session-typed handshake.
+///
+/// Sends ClientHello, receives ServerHello, sends ClientCaps,
+/// and waits for the server's Accept/Reject decision.
+///
+/// On success, returns the accepted capabilities and the reclaimed
+/// transport (via `finish()`). The caller can reuse the transport
+/// for the active phase — e.g., `transport.into_stream()` for unix sockets.
 pub fn run_client_handshake<T: Transport>(
     chan: Chan<pane_proto::protocol::ClientHandshake, T>,
     signature: &str,
-) -> Result<HandshakeResult, crate::error::Error> {
+) -> Result<HandshakeResult<T>, crate::error::Error> {
     use crate::error::{ConnectError, Error};
 
     let chan = chan.send(ClientHello {
@@ -71,8 +141,8 @@ pub fn run_client_handshake<T: Transport>(
         Offer::Left(chan) => {
             let (accepted, chan) = chan.recv()
                 .map_err(|e| Error::Connect(ConnectError::Transport(e)))?;
-            chan.close();
-            Ok(HandshakeResult { accepted })
+            let transport = chan.finish();
+            Ok(HandshakeResult { accepted, transport })
         }
         Offer::Right(chan) => {
             let (rejected, chan) = chan.recv()

@@ -1,3 +1,4 @@
+use std::io::Read;
 use std::os::unix::net::{UnixListener, UnixStream};
 use std::thread;
 use std::time::Duration;
@@ -166,4 +167,148 @@ fn calloop_handles_fragmented_writes() {
 
     assert_eq!(result, Some("fragmented message".to_string()));
     sender_handle.join().unwrap();
+}
+
+// --- Write path tests ---
+
+/// Validate that write_message produces correct length-prefixed framing
+/// that read_framed can parse.
+#[test]
+fn write_message_produces_valid_framing() {
+    let dir = tempfile::tempdir().unwrap();
+    let sock_path = dir.path().join("write-framing.sock");
+    let listener = UnixListener::bind(&sock_path).unwrap();
+
+    let path = sock_path.clone();
+    let writer_handle = thread::spawn(move || {
+        let stream = UnixStream::connect(&path).unwrap();
+        write_message(&stream, b"hello").unwrap();
+        write_message(&stream, b"world").unwrap();
+        write_message(&stream, b"").unwrap(); // zero-length message
+    });
+
+    let (mut stream, _) = listener.accept().unwrap();
+
+    // Read raw bytes and verify framing manually
+    let mut buf = [0u8; 4];
+
+    // Message 1: "hello" (5 bytes)
+    stream.read_exact(&mut buf).unwrap();
+    assert_eq!(u32::from_le_bytes(buf), 5);
+    let mut payload = vec![0u8; 5];
+    stream.read_exact(&mut payload).unwrap();
+    assert_eq!(payload, b"hello");
+
+    // Message 2: "world" (5 bytes)
+    stream.read_exact(&mut buf).unwrap();
+    assert_eq!(u32::from_le_bytes(buf), 5);
+    let mut payload = vec![0u8; 5];
+    stream.read_exact(&mut payload).unwrap();
+    assert_eq!(payload, b"world");
+
+    // Message 3: empty (0 bytes)
+    stream.read_exact(&mut buf).unwrap();
+    assert_eq!(u32::from_le_bytes(buf), 0);
+
+    writer_handle.join().unwrap();
+}
+
+/// Concurrent read via calloop + write via write_message on the same connection.
+#[test]
+fn concurrent_read_write_on_same_connection() {
+    let dir = tempfile::tempdir().unwrap();
+    let sock_path = dir.path().join("read-write.sock");
+    let listener = UnixListener::bind(&sock_path).unwrap();
+
+    let path = sock_path.clone();
+    let client_handle = thread::spawn(move || {
+        let stream = UnixStream::connect(&path).unwrap();
+        let transport = UnixTransport::from_stream(stream);
+        let client: Chan<ClientProtocol, _> = Chan::new(transport);
+
+        // Send a request
+        let client = client.send("ping".to_string()).unwrap();
+        // Receive response
+        let (response, client) = client.recv().unwrap();
+        assert_eq!(response, 4); // "ping".len()
+        client.close();
+    });
+
+    let (stream, _) = listener.accept().unwrap();
+    let write_stream = stream.try_clone().unwrap();
+    let source = SessionSource::new(stream).unwrap();
+
+    let mut event_loop: EventLoop<'_, bool> = EventLoop::try_new().unwrap();
+    let handle = event_loop.handle();
+
+    handle
+        .insert_source(source, move |event, _, done: &mut bool| {
+            match event {
+                SessionEvent::Message(bytes) => {
+                    let msg: String = postcard::from_bytes(&bytes).unwrap();
+                    // Write response on the same connection (via cloned stream)
+                    let response = postcard::to_allocvec(&(msg.len() as u64)).unwrap();
+                    write_message(&write_stream, &response).unwrap();
+                    *done = true;
+                    Ok(PostAction::Remove)
+                }
+                SessionEvent::Disconnected => {
+                    *done = true;
+                    Ok(PostAction::Remove)
+                }
+            }
+        })
+        .unwrap();
+
+    let mut done = false;
+    event_loop.dispatch(Duration::from_secs(2), &mut done).unwrap();
+    assert!(done, "should have processed the request-response");
+    client_handle.join().unwrap();
+}
+
+/// Multiple rapid writes followed by calloop reading all of them.
+#[test]
+fn write_burst_read_all() {
+    let dir = tempfile::tempdir().unwrap();
+    let sock_path = dir.path().join("burst.sock");
+    let listener = UnixListener::bind(&sock_path).unwrap();
+
+    let path = sock_path.clone();
+    let writer_handle = thread::spawn(move || {
+        let stream = UnixStream::connect(&path).unwrap();
+        for i in 0u32..100 {
+            let payload = postcard::to_allocvec(&i).unwrap();
+            write_message(&stream, &payload).unwrap();
+        }
+        // Keep alive briefly
+        thread::sleep(Duration::from_millis(200));
+    });
+
+    let (stream, _) = listener.accept().unwrap();
+    let source = SessionSource::new(stream).unwrap();
+
+    let mut event_loop: EventLoop<'_, u32> = EventLoop::try_new().unwrap();
+    let handle = event_loop.handle();
+
+    handle
+        .insert_source(source, |event, _, count: &mut u32| {
+            match event {
+                SessionEvent::Message(bytes) => {
+                    let _val: u32 = postcard::from_bytes(&bytes).unwrap();
+                    *count += 1;
+                    Ok(PostAction::Continue)
+                }
+                SessionEvent::Disconnected => Ok(PostAction::Remove),
+            }
+        })
+        .unwrap();
+
+    let mut count = 0u32;
+    for _ in 0..10 {
+        event_loop.dispatch(Duration::from_millis(100), &mut count).unwrap();
+        if count >= 100 { break; }
+    }
+
+    assert_eq!(count, 100, "should have received all 100 messages, got {}", count);
+    writer_handle.join().unwrap();
 }

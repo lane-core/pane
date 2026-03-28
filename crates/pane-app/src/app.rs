@@ -38,10 +38,37 @@ pub struct App {
 }
 
 impl App {
-    /// Connect to the compositor.
-    /// Currently returns NotRunning — no compositor exists yet (Phase 4).
-    pub fn connect(_signature: &str) -> std::result::Result<Self, ConnectError> {
-        Err(ConnectError::NotRunning)
+    /// Connect to the compositor via unix socket.
+    ///
+    /// Looks for the compositor socket at `$XDG_RUNTIME_DIR/pane/compositor.sock`.
+    /// Runs the session-typed handshake, then enters the active phase.
+    pub fn connect(signature: &str) -> std::result::Result<Self, ConnectError> {
+        let runtime_dir = std::env::var("XDG_RUNTIME_DIR")
+            .map_err(|_| ConnectError::NotRunning)?;
+        let sock_path = std::path::PathBuf::from(runtime_dir).join("pane/compositor.sock");
+
+        let stream = std::os::unix::net::UnixStream::connect(&sock_path)
+            .map_err(|_| ConnectError::NotRunning)?;
+
+        let transport = pane_session::transport::unix::UnixTransport::from_stream(stream);
+        let chan = pane_session::types::Chan::new(transport);
+
+        let hs = crate::connection::run_client_handshake(chan, signature)
+            .map_err(|e| match e {
+                crate::error::Error::Connect(ce) => ce,
+                other => ConnectError::Transport(
+                    pane_session::SessionError::Io(
+                        std::io::Error::new(std::io::ErrorKind::Other, format!("{:?}", other)),
+                    ),
+                ),
+            })?;
+
+        // Handshake complete — reuse the same socket for active phase.
+        // finish() reclaimed the transport; into_stream() gives the raw UnixStream.
+        let active_stream = hs.transport.into_stream();
+        let conn = crate::connection::from_unix_stream(active_stream);
+
+        Self::connect_test(signature, conn)
     }
 
     /// Connect using a test connection (for MockCompositor).
