@@ -202,7 +202,7 @@ impl Handler for TestHandler {
         Ok(true)
     }
 
-    fn quit_requested(&mut self, _proxy: &Messenger) -> Result<bool> {
+    fn close_requested(&mut self, _proxy: &Messenger) -> Result<bool> {
         self.log.lock().unwrap().push("close".into());
         Ok(false)
     }

@@ -27,7 +27,7 @@ use crate::proxy::Messenger;
 /// Returns None for compositor messages with wrong pane_id.
 fn unwrap_message(msg: LooperMessage, pane_id: PaneId) -> Option<Message> {
     match msg {
-        LooperMessage::FromComp(comp_msg) => Message::from_comp(comp_msg, pane_id),
+        LooperMessage::FromComp(comp_msg) => Message::try_from_comp(comp_msg, pane_id),
         LooperMessage::Posted(event) => Some(event),
     }
 }
@@ -177,7 +177,7 @@ fn dispatch_to_handler(handler: &mut impl Handler, proxy: &Messenger, event: Mes
         Message::Deactivated => handler.deactivated(proxy),
         Message::Key(key) => handler.key(proxy, key),
         Message::Mouse(mouse) => handler.mouse(proxy, mouse),
-        Message::CloseRequested => handler.quit_requested(proxy),
+        Message::CloseRequested => handler.close_requested(proxy),
         Message::CommandActivated => handler.command_activated(proxy),
         Message::CommandDismissed => handler.command_dismissed(proxy),
         Message::CommandExecuted { command, args } =>

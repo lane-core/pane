@@ -28,7 +28,7 @@ pub enum ConnectError {
 }
 
 /// Pane operation errors.
-#[derive(Debug)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PaneError {
     /// Pane creation was refused by the compositor.
     Refused,

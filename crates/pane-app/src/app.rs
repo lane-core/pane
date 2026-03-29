@@ -66,7 +66,8 @@ impl App {
         // Handshake complete — reuse the same socket for active phase.
         // finish() reclaimed the transport; into_stream() gives the raw UnixStream.
         let active_stream = hs.transport.into_stream();
-        let conn = crate::connection::from_unix_stream(active_stream);
+        let conn = crate::connection::from_unix_stream(active_stream)
+            .map_err(|e| ConnectError::Transport(pane_session::SessionError::Io(e)))?;
 
         Self::connect_test(signature, conn)
     }
@@ -93,7 +94,7 @@ impl App {
 
                 // Check if this is a PaneCreated response to a pending create
                 if let CompToClient::PaneCreated { .. } = &msg {
-                    let mut pending = creates.lock().unwrap();
+                    let mut pending = creates.lock().unwrap_or_else(|e| e.into_inner());
                     if let Some(oneshot) = pending.pop_front() {
                         let _ = oneshot.send(msg);
                         continue;
@@ -102,7 +103,7 @@ impl App {
 
                 // Route to the correct pane's channel (wrap as LooperMessage)
                 let id = msg.pane_id();
-                let channels = channels.lock().unwrap();
+                let channels = channels.lock().unwrap_or_else(|e| e.into_inner());
                 if let Some(tx) = channels.get(&id) {
                     let _ = tx.send(LooperMessage::FromComp(msg));
                 }
@@ -142,7 +143,7 @@ impl App {
 
         // Set up oneshot for the PaneCreated response
         let (create_tx, create_rx) = mpsc::channel();
-        self.pending_creates.lock().unwrap().push_back(create_tx);
+        self.pending_creates.lock().unwrap_or_else(|e| e.into_inner()).push_back(create_tx);
 
         // Send CreatePane to compositor
         self.comp_tx.send(ClientToComp::CreatePane { tag: wire_tag })
@@ -168,7 +169,7 @@ impl App {
         // the looper drains and coalesces on each wakeup, so the queue
         // should rarely exceed single digits under normal operation.
         let (pane_tx, pane_rx) = mpsc::sync_channel::<LooperMessage>(256);
-        self.pane_channels.lock().unwrap().insert(pane_id, pane_tx.clone());
+        self.pane_channels.lock().unwrap_or_else(|e| e.into_inner()).insert(pane_id, pane_tx.clone());
         self.pane_count.fetch_add(1, Ordering::Relaxed);
 
         Ok(Pane::new(
@@ -185,7 +186,7 @@ impl App {
     /// Wait until all panes are closed.
     pub fn run(&self) {
         let (lock, cvar) = &*self.done_signal;
-        let guard = lock.lock().unwrap();
+        let guard = lock.lock().unwrap_or_else(|e| e.into_inner());
         let _guard = cvar.wait_while(guard, |_| {
             self.pane_count.load(Ordering::Relaxed) > 0
         }).unwrap();

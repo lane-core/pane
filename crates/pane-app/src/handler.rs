@@ -82,7 +82,7 @@ pub trait Handler: Send + 'static {
 
     /// The compositor requests this pane to close.
     /// Default: accept the close (return Ok(false) to stop the loop).
-    fn quit_requested(&mut self, _proxy: &Messenger) -> Result<bool> {
+    fn close_requested(&mut self, _proxy: &Messenger) -> Result<bool> {
         Ok(false)
     }
 
@@ -97,7 +97,7 @@ pub trait Handler: Send + 'static {
     }
 
     /// Catch-all for events not handled by other methods.
-    fn fallback_handler(&mut self, _proxy: &Messenger) -> Result<bool> {
+    fn fallback(&mut self, _proxy: &Messenger) -> Result<bool> {
         Ok(true)
     }
 }

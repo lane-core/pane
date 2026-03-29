@@ -58,7 +58,7 @@ impl Message {
     /// Convert a CompToClient message to a Message for the given pane.
     /// Takes ownership to avoid cloning — the message comes from recv().
     /// Returns None if the message is for a different pane or handled internally.
-    pub fn from_comp(msg: CompToClient, pane: PaneId) -> Option<Message> {
+    pub fn try_from_comp(msg: CompToClient, pane: PaneId) -> Option<Message> {
         match msg {
             CompToClient::Resize { pane: p, geometry } if p == pane =>
                 Some(Message::Resize(geometry)),

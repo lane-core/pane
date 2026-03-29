@@ -43,12 +43,12 @@ impl ExitBroadcaster {
 
     /// Register a watcher's looper channel. Called by Messenger::monitor().
     pub(crate) fn add_watcher(&self, tx: mpsc::SyncSender<LooperMessage>) {
-        self.watchers.lock().unwrap().push(tx);
+        self.watchers.lock().unwrap_or_else(|e| e.into_inner()).push(tx);
     }
 
     /// Broadcast the exit to all watchers. Called when run() completes.
     pub(crate) fn broadcast(&self, pane: PaneId, reason: ExitReason) {
-        let watchers = self.watchers.lock().unwrap();
+        let watchers = self.watchers.lock().unwrap_or_else(|e| e.into_inner());
         let msg = Message::PaneExited { pane, reason };
         for tx in watchers.iter() {
             let _ = tx.send(LooperMessage::Posted(msg.clone()));

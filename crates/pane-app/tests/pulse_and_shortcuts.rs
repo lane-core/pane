@@ -61,7 +61,7 @@ fn pulse_handler_method() {
             Ok(true)
         }
 
-        fn quit_requested(&mut self, _proxy: &Messenger) -> Result<bool> {
+        fn close_requested(&mut self, _proxy: &Messenger) -> Result<bool> {
             Ok(false)
         }
     }

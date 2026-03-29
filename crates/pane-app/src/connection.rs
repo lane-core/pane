@@ -58,9 +58,9 @@ pub struct HandshakeResult<T> {
 ///
 /// The Connection's sender/receiver are the typed mpsc endpoints.
 /// The pump threads exit when either the stream or the mpsc channels close.
-pub fn from_unix_stream(stream: UnixStream) -> Connection {
-    let read_stream = stream.try_clone().expect("clone unix stream for read pump");
-    let shutdown_stream = stream.try_clone().expect("clone unix stream for shutdown");
+pub fn from_unix_stream(stream: UnixStream) -> std::io::Result<Connection> {
+    let read_stream = stream.try_clone()?;
+    let shutdown_stream = stream.try_clone()?;
     let write_stream = stream;
 
     let (client_tx, write_rx) = mpsc::channel::<ClientToComp>();
@@ -102,10 +102,10 @@ pub fn from_unix_stream(stream: UnixStream) -> Connection {
         let _ = shutdown_stream.shutdown(std::net::Shutdown::Both);
     });
 
-    Connection {
+    Ok(Connection {
         sender: client_tx,
         receiver: client_rx,
-    }
+    })
 }
 
 /// Run the client side of the session-typed handshake.

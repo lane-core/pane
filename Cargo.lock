@@ -1386,7 +1386,6 @@ dependencies = [
 name = "pane-app"
 version = "0.1.0"
 dependencies = [
- "pane-notify",
  "pane-proto",
  "pane-session",
  "tempfile",

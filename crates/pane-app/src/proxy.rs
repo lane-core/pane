@@ -166,8 +166,6 @@ impl Messenger {
     /// Returns a TimerToken that can cancel the timer. The first delivery
     /// happens after one interval. The BMessageRunner periodic equivalent.
     pub fn send_periodic(&self, event: Message, interval: std::time::Duration) -> Result<TimerToken>
-    where
-        Message: Clone,
     {
         let tx = self.looper_tx.as_ref().ok_or(PaneError::Disconnected)?.clone();
         let cancelled = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));

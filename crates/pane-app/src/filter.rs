@@ -1,6 +1,7 @@
 use crate::event::Message;
 
 /// What a filter decides to do with an event.
+#[derive(Debug, Clone, PartialEq)]
 pub enum FilterAction {
     /// Pass the event through (possibly modified).
     Pass(Message),

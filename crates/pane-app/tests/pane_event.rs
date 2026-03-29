@@ -14,27 +14,27 @@ fn test_geometry() -> PaneGeometry {
 }
 
 #[test]
-fn from_comp_resize_matching_pane() {
+fn try_from_comp_resize_matching_pane() {
     let msg = CompToClient::Resize {
         pane: pane_id(1),
         geometry: test_geometry(),
     };
-    let event = Message::from_comp(msg, pane_id(1));
+    let event = Message::try_from_comp(msg, pane_id(1));
     assert!(matches!(event, Some(Message::Resize(_))));
 }
 
 #[test]
-fn from_comp_resize_wrong_pane() {
+fn try_from_comp_resize_wrong_pane() {
     let msg = CompToClient::Resize {
         pane: pane_id(1),
         geometry: test_geometry(),
     };
-    let event = Message::from_comp(msg, pane_id(2));
+    let event = Message::try_from_comp(msg, pane_id(2));
     assert!(event.is_none());
 }
 
 #[test]
-fn from_comp_key_event() {
+fn try_from_comp_key_event() {
     let key = KeyEvent {
         key: Key::Named(NamedKey::Escape),
         modifiers: Modifiers::empty(),
@@ -42,7 +42,7 @@ fn from_comp_key_event() {
         timestamp: None,
     };
     let msg = CompToClient::Key { pane: pane_id(3), event: key.clone() };
-    let event = Message::from_comp(msg, pane_id(3));
+    let event = Message::try_from_comp(msg, pane_id(3));
     match event {
         Some(Message::Key(k)) => {
             assert!(k.is_escape());
@@ -52,20 +52,20 @@ fn from_comp_key_event() {
 }
 
 #[test]
-fn from_comp_close() {
+fn try_from_comp_close() {
     let msg = CompToClient::Close { pane: pane_id(1) };
-    let event = Message::from_comp(msg, pane_id(1));
+    let event = Message::try_from_comp(msg, pane_id(1));
     assert!(matches!(event, Some(Message::CloseRequested)));
 }
 
 #[test]
-fn from_comp_command_executed() {
+fn try_from_comp_command_executed() {
     let msg = CompToClient::CommandExecuted {
         pane: pane_id(1),
         command: "save".into(),
         args: "".into(),
     };
-    let event = Message::from_comp(msg, pane_id(1));
+    let event = Message::try_from_comp(msg, pane_id(1));
     match event {
         Some(Message::CommandExecuted { command, args }) => {
             assert_eq!(command, "save");
@@ -76,31 +76,31 @@ fn from_comp_command_executed() {
 }
 
 #[test]
-fn from_comp_pane_created_returns_none() {
+fn try_from_comp_pane_created_returns_none() {
     let msg = CompToClient::PaneCreated {
         pane: pane_id(1),
         geometry: test_geometry(),
     };
-    let event = Message::from_comp(msg, pane_id(1));
+    let event = Message::try_from_comp(msg, pane_id(1));
     assert!(event.is_none());
 }
 
 // --- P2-2: Complete Message variant coverage ---
 
 #[test]
-fn from_comp_focus() {
+fn try_from_comp_focus() {
     let msg = CompToClient::Focus { pane: pane_id(1) };
-    assert!(matches!(Message::from_comp(msg, pane_id(1)), Some(Message::Activated)));
+    assert!(matches!(Message::try_from_comp(msg, pane_id(1)), Some(Message::Activated)));
 }
 
 #[test]
-fn from_comp_blur() {
+fn try_from_comp_blur() {
     let msg = CompToClient::Blur { pane: pane_id(1) };
-    assert!(matches!(Message::from_comp(msg, pane_id(1)), Some(Message::Deactivated)));
+    assert!(matches!(Message::try_from_comp(msg, pane_id(1)), Some(Message::Deactivated)));
 }
 
 #[test]
-fn from_comp_mouse() {
+fn try_from_comp_mouse() {
     use pane_proto::event::{MouseEvent, MouseButton, MouseEventKind, Modifiers};
     let msg = CompToClient::Mouse {
         pane: pane_id(1),
@@ -111,29 +111,29 @@ fn from_comp_mouse() {
             timestamp: None,
         },
     };
-    assert!(matches!(Message::from_comp(msg, pane_id(1)), Some(Message::Mouse(_))));
+    assert!(matches!(Message::try_from_comp(msg, pane_id(1)), Some(Message::Mouse(_))));
 }
 
 #[test]
-fn from_comp_command_activated() {
+fn try_from_comp_command_activated() {
     let msg = CompToClient::CommandActivated { pane: pane_id(1) };
-    assert!(matches!(Message::from_comp(msg, pane_id(1)), Some(Message::CommandActivated)));
+    assert!(matches!(Message::try_from_comp(msg, pane_id(1)), Some(Message::CommandActivated)));
 }
 
 #[test]
-fn from_comp_command_dismissed() {
+fn try_from_comp_command_dismissed() {
     let msg = CompToClient::CommandDismissed { pane: pane_id(1) };
-    assert!(matches!(Message::from_comp(msg, pane_id(1)), Some(Message::CommandDismissed)));
+    assert!(matches!(Message::try_from_comp(msg, pane_id(1)), Some(Message::CommandDismissed)));
 }
 
 #[test]
-fn from_comp_completion_request() {
+fn try_from_comp_completion_request() {
     let msg = CompToClient::CompletionRequest {
         pane: pane_id(1),
         token: 42,
         input: "hel".into(),
     };
-    match Message::from_comp(msg, pane_id(1)) {
+    match Message::try_from_comp(msg, pane_id(1)) {
         Some(Message::CompletionRequest { token, input }) => {
             assert_eq!(token, 42);
             assert_eq!(input, "hel");
@@ -143,11 +143,11 @@ fn from_comp_completion_request() {
 }
 
 #[test]
-fn from_comp_all_variants_wrong_pane_returns_none() {
+fn try_from_comp_all_variants_wrong_pane_returns_none() {
     let wrong = pane_id(99);
-    assert!(Message::from_comp(CompToClient::Focus { pane: pane_id(1) }, wrong).is_none());
-    assert!(Message::from_comp(CompToClient::Blur { pane: pane_id(1) }, wrong).is_none());
-    assert!(Message::from_comp(CompToClient::Close { pane: pane_id(1) }, wrong).is_none());
-    assert!(Message::from_comp(CompToClient::CommandActivated { pane: pane_id(1) }, wrong).is_none());
-    assert!(Message::from_comp(CompToClient::CommandDismissed { pane: pane_id(1) }, wrong).is_none());
+    assert!(Message::try_from_comp(CompToClient::Focus { pane: pane_id(1) }, wrong).is_none());
+    assert!(Message::try_from_comp(CompToClient::Blur { pane: pane_id(1) }, wrong).is_none());
+    assert!(Message::try_from_comp(CompToClient::Close { pane: pane_id(1) }, wrong).is_none());
+    assert!(Message::try_from_comp(CompToClient::CommandActivated { pane: pane_id(1) }, wrong).is_none());
+    assert!(Message::try_from_comp(CompToClient::CommandDismissed { pane: pane_id(1) }, wrong).is_none());
 }

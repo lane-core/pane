@@ -18,6 +18,7 @@ use pane_proto::protocol::CreatePaneTag;
 ///     .command(cmd("save", "Save file").shortcut("Ctrl+S"))
 ///     .command(cmd("close", "Close pane").shortcut("Alt+W"))
 /// ```
+#[derive(Debug, Clone)]
 pub struct Tag {
     title: PaneTitle,
     vocabulary: CommandVocabulary,
@@ -88,6 +89,7 @@ impl Tag {
 ///
 /// The command name is the action identifier — when the user executes
 /// the command, the handler receives `Message::CommandExecuted { command: name, args }`.
+#[derive(Debug, Clone)]
 pub struct CommandBuilder {
     name: String,
     description: String,

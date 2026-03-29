@@ -31,7 +31,7 @@ impl Handler for DefaultHandler {}
 /// A Handler that overrides close_requested to continue (Ok(true)).
 struct NeverCloseHandler;
 impl Handler for NeverCloseHandler {
-    fn quit_requested(&mut self, _handle: &Messenger) -> Result<bool> {
+    fn close_requested(&mut self, _handle: &Messenger) -> Result<bool> {
         Ok(true) // refuse to close
     }
 }
