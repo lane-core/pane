@@ -255,22 +255,20 @@ The app object doesn't need its own message loop because per-pane loopers handle
 pub struct Pane {
     /// Pane identity assigned by the compositor.
     id: PaneId,
-    /// Sub-session writer for sending messages to the compositor.
-    writer: PaneWriter,
-    /// Current geometry (updated on Resize events).
-    geometry: Arc<Mutex<PaneGeometry>>,
-    /// The looper thread join handle.
-    thread: Option<JoinHandle<()>>,
+    /// Initial geometry from PaneCreated.
+    geometry: PaneGeometry,
+    /// Receiver for the unified LooperMessage channel.
+    receiver: Receiver<LooperMessage>,
+    /// Sender to the compositor (for RequestClose after exit).
+    comp_tx: Sender<ClientToComp>,
+    /// Sender to this pane's looper (cloned into PaneHandle).
+    looper_tx: Sender<LooperMessage>,
     /// Shared reference to the app's pane count.
-    app_pane_count: Arc<AtomicUsize>,
-}
-
-/// Pane geometry, updated by the compositor on resize.
-#[derive(Debug, Clone, Copy)]
-pub struct PaneGeometry {
-    pub width: u32,
-    pub height: u32,
-    pub scale: f64,
+    pane_count: Arc<AtomicUsize>,
+    /// Signal for app.wait() when all panes exit.
+    done_signal: Arc<(Mutex<()>, Condvar)>,
+    /// Filter chain applied before handler dispatch.
+    filters: FilterChain,
 }
 ```
 
@@ -291,25 +289,10 @@ impl App {
     /// # Errors
     /// - `PaneError::Disconnected` -- compositor connection lost
     /// - `PaneError::Refused(reason)` -- compositor refused the pane
-    pub fn create_pane(&self, tag: TagLine) -> Result<Pane, PaneError> { .. }
+    pub fn create_pane(&self, tag: Tag) -> Result<Pane> { .. }
 
-    /// Create a pane with explicit geometry hints.
-    pub fn create_pane_with(
-        &self,
-        tag: TagLine,
-        hints: PaneHints,
-    ) -> Result<Pane, PaneError> { .. }
-}
-
-/// Hints for pane creation. The compositor is free to ignore these.
-#[derive(Debug, Clone, Default)]
-pub struct PaneHints {
-    /// Preferred size (compositor may adjust for layout).
-    pub preferred_size: Option<(u32, u32)>,
-    /// Whether this pane should float (not participate in tiling).
-    pub floating: bool,
-    /// Tag visibility for bitmask-based workspaces.
-    pub tags: Option<u32>,
+    /// Create a component pane (no tag line).
+    pub fn create_component_pane(&self) -> Result<Pane> { .. }
 }
 ```
 
@@ -338,26 +321,13 @@ impl Pane {
     /// The handler trait provides typed dispatch.
     pub fn run_with<H: Handler>(self, handler: H) -> Result<()> { .. }
 
-    /// Spawn the pane's message loop on a new thread.
-    ///
-    /// Returns immediately. The pane runs until its handler returns false,
-    /// the compositor closes it, or the connection drops.
-    ///
-    /// For multi-pane applications:
-    /// ```
-    /// let p1 = app.create_pane(tag1)?;
-    /// let p2 = app.create_pane(tag2)?;
-    /// p1.spawn(handler1);
-    /// p2.spawn(handler2);
-    /// app.wait(); // block until both close
-    /// ```
-    pub fn spawn<F>(self, handler: F) -> PaneHandle
-    where
-        F: FnMut(PaneEvent) -> Result<bool> + Send + 'static,
-    { .. }
-
-    /// Spawn with a stateful handler on a new thread.
-    pub fn spawn_with<H: Handler + Send + 'static>(self, handler: H) -> PaneHandle { .. }
+    // For multi-pane applications, spawn each on its own thread:
+    //
+    //   let p1 = app.create_pane(tag1)?;
+    //   let p2 = app.create_pane(tag2)?;
+    //   thread::spawn(move || p1.run(handler1));
+    //   thread::spawn(move || p2.run(handler2));
+    //   app.wait(); // block until both close
 }
 
 /// A lightweight, cloneable handle for sending messages to the compositor
@@ -749,7 +719,7 @@ impl Filter for RemapFilter {
 
 ## 6. The Looper (Internal)
 
-The looper is the per-pane message loop. It is not a public type -- developers interact with it through `Pane::run`, `Pane::spawn`, the `Handler` trait, and filters. But its design is the heart of the kit.
+The looper is the per-pane message loop. It is not a public type -- developers interact with it through `Pane::run`, `Pane::run_with`, the `Handler` trait, and filters. But its design is the heart of the kit.
 
 ### How it works
 
@@ -784,16 +754,12 @@ The coalescing rules: Resize events keep only the last geometry. MouseMove event
       |
       |-- create_pane() --> [compositor assigns PaneId]
       |
-      |-- Pane::spawn()
-      |       |
-      |       +-- Pane looper thread
-      |           reads from sub-session channel
-      |           dispatches to handler/closure
-      |           writes responses via PaneWriter
+      |-- pane.run()  (blocks calling thread)
+      |       looper reads from LooperMessage channel
+      |       dispatches to handler/closure via PaneHandle
       |
-      |-- Pane::spawn()
-      |       |
-      |       +-- Pane looper thread (independent)
+      |   (or spawn a thread for each pane:)
+      |   thread::spawn(move || pane.run(...))
       |
       |-- app.wait() blocks until pane_count == 0
 ```
@@ -805,8 +771,8 @@ Each pane thread is independent. A slow handler in pane A does not block pane B'
 - Event deserialization
 - Filter evaluation
 - Handler dispatch
-- Tag updates (`set_tag` serializes and writes immediately)
-- Content updates (`set_content` queues and flushes)
+- Title/vocabulary updates (`set_title`, `set_vocabulary` via PaneHandle)
+- Content updates (`set_content` via PaneHandle)
 
 ### What must NOT run on the looper thread
 
@@ -1149,53 +1115,13 @@ No special tool. No special protocol. Just files. This is Plan 9's gift to the B
 
 The active phase uses typed enum messages over the same unix socket that completed the handshake. The session type's job ended at `End`; the active phase uses serde enums with exhaustive matching.
 
-```rust
-/// Messages from client to compositor (active phase).
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub enum ClientToComp {
-    /// Update the tag line content.
-    SetTag { pane: PaneId, tag: TagLine },
-    /// Update the body content.
-    SetContent { pane: PaneId, content: Vec<u8> },
-    /// Request the compositor to close a pane.
-    RequestClose { pane: PaneId },
-    /// Create a new pane (sub-session).
-    CreatePane { tag: TagLine, hints: Option<PaneHints> },
-    /// Reply to a scripting query.
-    ScriptReply { token: u64, data: Vec<u8> },
-    /// Heartbeat response.
-    HeartbeatAck { seq: u32 },
-}
+The canonical definitions are in `crates/pane-proto/src/protocol.rs`. Key variants:
 
-/// Messages from compositor to client (active phase).
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub enum CompToClient {
-    /// A pane was created (response to CreatePane).
-    PaneCreated { pane: PaneId, geometry: PaneGeometry },
-    /// A pane was resized.
-    Resize { pane: PaneId, geometry: PaneGeometry },
-    /// A pane gained focus.
-    Focus { pane: PaneId },
-    /// A pane lost focus.
-    Blur { pane: PaneId },
-    /// A key event for a pane.
-    Key { pane: PaneId, event: KeyEvent },
-    /// A mouse event for a pane.
-    Mouse { pane: PaneId, event: MouseEvent },
-    /// A tag action was executed.
-    TagAction { pane: PaneId, action: TagAction },
-    /// A route result.
-    TagRoute { pane: PaneId, result: RouteResult },
-    /// The compositor is closing a pane.
-    Close { pane: PaneId },
-    /// Close acknowledged.
-    CloseAck { pane: PaneId },
-    /// A scripting query.
-    ScriptQuery { pane: PaneId, token: u64, query: ScriptQuery },
-    /// Heartbeat.
-    Heartbeat { seq: u32 },
-}
-```
+**ClientToComp:** CreatePane, RequestClose, SetTitle, SetVocabulary, SetContent, CompletionResponse
+
+**CompToClient:** PaneCreated, Resize, Focus, Blur, Key, Mouse, Close, CloseAck, CommandActivated, CommandDismissed, CommandExecuted, CompletionRequest
+
+Every CompToClient variant carries a PaneId for demultiplexing. Input events (Key, Mouse) carry `timestamp: Option<u64>` in microseconds.
 
 ### Multiplexing
 
@@ -1281,16 +1207,16 @@ pub type Result<T> = std::result::Result<T, Error>;
 | Type | Send | Sync | Rationale |
 |---|---|---|---|
 | `App` | yes | no | Owns the connection. Can be moved but not shared. |
-| `Pane` | yes | no | Owns the sub-session writer. Moved into the looper thread. |
-| `PaneHandle` | yes | yes | Cross-thread reference to a spawned pane. `post()` is safe. |
-| `PaneWriter` | yes | no | Internal write handle. Moved into the looper. |
+| `Pane` | yes | no | Consumed by `run()`/`run_with()`. |
+| `PaneHandle` | yes | yes | Cloneable cross-thread handle. `post_event()` / `set_title()` are safe. |
 | `Filter` | must be Send | -- | Moved into the looper thread. |
-| `Handler` | must be Send for spawn | -- | Moved into the looper thread. |
+| `Handler` | must be Send | -- | Moved into the looper thread. |
+| `TimerToken` | yes | yes | `cancel()` is atomic. |
 | `ScriptReplyToken` | yes | no | Must be used on the looper thread, but can be moved. |
 
 The threading model is identical to BeOS:
 - Each pane's looper thread owns its data exclusively
-- Cross-thread communication goes through message passing (PaneHandle::post, or the compositor protocol)
+- Cross-thread communication goes through message passing (PaneHandle::post_event, or the compositor protocol)
 - Shared state between panes uses Arc<Mutex<T>> -- the developer's choice, not the kit's
 
 Potrebic's commandments (Be Newsletter #1-4) still apply:
