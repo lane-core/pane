@@ -13,7 +13,7 @@ use crate::proxy::Messenger;
 /// the close (returning `Ok(false)` to stop the loop).
 ///
 /// This is the BHandler pattern: override what you understand,
-/// ignore the rest. Rust's exhaustive matching via PaneEvent ensures
+/// ignore the rest. Rust's exhaustive matching via Message ensures
 /// nothing is silently dropped — every variant reaches a Handler
 /// method or the `unhandled` catch-all.
 ///

@@ -11,7 +11,7 @@ pub enum ExitReason {
     /// Handler returned Ok(false) voluntarily (e.g., user pressed Escape).
     /// The kit should send RequestClose to the compositor.
     HandlerExit,
-    /// Handler returned Ok(false) in response to Message::Close.
+    /// Handler returned Ok(false) in response to Message::CloseRequested.
     /// The compositor already knows — don't send RequestClose.
     CompositorClose,
     /// The connection to the compositor was lost.

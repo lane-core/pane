@@ -15,16 +15,16 @@ pub enum Message {
     Ready(PaneGeometry),
     /// The pane was resized.
     Resize(PaneGeometry),
-    /// The pane gained focus.
-    Focus,
-    /// The pane lost focus.
-    Blur,
+    /// The pane was activated (gained focus).
+    Activated,
+    /// The pane was deactivated (lost focus).
+    Deactivated,
     /// Keyboard input.
     Key(KeyEvent),
     /// Mouse input.
     Mouse(MouseEvent),
     /// The compositor requests this pane to close.
-    Close,
+    CloseRequested,
     /// The command surface was activated.
     CommandActivated,
     /// The command surface was dismissed.
@@ -55,7 +55,7 @@ pub enum Message {
 }
 
 impl Message {
-    /// Convert a CompToClient message to a PaneEvent for the given pane.
+    /// Convert a CompToClient message to a Message for the given pane.
     /// Takes ownership to avoid cloning — the message comes from recv().
     /// Returns None if the message is for a different pane or handled internally.
     pub fn from_comp(msg: CompToClient, pane: PaneId) -> Option<Message> {
@@ -63,15 +63,15 @@ impl Message {
             CompToClient::Resize { pane: p, geometry } if p == pane =>
                 Some(Message::Resize(geometry)),
             CompToClient::Focus { pane: p } if p == pane =>
-                Some(Message::Focus),
+                Some(Message::Activated),
             CompToClient::Blur { pane: p } if p == pane =>
-                Some(Message::Blur),
+                Some(Message::Deactivated),
             CompToClient::Key { pane: p, event } if p == pane =>
                 Some(Message::Key(event)),
             CompToClient::Mouse { pane: p, event } if p == pane =>
                 Some(Message::Mouse(event)),
             CompToClient::Close { pane: p } if p == pane =>
-                Some(Message::Close),
+                Some(Message::CloseRequested),
             CompToClient::CommandActivated { pane: p } if p == pane =>
                 Some(Message::CommandActivated),
             CompToClient::CommandDismissed { pane: p } if p == pane =>

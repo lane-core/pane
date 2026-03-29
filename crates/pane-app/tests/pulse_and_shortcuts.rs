@@ -40,7 +40,7 @@ fn pulse_dispatches_to_handler() {
     let mut got_pulse = false;
     pane_app::looper::run_closure(pane_id(1), rx, filters, proxy, |_m, msg| {
         if matches!(msg, Message::Pulse) { got_pulse = true; }
-        if matches!(msg, Message::Close) { return Ok(false); }
+        if matches!(msg, Message::CloseRequested) { return Ok(false); }
         Ok(true)
     }).unwrap();
 
@@ -118,7 +118,7 @@ fn shortcut_filter_transforms_key_to_command() {
         if let Message::CommandExecuted { ref command, .. } = msg {
             if command == "save" { got_save = true; }
         }
-        if matches!(msg, Message::Close) { return Ok(false); }
+        if matches!(msg, Message::CloseRequested) { return Ok(false); }
         Ok(true)
     }).unwrap();
 
@@ -155,7 +155,7 @@ fn shortcut_filter_passes_unmatched_keys() {
     let mut got_key = false;
     pane_app::looper::run_closure(pane_id(1), rx, filters, proxy, |_m, msg| {
         if matches!(msg, Message::Key(_)) { got_key = true; }
-        if matches!(msg, Message::Close) { return Ok(false); }
+        if matches!(msg, Message::CloseRequested) { return Ok(false); }
         Ok(true)
     }).unwrap();
 
@@ -194,7 +194,7 @@ fn shortcut_filter_ignores_key_release() {
     pane_app::looper::run_closure(pane_id(1), rx, filters, proxy, |_m, msg| {
         if matches!(msg, Message::CommandExecuted { .. }) { got_command = true; }
         if matches!(msg, Message::Key(_)) { got_key = true; }
-        if matches!(msg, Message::Close) { return Ok(false); }
+        if matches!(msg, Message::CloseRequested) { return Ok(false); }
         Ok(true)
     }).unwrap();
 
@@ -233,7 +233,7 @@ fn shortcut_filter_with_escape() {
         if let Message::CommandExecuted { ref command, .. } = msg {
             if command == "close" { got_close_cmd = true; }
         }
-        if matches!(msg, Message::Close) { return Ok(false); }
+        if matches!(msg, Message::CloseRequested) { return Ok(false); }
         Ok(true)
     }).unwrap();
 

@@ -55,7 +55,7 @@ fn from_comp_key_event() {
 fn from_comp_close() {
     let msg = CompToClient::Close { pane: pane_id(1) };
     let event = Message::from_comp(msg, pane_id(1));
-    assert!(matches!(event, Some(Message::Close)));
+    assert!(matches!(event, Some(Message::CloseRequested)));
 }
 
 #[test]
@@ -90,13 +90,13 @@ fn from_comp_pane_created_returns_none() {
 #[test]
 fn from_comp_focus() {
     let msg = CompToClient::Focus { pane: pane_id(1) };
-    assert!(matches!(Message::from_comp(msg, pane_id(1)), Some(Message::Focus)));
+    assert!(matches!(Message::from_comp(msg, pane_id(1)), Some(Message::Activated)));
 }
 
 #[test]
 fn from_comp_blur() {
     let msg = CompToClient::Blur { pane: pane_id(1) };
-    assert!(matches!(Message::from_comp(msg, pane_id(1)), Some(Message::Blur)));
+    assert!(matches!(Message::from_comp(msg, pane_id(1)), Some(Message::Deactivated)));
 }
 
 #[test]

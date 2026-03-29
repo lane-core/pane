@@ -74,8 +74,8 @@ fn multi_pane_concurrent_dispatch() {
             let mut count = 0usize;
             pane.run(|_proxy, event| {
                 match event {
-                    Message::Focus | Message::Blur => count += 1,
-                    Message::Close => return Ok(false),
+                    Message::Activated | Message::Deactivated => count += 1,
+                    Message::CloseRequested => return Ok(false),
                     _ => {}
                 }
                 Ok(true)
@@ -122,7 +122,7 @@ fn self_delivery_burst_from_workers() {
         thread::spawn(move || {
             for _ in 0..events_per_thread {
                 // Ignore errors — looper may exit before we finish
-                let _ = p.send_message(Message::Focus);
+                let _ = p.send_message(Message::Activated);
             }
         });
     }
@@ -142,8 +142,8 @@ fn self_delivery_burst_from_workers() {
 
     pane.run(move |_proxy, event| {
         match event {
-            Message::Focus => { count.fetch_add(1, Ordering::Relaxed); }
-            Message::Close => return Ok(false),
+            Message::Activated => { count.fetch_add(1, Ordering::Relaxed); }
+            Message::CloseRequested => return Ok(false),
             _ => {}
         }
         Ok(true)
@@ -204,7 +204,7 @@ fn coalesce_resize_flood() {
                 move_count += 1;
                 last_move_col = m.col;
             }
-            Message::Close => return Ok(false),
+            Message::CloseRequested => return Ok(false),
             _ => {}
         }
         Ok(true)
@@ -245,7 +245,7 @@ fn timer_cancellation_race() {
                 if cancelled.load(Ordering::Relaxed) {
                     break;
                 }
-                if tx_clone.send(LooperMessage::Posted(Message::Focus)).is_err() {
+                if tx_clone.send(LooperMessage::Posted(Message::Activated)).is_err() {
                     break;
                 }
             }
@@ -274,8 +274,8 @@ fn timer_cancellation_race() {
 
     pane_app::looper::run_closure(pane_id(1), rx, filters, proxy, move |_h, event| {
         match event {
-            Message::Focus => { count.fetch_add(1, Ordering::Relaxed); }
-            Message::Close => return Ok(false),
+            Message::Activated => { count.fetch_add(1, Ordering::Relaxed); }
+            Message::CloseRequested => return Ok(false),
             _ => {}
         }
         Ok(true)
@@ -346,7 +346,7 @@ fn looper_shutdown_under_active_posting() {
     let worker_proxy = proxy.clone();
     thread::spawn(move || {
         loop {
-            if worker_proxy.send_message(Message::Focus).is_err() {
+            if worker_proxy.send_message(Message::Activated).is_err() {
                 break; // looper gone, channel closed
             }
             thread::sleep(Duration::from_millis(1));
@@ -365,7 +365,7 @@ fn looper_shutdown_under_active_posting() {
 
     let result = pane.run(|_proxy, event| {
         match event {
-            Message::Close => Ok(false),
+            Message::CloseRequested => Ok(false),
             _ => Ok(true),
         }
     });

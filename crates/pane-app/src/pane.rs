@@ -101,7 +101,7 @@ impl Pane {
     /// ```ignore
     /// pane.run(|messenger, msg| match msg {
     ///     Message::Key(key) if key.is_escape() => Ok(false),
-    ///     Message::Close => Ok(false),
+    ///     Message::CloseRequested => Ok(false),
     ///     _ => Ok(true),
     /// })
     /// ```

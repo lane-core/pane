@@ -32,7 +32,7 @@ fn run() -> pane_app::Result<()> {
         println!("msg: {:?}", msg);
         match msg {
             Message::CommandExecuted { ref command, .. } if command == "close" => Ok(false),
-            Message::Close => Ok(false),
+            Message::CloseRequested => Ok(false),
             _ => Ok(true),
         }
     })

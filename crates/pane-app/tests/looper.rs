@@ -75,7 +75,7 @@ fn closure_handles_close() {
 
     let mut got_close = false;
     pane_app::looper::run_closure(pane_id(1), rx, filters, proxy, |_proxy, event| {
-        if matches!(event, Message::Close) {
+        if matches!(event, Message::CloseRequested) {
             got_close = true;
             return Ok(false);
         }
@@ -117,7 +117,7 @@ fn closure_ignores_wrong_pane_id() {
     let mut events_received = 0;
     pane_app::looper::run_closure(pane_id(1), rx, filters, proxy, |_proxy, event| {
         events_received += 1;
-        if matches!(event, Message::Close) {
+        if matches!(event, Message::CloseRequested) {
             return Ok(false);
         }
         Ok(true)
@@ -157,7 +157,7 @@ fn filter_consumes_event() {
     pane_app::looper::run_closure(pane_id(1), rx, filters, proxy, |_proxy, event| {
         match event {
             Message::Key(ref k) if k.is_escape() => got_escape = true,
-            Message::Close => {
+            Message::CloseRequested => {
                 got_close = true;
                 return Ok(false);
             }
@@ -247,8 +247,8 @@ fn empty_filter_chain_passes_all() {
 
     let mut got_focus = false;
     pane_app::looper::run_closure(pane_id(1), rx, filters, proxy, |_h, event| {
-        if matches!(event, Message::Focus) { got_focus = true; }
-        if matches!(event, Message::Close) { return Ok(false); }
+        if matches!(event, Message::Activated) { got_focus = true; }
+        if matches!(event, Message::CloseRequested) { return Ok(false); }
         Ok(true)
     }).unwrap();
 
@@ -259,8 +259,8 @@ struct TransformFilter;
 impl Filter for TransformFilter {
     fn filter(&mut self, event: Message) -> FilterAction {
         // Transform Focus into Blur
-        if matches!(event, Message::Focus) {
-            return FilterAction::Pass(Message::Blur);
+        if matches!(event, Message::Activated) {
+            return FilterAction::Pass(Message::Deactivated);
         }
         FilterAction::Pass(event)
     }
@@ -281,9 +281,9 @@ fn filter_chain_ordering_transforms() {
     let mut got_focus = false;
     pane_app::looper::run_closure(pane_id(1), rx, filters, proxy, |_h, event| {
         match event {
-            Message::Focus => got_focus = true,
-            Message::Blur => got_blur = true,
-            Message::Close => return Ok(false),
+            Message::Activated => got_focus = true,
+            Message::Deactivated => got_blur = true,
+            Message::CloseRequested => return Ok(false),
             _ => {}
         }
         Ok(true)
@@ -401,7 +401,7 @@ impl Filter for SkipFocusFilter {
     }
 
     fn wants(&self, event: &Message) -> bool {
-        !matches!(event, Message::Focus)
+        !matches!(event, Message::Activated)
     }
 }
 
@@ -423,8 +423,8 @@ fn filter_wants_skips_uninterested() {
     let mut got_close = false;
     pane_app::looper::run_closure(pane_id(1), rx, filters, proxy, |_h, event| {
         match event {
-            Message::Focus => got_focus = true,
-            Message::Close => { got_close = true; return Ok(false); }
+            Message::Activated => got_focus = true,
+            Message::CloseRequested => { got_close = true; return Ok(false); }
             Message::Disconnected => return Ok(false),
             _ => {}
         }
@@ -467,14 +467,14 @@ fn self_delivery_reaches_handler() {
     let proxy = make_proxy(pane_id(1));
 
     // Post a self-delivered Focus, then a comp Close to terminate
-    tx.send(LooperMessage::Posted(Message::Focus)).unwrap();
+    tx.send(LooperMessage::Posted(Message::Activated)).unwrap();
     send_comp(&tx, close_msg());
     drop(tx);
 
     let mut got_focus = false;
     pane_app::looper::run_closure(pane_id(1), rx, filters, proxy, |_h, event| {
-        if matches!(event, Message::Focus) { got_focus = true; }
-        if matches!(event, Message::Close) { return Ok(false); }
+        if matches!(event, Message::Activated) { got_focus = true; }
+        if matches!(event, Message::CloseRequested) { return Ok(false); }
         Ok(true)
     }).unwrap();
 
@@ -488,14 +488,14 @@ fn self_delivery_interleaved_with_comp() {
     let proxy = make_proxy(pane_id(1));
 
     send_comp(&tx, CompToClient::Focus { pane: pane_id(1) });
-    tx.send(LooperMessage::Posted(Message::Blur)).unwrap();
+    tx.send(LooperMessage::Posted(Message::Deactivated)).unwrap();
     send_comp(&tx, close_msg());
     drop(tx);
 
     let mut log = Vec::new();
     pane_app::looper::run_closure(pane_id(1), rx, filters, proxy, |_h, event| {
         log.push(format!("{:?}", std::mem::discriminant(&event)));
-        if matches!(event, Message::Close) { return Ok(false); }
+        if matches!(event, Message::CloseRequested) { return Ok(false); }
         Ok(true)
     }).unwrap();
 
@@ -523,7 +523,7 @@ fn self_delivery_filters_apply() {
     let mut got_escape = false;
     pane_app::looper::run_closure(pane_id(1), rx, filters, proxy, |_h, event| {
         if matches!(event, Message::Key(_)) { got_escape = true; }
-        if matches!(event, Message::Close) { return Ok(false); }
+        if matches!(event, Message::CloseRequested) { return Ok(false); }
         Ok(true)
     }).unwrap();
 
@@ -574,7 +574,7 @@ fn coalesce_resize_keeps_last() {
             resize_count += 1;
             last_width = g.width;
         }
-        if matches!(event, Message::Close) { return Ok(false); }
+        if matches!(event, Message::CloseRequested) { return Ok(false); }
         Ok(true)
     }).unwrap();
 
@@ -603,7 +603,7 @@ fn coalesce_mouse_move_keeps_last() {
                 last_col = m.col;
             }
         }
-        if matches!(event, Message::Close) { return Ok(false); }
+        if matches!(event, Message::CloseRequested) { return Ok(false); }
         Ok(true)
     }).unwrap();
 
@@ -644,7 +644,7 @@ fn coalesce_preserves_press_release() {
     pane_app::looper::run_closure(pane_id(1), rx, filters, proxy, |_h, event| {
         match &event {
             Message::Mouse(m) => event_types.push(format!("{:?}", m.kind)),
-            Message::Close => { event_types.push("Close".into()); return Ok(false); }
+            Message::CloseRequested => { event_types.push("Close".into()); return Ok(false); }
             _ => {}
         }
         Ok(true)
@@ -672,10 +672,10 @@ fn coalesce_no_coalesce_focus_blur() {
 
     let mut count = 0;
     pane_app::looper::run_closure(pane_id(1), rx, filters, proxy, |_h, event| {
-        if !matches!(event, Message::Close | Message::Disconnected) {
+        if !matches!(event, Message::CloseRequested | Message::Disconnected) {
             count += 1;
         }
-        if matches!(event, Message::Close) { return Ok(false); }
+        if matches!(event, Message::CloseRequested) { return Ok(false); }
         Ok(true)
     }).unwrap();
 
@@ -695,8 +695,8 @@ fn single_message_no_coalesce() {
 
     let mut got_focus = false;
     pane_app::looper::run_closure(pane_id(1), rx, filters, proxy, |_h, event| {
-        if matches!(event, Message::Focus) { got_focus = true; }
-        if matches!(event, Message::Close) { return Ok(false); }
+        if matches!(event, Message::Activated) { got_focus = true; }
+        if matches!(event, Message::CloseRequested) { return Ok(false); }
         Ok(true)
     }).unwrap();
 

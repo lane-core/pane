@@ -41,7 +41,7 @@ fn hello_pane_lifecycle() {
         eprintln!("[run] received event: {:?}", event);
         match event {
             Message::Key(key) if key.is_escape() => Ok(false),
-            Message::Close => {
+            Message::CloseRequested => {
                 eprintln!("[run] got Close, exiting");
                 Ok(false)
             }

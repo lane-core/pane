@@ -7,17 +7,17 @@
 //! # Quick Start
 //!
 //! ```ignore
-//! use pane_app::{App, Tag, cmd, Message, KeyCombo, Builtin};
+//! use pane_app::{App, Tag, cmd, Message};
 //!
 //! fn main() -> pane_app::Result<()> {
 //!     let app = App::connect("com.example.hello")?;
-//!     let mut pane = app.create_pane(
+//!     let pane = app.create_pane(
 //!         Tag::new("Hello")
-//!             .command(cmd("close", "Close").shortcut("Alt+W").built_in(Builtin::Close)),
+//!             .command(cmd("close", "Close").shortcut("Alt+W")),
 //!     )?;
-//!     pane.add_shortcut(KeyCombo::new(Key::Named(NamedKey::Escape), Modifiers::empty()), "close", "");
 //!     pane.run(|_messenger, msg| match msg {
-//!         Message::CommandExecuted { ref command, .. } if command == "close" => Ok(false),
+//!         Message::Key(key) if key.is_escape() => Ok(false),
+//!         Message::CloseRequested => Ok(false),
 //!         _ => Ok(true),
 //!     })
 //! }

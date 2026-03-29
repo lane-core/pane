@@ -3,7 +3,7 @@
 //! Each pane has its own looper running on its own thread (or the
 //! calling thread for `pane.run()`). The looper reads LooperMessages
 //! from a unified channel (compositor events + self-delivered events),
-//! converts them to PaneEvents, applies filters, and dispatches to
+//! converts them to Messages, applies filters, and dispatches to
 //! the handler or closure.
 //!
 //! This is the BLooper model: one thread, one message queue,
@@ -23,7 +23,7 @@ use crate::handler::Handler;
 use crate::looper_message::LooperMessage;
 use crate::proxy::Messenger;
 
-/// Unwrap a LooperMessage into a PaneEvent.
+/// Unwrap a LooperMessage into a Message.
 /// Returns None for compositor messages with wrong pane_id.
 fn unwrap_message(msg: LooperMessage, pane_id: PaneId) -> Option<Message> {
     match msg {
@@ -87,7 +87,7 @@ fn drain_and_coalesce(
 /// Run the event loop with a closure handler.
 ///
 /// The closure receives a Messenger (for sending messages back to the
-/// compositor or posting events to this looper) and a PaneEvent, and returns:
+/// compositor or posting events to this looper) and a Message, and returns:
 /// - Ok(true) to continue
 /// - Ok(false) to exit
 /// - Err to exit with error
@@ -110,7 +110,7 @@ pub fn run_closure(
         let batch = drain_and_coalesce(msg, &receiver, pane_id);
 
         for event in batch {
-            let is_close = matches!(event, Message::Close);
+            let is_close = matches!(event, Message::CloseRequested);
 
             let event = match filters.apply(event) {
                 Some(e) => e,
@@ -149,7 +149,7 @@ pub fn run_handler(
         let batch = drain_and_coalesce(msg, &receiver, pane_id);
 
         for event in batch {
-            let is_close = matches!(event, Message::Close);
+            let is_close = matches!(event, Message::CloseRequested);
 
             let event = match filters.apply(event) {
                 Some(e) => e,
@@ -168,16 +168,16 @@ pub fn run_handler(
     }
 }
 
-/// Dispatch a single PaneEvent to the appropriate Handler method.
+/// Dispatch a single Message to the appropriate Handler method.
 fn dispatch_to_handler(handler: &mut impl Handler, proxy: &Messenger, event: Message) -> Result<bool> {
     match event {
         Message::Ready(geom) => handler.ready(proxy, geom),
         Message::Resize(geom) => handler.resized(proxy, geom),
-        Message::Focus => handler.activated(proxy),
-        Message::Blur => handler.deactivated(proxy),
+        Message::Activated => handler.activated(proxy),
+        Message::Deactivated => handler.deactivated(proxy),
         Message::Key(key) => handler.key(proxy, key),
         Message::Mouse(mouse) => handler.mouse(proxy, mouse),
-        Message::Close => handler.quit_requested(proxy),
+        Message::CloseRequested => handler.quit_requested(proxy),
         Message::CommandActivated => handler.command_activated(proxy),
         Message::CommandDismissed => handler.command_dismissed(proxy),
         Message::CommandExecuted { command, args } =>
