@@ -1,7 +1,7 @@
 use std::thread;
 use std::time::Duration;
 
-use pane_app::{App, Tag, cmd, BuiltIn, PaneMessage};
+use pane_app::{App, Tag, cmd, BuiltIn, Message};
 use pane_app::mock::MockCompositor;
 
 /// THE acceptance test. The hello-pane example running end-to-end
@@ -43,8 +43,8 @@ fn hello_pane_lifecycle() {
     pane.run(|_proxy, event| {
         eprintln!("[run] received event: {:?}", event);
         match event {
-            PaneMessage::Key(key) if key.is_escape() => Ok(false),
-            PaneMessage::Close => {
+            Message::Key(key) if key.is_escape() => Ok(false),
+            Message::Close => {
                 eprintln!("[run] got Close, exiting");
                 Ok(false)
             }

@@ -3,7 +3,7 @@
 //! Connects to the compositor, creates a pane with a tag and command
 //! vocabulary, prints all events, and exits on Close or Escape.
 
-use pane_app::{App, Tag, cmd, PaneMessage};
+use pane_app::{App, Tag, cmd, Message};
 use pane_proto::tag::BuiltIn;
 
 fn main() {
@@ -30,8 +30,8 @@ fn run() -> pane_app::Result<()> {
     pane.run(|_proxy, event| {
         println!("event: {:?}", event);
         match event {
-            PaneMessage::Key(key) if key.is_escape() => Ok(false),
-            PaneMessage::Close => Ok(false),
+            Message::Key(key) if key.is_escape() => Ok(false),
+            Message::Close => Ok(false),
             _ => Ok(true),
         }
     })

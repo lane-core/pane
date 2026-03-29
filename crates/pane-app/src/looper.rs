@@ -16,7 +16,7 @@ use pane_proto::event::MouseEventKind;
 use pane_proto::message::PaneId;
 
 use crate::error::Result;
-use crate::event::PaneMessage;
+use crate::event::Message;
 use crate::exit::ExitReason;
 use crate::filter::FilterChain;
 use crate::handler::Handler;
@@ -25,9 +25,9 @@ use crate::proxy::Messenger;
 
 /// Unwrap a LooperMessage into a PaneEvent.
 /// Returns None for compositor messages with wrong pane_id.
-fn unwrap_message(msg: LooperMessage, pane_id: PaneId) -> Option<PaneMessage> {
+fn unwrap_message(msg: LooperMessage, pane_id: PaneId) -> Option<Message> {
     match msg {
-        LooperMessage::FromComp(comp_msg) => PaneMessage::from_comp(comp_msg, pane_id),
+        LooperMessage::FromComp(comp_msg) => Message::from_comp(comp_msg, pane_id),
         LooperMessage::Posted(event) => Some(event),
     }
 }
@@ -42,13 +42,13 @@ fn drain_and_coalesce(
     first: LooperMessage,
     receiver: &mpsc::Receiver<LooperMessage>,
     pane_id: PaneId,
-) -> Vec<PaneMessage> {
+) -> Vec<Message> {
     let mut batch = vec![first];
     while let Ok(more) = receiver.try_recv() {
         batch.push(more);
     }
 
-    let mut events: Vec<PaneMessage> = Vec::with_capacity(batch.len());
+    let mut events: Vec<Message> = Vec::with_capacity(batch.len());
     let mut last_resize_idx: Option<usize> = None;
     let mut last_mouse_move_idx: Option<usize> = None;
 
@@ -59,7 +59,7 @@ fn drain_and_coalesce(
         };
 
         match &event {
-            PaneMessage::Resize(_) => {
+            Message::Resize(_) => {
                 if let Some(idx) = last_resize_idx {
                     events[idx] = event;
                 } else {
@@ -67,7 +67,7 @@ fn drain_and_coalesce(
                     events.push(event);
                 }
             }
-            PaneMessage::Mouse(m) if matches!(m.kind, MouseEventKind::Move) => {
+            Message::Mouse(m) if matches!(m.kind, MouseEventKind::Move) => {
                 if let Some(idx) = last_mouse_move_idx {
                     events[idx] = event;
                 } else {
@@ -96,13 +96,13 @@ pub fn run_closure(
     receiver: mpsc::Receiver<LooperMessage>,
     mut filters: FilterChain,
     proxy: Messenger,
-    mut handler: impl FnMut(&Messenger, PaneMessage) -> Result<bool>,
+    mut handler: impl FnMut(&Messenger, Message) -> Result<bool>,
 ) -> std::result::Result<ExitReason, crate::error::Error> {
     loop {
         let msg = match receiver.recv() {
             Ok(msg) => msg,
             Err(_) => {
-                let _ = handler(&proxy, PaneMessage::Disconnected);
+                let _ = handler(&proxy, Message::Disconnected);
                 return Ok(ExitReason::Disconnected);
             }
         };
@@ -110,7 +110,7 @@ pub fn run_closure(
         let batch = drain_and_coalesce(msg, &receiver, pane_id);
 
         for event in batch {
-            let is_close = matches!(event, PaneMessage::Close);
+            let is_close = matches!(event, Message::Close);
 
             let event = match filters.apply(event) {
                 Some(e) => e,
@@ -149,7 +149,7 @@ pub fn run_handler(
         let batch = drain_and_coalesce(msg, &receiver, pane_id);
 
         for event in batch {
-            let is_close = matches!(event, PaneMessage::Close);
+            let is_close = matches!(event, Message::Close);
 
             let event = match filters.apply(event) {
                 Some(e) => e,
@@ -169,22 +169,22 @@ pub fn run_handler(
 }
 
 /// Dispatch a single PaneEvent to the appropriate Handler method.
-fn dispatch_to_handler(handler: &mut impl Handler, proxy: &Messenger, event: PaneMessage) -> Result<bool> {
+fn dispatch_to_handler(handler: &mut impl Handler, proxy: &Messenger, event: Message) -> Result<bool> {
     match event {
-        PaneMessage::Ready(geom) => handler.ready(proxy, geom),
-        PaneMessage::Resize(geom) => handler.resized(proxy, geom),
-        PaneMessage::Focus => handler.activated(proxy),
-        PaneMessage::Blur => handler.deactivated(proxy),
-        PaneMessage::Key(key) => handler.key(proxy, key),
-        PaneMessage::Mouse(mouse) => handler.mouse(proxy, mouse),
-        PaneMessage::Close => handler.quit_requested(proxy),
-        PaneMessage::CommandActivated => handler.command_activated(proxy),
-        PaneMessage::CommandDismissed => handler.command_dismissed(proxy),
-        PaneMessage::CommandExecuted { command, args } =>
+        Message::Ready(geom) => handler.ready(proxy, geom),
+        Message::Resize(geom) => handler.resized(proxy, geom),
+        Message::Focus => handler.activated(proxy),
+        Message::Blur => handler.deactivated(proxy),
+        Message::Key(key) => handler.key(proxy, key),
+        Message::Mouse(mouse) => handler.mouse(proxy, mouse),
+        Message::Close => handler.quit_requested(proxy),
+        Message::CommandActivated => handler.command_activated(proxy),
+        Message::CommandDismissed => handler.command_dismissed(proxy),
+        Message::CommandExecuted { command, args } =>
             handler.command_executed(proxy, &command, &args),
-        PaneMessage::CompletionRequest { token, input } =>
+        Message::CompletionRequest { token, input } =>
             handler.completion_request(proxy, token, &input),
-        PaneMessage::Disconnected => handler.disconnected(proxy),
-        PaneMessage::PaneExited { pane, reason } => handler.pane_exited(proxy, pane, reason),
+        Message::Disconnected => handler.disconnected(proxy),
+        Message::PaneExited { pane, reason } => handler.pane_exited(proxy, pane, reason),
     }
 }

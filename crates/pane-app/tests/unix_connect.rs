@@ -8,7 +8,7 @@ use std::os::unix::net::UnixListener;
 use std::thread;
 use std::num::NonZeroU32;
 
-use pane_app::{App, Tag, PaneMessage};
+use pane_app::{App, Tag, Message};
 use pane_proto::protocol::{
     ServerHello, Accepted, ClientToComp, CompToClient, PaneGeometry,
     ServerHandshake,
@@ -97,7 +97,7 @@ fn connect_over_unix_socket() {
     // Validate geometry from PaneCreated arrives as Ready event
     pane.run(|_proxy, event| {
         match event {
-            PaneMessage::Ready(g) => {
+            Message::Ready(g) => {
                 assert_eq!(g.width, 800);
                 assert_eq!(g.height, 600);
                 Ok(false)

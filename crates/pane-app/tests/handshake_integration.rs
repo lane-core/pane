@@ -5,7 +5,7 @@
 
 use std::thread;
 
-use pane_app::{App, Tag, PaneMessage, run_client_handshake};
+use pane_app::{App, Tag, Message, run_client_handshake};
 use pane_app::mock::MockCompositor;
 
 /// Full lifecycle: handshake → create pane → receive events → close.
@@ -29,7 +29,7 @@ fn handshake_then_hello_pane() {
     // Pane exits on Ready — validates the full handshake→create→run flow
     pane.run(|_proxy, event| {
         match event {
-            PaneMessage::Ready(_) => {
+            Message::Ready(_) => {
                 eprintln!("[test] got Ready after handshake — success!");
                 Ok(false) // exit immediately after Ready
             }
@@ -64,17 +64,17 @@ fn handshake_then_multi_pane() {
     // Exit all panes immediately on Ready
     let h1 = thread::spawn(move || {
         pane1.run(|_, event| {
-            if matches!(event, PaneMessage::Ready(_)) { Ok(false) } else { Ok(true) }
+            if matches!(event, Message::Ready(_)) { Ok(false) } else { Ok(true) }
         }).unwrap();
     });
     let h2 = thread::spawn(move || {
         pane2.run(|_, event| {
-            if matches!(event, PaneMessage::Ready(_)) { Ok(false) } else { Ok(true) }
+            if matches!(event, Message::Ready(_)) { Ok(false) } else { Ok(true) }
         }).unwrap();
     });
     let h3 = thread::spawn(move || {
         pane3.run(|_, event| {
-            if matches!(event, PaneMessage::Ready(_)) { Ok(false) } else { Ok(true) }
+            if matches!(event, Message::Ready(_)) { Ok(false) } else { Ok(true) }
         }).unwrap();
     });
 

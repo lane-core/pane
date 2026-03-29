@@ -150,7 +150,7 @@ fn send_message_without_looper_returns_error() {
     let (tx, _rx) = mpsc::channel::<ClientToComp>();
     let handle = Messenger::new(pane_id(1), tx);
     // No looper_tx attached — send_message should fail
-    let result = handle.send_message(pane_app::PaneMessage::Focus);
+    let result = handle.send_message(pane_app::Message::Focus);
     assert!(result.is_err(), "send_message without looper should return Disconnected");
 }
 
@@ -168,7 +168,7 @@ fn send_message_without_looper_returns_error() {
 fn send_delayed_without_looper_returns_error() {
     let (tx, _rx) = mpsc::channel::<ClientToComp>();
     let handle = Messenger::new(pane_id(1), tx);
-    let result = handle.send_delayed(pane_app::PaneMessage::Focus, std::time::Duration::from_millis(10));
+    let result = handle.send_delayed(pane_app::Message::Focus, std::time::Duration::from_millis(10));
     assert!(result.is_err(), "send_delayed without looper should return Disconnected");
 }
 
@@ -176,6 +176,6 @@ fn send_delayed_without_looper_returns_error() {
 fn send_periodic_without_looper_returns_error() {
     let (tx, _rx) = mpsc::channel::<ClientToComp>();
     let handle = Messenger::new(pane_id(1), tx);
-    let result = handle.send_periodic(pane_app::PaneMessage::Focus, std::time::Duration::from_millis(10));
+    let result = handle.send_periodic(pane_app::Message::Focus, std::time::Duration::from_millis(10));
     assert!(result.is_err(), "send_periodic without looper should return Disconnected");
 }

@@ -1,9 +1,9 @@
-use crate::event::PaneMessage;
+use crate::event::Message;
 
 /// What a filter decides to do with an event.
 pub enum FilterAction {
     /// Pass the event through (possibly modified).
-    Pass(PaneMessage),
+    Pass(Message),
     /// Consume the event — the handler never sees it.
     Consume,
 }
@@ -19,13 +19,13 @@ pub enum FilterAction {
 pub trait Filter: Send + 'static {
     /// Process an event. Return `Pass(event)` to continue dispatch
     /// (possibly with a modified event), or `Consume` to swallow it.
-    fn filter(&mut self, event: PaneMessage) -> FilterAction;
+    fn filter(&mut self, event: Message) -> FilterAction;
 
     /// Whether this filter is interested in this event type.
     /// Returns true by default (filter sees everything). Override
     /// to skip events your filter doesn't care about — a key-remap
     /// filter can return false for mouse events, etc.
-    fn wants(&self, _event: &PaneMessage) -> bool {
+    fn wants(&self, _event: &Message) -> bool {
         true
     }
 }
@@ -53,7 +53,7 @@ impl FilterChain {
 
     /// Run the event through all filters. Returns the (possibly modified)
     /// event if it survived, or None if any filter consumed it.
-    pub fn apply(&mut self, mut event: PaneMessage) -> Option<PaneMessage> {
+    pub fn apply(&mut self, mut event: Message) -> Option<Message> {
         for filter in &mut self.filters {
             if !filter.wants(&event) {
                 continue;

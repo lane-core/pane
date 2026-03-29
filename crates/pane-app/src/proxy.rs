@@ -16,7 +16,7 @@ use pane_proto::protocol::ClientToComp;
 use pane_proto::tag::{PaneTitle, CommandVocabulary, Completion};
 
 use crate::error::{PaneError, Result};
-use crate::event::PaneMessage;
+use crate::event::Message;
 use crate::exit::ExitBroadcaster;
 use crate::looper_message::LooperMessage;
 
@@ -53,20 +53,20 @@ impl Messenger {
     /// This is the self-delivery mechanism: worker threads (network,
     /// computation) can post results back to the pane's event loop
     /// for sequential processing. The BLooper::PostMessage equivalent.
-    pub fn send_message(&self, event: PaneMessage) -> Result<()> {
+    pub fn send_message(&self, event: Message) -> Result<()> {
         let tx = self.looper_tx.as_ref().ok_or(PaneError::Disconnected)?;
         tx.send(LooperMessage::Posted(event))
             .map_err(|_| PaneError::Disconnected)?;
         Ok(())
     }
 
-    /// Monitor this pane: when it exits, deliver PaneMessage::PaneExited
+    /// Monitor this pane: when it exits, deliver Message::PaneExited
     /// to the given watcher's looper. Erlang-style crash propagation.
     ///
     /// ```ignore
     /// // In pane A's handler, monitoring pane B:
     /// b_handle.monitor(a_proxy);
-    /// // When B exits, A receives PaneMessage::PaneExited { pane: b_id, reason }
+    /// // When B exits, A receives Message::PaneExited { pane: b_id, reason }
     /// ```
     pub fn monitor(&self, watcher: &Messenger) {
         if let Some(ref tx) = watcher.looper_tx {
@@ -110,7 +110,7 @@ impl Messenger {
     ///
     /// Spawns a thread that sleeps then delivers via self-delivery.
     /// The BMessageRunner single-shot equivalent.
-    pub fn send_delayed(&self, event: PaneMessage, delay: std::time::Duration) -> Result<()> {
+    pub fn send_delayed(&self, event: Message, delay: std::time::Duration) -> Result<()> {
         let tx = self.looper_tx.as_ref().ok_or(PaneError::Disconnected)?.clone();
         std::thread::spawn(move || {
             std::thread::sleep(delay);
@@ -123,9 +123,9 @@ impl Messenger {
     ///
     /// Returns a TimerToken that can cancel the timer. The first delivery
     /// happens after one interval. The BMessageRunner periodic equivalent.
-    pub fn send_periodic(&self, event: PaneMessage, interval: std::time::Duration) -> Result<TimerToken>
+    pub fn send_periodic(&self, event: Message, interval: std::time::Duration) -> Result<TimerToken>
     where
-        PaneMessage: Clone,
+        Message: Clone,
     {
         let tx = self.looper_tx.as_ref().ok_or(PaneError::Disconnected)?.clone();
         let cancelled = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));

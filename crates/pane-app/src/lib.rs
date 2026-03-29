@@ -49,7 +49,7 @@ pub use looper_message::LooperMessage;
 pub use app::App;
 pub use connection::{run_client_handshake, HandshakeResult};
 pub use error::{Error, ConnectError, PaneError, Result};
-pub use event::PaneMessage;
+pub use event::Message;
 pub use filter::{Filter, FilterAction};
 pub use handler::Handler;
 pub use pane::Pane;
