@@ -105,19 +105,10 @@ fn arb_mouse_event() -> impl Strategy<Value = MouseEvent> {
         .prop_map(|(col, row, kind, modifiers, timestamp)| MouseEvent { col, row, kind, modifiers, timestamp })
 }
 
-fn arb_command_action() -> impl Strategy<Value = pane_proto::tag::CommandAction> {
-    prop_oneof![
-        Just(pane_proto::tag::CommandAction::Builtin(pane_proto::tag::Builtin::Close)),
-        Just(pane_proto::tag::CommandAction::Builtin(pane_proto::tag::Builtin::Copy)),
-        ".*".prop_map(pane_proto::tag::CommandAction::Client),
-        ".*".prop_map(pane_proto::tag::CommandAction::Route),
-    ]
-}
-
 fn arb_command() -> impl Strategy<Value = pane_proto::tag::Command> {
-    (".*", ".*", proptest::option::of(".*"), arb_command_action(), any::<bool>())
-        .prop_map(|(name, description, shortcut, action, enabled)| pane_proto::tag::Command {
-            name, description, shortcut, action, enabled,
+    (".*", ".*", proptest::option::of(".*"), any::<bool>())
+        .prop_map(|(name, description, shortcut, enabled)| pane_proto::tag::Command {
+            name, description, shortcut, enabled,
         })
 }
 
@@ -344,7 +335,6 @@ fn roundtrip_command_enabled_false() {
         name: "disabled-cmd".into(),
         description: "A disabled command".into(),
         shortcut: None,
-        action: pane_proto::tag::CommandAction::Client("noop".into()),
         enabled: false,
     };
     let bytes = serialize(&cmd).unwrap();

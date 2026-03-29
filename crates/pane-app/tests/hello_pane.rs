@@ -1,7 +1,7 @@
 use std::thread;
 use std::time::Duration;
 
-use pane_app::{App, Tag, cmd, Builtin, Message};
+use pane_app::{App, Tag, cmd, Message};
 use pane_app::mock::MockCompositor;
 
 /// THE acceptance test. The hello-pane example running end-to-end
@@ -20,11 +20,8 @@ fn hello_pane_lifecycle() {
 
     eprintln!("[test] creating pane");
     let pane = app.create_pane(
-        Tag::new("Hello").commands(vec![
-            cmd("close", "Close this pane")
-                .shortcut("Alt+W")
-                .built_in(Builtin::Close),
-        ]),
+        Tag::new("Hello")
+            .command(cmd("close", "Close this pane").shortcut("Alt+W")),
     ).unwrap();
 
     let pane_id = pane.id();

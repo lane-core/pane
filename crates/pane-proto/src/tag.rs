@@ -29,6 +29,11 @@ pub struct CommandGroup {
 }
 
 /// A single command in the vocabulary.
+///
+/// Every command goes to the handler as `Message::CommandExecuted`.
+/// The handler decides what to do — close, save, route, whatever.
+/// There are no "built-in" compositor actions; the handler is always
+/// in control.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Command {
     /// The command name as the user types it. Unique within the vocabulary.
@@ -37,37 +42,9 @@ pub struct Command {
     pub description: String,
     /// Keyboard shortcut displayed alongside the command (e.g., "Ctrl+S").
     pub shortcut: Option<String>,
-    /// What happens when executed.
-    pub action: CommandAction,
     /// Whether this command is currently available. Disabled commands
-    /// appear grayed out in the command surface (BMenuItem::SetEnabled).
+    /// appear grayed out in the command surface.
     pub enabled: bool,
-}
-
-/// What a command does when executed.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub enum CommandAction {
-    /// Built-in compositor action.
-    Builtin(Builtin),
-    /// Sent to the client's handler as a command_executed event.
-    Client(String),
-    /// Dispatched through the routing infrastructure.
-    Route(String),
-}
-
-/// Built-in compositor actions.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-pub enum Builtin {
-    /// Close this pane.
-    Close,
-    /// Copy selection to clipboard.
-    Copy,
-    /// Paste from clipboard.
-    Paste,
-    /// Undo last action.
-    Undo,
-    /// Redo last undone action.
-    Redo,
 }
 
 /// A completion entry returned by the pane's completion provider.

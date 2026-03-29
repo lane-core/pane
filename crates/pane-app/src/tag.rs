@@ -1,5 +1,5 @@
 use pane_proto::tag::{
-    PaneTitle, CommandVocabulary, CommandGroup, Command, CommandAction, Builtin,
+    PaneTitle, CommandVocabulary, CommandGroup, Command,
 };
 use pane_proto::protocol::CreatePaneTag;
 
@@ -14,14 +14,9 @@ use pane_proto::protocol::CreatePaneTag;
 ///
 /// With commands:
 /// ```ignore
-/// Tag::new("Editor").commands(vec![
-///     cmd("save", "Save the current file")
-///         .shortcut("Ctrl+S")
-///         .client("save"),
-///     cmd("close", "Close this pane")
-///         .shortcut("Alt+W")
-///         .built_in(Builtin::Close),
-/// ])
+/// Tag::new("Editor")
+///     .command(cmd("save", "Save file").shortcut("Ctrl+S"))
+///     .command(cmd("close", "Close pane").shortcut("Alt+W"))
 /// ```
 pub struct Tag {
     title: PaneTitle,
@@ -49,10 +44,11 @@ impl Tag {
     /// Add a single command. Can be chained:
     /// ```ignore
     /// Tag::new("Editor")
-    ///     .command(cmd("save", "Save").shortcut("Ctrl+S").client("save"))
-    ///     .command(cmd("close", "Close").built_in(Builtin::Close))
+    ///     .command(cmd("save", "Save").shortcut("Ctrl+S"))
+    ///     .command(cmd("close", "Close").shortcut("Alt+W"))
     /// ```
-    pub fn command(mut self, command: Command) -> Self {
+    pub fn command(mut self, command: impl Into<Command>) -> Self {
+        let command = command.into();
         if self.vocabulary.groups.is_empty() {
             self.vocabulary.groups.push(CommandGroup {
                 label: "Commands".into(),
@@ -89,6 +85,9 @@ impl Tag {
 }
 
 /// Builder for a single command. Created via `cmd()`.
+///
+/// The command name is the action identifier — when the user executes
+/// the command, the handler receives `Message::CommandExecuted { command: name, args }`.
 pub struct CommandBuilder {
     name: String,
     description: String,
@@ -96,12 +95,12 @@ pub struct CommandBuilder {
     enabled: bool,
 }
 
-/// Create a command builder with the given name and description.
+/// Create a command with the given name and description.
+///
+/// The name is both what the user types and what the handler receives.
 ///
 /// ```ignore
-/// cmd("save", "Save the current file")
-///     .shortcut("Ctrl+S")
-///     .client("save")
+/// cmd("save", "Save the current file").shortcut("Ctrl+S")
 /// ```
 pub fn cmd(name: impl Into<String>, description: impl Into<String>) -> CommandBuilder {
     CommandBuilder {
@@ -125,36 +124,23 @@ impl CommandBuilder {
         self
     }
 
-    /// The command is handled by the client's Handler.
-    pub fn client(self, data: impl Into<String>) -> Command {
+    /// Build the Command.
+    pub fn build(self) -> Command {
         Command {
             name: self.name,
             description: self.description,
             shortcut: self.shortcut,
-            action: CommandAction::Client(data.into()),
             enabled: self.enabled,
         }
     }
+}
 
-    /// The command is a built-in compositor action.
-    pub fn built_in(self, action: Builtin) -> Command {
-        Command {
-            name: self.name,
-            description: self.description,
-            shortcut: self.shortcut,
-            action: CommandAction::Builtin(action),
-            enabled: self.enabled,
-        }
-    }
-
-    /// The command dispatches through the routing infrastructure.
-    pub fn route(self, expr: impl Into<String>) -> Command {
-        Command {
-            name: self.name,
-            description: self.description,
-            shortcut: self.shortcut,
-            action: CommandAction::Route(expr.into()),
-            enabled: self.enabled,
-        }
+// Allow using CommandBuilder directly where Command is expected.
+// cmd("save", "Save").shortcut("Ctrl+S") produces a CommandBuilder;
+// Tag::command() and Tag::commands() accept Command. This impl
+// bridges the gap so .build() is optional in builder chains.
+impl From<CommandBuilder> for Command {
+    fn from(cb: CommandBuilder) -> Command {
+        cb.build()
     }
 }

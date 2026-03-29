@@ -1,5 +1,5 @@
-use pane_app::{Tag, cmd, Builtin};
-use pane_proto::tag::{CommandAction, CommandGroup};
+use pane_app::{Tag, cmd};
+use pane_proto::tag::CommandGroup;
 
 #[test]
 fn tag_minimal() {
@@ -20,14 +20,9 @@ fn tag_with_short_title() {
 
 #[test]
 fn tag_with_commands() {
-    let tag = Tag::new("Editor").commands(vec![
-        cmd("save", "Save file")
-            .shortcut("Ctrl+S")
-            .client("save"),
-        cmd("close", "Close pane")
-            .shortcut("Alt+W")
-            .built_in(Builtin::Close),
-    ]);
+    let tag = Tag::new("Editor")
+        .command(cmd("save", "Save file").shortcut("Ctrl+S"))
+        .command(cmd("close", "Close pane").shortcut("Alt+W"));
     let wire = tag.into_wire();
 
     assert_eq!(wire.vocabulary.groups.len(), 1);
@@ -38,11 +33,10 @@ fn tag_with_commands() {
     assert_eq!(save.name, "save");
     assert_eq!(save.description, "Save file");
     assert_eq!(save.shortcut, Some("Ctrl+S".to_string()));
-    assert!(matches!(save.action, CommandAction::Client(ref s) if s == "save"));
 
     let close = &wire.vocabulary.groups[0].commands[1];
     assert_eq!(close.name, "close");
-    assert!(matches!(close.action, CommandAction::Builtin(Builtin::Close)));
+    assert_eq!(close.shortcut, Some("Alt+W".to_string()));
 }
 
 #[test]
@@ -51,14 +45,14 @@ fn tag_with_explicit_groups() {
         CommandGroup {
             label: "File".into(),
             commands: vec![
-                cmd("save", "Save").client("save"),
-                cmd("close", "Close").built_in(Builtin::Close),
+                cmd("save", "Save").build(),
+                cmd("close", "Close").build(),
             ],
         },
         CommandGroup {
             label: "Build".into(),
             commands: vec![
-                cmd("build", "Build project").client("build"),
+                cmd("build", "Build project").build(),
             ],
         },
     ]);
@@ -72,9 +66,9 @@ fn tag_with_explicit_groups() {
 }
 
 #[test]
-fn cmd_route_action() {
-    let c = cmd("open", "Open file").route("edit $file");
-    assert!(matches!(c.action, CommandAction::Route(ref s) if s == "edit $file"));
+fn cmd_no_shortcut() {
+    let c = cmd("save", "Save file").build();
+    assert!(c.shortcut.is_none());
 }
 
 // --- P2-4: Tag/Command builder edge cases ---
@@ -83,15 +77,8 @@ fn cmd_route_action() {
 fn tag_empty_commands() {
     let tag = Tag::new("Empty").commands(vec![]);
     let wire = tag.into_wire();
-    // Empty commands should produce one group with zero commands
     assert_eq!(wire.vocabulary.groups.len(), 1);
     assert_eq!(wire.vocabulary.groups[0].commands.len(), 0);
-}
-
-#[test]
-fn cmd_no_shortcut() {
-    let c = cmd("save", "Save file").client("save");
-    assert!(c.shortcut.is_none());
 }
 
 #[test]
@@ -102,16 +89,30 @@ fn tag_unicode_title() {
     assert_eq!(wire.title.short, Some("テスト".to_string()));
 }
 
-// --- Commit 1: Command enabled/disabled ---
+// --- Command enabled/disabled ---
 
 #[test]
 fn cmd_enabled_default_true() {
-    let c = cmd("save", "Save file").client("save");
+    let c = cmd("save", "Save file").build();
     assert!(c.enabled);
 }
 
 #[test]
 fn cmd_enabled_false() {
-    let c = cmd("undo", "Undo").enabled(false).client("undo");
+    let c = cmd("undo", "Undo").enabled(false).build();
     assert!(!c.enabled);
+}
+
+// --- Tag::command() builder ---
+
+#[test]
+fn tag_command_builder_chains() {
+    let tag = Tag::new("Test")
+        .command(cmd("a", "First"))
+        .command(cmd("b", "Second"))
+        .command(cmd("c", "Third"));
+    let wire = tag.into_wire();
+    assert_eq!(wire.vocabulary.groups[0].commands.len(), 3);
+    assert_eq!(wire.vocabulary.groups[0].commands[0].name, "a");
+    assert_eq!(wire.vocabulary.groups[0].commands[2].name, "c");
 }

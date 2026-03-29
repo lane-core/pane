@@ -62,7 +62,6 @@ pub use pane::Pane;
 pub use proxy::{Messenger, TimerToken};
 pub use shortcuts::KeyCombo;
 pub use tag::{Tag, CommandBuilder, cmd};
-pub use pane_proto::tag::Builtin;
 
 // --- Test support (hidden) ---
 

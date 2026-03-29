@@ -5,7 +5,6 @@
 
 use pane_app::{App, Tag, cmd, Message, KeyCombo};
 use pane_proto::event::{Key, Modifiers, NamedKey};
-use pane_proto::tag::Builtin;
 
 fn main() {
     if let Err(e) = run() {
@@ -19,8 +18,8 @@ fn run() -> pane_app::Result<()> {
 
     let mut pane = app.create_pane(
         Tag::new("Hello, pane!")
-            .command(cmd("save", "Save").shortcut("Ctrl+S").client("save"))
-            .command(cmd("close", "Close").shortcut("Alt+W").built_in(Builtin::Close)),
+            .command(cmd("save", "Save").shortcut("Ctrl+S"))
+            .command(cmd("close", "Close").shortcut("Alt+W")),
     )?;
 
     // Register keyboard shortcuts — Ctrl+S and Escape
