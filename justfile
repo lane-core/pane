@@ -41,23 +41,30 @@ test-crate crate:
 build-crate crate:
     cargo build -p {{crate}}
 
-# --- nix ---
+# --- nix (cross-build for linux) ---
 
-# Build pane-comp (Linux only, via nix)
+# Build pane-comp for Linux (via nix remote builder)
 build-comp:
     nix build .#packages.aarch64-linux.pane-comp --print-build-logs
 
-# Build for Linux from macOS
-build-linux:
-    nix build .#packages.aarch64-linux.pane-comp --print-build-logs
+# Build any crate for Linux (via nix, --impure for ad-hoc builds)
+build-linux crate:
+    nix build --impure --expr ' \
+      let pkgs = (builtins.getFlake (toString ./.)).inputs.nixpkgs.legacyPackages.aarch64-linux; \
+      in pkgs.rustPlatform.buildRustPackage { \
+        pname = "{{crate}}"; version = "0.1.0"; src = ./.; \
+        cargoLock.lockFile = ./Cargo.lock; \
+        cargoBuildFlags = [ "-p" "{{crate}}" ]; \
+        cargoTestFlags = [ "-p" "{{crate}}" ]; \
+      }' --print-build-logs -o result-{{crate}}
 
 # --- vm ---
 
-# Build the test VM
+# Build the test VM image
 vm-build:
     nix build .#nixosConfigurations.pane-test-vm.config.system.build.vm
 
-# Boot a fresh VM (build + boot)
+# Boot a fresh VM (build image + clean state + boot)
 vm-fresh:
     just vm-build
     ssh-keygen -R "[localhost]:2222" 2>/dev/null || true
@@ -68,9 +75,37 @@ vm-fresh:
 vm-ssh:
     ssh -p 2222 pane@localhost
 
-# Dev iteration in VM (build + run compositor)
-vm-dev:
-    ssh -p 2222 pane@localhost "cd ~/pane && cargo build -p pane-comp && WAYLAND_DISPLAY=wayland-0 XDG_RUNTIME_DIR=/run/user/1000 ~/pane/target/debug/pane-comp"
+# Push a nix build result to the running VM
+vm-push path="./result":
+    NIX_SSHOPTS="-p 2222" nix copy --no-check-sigs --to ssh://pane@localhost {{path}}
+
+# --- dev iteration (the fast path) ---
+
+# Build compositor + push to VM + restart it
+dev-comp:
+    just build-comp
+    scp -P 2222 result/bin/pane-comp pane@localhost:/tmp/pane-comp
+    ssh -p 2222 pane@localhost "pkill pane-comp 2>/dev/null; sleep 0.5; \
+      WAYLAND_DISPLAY=wayland-1 XDG_RUNTIME_DIR=/run/user/1000 /tmp/pane-comp &"
+    @echo "compositor restarted"
+
+# Build pane-hello + push to VM
+dev-hello:
+    just build-linux pane-hello
+    scp -P 2222 result-pane-hello/bin/pane-hello pane@localhost:/tmp/pane-hello
+    @echo "pane-hello pushed — run with: just vm-run-hello"
+
+# Run pane-hello in the VM
+vm-run-hello:
+    ssh -p 2222 pane@localhost "XDG_RUNTIME_DIR=/run/user/1000 /tmp/pane-hello"
+
+# Full dev cycle: build both + push + restart compositor + run hello
+dev-cycle:
+    just dev-comp
+    just dev-hello
+    @echo "sleeping 2s for compositor startup..."
+    sleep 2
+    just vm-run-hello
 
 # --- clean ---
 

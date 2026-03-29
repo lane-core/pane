@@ -43,6 +43,9 @@ in
   # files crash CppNix's daemon on the builder, corrupting its SQLite cache.
   nix.package = pkgs.lix;
 
+  # Accept unsigned store paths from the host (for nix copy --to ssh://)
+  nix.settings.trusted-users = [ "root" "pane" ];
+
   # Mount host project directory for fast iteration
   systemd.tmpfiles.rules = [ "d /home/pane/pane 0755 pane users -" ];
 
