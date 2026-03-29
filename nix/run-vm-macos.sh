@@ -13,7 +13,7 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 PROJECT_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
-RESULT="$PROJECT_DIR/result"
+RESULT="${PANE_VM_RESULT:-$PROJECT_DIR/result-vm}"
 DISK_RESULT="$PROJECT_DIR/result-disk"
 
 if [ ! -d "$RESULT" ]; then

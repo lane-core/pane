@@ -60,9 +60,9 @@ build-linux crate:
 
 # --- vm ---
 
-# Build the test VM image
+# Build the test VM image (separate from ./result to avoid conflict with cross-builds)
 vm-build:
-    nix build .#nixosConfigurations.pane-test-vm.config.system.build.vm
+    nix build .#nixosConfigurations.pane-test-vm.config.system.build.vm -o result-vm
 
 # Boot a fresh VM (build image + clean state + boot)
 vm-fresh:
@@ -75,7 +75,7 @@ vm-fresh:
 vm-ssh:
     ssh -p 2222 pane@localhost
 
-# Push a nix build result to the running VM
+# Push a nix build result to the running VM's nix store
 vm-push path="./result":
     NIX_SSHOPTS="-p 2222" nix copy --no-check-sigs --to ssh://pane@localhost {{path}}
 
@@ -84,9 +84,10 @@ vm-push path="./result":
 # Build compositor + push to VM + restart it
 dev-comp:
     just build-comp
-    scp -P 2222 result/bin/pane-comp pane@localhost:/tmp/pane-comp
+    just vm-push ./result
     ssh -p 2222 pane@localhost "pkill pane-comp 2>/dev/null; sleep 0.5; \
-      WAYLAND_DISPLAY=wayland-1 XDG_RUNTIME_DIR=/run/user/1000 /tmp/pane-comp &"
+      WAYLAND_DISPLAY=wayland-1 XDG_RUNTIME_DIR=/run/user/1000 \
+      $(readlink ./result)/bin/pane-comp &"
     @echo "compositor restarted"
 
 # Build pane-hello + push to VM
