@@ -21,7 +21,7 @@ use crate::exit::ExitReason;
 use crate::filter::FilterChain;
 use crate::handler::Handler;
 use crate::looper_message::LooperMessage;
-use crate::proxy::PaneHandle;
+use crate::proxy::Messenger;
 
 /// Unwrap a LooperMessage into a PaneEvent.
 /// Returns None for compositor messages with wrong pane_id.
@@ -86,7 +86,7 @@ fn drain_and_coalesce(
 
 /// Run the event loop with a closure handler.
 ///
-/// The closure receives a PaneHandle (for sending messages back to the
+/// The closure receives a Messenger (for sending messages back to the
 /// compositor or posting events to this looper) and a PaneEvent, and returns:
 /// - Ok(true) to continue
 /// - Ok(false) to exit
@@ -95,8 +95,8 @@ pub fn run_closure(
     pane_id: PaneId,
     receiver: mpsc::Receiver<LooperMessage>,
     mut filters: FilterChain,
-    proxy: PaneHandle,
-    mut handler: impl FnMut(&PaneHandle, PaneMessage) -> Result<bool>,
+    proxy: Messenger,
+    mut handler: impl FnMut(&Messenger, PaneMessage) -> Result<bool>,
 ) -> std::result::Result<ExitReason, crate::error::Error> {
     loop {
         let msg = match receiver.recv() {
@@ -134,7 +134,7 @@ pub fn run_handler(
     pane_id: PaneId,
     receiver: mpsc::Receiver<LooperMessage>,
     mut filters: FilterChain,
-    proxy: PaneHandle,
+    proxy: Messenger,
     mut handler: impl Handler,
 ) -> std::result::Result<ExitReason, crate::error::Error> {
     loop {
@@ -169,15 +169,15 @@ pub fn run_handler(
 }
 
 /// Dispatch a single PaneEvent to the appropriate Handler method.
-fn dispatch_to_handler(handler: &mut impl Handler, proxy: &PaneHandle, event: PaneMessage) -> Result<bool> {
+fn dispatch_to_handler(handler: &mut impl Handler, proxy: &Messenger, event: PaneMessage) -> Result<bool> {
     match event {
         PaneMessage::Ready(geom) => handler.ready(proxy, geom),
         PaneMessage::Resize(geom) => handler.resized(proxy, geom),
-        PaneMessage::Focus => handler.focused(proxy),
-        PaneMessage::Blur => handler.blurred(proxy),
+        PaneMessage::Focus => handler.activated(proxy),
+        PaneMessage::Blur => handler.deactivated(proxy),
         PaneMessage::Key(key) => handler.key(proxy, key),
         PaneMessage::Mouse(mouse) => handler.mouse(proxy, mouse),
-        PaneMessage::Close => handler.close_requested(proxy),
+        PaneMessage::Close => handler.quit_requested(proxy),
         PaneMessage::CommandActivated => handler.command_activated(proxy),
         PaneMessage::CommandDismissed => handler.command_dismissed(proxy),
         PaneMessage::CommandExecuted { command, args } =>

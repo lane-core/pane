@@ -5,7 +5,7 @@
 use std::num::NonZeroU32;
 use std::sync::mpsc;
 
-use pane_app::PaneHandle;
+use pane_app::Messenger;
 use pane_proto::message::PaneId;
 use pane_proto::protocol::ClientToComp;
 use pane_proto::tag::{PaneTitle, CommandVocabulary, Completion};
@@ -19,7 +19,7 @@ fn pane_id(n: u32) -> PaneId {
 #[test]
 fn pane_handle_send_after_disconnect() {
     let (tx, rx) = mpsc::channel::<ClientToComp>();
-    let handle = PaneHandle::new(pane_id(1), tx);
+    let handle = Messenger::new(pane_id(1), tx);
     drop(rx); // simulate compositor death
 
     let result = handle.set_title(PaneTitle {
@@ -34,7 +34,7 @@ fn pane_handle_send_after_disconnect() {
 #[test]
 fn pane_handle_set_title_sends_correct_message() {
     let (tx, rx) = mpsc::channel();
-    let handle = PaneHandle::new(pane_id(7), tx);
+    let handle = Messenger::new(pane_id(7), tx);
 
     handle.set_title(PaneTitle {
         text: "Hello".into(),
@@ -55,7 +55,7 @@ fn pane_handle_set_title_sends_correct_message() {
 #[test]
 fn pane_handle_set_vocabulary_sends_correct_message() {
     let (tx, rx) = mpsc::channel();
-    let handle = PaneHandle::new(pane_id(3), tx);
+    let handle = Messenger::new(pane_id(3), tx);
 
     handle.set_vocabulary(CommandVocabulary::default()).unwrap();
 
@@ -66,7 +66,7 @@ fn pane_handle_set_vocabulary_sends_correct_message() {
 #[test]
 fn pane_handle_set_content_sends_correct_message() {
     let (tx, rx) = mpsc::channel();
-    let handle = PaneHandle::new(pane_id(5), tx);
+    let handle = Messenger::new(pane_id(5), tx);
 
     handle.set_content(b"hello world").unwrap();
 
@@ -83,7 +83,7 @@ fn pane_handle_set_content_sends_correct_message() {
 #[test]
 fn pane_handle_set_completions_sends_correct_message() {
     let (tx, rx) = mpsc::channel();
-    let handle = PaneHandle::new(pane_id(2), tx);
+    let handle = Messenger::new(pane_id(2), tx);
 
     handle.set_completions(42, vec![
         Completion { text: "foo".into(), description: Some("a foo".into()) },
@@ -104,7 +104,7 @@ fn pane_handle_set_completions_sends_correct_message() {
 #[test]
 fn pane_handle_clone_sends_to_same_channel() {
     let (tx, rx) = mpsc::channel();
-    let handle1 = PaneHandle::new(pane_id(1), tx);
+    let handle1 = Messenger::new(pane_id(1), tx);
     let handle2 = handle1.clone();
 
     handle1.set_content(b"from 1").unwrap();
@@ -123,14 +123,14 @@ fn pane_handle_clone_sends_to_same_channel() {
 #[test]
 fn pane_handle_id_matches_construction() {
     let (tx, _rx) = mpsc::channel();
-    let handle = PaneHandle::new(pane_id(42), tx);
+    let handle = Messenger::new(pane_id(42), tx);
     assert_eq!(handle.id(), pane_id(42));
 }
 
 #[test]
 fn pane_handle_clone_has_same_id() {
     let (tx, _rx) = mpsc::channel();
-    let handle = PaneHandle::new(pane_id(99), tx);
+    let handle = Messenger::new(pane_id(99), tx);
     let cloned = handle.clone();
     assert_eq!(handle.id(), cloned.id());
 }
@@ -138,7 +138,7 @@ fn pane_handle_clone_has_same_id() {
 #[test]
 fn pane_handle_debug_includes_id() {
     let (tx, _rx) = mpsc::channel();
-    let handle = PaneHandle::new(pane_id(7), tx);
+    let handle = Messenger::new(pane_id(7), tx);
     let debug = format!("{:?}", handle);
     assert!(debug.contains("7"), "debug output should include pane ID: {}", debug);
 }
@@ -148,7 +148,7 @@ fn pane_handle_debug_includes_id() {
 #[test]
 fn send_message_without_looper_returns_error() {
     let (tx, _rx) = mpsc::channel::<ClientToComp>();
-    let handle = PaneHandle::new(pane_id(1), tx);
+    let handle = Messenger::new(pane_id(1), tx);
     // No looper_tx attached — send_message should fail
     let result = handle.send_message(pane_app::PaneMessage::Focus);
     assert!(result.is_err(), "send_message without looper should return Disconnected");
@@ -167,7 +167,7 @@ fn send_message_without_looper_returns_error() {
 #[test]
 fn send_delayed_without_looper_returns_error() {
     let (tx, _rx) = mpsc::channel::<ClientToComp>();
-    let handle = PaneHandle::new(pane_id(1), tx);
+    let handle = Messenger::new(pane_id(1), tx);
     let result = handle.send_delayed(pane_app::PaneMessage::Focus, std::time::Duration::from_millis(10));
     assert!(result.is_err(), "send_delayed without looper should return Disconnected");
 }
@@ -175,7 +175,7 @@ fn send_delayed_without_looper_returns_error() {
 #[test]
 fn send_periodic_without_looper_returns_error() {
     let (tx, _rx) = mpsc::channel::<ClientToComp>();
-    let handle = PaneHandle::new(pane_id(1), tx);
+    let handle = Messenger::new(pane_id(1), tx);
     let result = handle.send_periodic(pane_app::PaneMessage::Focus, std::time::Duration::from_millis(10));
     assert!(result.is_err(), "send_periodic without looper should return Disconnected");
 }

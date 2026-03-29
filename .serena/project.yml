@@ -27,7 +27,6 @@ project_name: "pane"
 # Note that when using the JetBrains backend, language servers are not used and this list is correspondingly ignored.
 languages:
 - rust
-- markdown
 - nix
 
 # the encoding used by text files in the project

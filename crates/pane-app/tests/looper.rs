@@ -2,7 +2,7 @@ use std::num::NonZeroU32;
 use std::sync::mpsc;
 use std::sync::{Arc, Mutex};
 
-use pane_app::{PaneMessage, Handler, Filter, FilterAction, PaneHandle, LooperMessage};
+use pane_app::{PaneMessage, Handler, Filter, FilterAction, Messenger, LooperMessage};
 use pane_app::error::Result;
 use pane_proto::event::{KeyEvent, Key, NamedKey, Modifiers, KeyState};
 use pane_proto::message::PaneId;
@@ -12,10 +12,10 @@ fn pane_id(n: u32) -> PaneId {
     PaneId::new(NonZeroU32::new(n).unwrap())
 }
 
-fn make_proxy(id: PaneId) -> PaneHandle {
+fn make_proxy(id: PaneId) -> Messenger {
     // Create a dummy proxy for testing — the sender goes nowhere
     let (tx, _rx) = mpsc::channel::<ClientToComp>();
-    PaneHandle::new(id, tx)
+    Messenger::new(id, tx)
 }
 
 /// Send a CompToClient message through a LooperMessage channel.
@@ -177,32 +177,32 @@ struct TestHandler {
 }
 
 impl Handler for TestHandler {
-    fn ready(&mut self, _proxy: &PaneHandle, _geom: PaneGeometry) -> Result<bool> {
+    fn ready(&mut self, _proxy: &Messenger, _geom: PaneGeometry) -> Result<bool> {
         self.log.lock().unwrap().push("ready".into());
         Ok(true)
     }
 
-    fn focused(&mut self, _proxy: &PaneHandle) -> Result<bool> {
-        self.log.lock().unwrap().push("focused".into());
+    fn activated(&mut self, _proxy: &Messenger) -> Result<bool> {
+        self.log.lock().unwrap().push("activated".into());
         Ok(true)
     }
 
-    fn blurred(&mut self, _proxy: &PaneHandle) -> Result<bool> {
-        self.log.lock().unwrap().push("blurred".into());
+    fn deactivated(&mut self, _proxy: &Messenger) -> Result<bool> {
+        self.log.lock().unwrap().push("deactivated".into());
         Ok(true)
     }
 
-    fn key(&mut self, _proxy: &PaneHandle, event: KeyEvent) -> Result<bool> {
+    fn key(&mut self, _proxy: &Messenger, event: KeyEvent) -> Result<bool> {
         self.log.lock().unwrap().push(format!("key:{:?}", event.key));
         Ok(true)
     }
 
-    fn command_executed(&mut self, _proxy: &PaneHandle, command: &str, args: &str) -> Result<bool> {
+    fn command_executed(&mut self, _proxy: &Messenger, command: &str, args: &str) -> Result<bool> {
         self.log.lock().unwrap().push(format!("cmd:{}:{}", command, args));
         Ok(true)
     }
 
-    fn close_requested(&mut self, _proxy: &PaneHandle) -> Result<bool> {
+    fn quit_requested(&mut self, _proxy: &Messenger) -> Result<bool> {
         self.log.lock().unwrap().push("close".into());
         Ok(false)
     }
@@ -230,7 +230,7 @@ fn handler_dispatches_to_correct_methods() {
     pane_app::looper::run_handler(pane_id(1), rx, filters, proxy, handler).unwrap();
 
     let log = log.lock().unwrap();
-    assert_eq!(*log, vec!["focused", "blurred", "cmd:save:foo.rs", "close"]);
+    assert_eq!(*log, vec!["activated", "deactivated", "cmd:save:foo.rs", "close"]);
 }
 
 // --- P1-3: Filter chain edge cases ---

@@ -28,7 +28,7 @@ impl ExitReason {
 
 /// Broadcasts a pane's exit to all monitoring loopers.
 ///
-/// When pane A monitors pane B (via PaneHandle::monitor()), A registers
+/// When pane A monitors pane B (via Messenger::monitor()), A registers
 /// its looper_tx here. When B exits, the broadcaster sends
 /// PaneMessage::PaneExited to all registered watchers.
 #[derive(Clone, Default)]
@@ -41,7 +41,7 @@ impl ExitBroadcaster {
         Self::default()
     }
 
-    /// Register a watcher's looper channel. Called by PaneHandle::monitor().
+    /// Register a watcher's looper channel. Called by Messenger::monitor().
     pub fn add_watcher(&self, tx: mpsc::SyncSender<LooperMessage>) {
         self.watchers.lock().unwrap().push(tx);
     }

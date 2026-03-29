@@ -183,7 +183,7 @@ impl App {
     }
 
     /// Wait until all panes are closed.
-    pub fn wait(&self) {
+    pub fn run(&self) {
         let (lock, cvar) = &*self.done_signal;
         let guard = lock.lock().unwrap();
         let _guard = cvar.wait_while(guard, |_| {

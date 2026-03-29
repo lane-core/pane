@@ -42,7 +42,7 @@ pub enum PaneMessage {
     /// The connection to the compositor was lost.
     Disconnected,
     /// A monitored pane exited. Delivered when a pane that this handler
-    /// is monitoring (via PaneHandle::monitor()) exits for any reason.
+    /// is monitoring (via Messenger::monitor()) exits for any reason.
     /// Erlang-style crash propagation through the event loop.
     PaneExited {
         pane: PaneId,

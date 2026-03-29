@@ -12,7 +12,7 @@ use std::sync::{Arc, Mutex, atomic::{AtomicUsize, Ordering}};
 use std::thread;
 use std::time::Duration;
 
-use pane_app::{App, Tag, PaneMessage, PaneHandle, LooperMessage};
+use pane_app::{App, Tag, PaneMessage, Messenger, LooperMessage};
 use pane_app::mock::MockCompositor;
 use pane_proto::event::{Modifiers, MouseEvent, MouseEventKind};
 use pane_proto::message::PaneId;
@@ -110,7 +110,7 @@ fn self_delivery_burst_from_workers() {
     let app = App::connect_test("com.test.burst", conn).unwrap();
     let pane = app.create_pane(Tag::new("Burst")).unwrap();
     let pane_id = pane.id();
-    let proxy = pane.proxy();
+    let proxy = pane.messenger();
 
     let num_threads = 5;
     let events_per_thread = 100;
@@ -164,7 +164,7 @@ fn coalesce_resize_flood() {
     let (tx, rx) = mpsc::channel::<LooperMessage>();
     let filters = pane_app::filter::FilterChain::new();
     let (comp_tx, _comp_rx) = mpsc::channel::<ClientToComp>();
-    let proxy = PaneHandle::new(pane_id(1), comp_tx);
+    let proxy = Messenger::new(pane_id(1), comp_tx);
 
     // Pre-load 1000 resizes with different geometries
     for i in 0..1000u32 {
@@ -224,7 +224,7 @@ fn timer_cancellation_race() {
     let (comp_tx, _comp_rx) = mpsc::channel::<ClientToComp>();
     let filters = pane_app::filter::FilterChain::new();
     let looper_tx = tx.clone();
-    let proxy = PaneHandle::new(pane_id(1), comp_tx);
+    let proxy = Messenger::new(pane_id(1), comp_tx);
 
     // We can't use with_looper from integration tests, so we test
     // the timer threading pattern directly: spawn timer threads that
@@ -291,12 +291,12 @@ fn timer_cancellation_race() {
         "too many events ({}), cancelled timers may still be firing", received);
 }
 
-// --- P3-E: PaneHandle clone flood ---
+// --- P3-E: Messenger clone flood ---
 
 #[test]
 fn pane_handle_clone_flood() {
     let (comp_tx, comp_rx) = mpsc::channel::<ClientToComp>();
-    let handle = PaneHandle::new(pane_id(1), comp_tx);
+    let handle = Messenger::new(pane_id(1), comp_tx);
 
     let num_threads = 50;
     let sends_per_thread = 50;
@@ -340,7 +340,7 @@ fn looper_shutdown_under_active_posting() {
     let app = App::connect_test("com.test.shutdown", conn).unwrap();
     let pane = app.create_pane(Tag::new("Shutdown")).unwrap();
     let pane_id = pane.id();
-    let proxy = pane.proxy();
+    let proxy = pane.messenger();
 
     // Spawn a worker that posts events continuously
     let worker_proxy = proxy.clone();

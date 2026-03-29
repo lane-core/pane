@@ -5,7 +5,7 @@
 use std::num::NonZeroU32;
 use std::sync::mpsc;
 
-use pane_app::{PaneHandle, Handler, LooperMessage};
+use pane_app::{Messenger, Handler, LooperMessage};
 use pane_app::error::Result;
 use pane_proto::event::{KeyEvent, Key, Modifiers, KeyState};
 use pane_proto::message::PaneId;
@@ -15,9 +15,9 @@ fn pane_id(n: u32) -> PaneId {
     PaneId::new(NonZeroU32::new(n).unwrap())
 }
 
-fn make_handle(id: PaneId) -> (PaneHandle, mpsc::Receiver<ClientToComp>) {
+fn make_handle(id: PaneId) -> (Messenger, mpsc::Receiver<ClientToComp>) {
     let (tx, rx) = mpsc::channel();
-    (PaneHandle::new(id, tx), rx)
+    (Messenger::new(id, tx), rx)
 }
 
 fn send_comp(tx: &mpsc::Sender<LooperMessage>, msg: CompToClient) {
@@ -31,7 +31,7 @@ impl Handler for DefaultHandler {}
 /// A Handler that overrides close_requested to continue (Ok(true)).
 struct NeverCloseHandler;
 impl Handler for NeverCloseHandler {
-    fn close_requested(&mut self, _handle: &PaneHandle) -> Result<bool> {
+    fn quit_requested(&mut self, _handle: &Messenger) -> Result<bool> {
         Ok(true) // refuse to close
     }
 }

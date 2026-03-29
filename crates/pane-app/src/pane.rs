@@ -14,7 +14,7 @@ use crate::filter::FilterChain;
 use crate::handler::Handler;
 use crate::looper;
 use crate::looper_message::LooperMessage;
-use crate::proxy::PaneHandle;
+use crate::proxy::Messenger;
 
 /// Handle to a pane in the compositor.
 ///
@@ -68,36 +68,37 @@ impl Pane {
         self.filters.add(filter);
     }
 
-    /// Get a PaneHandle for this pane. The handle can be cloned and
+    /// Get a Messenger for this pane. The messenger can be cloned and
     /// sent to other threads for sending messages to the compositor
-    /// or posting events back to the pane's own looper.
-    pub fn proxy(&self) -> PaneHandle {
-        PaneHandle::new(self.id, self.comp_tx.clone())
+    /// or back to this pane's own looper.
+    pub fn messenger(&self) -> Messenger {
+        Messenger::new(self.id, self.comp_tx.clone())
             .with_looper(self.looper_tx.clone())
     }
 
     /// Run the event loop with a closure handler on the current thread.
     ///
-    /// The closure receives a `&PaneHandle` and a `PaneMessage`, and returns:
+    /// The closure receives a `&Messenger` and a `PaneMessage`, and returns:
     /// - `Ok(true)` — continue
     /// - `Ok(false)` — exit (sends RequestClose)
     /// - `Err(e)` — exit with error
     ///
     /// This is the hello-pane pattern:
     /// ```ignore
-    /// pane.run(|proxy, event| match event {
+    /// pane.run(|messenger, msg| match msg {
     ///     PaneMessage::Key(key) if key.is_escape() => Ok(false),
     ///     PaneMessage::Close => Ok(false),
     ///     _ => Ok(true),
     /// })
     /// ```
-    pub fn run(self, mut handler: impl FnMut(&PaneHandle, PaneMessage) -> Result<bool>) -> Result<()> {
+    pub fn run(self, mut handler: impl FnMut(&Messenger, PaneMessage) -> Result<bool>) -> Result<()> {
         let Pane { id, geometry, receiver, filters, comp_tx, looper_tx, pane_count, done_signal, .. } = self;
-        let handle = PaneHandle::new(id, comp_tx.clone()).with_looper(looper_tx);
+        let handle = Messenger::new(id, comp_tx.clone()).with_looper(looper_tx);
 
-        // Synthesize Ready as the first event (like BWindow B_WINDOW_ACTIVATED)
+        // Synthesize Ready as the first message
         let keep_going = handler(&handle, PaneMessage::Ready(geometry))?;
         if !keep_going {
+            handle.broadcaster.broadcast(id, ExitReason::HandlerExit);
             pane_count.fetch_sub(1, Ordering::Relaxed);
             if pane_count.load(Ordering::Relaxed) == 0 {
                 done_signal.1.notify_all();
@@ -107,7 +108,6 @@ impl Pane {
 
         let exit = looper::run_closure(id, receiver, filters, handle.clone(), handler)?;
 
-        // Broadcast exit to monitoring panes (Erlang-style crash propagation)
         handle.broadcaster.broadcast(id, exit);
 
         if exit.should_request_close() {
@@ -128,9 +128,9 @@ impl Pane {
     /// ```
     pub fn run_with(self, mut handler: impl Handler) -> Result<()> {
         let Pane { id, geometry, receiver, filters, comp_tx, looper_tx, pane_count, done_signal, .. } = self;
-        let handle = PaneHandle::new(id, comp_tx.clone()).with_looper(looper_tx);
+        let handle = Messenger::new(id, comp_tx.clone()).with_looper(looper_tx);
 
-        // Synthesize Ready as the first event
+        // Synthesize Ready as the first message
         let keep_going = handler.ready(&handle, geometry)?;
         if !keep_going {
             handle.broadcaster.broadcast(id, ExitReason::HandlerExit);
@@ -155,9 +155,8 @@ impl Pane {
         Ok(())
     }
 
-    // Note: set_title, set_vocabulary, set_content live on PaneHandle,
+    // Note: set_title, set_vocabulary, set_content live on Messenger,
     // not Pane. Pane is consumed by run(), so these can't be called
-    // during the event loop. Use pane.proxy() before run() or the
-    // &PaneHandle passed to your handler/closure.
+    // during the event loop. Use pane.messenger() before run() or the
+    // &Messenger passed to your handler/closure.
 }
-

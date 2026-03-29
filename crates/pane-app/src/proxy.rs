@@ -1,4 +1,4 @@
-//! PaneHandle — a lightweight, cloneable handle for sending messages
+//! Messenger — a lightweight, cloneable handle for sending messages
 //! to the compositor and posting events to the pane's own looper.
 //!
 //! This is the BMessenger pattern: the handle doesn't own the pane,
@@ -27,19 +27,19 @@ use crate::looper_message::LooperMessage;
 /// Use this inside event handlers and spawned threads to update
 /// pane state without owning the Pane itself.
 #[derive(Clone)]
-pub struct PaneHandle {
+pub struct Messenger {
     pub(crate) id: PaneId,
     pub(crate) sender: mpsc::Sender<ClientToComp>,
     pub(crate) looper_tx: Option<mpsc::SyncSender<LooperMessage>>,
     pub(crate) broadcaster: ExitBroadcaster,
 }
 
-impl PaneHandle {
-    /// Create a PaneHandle from an ID and compositor sender.
+impl Messenger {
+    /// Create a Messenger from an ID and compositor sender.
     /// The looper channel is set internally by Pane — not needed
     /// for test construction where only compositor sends matter.
     pub fn new(id: PaneId, sender: mpsc::Sender<ClientToComp>) -> Self {
-        PaneHandle { id, sender, looper_tx: None, broadcaster: ExitBroadcaster::new() }
+        Messenger { id, sender, looper_tx: None, broadcaster: ExitBroadcaster::new() }
     }
 
     /// Attach the looper's self-delivery channel. Internal.
@@ -68,7 +68,7 @@ impl PaneHandle {
     /// b_handle.monitor(a_proxy);
     /// // When B exits, A receives PaneMessage::PaneExited { pane: b_id, reason }
     /// ```
-    pub fn monitor(&self, watcher: &PaneHandle) {
+    pub fn monitor(&self, watcher: &Messenger) {
         if let Some(ref tx) = watcher.looper_tx {
             self.broadcaster.add_watcher(tx.clone());
         }
@@ -154,7 +154,7 @@ impl PaneHandle {
 
 /// Token for cancelling a periodic timer.
 ///
-/// Created by `PaneHandle::send_periodic`. Drop does not cancel —
+/// Created by `Messenger::send_periodic`. Drop does not cancel —
 /// call `cancel()` explicitly.
 #[derive(Debug, Clone)]
 pub struct TimerToken {
@@ -168,9 +168,9 @@ impl TimerToken {
     }
 }
 
-impl std::fmt::Debug for PaneHandle {
+impl std::fmt::Debug for Messenger {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("PaneHandle")
+        f.debug_struct("Messenger")
             .field("id", &self.id)
             .finish()
     }
