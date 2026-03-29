@@ -24,7 +24,7 @@ pub struct App {
     /// Per-pane channels, keyed by PaneId. The dispatcher thread
     /// forwards CompToClient messages (wrapped as LooperMessage) to
     /// the right pane's channel.
-    pane_channels: Arc<Mutex<HashMap<PaneId, mpsc::Sender<LooperMessage>>>>,
+    pane_channels: Arc<Mutex<HashMap<PaneId, mpsc::SyncSender<LooperMessage>>>>,
     /// Oneshot channels for pending create_pane responses.
     pending_creates: Arc<Mutex<VecDeque<mpsc::Sender<CompToClient>>>>,
     /// Application signature.
@@ -74,7 +74,7 @@ impl App {
     /// Connect using a test connection (for MockCompositor).
     pub fn connect_test(signature: &str, conn: Connection) -> std::result::Result<Self, ConnectError> {
         let comp_tx = conn.sender;
-        let pane_channels: Arc<Mutex<HashMap<PaneId, mpsc::Sender<LooperMessage>>>> =
+        let pane_channels: Arc<Mutex<HashMap<PaneId, mpsc::SyncSender<LooperMessage>>>> =
             Arc::new(Mutex::new(HashMap::new()));
         let pending_creates: Arc<Mutex<VecDeque<mpsc::Sender<CompToClient>>>> =
             Arc::new(Mutex::new(VecDeque::new()));
@@ -163,7 +163,11 @@ impl App {
         // The proper fix (Stage 3) is to have the dispatcher pre-register the channel
         // or buffer events for unknown pane IDs. For now, the window is microseconds
         // and only affects events sent by the compositor in the same batch as PaneCreated.
-        let (pane_tx, pane_rx) = mpsc::channel::<LooperMessage>();
+        // Bounded channel: backpressure prevents unbounded memory growth
+        // from a chatty compositor or rapid self-delivery. 256 is generous —
+        // the looper drains and coalesces on each wakeup, so the queue
+        // should rarely exceed single digits under normal operation.
+        let (pane_tx, pane_rx) = mpsc::sync_channel::<LooperMessage>(256);
         self.pane_channels.lock().unwrap().insert(pane_id, pane_tx.clone());
         self.pane_count.fetch_add(1, Ordering::Relaxed);
 

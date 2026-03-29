@@ -9,6 +9,7 @@ use pane_proto::protocol::{ClientToComp, PaneGeometry};
 
 use crate::error::Result;
 use crate::event::PaneMessage;
+use crate::exit::ExitReason;
 use crate::filter::FilterChain;
 use crate::handler::Handler;
 use crate::looper;
@@ -24,7 +25,7 @@ pub struct Pane {
     geometry: PaneGeometry,
     receiver: mpsc::Receiver<LooperMessage>,
     comp_tx: mpsc::Sender<ClientToComp>,
-    looper_tx: mpsc::Sender<LooperMessage>,
+    looper_tx: mpsc::SyncSender<LooperMessage>,
     pane_count: Arc<AtomicUsize>,
     done_signal: Arc<(std::sync::Mutex<()>, std::sync::Condvar)>,
     filters: FilterChain,
@@ -36,7 +37,7 @@ impl Pane {
         geometry: PaneGeometry,
         receiver: mpsc::Receiver<LooperMessage>,
         comp_tx: mpsc::Sender<ClientToComp>,
-        looper_tx: mpsc::Sender<LooperMessage>,
+        looper_tx: mpsc::SyncSender<LooperMessage>,
         pane_count: Arc<AtomicUsize>,
         done_signal: Arc<(std::sync::Mutex<()>, std::sync::Condvar)>,
     ) -> Self {
@@ -104,7 +105,10 @@ impl Pane {
             return Ok(());
         }
 
-        let exit = looper::run_closure(id, receiver, filters, handle, handler)?;
+        let exit = looper::run_closure(id, receiver, filters, handle.clone(), handler)?;
+
+        // Broadcast exit to monitoring panes (Erlang-style crash propagation)
+        handle.broadcaster.broadcast(id, exit);
 
         if exit.should_request_close() {
             let _ = comp_tx.send(ClientToComp::RequestClose { pane: id });
@@ -129,6 +133,7 @@ impl Pane {
         // Synthesize Ready as the first event
         let keep_going = handler.ready(&handle, geometry)?;
         if !keep_going {
+            handle.broadcaster.broadcast(id, ExitReason::HandlerExit);
             pane_count.fetch_sub(1, Ordering::Relaxed);
             if pane_count.load(Ordering::Relaxed) == 0 {
                 done_signal.1.notify_all();
@@ -136,7 +141,9 @@ impl Pane {
             return Ok(());
         }
 
-        let exit = looper::run_handler(id, receiver, filters, handle, handler)?;
+        let exit = looper::run_handler(id, receiver, filters, handle.clone(), handler)?;
+
+        handle.broadcaster.broadcast(id, exit);
 
         if exit.should_request_close() {
             let _ = comp_tx.send(ClientToComp::RequestClose { pane: id });

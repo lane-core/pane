@@ -17,6 +17,7 @@ use pane_proto::tag::{PaneTitle, CommandVocabulary, Completion};
 
 use crate::error::{PaneError, Result};
 use crate::event::PaneMessage;
+use crate::exit::ExitBroadcaster;
 use crate::looper_message::LooperMessage;
 
 /// A cloneable handle for sending messages to the compositor on
@@ -29,7 +30,8 @@ use crate::looper_message::LooperMessage;
 pub struct PaneHandle {
     pub(crate) id: PaneId,
     pub(crate) sender: mpsc::Sender<ClientToComp>,
-    pub(crate) looper_tx: Option<mpsc::Sender<LooperMessage>>,
+    pub(crate) looper_tx: Option<mpsc::SyncSender<LooperMessage>>,
+    pub(crate) broadcaster: ExitBroadcaster,
 }
 
 impl PaneHandle {
@@ -37,11 +39,11 @@ impl PaneHandle {
     /// The looper channel is set internally by Pane — not needed
     /// for test construction where only compositor sends matter.
     pub fn new(id: PaneId, sender: mpsc::Sender<ClientToComp>) -> Self {
-        PaneHandle { id, sender, looper_tx: None }
+        PaneHandle { id, sender, looper_tx: None, broadcaster: ExitBroadcaster::new() }
     }
 
     /// Attach the looper's self-delivery channel. Internal.
-    pub(crate) fn with_looper(mut self, tx: mpsc::Sender<LooperMessage>) -> Self {
+    pub(crate) fn with_looper(mut self, tx: mpsc::SyncSender<LooperMessage>) -> Self {
         self.looper_tx = Some(tx);
         self
     }
@@ -56,6 +58,20 @@ impl PaneHandle {
         tx.send(LooperMessage::Posted(event))
             .map_err(|_| PaneError::Disconnected)?;
         Ok(())
+    }
+
+    /// Monitor this pane: when it exits, deliver PaneMessage::PaneExited
+    /// to the given watcher's looper. Erlang-style crash propagation.
+    ///
+    /// ```ignore
+    /// // In pane A's handler, monitoring pane B:
+    /// b_handle.monitor(a_proxy);
+    /// // When B exits, A receives PaneMessage::PaneExited { pane: b_id, reason }
+    /// ```
+    pub fn monitor(&self, watcher: &PaneHandle) {
+        if let Some(ref tx) = watcher.looper_tx {
+            self.broadcaster.add_watcher(tx.clone());
+        }
     }
 
     /// The pane's compositor-assigned ID.

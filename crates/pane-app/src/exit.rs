@@ -1,10 +1,17 @@
+use std::sync::{Arc, Mutex, mpsc};
+
+use pane_proto::message::PaneId;
+
+use crate::event::PaneMessage;
+use crate::looper_message::LooperMessage;
+
 /// Why the pane's event loop exited.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ExitReason {
     /// Handler returned Ok(false) voluntarily (e.g., user pressed Escape).
     /// The kit should send RequestClose to the compositor.
     HandlerExit,
-    /// Handler returned Ok(false) in response to PaneEvent::Close.
+    /// Handler returned Ok(false) in response to PaneMessage::Close.
     /// The compositor already knows — don't send RequestClose.
     CompositorClose,
     /// The connection to the compositor was lost.
@@ -16,5 +23,35 @@ impl ExitReason {
     /// Should the kit send RequestClose to the compositor?
     pub fn should_request_close(&self) -> bool {
         matches!(self, ExitReason::HandlerExit)
+    }
+}
+
+/// Broadcasts a pane's exit to all monitoring loopers.
+///
+/// When pane A monitors pane B (via PaneHandle::monitor()), A registers
+/// its looper_tx here. When B exits, the broadcaster sends
+/// PaneMessage::PaneExited to all registered watchers.
+#[derive(Clone, Default)]
+pub struct ExitBroadcaster {
+    watchers: Arc<Mutex<Vec<mpsc::SyncSender<LooperMessage>>>>,
+}
+
+impl ExitBroadcaster {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Register a watcher's looper channel. Called by PaneHandle::monitor().
+    pub fn add_watcher(&self, tx: mpsc::SyncSender<LooperMessage>) {
+        self.watchers.lock().unwrap().push(tx);
+    }
+
+    /// Broadcast the exit to all watchers. Called when run() completes.
+    pub fn broadcast(&self, pane: PaneId, reason: ExitReason) {
+        let watchers = self.watchers.lock().unwrap();
+        let msg = PaneMessage::PaneExited { pane, reason };
+        for tx in watchers.iter() {
+            let _ = tx.send(LooperMessage::Posted(msg.clone()));
+        }
     }
 }

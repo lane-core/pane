@@ -2,6 +2,8 @@ use pane_proto::event::{KeyEvent, MouseEvent};
 use pane_proto::message::PaneId;
 use pane_proto::protocol::{CompToClient, PaneGeometry};
 
+use crate::exit::ExitReason;
+
 /// Events delivered to a pane's event handler.
 ///
 /// This is flatter than `CompToClient` — PaneId is stripped (the kit
@@ -39,6 +41,13 @@ pub enum PaneMessage {
     },
     /// The connection to the compositor was lost.
     Disconnected,
+    /// A monitored pane exited. Delivered when a pane that this handler
+    /// is monitoring (via PaneHandle::monitor()) exits for any reason.
+    /// Erlang-style crash propagation through the event loop.
+    PaneExited {
+        pane: PaneId,
+        reason: ExitReason,
+    },
 }
 
 impl PaneMessage {

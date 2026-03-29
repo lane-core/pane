@@ -185,5 +185,6 @@ fn dispatch_to_handler(handler: &mut impl Handler, proxy: &PaneHandle, event: Pa
         PaneMessage::CompletionRequest { token, input } =>
             handler.completion_request(proxy, token, &input),
         PaneMessage::Disconnected => handler.disconnected(proxy),
+        PaneMessage::PaneExited { pane, reason } => handler.pane_exited(proxy, pane, reason),
     }
 }

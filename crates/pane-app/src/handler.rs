@@ -1,7 +1,9 @@
 use pane_proto::event::{KeyEvent, MouseEvent};
+use pane_proto::message::PaneId;
 use pane_proto::protocol::PaneGeometry;
 
 use crate::error::Result;
+use crate::exit::ExitReason;
 use crate::proxy::PaneHandle;
 
 /// Trait for structured pane event handling.
@@ -82,6 +84,11 @@ pub trait Handler: Send + 'static {
     /// The connection to the compositor was lost.
     fn disconnected(&mut self, _proxy: &PaneHandle) -> Result<bool> {
         Ok(false)
+    }
+
+    /// A monitored pane exited. Default: continue.
+    fn pane_exited(&mut self, _proxy: &PaneHandle, _pane: PaneId, _reason: ExitReason) -> Result<bool> {
+        Ok(true)
     }
 
     /// Catch-all for events not handled by other methods.
