@@ -5,11 +5,19 @@ edition = "2021"
 description = "Pane desktop environment compositor"
 license = "AGPL-3.0-only"
 
+[features]
+default = ["winit"]
+winit = ["smithay/backend_winit", "smithay/renderer_glow"]
+# DummyRenderer — zero-work renderer for headless protocol tests (no GPU)
+test-renderer = ["smithay/renderer_test"]
+# Pixman — real software rendering without GPU (for CI screenshots)
+pixman = ["smithay/renderer_pixman"]
+
 [dependencies]
 pane-proto = { path = "../pane-proto" }
 pane-session = { path = "../pane-session" }
 pane-server = { path = "../pane-server" }
-smithay = { version = "0.7", features = ["backend_winit", "renderer_glow"] }
+smithay = { version = "0.7" }
 calloop = "0.14"
 cosmic-text = "0.18"
 tracing = "0.1"
