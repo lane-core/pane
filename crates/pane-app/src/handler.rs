@@ -75,6 +75,11 @@ pub trait Handler: Send + 'static {
         Ok(true)
     }
 
+    /// Periodic pulse. Override for animations, status polling, clock ticks.
+    fn pulse(&mut self, _proxy: &Messenger) -> Result<bool> {
+        Ok(true)
+    }
+
     /// The compositor requests this pane to close.
     /// Default: accept the close (return Ok(false) to stop the loop).
     fn quit_requested(&mut self, _proxy: &Messenger) -> Result<bool> {

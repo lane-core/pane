@@ -18,9 +18,9 @@
 //!                 .built_in(BuiltIn::Close),
 //!         ]),
 //!     )?;
-//!     pane.run(|_proxy, event| match event {
-//!         pane_app::PaneEvent::Key(key) if key.is_escape() => Ok(false),
-//!         pane_app::PaneEvent::Close => Ok(false),
+//!     pane.run(|_messenger, msg| match msg {
+//!         pane_app::Message::Key(key) if key.is_escape() => Ok(false),
+//!         pane_app::Message::Close => Ok(false),
 //!         _ => Ok(true),
 //!     })
 //! }
@@ -40,6 +40,7 @@ pub mod pane;
 pub mod proxy;
 pub mod routing;
 pub mod scripting;
+pub mod shortcuts;
 pub mod tag;
 
 // Re-export for integration tests that construct looper channels directly.
@@ -56,5 +57,6 @@ pub use pane::Pane;
 pub use proxy::{Messenger, TimerToken};
 pub use routing::{RouteTable, RouteResult, RouteCandidate};
 pub use scripting::{Attribute, ScriptQuery, ScriptOp, ScriptReplyToken};
+pub use shortcuts::{ShortcutFilter, KeyCombo};
 pub use tag::{Tag, CommandBuilder, cmd};
 pub use pane_proto::tag::BuiltIn;

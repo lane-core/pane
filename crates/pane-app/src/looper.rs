@@ -184,6 +184,7 @@ fn dispatch_to_handler(handler: &mut impl Handler, proxy: &Messenger, event: Mes
             handler.command_executed(proxy, &command, &args),
         Message::CompletionRequest { token, input } =>
             handler.completion_request(proxy, token, &input),
+        Message::Pulse => handler.pulse(proxy),
         Message::Disconnected => handler.disconnected(proxy),
         Message::PaneExited { pane, reason } => handler.pane_exited(proxy, pane, reason),
     }

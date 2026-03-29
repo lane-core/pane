@@ -39,6 +39,10 @@ pub enum Message {
         token: u64,
         input: String,
     },
+    /// Periodic pulse. Delivered at the rate set by
+    /// Messenger::set_pulse_rate(). The blessed way to do
+    /// animations, status polling, clock ticks.
+    Pulse,
     /// The connection to the compositor was lost.
     Disconnected,
     /// A monitored pane exited. Delivered when a pane that this handler
