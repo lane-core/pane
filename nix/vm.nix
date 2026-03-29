@@ -6,6 +6,9 @@
 # Run:
 #   just vm-fresh   (or ./nix/run-vm-macos.sh)
 #
+# Note: root filesystem uses NixOS VM module's implicit mount (label "nixos").
+# Do not add a fileSystems."/" override without also setting the device.
+#
 # Fast iteration:
 #   just dev-build  # cargo build inside VM via SSH
 #   just dev-run    # run freshly built binary in VM

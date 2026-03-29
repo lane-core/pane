@@ -28,7 +28,7 @@ lint:
 # Format all Rust and Nix code
 fmt:
     cargo fmt
-    find . -name '*.nix' -not -path './result*' | xargs nixpkgs-fmt
+    find . -name '*.nix' -not -path './result*' -exec nixpkgs-fmt {} +
 
 # Generate API documentation
 doc:
