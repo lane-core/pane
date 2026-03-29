@@ -2,7 +2,7 @@
 //!
 //! The looper receives from two sources:
 //! 1. The dispatcher thread (compositor messages)
-//! 2. Self-delivery (PaneHandle::post_message from worker threads)
+//! 2. Self-delivery (PaneHandle::send_message from worker threads)
 //!
 //! Both funnel into a single mpsc channel as LooperMessage variants.
 
@@ -15,6 +15,6 @@ use crate::event::PaneMessage;
 pub enum LooperMessage {
     /// A message from the compositor, forwarded by the dispatcher.
     FromComp(CompToClient),
-    /// A self-delivered event from a worker thread via PaneHandle::post_message().
+    /// A self-delivered event from a worker thread via PaneHandle::send_message().
     Posted(PaneMessage),
 }

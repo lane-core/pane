@@ -122,7 +122,7 @@ fn self_delivery_burst_from_workers() {
         thread::spawn(move || {
             for _ in 0..events_per_thread {
                 // Ignore errors — looper may exit before we finish
-                let _ = p.post_message(PaneMessage::Focus);
+                let _ = p.send_message(PaneMessage::Focus);
             }
         });
     }
@@ -346,7 +346,7 @@ fn looper_shutdown_under_active_posting() {
     let worker_proxy = proxy.clone();
     thread::spawn(move || {
         loop {
-            if worker_proxy.post_message(PaneMessage::Focus).is_err() {
+            if worker_proxy.send_message(PaneMessage::Focus).is_err() {
                 break; // looper gone, channel closed
             }
             thread::sleep(Duration::from_millis(1));

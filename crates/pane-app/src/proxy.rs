@@ -7,7 +7,7 @@
 //!
 //! Two directions:
 //! - `set_title()`, `set_vocabulary()`, etc. → compositor
-//! - `post_message()` → pane's own looper (BLooper::PostMessage)
+//! - `send_message()` → pane's own looper (BLooper::PostMessage)
 
 use std::sync::mpsc;
 
@@ -51,7 +51,7 @@ impl PaneHandle {
     /// This is the self-delivery mechanism: worker threads (network,
     /// computation) can post results back to the pane's event loop
     /// for sequential processing. The BLooper::PostMessage equivalent.
-    pub fn post_message(&self, event: PaneMessage) -> Result<()> {
+    pub fn send_message(&self, event: PaneMessage) -> Result<()> {
         let tx = self.looper_tx.as_ref().ok_or(PaneError::Disconnected)?;
         tx.send(LooperMessage::Posted(event))
             .map_err(|_| PaneError::Disconnected)?;
@@ -94,7 +94,7 @@ impl PaneHandle {
     ///
     /// Spawns a thread that sleeps then delivers via self-delivery.
     /// The BMessageRunner single-shot equivalent.
-    pub fn post_delayed(&self, event: PaneMessage, delay: std::time::Duration) -> Result<()> {
+    pub fn send_delayed(&self, event: PaneMessage, delay: std::time::Duration) -> Result<()> {
         let tx = self.looper_tx.as_ref().ok_or(PaneError::Disconnected)?.clone();
         std::thread::spawn(move || {
             std::thread::sleep(delay);
@@ -107,7 +107,7 @@ impl PaneHandle {
     ///
     /// Returns a TimerToken that can cancel the timer. The first delivery
     /// happens after one interval. The BMessageRunner periodic equivalent.
-    pub fn post_periodic(&self, event: PaneMessage, interval: std::time::Duration) -> Result<TimerToken>
+    pub fn send_periodic(&self, event: PaneMessage, interval: std::time::Duration) -> Result<TimerToken>
     where
         PaneMessage: Clone,
     {
@@ -138,7 +138,7 @@ impl PaneHandle {
 
 /// Token for cancelling a periodic timer.
 ///
-/// Created by `PaneHandle::post_periodic`. Drop does not cancel —
+/// Created by `PaneHandle::send_periodic`. Drop does not cancel —
 /// call `cancel()` explicitly.
 #[derive(Debug, Clone)]
 pub struct TimerToken {
