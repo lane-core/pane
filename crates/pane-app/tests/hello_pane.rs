@@ -1,7 +1,7 @@
 use std::thread;
 use std::time::Duration;
 
-use pane_app::{App, Tag, cmd, BuiltIn, Message};
+use pane_app::{App, Tag, cmd, Builtin, Message};
 use pane_app::mock::MockCompositor;
 
 /// THE acceptance test. The hello-pane example running end-to-end
@@ -23,7 +23,7 @@ fn hello_pane_lifecycle() {
         Tag::new("Hello").commands(vec![
             cmd("close", "Close this pane")
                 .shortcut("Alt+W")
-                .built_in(BuiltIn::Close),
+                .built_in(Builtin::Close),
         ]),
     ).unwrap();
 

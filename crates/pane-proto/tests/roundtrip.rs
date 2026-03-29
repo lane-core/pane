@@ -107,8 +107,8 @@ fn arb_mouse_event() -> impl Strategy<Value = MouseEvent> {
 
 fn arb_command_action() -> impl Strategy<Value = pane_proto::tag::CommandAction> {
     prop_oneof![
-        Just(pane_proto::tag::CommandAction::BuiltIn(pane_proto::tag::BuiltIn::Close)),
-        Just(pane_proto::tag::CommandAction::BuiltIn(pane_proto::tag::BuiltIn::Copy)),
+        Just(pane_proto::tag::CommandAction::Builtin(pane_proto::tag::Builtin::Close)),
+        Just(pane_proto::tag::CommandAction::Builtin(pane_proto::tag::Builtin::Copy)),
         ".*".prop_map(pane_proto::tag::CommandAction::Client),
         ".*".prop_map(pane_proto::tag::CommandAction::Route),
     ]

@@ -7,13 +7,13 @@
 //! # Quick Start
 //!
 //! ```ignore
-//! use pane_app::{App, Tag, cmd, Message, KeyCombo, BuiltIn};
+//! use pane_app::{App, Tag, cmd, Message, KeyCombo, Builtin};
 //!
 //! fn main() -> pane_app::Result<()> {
 //!     let app = App::connect("com.example.hello")?;
 //!     let mut pane = app.create_pane(
 //!         Tag::new("Hello")
-//!             .command(cmd("close", "Close").shortcut("Alt+W").built_in(BuiltIn::Close)),
+//!             .command(cmd("close", "Close").shortcut("Alt+W").built_in(Builtin::Close)),
 //!     )?;
 //!     pane.add_shortcut(KeyCombo::new(Key::Named(NamedKey::Escape), Modifiers::empty()), "close", "");
 //!     pane.run(|_messenger, msg| match msg {
@@ -62,7 +62,7 @@ pub use pane::Pane;
 pub use proxy::{Messenger, TimerToken};
 pub use shortcuts::KeyCombo;
 pub use tag::{Tag, CommandBuilder, cmd};
-pub use pane_proto::tag::BuiltIn;
+pub use pane_proto::tag::Builtin;
 
 // --- Test support (hidden) ---
 

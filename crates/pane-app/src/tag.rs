@@ -1,5 +1,5 @@
 use pane_proto::tag::{
-    PaneTitle, CommandVocabulary, CommandGroup, Command, CommandAction, BuiltIn,
+    PaneTitle, CommandVocabulary, CommandGroup, Command, CommandAction, Builtin,
 };
 use pane_proto::protocol::CreatePaneTag;
 
@@ -20,7 +20,7 @@ use pane_proto::protocol::CreatePaneTag;
 ///         .client("save"),
 ///     cmd("close", "Close this pane")
 ///         .shortcut("Alt+W")
-///         .built_in(BuiltIn::Close),
+///         .built_in(Builtin::Close),
 /// ])
 /// ```
 pub struct Tag {
@@ -50,7 +50,7 @@ impl Tag {
     /// ```ignore
     /// Tag::new("Editor")
     ///     .command(cmd("save", "Save").shortcut("Ctrl+S").client("save"))
-    ///     .command(cmd("close", "Close").built_in(BuiltIn::Close))
+    ///     .command(cmd("close", "Close").built_in(Builtin::Close))
     /// ```
     pub fn command(mut self, command: Command) -> Self {
         if self.vocabulary.groups.is_empty() {
@@ -137,12 +137,12 @@ impl CommandBuilder {
     }
 
     /// The command is a built-in compositor action.
-    pub fn built_in(self, action: BuiltIn) -> Command {
+    pub fn built_in(self, action: Builtin) -> Command {
         Command {
             name: self.name,
             description: self.description,
             shortcut: self.shortcut,
-            action: CommandAction::BuiltIn(action),
+            action: CommandAction::Builtin(action),
             enabled: self.enabled,
         }
     }

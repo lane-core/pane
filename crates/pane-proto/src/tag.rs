@@ -48,7 +48,7 @@ pub struct Command {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum CommandAction {
     /// Built-in compositor action.
-    BuiltIn(BuiltIn),
+    Builtin(Builtin),
     /// Sent to the client's handler as a command_executed event.
     Client(String),
     /// Dispatched through the routing infrastructure.
@@ -57,7 +57,7 @@ pub enum CommandAction {
 
 /// Built-in compositor actions.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-pub enum BuiltIn {
+pub enum Builtin {
     /// Close this pane.
     Close,
     /// Copy selection to clipboard.

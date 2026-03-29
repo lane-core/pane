@@ -1,4 +1,4 @@
-use pane_app::{Tag, cmd, BuiltIn};
+use pane_app::{Tag, cmd, Builtin};
 use pane_proto::tag::{CommandAction, CommandGroup};
 
 #[test]
@@ -26,7 +26,7 @@ fn tag_with_commands() {
             .client("save"),
         cmd("close", "Close pane")
             .shortcut("Alt+W")
-            .built_in(BuiltIn::Close),
+            .built_in(Builtin::Close),
     ]);
     let wire = tag.into_wire();
 
@@ -42,7 +42,7 @@ fn tag_with_commands() {
 
     let close = &wire.vocabulary.groups[0].commands[1];
     assert_eq!(close.name, "close");
-    assert!(matches!(close.action, CommandAction::BuiltIn(BuiltIn::Close)));
+    assert!(matches!(close.action, CommandAction::Builtin(Builtin::Close)));
 }
 
 #[test]
@@ -52,7 +52,7 @@ fn tag_with_explicit_groups() {
             label: "File".into(),
             commands: vec![
                 cmd("save", "Save").client("save"),
-                cmd("close", "Close").built_in(BuiltIn::Close),
+                cmd("close", "Close").built_in(Builtin::Close),
             ],
         },
         CommandGroup {
