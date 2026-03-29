@@ -180,3 +180,12 @@ impl Pane {
     // during the event loop. Use pane.messenger() before run() or the
     // &Messenger passed to your handler/closure.
 }
+
+impl std::fmt::Debug for Pane {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Pane")
+            .field("id", &self.id)
+            .field("geometry", &self.geometry)
+            .finish()
+    }
+}

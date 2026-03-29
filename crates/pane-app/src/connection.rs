@@ -13,8 +13,8 @@ use pane_session::transport::Transport;
 /// Abstracted over transport so the kit can be tested without
 /// a running compositor.
 pub struct Connection {
-    pub sender: mpsc::Sender<ClientToComp>,
-    pub receiver: mpsc::Receiver<CompToClient>,
+    pub(crate) sender: mpsc::Sender<ClientToComp>,
+    pub(crate) receiver: mpsc::Receiver<CompToClient>,
 }
 
 /// Create a connected pair for testing: one side is the "client" (kit),
@@ -38,16 +38,16 @@ pub fn test_pair() -> (Connection, MockConnection) {
 
 /// The mock compositor's end of the connection.
 pub struct MockConnection {
-    pub sender: mpsc::Sender<CompToClient>,
-    pub receiver: mpsc::Receiver<ClientToComp>,
+    pub(crate) sender: mpsc::Sender<CompToClient>,
+    pub(crate) receiver: mpsc::Receiver<ClientToComp>,
 }
 
 /// Result of a successful client handshake.
 pub struct HandshakeResult<T> {
     /// Capabilities accepted by the server.
-    pub accepted: Accepted,
+    pub(crate) accepted: Accepted,
     /// The transport, reclaimed via finish() for active-phase reuse.
-    pub transport: T,
+    pub(crate) transport: T,
 }
 
 /// Bridge a unix stream into a typed Connection.

@@ -69,8 +69,26 @@ impl fmt::Display for PaneError {
     }
 }
 
-impl std::error::Error for Error {}
-impl std::error::Error for ConnectError {}
+impl std::error::Error for Error {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            Error::Connect(e) => Some(e),
+            Error::Pane(e) => Some(e),
+            Error::Session(e) => Some(e),
+            Error::Io(e) => Some(e),
+        }
+    }
+}
+
+impl std::error::Error for ConnectError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            ConnectError::Transport(e) => Some(e),
+            _ => None,
+        }
+    }
+}
+
 impl std::error::Error for PaneError {}
 
 impl From<ConnectError> for Error {

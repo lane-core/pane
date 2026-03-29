@@ -55,3 +55,12 @@ impl ExitBroadcaster {
         }
     }
 }
+
+impl std::fmt::Debug for ExitBroadcaster {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let count = self.watchers.lock().unwrap_or_else(|e| e.into_inner()).len();
+        f.debug_struct("ExitBroadcaster")
+            .field("watcher_count", &count)
+            .finish()
+    }
+}

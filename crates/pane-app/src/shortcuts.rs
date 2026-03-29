@@ -30,6 +30,7 @@ impl KeyCombo {
 }
 
 /// A registered shortcut: key combo → command name + args.
+#[derive(Debug)]
 struct Shortcut {
     combo: KeyCombo,
     command: String,
@@ -54,6 +55,7 @@ struct Shortcut {
 /// );
 /// pane.add_filter(shortcuts);
 /// ```
+#[derive(Debug)]
 pub struct ShortcutFilter {
     shortcuts: Vec<Shortcut>,
 }

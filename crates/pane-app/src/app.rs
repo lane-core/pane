@@ -73,6 +73,7 @@ impl App {
     }
 
     /// Connect using a test connection (for MockCompositor).
+    #[doc(hidden)]
     pub fn connect_test(signature: &str, conn: Connection) -> std::result::Result<Self, ConnectError> {
         let comp_tx = conn.sender;
         let pane_channels: Arc<Mutex<HashMap<PaneId, mpsc::SyncSender<LooperMessage>>>> =
@@ -193,3 +194,12 @@ impl App {
     }
 }
 
+
+impl std::fmt::Debug for App {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("App")
+            .field("signature", &self.signature)
+            .field("pane_count", &self.pane_count.load(Ordering::Relaxed))
+            .finish()
+    }
+}

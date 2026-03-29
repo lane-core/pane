@@ -67,3 +67,11 @@ impl FilterChain {
         Some(event)
     }
 }
+
+impl std::fmt::Debug for FilterChain {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("FilterChain")
+            .field("filter_count", &self.filters.len())
+            .finish()
+    }
+}

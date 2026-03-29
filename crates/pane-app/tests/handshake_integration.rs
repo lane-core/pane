@@ -19,7 +19,7 @@ fn handshake_then_hello_pane() {
 
     // 3. Run client handshake
     let hs = run_client_handshake(client_chan, "com.example.hello").unwrap();
-    eprintln!("[test] handshake complete, accepted caps: {:?}", hs.accepted.caps);
+    eprintln!("[test] handshake complete, accepted caps: {:?}", "(handshake ok)");
 
     // 4. Connect app using active-phase channels
     let app = App::connect_test("com.example.hello", conn).unwrap();
