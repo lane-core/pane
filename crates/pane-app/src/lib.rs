@@ -55,6 +55,6 @@ pub use handler::Handler;
 pub use pane::Pane;
 pub use proxy::{Messenger, TimerToken};
 pub use routing::{RouteTable, RouteResult, RouteCandidate};
-pub use scripting::{PropertyDecl, ScriptQuery, ScriptOp, ScriptReplyToken};
+pub use scripting::{Attribute, ScriptQuery, ScriptOp, ScriptReplyToken};
 pub use tag::{Tag, CommandBuilder, cmd};
 pub use pane_proto::tag::BuiltIn;

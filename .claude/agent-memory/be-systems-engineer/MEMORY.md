@@ -12,3 +12,4 @@
 - [project_session_crate_review.md](project_session_crate_review.md) — pane-session code review (2026-03-22): typestate correct, crash safety holds, calloop needs rework (blocking mode, no max msg size, framing duplication)
 - [project_vector_similarity_design.md](project_vector_similarity_design.md) — Vector similarity design (2026-03-26): HNSW in pane-store, threshold live queries, embedding xattr format, model migration
 - [project_pane_app_kit_design.md](project_pane_app_kit_design.md) — pane-app kit design decisions (2026-03-26): App not a looper, flat enum, filesystem scripting, TOML routing rules
+- [project_fs_scripting_validation.md](project_fs_scripting_validation.md) — FS scripting validation (2026-03-28): 10 hey scenarios mapped, bet holds, no dynamic Message needed, ctl syntax + by-sig index recommended

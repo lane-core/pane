@@ -14,7 +14,7 @@
 ///
 /// TODO(phase-6): implement with actual optic types.
 #[derive(Debug, Clone)]
-pub struct PropertyDecl {
+pub struct Attribute {
     /// Property name (e.g., "title", "content", "selection").
     pub name: String,
     /// Human-readable description.

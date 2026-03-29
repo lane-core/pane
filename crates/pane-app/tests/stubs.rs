@@ -1,4 +1,4 @@
-use pane_app::{RouteTable, RouteResult, PropertyDecl, ScriptQuery, ScriptOp};
+use pane_app::{RouteTable, RouteResult, Attribute, ScriptQuery, ScriptOp};
 
 #[test]
 fn route_table_returns_no_match() {
@@ -9,7 +9,7 @@ fn route_table_returns_no_match() {
 
 #[test]
 fn property_decl_constructible() {
-    let prop = PropertyDecl {
+    let prop = Attribute {
         name: "title".into(),
         description: "The pane title".into(),
         writable: true,
