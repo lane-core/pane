@@ -2,13 +2,13 @@
 
 use std::num::NonZeroU32;
 use std::sync::mpsc;
-use std::sync::{Arc, atomic::{AtomicUsize, Ordering}};
+use std::sync::Arc;
 
 use pane_app::{Message, Messenger, Handler, LooperMessage, ShortcutFilter, KeyCombo};
 use pane_app::error::Result;
 use pane_proto::event::{Key, KeyEvent, KeyState, Modifiers, NamedKey};
 use pane_proto::message::PaneId;
-use pane_proto::protocol::{ClientToComp, CompToClient, PaneGeometry};
+use pane_proto::protocol::{ClientToComp, CompToClient};
 
 fn pane_id(n: u32) -> PaneId {
     PaneId::new(NonZeroU32::new(n).unwrap())

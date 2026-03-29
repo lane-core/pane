@@ -222,6 +222,34 @@ impl ProtocolServer {
             }
 
             ClientToComp::CompletionResponse { .. } => {}
+
+            ClientToComp::RequestResize { pane, width, height } => {
+                info!("pane {:?} requested resize to {}x{}", pane, width, height);
+                // Compositor decides whether to honor — tiling may constrain.
+                // For now, acknowledge with the requested geometry.
+                if let Some(client) = self.clients.get_mut(&client_id) {
+                    let response = CompToClient::Resize {
+                        pane,
+                        geometry: PaneGeometry {
+                            width, height,
+                            cols: (width as u16) / 9,  // approximate cell size
+                            rows: (height as u16) / 17,
+                        },
+                    };
+                    Self::send_to_client(client, &response);
+                }
+            }
+
+            ClientToComp::SetSizeLimits { pane, min_width, min_height, max_width, max_height } => {
+                info!("pane {:?} size limits: {}x{} - {}x{}", pane,
+                    min_width, min_height, max_width, max_height);
+                // Store for layout engine (not yet implemented)
+            }
+
+            ClientToComp::SetHidden { pane, hidden } => {
+                info!("pane {:?} hidden={}", pane, hidden);
+                // Visibility control (not yet implemented)
+            }
         }
     }
 

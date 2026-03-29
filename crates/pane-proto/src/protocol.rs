@@ -47,6 +47,25 @@ pub enum ClientToComp {
         token: u64,
         completions: Vec<Completion>,
     },
+    /// Request a resize. The compositor decides whether to honor it.
+    RequestResize {
+        pane: PaneId,
+        width: u32,
+        height: u32,
+    },
+    /// Declare size limits. The compositor uses these during layout.
+    SetSizeLimits {
+        pane: PaneId,
+        min_width: u32,
+        min_height: u32,
+        max_width: u32,
+        max_height: u32,
+    },
+    /// Request the pane be hidden or shown.
+    SetHidden {
+        pane: PaneId,
+        hidden: bool,
+    },
 }
 
 /// Messages from the compositor to a pane-native client.

@@ -106,6 +106,32 @@ impl Messenger {
         })
     }
 
+    /// Request the compositor to resize this pane.
+    /// The compositor decides whether to honor it (tiling may constrain).
+    pub fn request_resize(&self, width: u32, height: u32) -> Result<()> {
+        self.send(ClientToComp::RequestResize { pane: self.id, width, height })
+    }
+
+    /// Declare size limits for this pane.
+    /// The compositor uses these during layout — it won't shrink
+    /// below min or grow beyond max.
+    pub fn set_size_limits(
+        &self,
+        min: (u32, u32),
+        max: (u32, u32),
+    ) -> Result<()> {
+        self.send(ClientToComp::SetSizeLimits {
+            pane: self.id,
+            min_width: min.0, min_height: min.1,
+            max_width: max.0, max_height: max.1,
+        })
+    }
+
+    /// Request the pane be hidden or shown.
+    pub fn set_hidden(&self, hidden: bool) -> Result<()> {
+        self.send(ClientToComp::SetHidden { pane: self.id, hidden })
+    }
+
     /// Set the pulse rate. Pulse messages are delivered at this interval.
     /// Pass `Duration::ZERO` to disable. BWindow::SetPulseRate equivalent.
     ///
