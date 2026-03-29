@@ -8,7 +8,7 @@ use pane_proto::protocol::{CompToClient, PaneGeometry};
 /// demuxes before the developer sees events), and nested structures
 /// are eliminated. The developer matches on this enum directly.
 #[derive(Debug, Clone, PartialEq)]
-pub enum PaneEvent {
+pub enum PaneMessage {
     /// The pane is ready (initial geometry received).
     Ready(PaneGeometry),
     /// The pane was resized.
@@ -41,32 +41,32 @@ pub enum PaneEvent {
     Disconnected,
 }
 
-impl PaneEvent {
+impl PaneMessage {
     /// Convert a CompToClient message to a PaneEvent for the given pane.
     /// Takes ownership to avoid cloning — the message comes from recv().
     /// Returns None if the message is for a different pane or handled internally.
-    pub fn from_comp(msg: CompToClient, pane: PaneId) -> Option<PaneEvent> {
+    pub fn from_comp(msg: CompToClient, pane: PaneId) -> Option<PaneMessage> {
         match msg {
             CompToClient::Resize { pane: p, geometry } if p == pane =>
-                Some(PaneEvent::Resize(geometry)),
+                Some(PaneMessage::Resize(geometry)),
             CompToClient::Focus { pane: p } if p == pane =>
-                Some(PaneEvent::Focus),
+                Some(PaneMessage::Focus),
             CompToClient::Blur { pane: p } if p == pane =>
-                Some(PaneEvent::Blur),
+                Some(PaneMessage::Blur),
             CompToClient::Key { pane: p, event } if p == pane =>
-                Some(PaneEvent::Key(event)),
+                Some(PaneMessage::Key(event)),
             CompToClient::Mouse { pane: p, event } if p == pane =>
-                Some(PaneEvent::Mouse(event)),
+                Some(PaneMessage::Mouse(event)),
             CompToClient::Close { pane: p } if p == pane =>
-                Some(PaneEvent::Close),
+                Some(PaneMessage::Close),
             CompToClient::CommandActivated { pane: p } if p == pane =>
-                Some(PaneEvent::CommandActivated),
+                Some(PaneMessage::CommandActivated),
             CompToClient::CommandDismissed { pane: p } if p == pane =>
-                Some(PaneEvent::CommandDismissed),
+                Some(PaneMessage::CommandDismissed),
             CompToClient::CommandExecuted { pane: p, command, args } if p == pane =>
-                Some(PaneEvent::CommandExecuted { command, args }),
+                Some(PaneMessage::CommandExecuted { command, args }),
             CompToClient::CompletionRequest { pane: p, token, input } if p == pane =>
-                Some(PaneEvent::CompletionRequest { token, input }),
+                Some(PaneMessage::CompletionRequest { token, input }),
             _ => None,
         }
     }

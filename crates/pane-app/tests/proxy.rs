@@ -146,12 +146,12 @@ fn pane_handle_debug_includes_id() {
 // --- Commit 3: Self-delivery tests ---
 
 #[test]
-fn post_event_without_looper_returns_error() {
+fn post_message_without_looper_returns_error() {
     let (tx, _rx) = mpsc::channel::<ClientToComp>();
     let handle = PaneHandle::new(pane_id(1), tx);
-    // No looper_tx attached — post_event should fail
-    let result = handle.post_event(pane_app::PaneEvent::Focus);
-    assert!(result.is_err(), "post_event without looper should return Disconnected");
+    // No looper_tx attached — post_message should fail
+    let result = handle.post_message(pane_app::PaneMessage::Focus);
+    assert!(result.is_err(), "post_message without looper should return Disconnected");
 }
 
 // Happy-path self-delivery is tested in looper.rs via self_delivery_reaches_handler,
@@ -168,7 +168,7 @@ fn post_event_without_looper_returns_error() {
 fn post_delayed_without_looper_returns_error() {
     let (tx, _rx) = mpsc::channel::<ClientToComp>();
     let handle = PaneHandle::new(pane_id(1), tx);
-    let result = handle.post_delayed(pane_app::PaneEvent::Focus, std::time::Duration::from_millis(10));
+    let result = handle.post_delayed(pane_app::PaneMessage::Focus, std::time::Duration::from_millis(10));
     assert!(result.is_err(), "post_delayed without looper should return Disconnected");
 }
 
@@ -176,6 +176,6 @@ fn post_delayed_without_looper_returns_error() {
 fn post_periodic_without_looper_returns_error() {
     let (tx, _rx) = mpsc::channel::<ClientToComp>();
     let handle = PaneHandle::new(pane_id(1), tx);
-    let result = handle.post_periodic(pane_app::PaneEvent::Focus, std::time::Duration::from_millis(10));
+    let result = handle.post_periodic(pane_app::PaneMessage::Focus, std::time::Duration::from_millis(10));
     assert!(result.is_err(), "post_periodic without looper should return Disconnected");
 }

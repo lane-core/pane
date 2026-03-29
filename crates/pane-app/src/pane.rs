@@ -8,7 +8,7 @@ use pane_proto::message::PaneId;
 use pane_proto::protocol::{ClientToComp, PaneGeometry};
 
 use crate::error::Result;
-use crate::event::PaneEvent;
+use crate::event::PaneMessage;
 use crate::filter::FilterChain;
 use crate::handler::Handler;
 use crate::looper;
@@ -77,7 +77,7 @@ impl Pane {
 
     /// Run the event loop with a closure handler on the current thread.
     ///
-    /// The closure receives a `&PaneHandle` and a `PaneEvent`, and returns:
+    /// The closure receives a `&PaneHandle` and a `PaneMessage`, and returns:
     /// - `Ok(true)` — continue
     /// - `Ok(false)` — exit (sends RequestClose)
     /// - `Err(e)` — exit with error
@@ -85,17 +85,17 @@ impl Pane {
     /// This is the hello-pane pattern:
     /// ```ignore
     /// pane.run(|proxy, event| match event {
-    ///     PaneEvent::Key(key) if key.is_escape() => Ok(false),
-    ///     PaneEvent::Close => Ok(false),
+    ///     PaneMessage::Key(key) if key.is_escape() => Ok(false),
+    ///     PaneMessage::Close => Ok(false),
     ///     _ => Ok(true),
     /// })
     /// ```
-    pub fn run(self, mut handler: impl FnMut(&PaneHandle, PaneEvent) -> Result<bool>) -> Result<()> {
+    pub fn run(self, mut handler: impl FnMut(&PaneHandle, PaneMessage) -> Result<bool>) -> Result<()> {
         let Pane { id, geometry, receiver, filters, comp_tx, looper_tx, pane_count, done_signal, .. } = self;
         let handle = PaneHandle::new(id, comp_tx.clone()).with_looper(looper_tx);
 
         // Synthesize Ready as the first event (like BWindow B_WINDOW_ACTIVATED)
-        let keep_going = handler(&handle, PaneEvent::Ready(geometry))?;
+        let keep_going = handler(&handle, PaneMessage::Ready(geometry))?;
         if !keep_going {
             pane_count.fetch_sub(1, Ordering::Relaxed);
             if pane_count.load(Ordering::Relaxed) == 0 {

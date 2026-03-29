@@ -2,7 +2,7 @@ use std::num::NonZeroU32;
 use std::sync::mpsc;
 use std::sync::{Arc, Mutex};
 
-use pane_app::{PaneEvent, Handler, Filter, FilterAction, PaneHandle, LooperMessage};
+use pane_app::{PaneMessage, Handler, Filter, FilterAction, PaneHandle, LooperMessage};
 use pane_app::error::Result;
 use pane_proto::event::{KeyEvent, Key, NamedKey, Modifiers, KeyState};
 use pane_proto::message::PaneId;
@@ -52,7 +52,7 @@ fn closure_receives_key_and_exits() {
 
     let mut got_key = false;
     pane_app::looper::run_closure(pane_id(1), rx, filters, proxy, |_proxy, event| {
-        if let PaneEvent::Key(k) = &event {
+        if let PaneMessage::Key(k) = &event {
             if k.is_escape() {
                 got_key = true;
                 return Ok(false);
@@ -75,7 +75,7 @@ fn closure_handles_close() {
 
     let mut got_close = false;
     pane_app::looper::run_closure(pane_id(1), rx, filters, proxy, |_proxy, event| {
-        if matches!(event, PaneEvent::Close) {
+        if matches!(event, PaneMessage::Close) {
             got_close = true;
             return Ok(false);
         }
@@ -95,7 +95,7 @@ fn closure_handles_channel_close_as_disconnect() {
 
     let mut got_disconnect = false;
     pane_app::looper::run_closure(pane_id(1), rx, filters, proxy, |_proxy, event| {
-        if matches!(event, PaneEvent::Disconnected) {
+        if matches!(event, PaneMessage::Disconnected) {
             got_disconnect = true;
         }
         Ok(true)
@@ -117,7 +117,7 @@ fn closure_ignores_wrong_pane_id() {
     let mut events_received = 0;
     pane_app::looper::run_closure(pane_id(1), rx, filters, proxy, |_proxy, event| {
         events_received += 1;
-        if matches!(event, PaneEvent::Close) {
+        if matches!(event, PaneMessage::Close) {
             return Ok(false);
         }
         Ok(true)
@@ -131,8 +131,8 @@ fn closure_ignores_wrong_pane_id() {
 struct ConsumeEscapeFilter;
 
 impl Filter for ConsumeEscapeFilter {
-    fn filter(&mut self, event: PaneEvent) -> FilterAction {
-        if let PaneEvent::Key(ref k) = event {
+    fn filter(&mut self, event: PaneMessage) -> FilterAction {
+        if let PaneMessage::Key(ref k) = event {
             if k.is_escape() {
                 return FilterAction::Consume;
             }
@@ -156,8 +156,8 @@ fn filter_consumes_event() {
     let mut got_close = false;
     pane_app::looper::run_closure(pane_id(1), rx, filters, proxy, |_proxy, event| {
         match event {
-            PaneEvent::Key(ref k) if k.is_escape() => got_escape = true,
-            PaneEvent::Close => {
+            PaneMessage::Key(ref k) if k.is_escape() => got_escape = true,
+            PaneMessage::Close => {
                 got_close = true;
                 return Ok(false);
             }
@@ -247,8 +247,8 @@ fn empty_filter_chain_passes_all() {
 
     let mut got_focus = false;
     pane_app::looper::run_closure(pane_id(1), rx, filters, proxy, |_h, event| {
-        if matches!(event, PaneEvent::Focus) { got_focus = true; }
-        if matches!(event, PaneEvent::Close) { return Ok(false); }
+        if matches!(event, PaneMessage::Focus) { got_focus = true; }
+        if matches!(event, PaneMessage::Close) { return Ok(false); }
         Ok(true)
     }).unwrap();
 
@@ -257,10 +257,10 @@ fn empty_filter_chain_passes_all() {
 
 struct TransformFilter;
 impl Filter for TransformFilter {
-    fn filter(&mut self, event: PaneEvent) -> FilterAction {
+    fn filter(&mut self, event: PaneMessage) -> FilterAction {
         // Transform Focus into Blur
-        if matches!(event, PaneEvent::Focus) {
-            return FilterAction::Pass(PaneEvent::Blur);
+        if matches!(event, PaneMessage::Focus) {
+            return FilterAction::Pass(PaneMessage::Blur);
         }
         FilterAction::Pass(event)
     }
@@ -281,9 +281,9 @@ fn filter_chain_ordering_transforms() {
     let mut got_focus = false;
     pane_app::looper::run_closure(pane_id(1), rx, filters, proxy, |_h, event| {
         match event {
-            PaneEvent::Focus => got_focus = true,
-            PaneEvent::Blur => got_blur = true,
-            PaneEvent::Close => return Ok(false),
+            PaneMessage::Focus => got_focus = true,
+            PaneMessage::Blur => got_blur = true,
+            PaneMessage::Close => return Ok(false),
             _ => {}
         }
         Ok(true)
@@ -295,7 +295,7 @@ fn filter_chain_ordering_transforms() {
 
 struct ConsumeAllFilter;
 impl Filter for ConsumeAllFilter {
-    fn filter(&mut self, _event: PaneEvent) -> FilterAction {
+    fn filter(&mut self, _event: PaneMessage) -> FilterAction {
         FilterAction::Consume
     }
 }
@@ -315,7 +315,7 @@ fn filter_consume_all_then_disconnect() {
     pane_app::looper::run_closure(pane_id(1), rx, filters, proxy, |_h, event| {
         // Only Disconnected should reach the handler — it's generated
         // by the looper itself, not from CompToClient (so not filtered)
-        assert!(matches!(event, PaneEvent::Disconnected),
+        assert!(matches!(event, PaneMessage::Disconnected),
             "only Disconnected should pass through — got {:?}", event);
         events_seen += 1;
         Ok(true)
@@ -356,7 +356,7 @@ fn looper_processes_all_queued_before_disconnect() {
 
     let mut count = 0;
     pane_app::looper::run_closure(pane_id(1), rx, filters, proxy, |_h, event| {
-        if !matches!(event, PaneEvent::Disconnected) {
+        if !matches!(event, PaneMessage::Disconnected) {
             count += 1;
         }
         Ok(true)
@@ -396,12 +396,12 @@ fn looper_error_stops_processing() {
 struct SkipFocusFilter;
 
 impl Filter for SkipFocusFilter {
-    fn filter(&mut self, _event: PaneEvent) -> FilterAction {
+    fn filter(&mut self, _event: PaneMessage) -> FilterAction {
         FilterAction::Consume
     }
 
-    fn wants(&self, event: &PaneEvent) -> bool {
-        !matches!(event, PaneEvent::Focus)
+    fn wants(&self, event: &PaneMessage) -> bool {
+        !matches!(event, PaneMessage::Focus)
     }
 }
 
@@ -423,9 +423,9 @@ fn filter_wants_skips_uninterested() {
     let mut got_close = false;
     pane_app::looper::run_closure(pane_id(1), rx, filters, proxy, |_h, event| {
         match event {
-            PaneEvent::Focus => got_focus = true,
-            PaneEvent::Close => { got_close = true; return Ok(false); }
-            PaneEvent::Disconnected => return Ok(false),
+            PaneMessage::Focus => got_focus = true,
+            PaneMessage::Close => { got_close = true; return Ok(false); }
+            PaneMessage::Disconnected => return Ok(false),
             _ => {}
         }
         Ok(true)
@@ -449,7 +449,7 @@ fn filter_wants_default_true() {
     let mut events_seen = 0;
     pane_app::looper::run_closure(pane_id(1), rx, filters, proxy, |_h, event| {
         events_seen += 1;
-        if matches!(event, PaneEvent::Disconnected) { return Ok(false); }
+        if matches!(event, PaneMessage::Disconnected) { return Ok(false); }
         Ok(true)
     }).unwrap();
 
@@ -467,14 +467,14 @@ fn self_delivery_reaches_handler() {
     let proxy = make_proxy(pane_id(1));
 
     // Post a self-delivered Focus, then a comp Close to terminate
-    tx.send(LooperMessage::Posted(PaneEvent::Focus)).unwrap();
+    tx.send(LooperMessage::Posted(PaneMessage::Focus)).unwrap();
     send_comp(&tx, close_msg());
     drop(tx);
 
     let mut got_focus = false;
     pane_app::looper::run_closure(pane_id(1), rx, filters, proxy, |_h, event| {
-        if matches!(event, PaneEvent::Focus) { got_focus = true; }
-        if matches!(event, PaneEvent::Close) { return Ok(false); }
+        if matches!(event, PaneMessage::Focus) { got_focus = true; }
+        if matches!(event, PaneMessage::Close) { return Ok(false); }
         Ok(true)
     }).unwrap();
 
@@ -488,14 +488,14 @@ fn self_delivery_interleaved_with_comp() {
     let proxy = make_proxy(pane_id(1));
 
     send_comp(&tx, CompToClient::Focus { pane: pane_id(1) });
-    tx.send(LooperMessage::Posted(PaneEvent::Blur)).unwrap();
+    tx.send(LooperMessage::Posted(PaneMessage::Blur)).unwrap();
     send_comp(&tx, close_msg());
     drop(tx);
 
     let mut log = Vec::new();
     pane_app::looper::run_closure(pane_id(1), rx, filters, proxy, |_h, event| {
         log.push(format!("{:?}", std::mem::discriminant(&event)));
-        if matches!(event, PaneEvent::Close) { return Ok(false); }
+        if matches!(event, PaneMessage::Close) { return Ok(false); }
         Ok(true)
     }).unwrap();
 
@@ -516,14 +516,14 @@ fn self_delivery_filters_apply() {
         state: KeyState::Press,
         timestamp: None,
     };
-    tx.send(LooperMessage::Posted(PaneEvent::Key(esc))).unwrap();
+    tx.send(LooperMessage::Posted(PaneMessage::Key(esc))).unwrap();
     send_comp(&tx, close_msg());
     drop(tx);
 
     let mut got_escape = false;
     pane_app::looper::run_closure(pane_id(1), rx, filters, proxy, |_h, event| {
-        if matches!(event, PaneEvent::Key(_)) { got_escape = true; }
-        if matches!(event, PaneEvent::Close) { return Ok(false); }
+        if matches!(event, PaneMessage::Key(_)) { got_escape = true; }
+        if matches!(event, PaneMessage::Close) { return Ok(false); }
         Ok(true)
     }).unwrap();
 
@@ -570,11 +570,11 @@ fn coalesce_resize_keeps_last() {
     let mut resize_count = 0;
     let mut last_width = 0;
     pane_app::looper::run_closure(pane_id(1), rx, filters, proxy, |_h, event| {
-        if let PaneEvent::Resize(g) = &event {
+        if let PaneMessage::Resize(g) = &event {
             resize_count += 1;
             last_width = g.width;
         }
-        if matches!(event, PaneEvent::Close) { return Ok(false); }
+        if matches!(event, PaneMessage::Close) { return Ok(false); }
         Ok(true)
     }).unwrap();
 
@@ -597,13 +597,13 @@ fn coalesce_mouse_move_keeps_last() {
     let mut move_count = 0;
     let mut last_col = 0;
     pane_app::looper::run_closure(pane_id(1), rx, filters, proxy, |_h, event| {
-        if let PaneEvent::Mouse(m) = &event {
+        if let PaneMessage::Mouse(m) = &event {
             if matches!(m.kind, MouseEventKind::Move) {
                 move_count += 1;
                 last_col = m.col;
             }
         }
-        if matches!(event, PaneEvent::Close) { return Ok(false); }
+        if matches!(event, PaneMessage::Close) { return Ok(false); }
         Ok(true)
     }).unwrap();
 
@@ -643,8 +643,8 @@ fn coalesce_preserves_press_release() {
     let mut event_types = Vec::new();
     pane_app::looper::run_closure(pane_id(1), rx, filters, proxy, |_h, event| {
         match &event {
-            PaneEvent::Mouse(m) => event_types.push(format!("{:?}", m.kind)),
-            PaneEvent::Close => { event_types.push("Close".into()); return Ok(false); }
+            PaneMessage::Mouse(m) => event_types.push(format!("{:?}", m.kind)),
+            PaneMessage::Close => { event_types.push("Close".into()); return Ok(false); }
             _ => {}
         }
         Ok(true)
@@ -672,10 +672,10 @@ fn coalesce_no_coalesce_focus_blur() {
 
     let mut count = 0;
     pane_app::looper::run_closure(pane_id(1), rx, filters, proxy, |_h, event| {
-        if !matches!(event, PaneEvent::Close | PaneEvent::Disconnected) {
+        if !matches!(event, PaneMessage::Close | PaneMessage::Disconnected) {
             count += 1;
         }
-        if matches!(event, PaneEvent::Close) { return Ok(false); }
+        if matches!(event, PaneMessage::Close) { return Ok(false); }
         Ok(true)
     }).unwrap();
 
@@ -695,8 +695,8 @@ fn single_message_no_coalesce() {
 
     let mut got_focus = false;
     pane_app::looper::run_closure(pane_id(1), rx, filters, proxy, |_h, event| {
-        if matches!(event, PaneEvent::Focus) { got_focus = true; }
-        if matches!(event, PaneEvent::Close) { return Ok(false); }
+        if matches!(event, PaneMessage::Focus) { got_focus = true; }
+        if matches!(event, PaneMessage::Close) { return Ok(false); }
         Ok(true)
     }).unwrap();
 
