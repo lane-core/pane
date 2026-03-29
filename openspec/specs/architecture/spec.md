@@ -218,6 +218,12 @@ The principle: if you'd be comfortable with 30μs latency and per-file granulari
 
 pane-fs targets FUSE-over-io_uring (Linux 6.14+), which halves the overhead and eliminates concurrency bottlenecks via per-CPU queues. As a distribution that controls its kernel version, pane requires io_uring-backed FUSE — this is not an optional optimization but a baseline expectation.
 
+**The pane boundary principle.** The scriptable surface of a pane is its declared attributes, not its internal widget hierarchy. BeOS's `hey` could traverse into any application's view tree — powerful but fragile (scripts broke when apps rearranged their UI). Pane deliberately stops at the pane boundary: a pane exposes what it chooses to expose through `PropertyDecl`. The composer of the script and the author of the pane agree on a stable interface. Internal rendering state (view trees, widget layouts, buffer positions) is opaque. If a pane wants internal structure scriptable, it declares those properties explicitly.
+
+**Control file as command interface.** Each pane's `ctl` file accepts line-oriented commands — the `hey AppName do ...` equivalent. Simple commands are `COMMAND [ARGS...]`. Structured payloads use JSON after the command name for multi-property atomic operations (the one case where the filesystem model requires design attention compared to BMessage's dynamic fields).
+
+**Per-signature index.** `/pane/by-sig/<signature>/` contains symlinks to panes owned by each application signature, recovering the "count my application's windows" use case without a full pane-store query.
+
 ### Notifications
 
 Notifications are panes — not a separate subsystem. A notification is created as a floating pane with attributes (source, timestamp, content, priority). It participates in routing, has a filesystem projection, and can be queried via pane-store. Retention policies, routing to logs, and dismissal are all standard pane operations — no dedicated notification server is needed.

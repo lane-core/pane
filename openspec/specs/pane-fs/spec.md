@@ -79,3 +79,82 @@ pane-fs SHALL expose a pane index at `/pane/index`.
 #### Scenario: Directory listing
 - **WHEN** `ls /pane/` is executed
 - **THEN** each pane SHALL appear as a directory entry by its ID
+
+### Requirement: Control file command syntax
+The `ctl` file SHALL accept line-oriented commands. Each line is a command with optional arguments. For structured payloads (multi-property creation, complex operations), a JSON payload follows the command name.
+
+Simple commands:
+```
+close
+save
+undo
+```
+
+Commands with arguments:
+```
+save /tmp/output.txt
+goto 42
+```
+
+Structured payloads (for multi-property atomic operations):
+```
+create-command {"name":"save","description":"Save file","shortcut":"Ctrl+S","action":"client:save"}
+```
+
+This is the `hey AppName do ...` equivalent. Writing a command to `ctl` delivers it as `Message::CommandExecuted { command, args }` to the pane's handler.
+
+#### Scenario: Simple ctl command
+- **WHEN** `echo "close" > /pane/1/ctl` is executed
+- **THEN** the pane SHALL receive `Message::CommandExecuted { command: "close", args: "" }`
+
+#### Scenario: Ctl command with arguments
+- **WHEN** `echo "save /tmp/out.txt" > /pane/1/ctl` is executed
+- **THEN** the pane SHALL receive `Message::CommandExecuted { command: "save", args: "/tmp/out.txt" }`
+
+#### Scenario: Ctl structured payload
+- **WHEN** a JSON payload is written to `ctl` after a command name
+- **THEN** the pane SHALL receive the command with the JSON as the args field, and MAY parse it for structured handling
+
+### Requirement: Per-signature pane index
+pane-fs SHALL expose a per-application-signature index at `/pane/by-sig/`. Each application signature that has running panes appears as a directory containing symlinks to those panes' directories.
+
+This recovers the BeOS "count my application's windows" use case (`hey AppName count Window`) without requiring a full pane-store query.
+
+#### Scenario: List panes by application
+- **WHEN** `ls /pane/by-sig/com.example.editor/` is executed
+- **THEN** symlinks to all panes owned by that application SHALL be listed
+
+#### Scenario: Count application panes
+- **WHEN** `ls /pane/by-sig/com.example.editor/ | wc -l` is executed
+- **THEN** the count of panes owned by that application SHALL be returned
+
+#### Scenario: New pane appears in index
+- **WHEN** a new pane is created by `com.example.editor`
+- **THEN** a symlink SHALL appear in `/pane/by-sig/com.example.editor/` without restart
+
+### Requirement: Bulk attribute read
+pane-fs SHALL support efficient bulk reads of all attributes for a pane. Reading `/pane/<id>/attrs.json` SHALL return all attributes as a single JSON object.
+
+This addresses the round-trip concern: reading 10 individual attribute files requires 10 FUSE operations. Reading `attrs.json` is one operation.
+
+#### Scenario: Bulk attribute read
+- **WHEN** `cat /pane/1/attrs.json` is executed
+- **THEN** a JSON object containing all attribute key-value pairs SHALL be returned
+- **AND** the result SHALL be equivalent to reading each file in `attrs/` individually
+
+### Requirement: Pane boundary principle
+pane-fs SHALL NOT expose the internal widget hierarchy of a pane. The scriptable surface of a pane is the set of attributes its handler declares via `PropertyDecl`. Internal rendering state (view trees, widget layouts, buffer positions) is opaque.
+
+This is a deliberate divergence from BeOS, where `hey` could traverse into any application's view hierarchy (`get Frame of View "statusbar" of Window 0`). BeOS's deep traversal was powerful but fragile — scripts broke when applications rearranged their internal UI.
+
+In pane, the scripting contract is: a pane exposes the attributes it chooses to expose. The level of abstraction is the pane, not the widget. If a pane wants internal structure to be scriptable, it declares those properties explicitly. The composer of the script and the author of the pane agree on a stable interface, rather than the script reaching into implementation details.
+
+#### Scenario: No internal widget access
+- **WHEN** a script attempts to access internal rendering state via pane-fs
+- **THEN** only declared attributes SHALL be visible in `attrs/`
+- **AND** the filesystem SHALL NOT expose view trees, widget hierarchies, or rendering internals
+
+#### Scenario: Explicit property exposure
+- **WHEN** a pane handler declares `PropertyDecl { name: "cursor-line", type: Int }`
+- **THEN** `/pane/<id>/attrs/cursor-line` SHALL be readable
+- **AND** scripts MAY depend on this property as part of the pane's stable scripting contract
