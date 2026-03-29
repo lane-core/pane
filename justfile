@@ -1,6 +1,9 @@
 # pane desktop environment
 # run `just` to see all recipes
 
+# Target Linux system for cross-builds (change for x86_64)
+linux_system := "aarch64-linux"
+
 default:
     @just --list
 
@@ -45,7 +48,7 @@ build-crate crate:
 
 # Build pane-comp for Linux (via nix remote builder)
 build-comp:
-    nix build .#packages.aarch64-linux.pane-comp --print-build-logs
+    nix build .#packages.{{linux_system}}.pane-comp --print-build-logs
 
 # Build any crate for Linux (via nix, --impure for ad-hoc builds)
 build-linux crate:
@@ -82,6 +85,8 @@ vm-push path="./result":
 # --- dev iteration (the fast path) ---
 
 # Build compositor + push to VM + restart it
+# Note: $(readlink ./result) resolves the nix store path on the HOST.
+# This works because the VM mounts the host /nix/store read-only via 9p.
 dev-comp:
     just build-comp
     just vm-push ./result
@@ -117,7 +122,8 @@ clean:
 # Clean everything (cargo + nix + vm)
 clean-all:
     cargo clean
-    rm -f nixos.qcow2 result result-disk
+    rm -f nixos.qcow2 result result-disk result-vm result-hello
+    rm -f result-pane-*
 
 # --- openspec ---
 

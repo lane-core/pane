@@ -27,11 +27,15 @@ if ! command -v qemu-system-aarch64 &>/dev/null; then
     exit 1
 fi
 
-# Parse paths from the generated run-nixos-vm script
+# Parse paths from the generated run-nixos-vm script.
+# Fragile: depends on NixOS's generated script format. Guards below catch breakage.
 SYSTEM=$(sed -n 's/.*init=\(\/nix\/store\/[^ ]*\)\/init.*/\1/p' "$RESULT/bin/run-nixos-vm")
+[ -n "$SYSTEM" ] || { echo "Failed to parse SYSTEM from run-nixos-vm (NixOS format may have changed)"; exit 1; }
 KERNEL="$SYSTEM/kernel"
 INITRD=$(sed -n 's/.*-initrd \(\/nix\/store\/[^ ]*\).*/\1/p' "$RESULT/bin/run-nixos-vm")
+[ -n "$INITRD" ] || { echo "Failed to parse INITRD from run-nixos-vm"; exit 1; }
 REGINFO=$(sed -n 's/.*regInfo=\(\/nix\/store\/[^ ]*\).*/\1/p' "$RESULT/bin/run-nixos-vm")
+[ -n "$REGINFO" ] || { echo "Failed to parse REGINFO from run-nixos-vm"; exit 1; }
 KERNEL_PARAMS="$(cat "$SYSTEM/kernel-params") init=$SYSTEM/init regInfo=$REGINFO console=ttyAMA0,115200n8 console=tty0"
 
 # Get or create disk image

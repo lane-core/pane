@@ -27,7 +27,7 @@
         inputsFrom = [
           self'.devShells.rust
         ] ++ lib.optionals (self' ? devShells && builtins.hasAttr "pre-commit" (self'.devShells or {})) [
-          # pre-commit shell if available
+          self'.devShells.pre-commit
         ];
 
         nativeBuildInputs = [

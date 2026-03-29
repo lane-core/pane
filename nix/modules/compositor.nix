@@ -21,6 +21,8 @@
     in
     {
       packages = lib.optionalAttrs isLinux {
+        # mkForce: rust-flake auto-discovers pane-comp from workspace members
+        # and produces a broken derivation (missing Wayland deps). Override it.
         pane-comp = lib.mkForce (pkgs.rustPlatform.buildRustPackage {
           pname = "pane-comp";
           version = "0.1.0";

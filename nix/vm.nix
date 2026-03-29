@@ -12,7 +12,6 @@
 #
 # SSH:
 #   ssh -p 2222 pane@localhost  (password: pane)
-{ ... }:
 { pkgs, lib, ... }:
 
 let

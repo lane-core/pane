@@ -22,7 +22,7 @@
     nixosConfigurations.pane-test-vm = inputs.nixpkgs.lib.nixosSystem {
       system = "aarch64-linux";
       modules = [
-        (import ../vm.nix {})
+        ../vm.nix
       ];
     };
   };
