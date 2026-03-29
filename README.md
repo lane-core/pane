@@ -31,10 +31,10 @@ semantic object for accessibility. the views are projections
 of the same state, kept consistent by optics discipline.
 
 the system is extended through the same interfaces it uses
-internally. a routing rule is a file. a translator is a binary
-in a directory. a pane mode wraps a library with domain-specific
-semantics. adding a plugin is dropping a file. removing it is
-deleting the file.
+internally. a routing rule is a file. a pane mode wraps a
+library with domain-specific semantics. more generally, add
+new functionality by dropping a declarative specification in
+the relevant directory. removing it is deleting the file.
 
 agents are system users, not applications. they have accounts,
 home directories, .plan files. they communicate through the
@@ -105,7 +105,7 @@ building
 
     direnv allow            # activate nix dev shell (first time)
     just build              # build all crates
-    just test               # run all tests (60+)
+    just test               # run all tests (120+)
     just test-crate pane-app   # test a specific crate
     just lint               # clippy
     just fmt                # rustfmt + nixfmt
