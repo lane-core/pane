@@ -29,6 +29,7 @@ pub struct Pane {
     pane_count: Arc<AtomicUsize>,
     done_signal: Arc<(std::sync::Mutex<()>, std::sync::Condvar)>,
     filters: FilterChain,
+    shortcuts: crate::shortcuts::ShortcutFilter,
 }
 
 impl Pane {
@@ -50,6 +51,7 @@ impl Pane {
             pane_count,
             done_signal,
             filters: FilterChain::new(),
+            shortcuts: crate::shortcuts::ShortcutFilter::new(),
         }
     }
 
@@ -66,6 +68,18 @@ impl Pane {
     /// Add a filter to the pane's filter chain.
     pub fn add_filter(&mut self, filter: impl crate::filter::Filter) {
         self.filters.add(filter);
+    }
+
+    /// Register a keyboard shortcut. When the key combo is pressed,
+    /// the handler receives `Message::CommandExecuted { command, args }`
+    /// instead of the raw key event. BWindow::AddShortcut equivalent.
+    pub fn add_shortcut(
+        &mut self,
+        combo: crate::shortcuts::KeyCombo,
+        command: impl Into<String>,
+        args: impl Into<String>,
+    ) {
+        self.shortcuts.add(combo, command, args);
     }
 
     /// Get a Messenger for this pane. The messenger can be cloned and
@@ -92,7 +106,10 @@ impl Pane {
     /// })
     /// ```
     pub fn run(self, mut handler: impl FnMut(&Messenger, Message) -> Result<bool>) -> Result<()> {
-        let Pane { id, geometry, receiver, filters, comp_tx, looper_tx, pane_count, done_signal, .. } = self;
+        let Pane { id, geometry, receiver, mut filters, comp_tx, looper_tx, pane_count, done_signal, shortcuts, .. } = self;
+        if !shortcuts.is_empty() {
+            filters.add(shortcuts);
+        }
         let handle = Messenger::new(id, comp_tx.clone()).with_looper(looper_tx);
 
         // Synthesize Ready as the first message
@@ -127,7 +144,10 @@ impl Pane {
     /// pane.run_with(Weather { city: "SF".into(), data: None })
     /// ```
     pub fn run_with(self, mut handler: impl Handler) -> Result<()> {
-        let Pane { id, geometry, receiver, filters, comp_tx, looper_tx, pane_count, done_signal, .. } = self;
+        let Pane { id, geometry, receiver, mut filters, comp_tx, looper_tx, pane_count, done_signal, shortcuts, .. } = self;
+        if !shortcuts.is_empty() {
+            filters.add(shortcuts);
+        }
         let handle = Messenger::new(id, comp_tx.clone()).with_looper(looper_tx);
 
         // Synthesize Ready as the first message

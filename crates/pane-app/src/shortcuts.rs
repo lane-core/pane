@@ -63,6 +63,11 @@ impl ShortcutFilter {
         ShortcutFilter { shortcuts: Vec::new() }
     }
 
+    /// Whether any shortcuts are registered.
+    pub fn is_empty(&self) -> bool {
+        self.shortcuts.is_empty()
+    }
+
     /// Register a keyboard shortcut. When the key combo is pressed,
     /// the filter transforms it into `Message::CommandExecuted { command, args }`.
     pub fn add(&mut self, combo: KeyCombo, command: impl Into<String>, args: impl Into<String>) {
