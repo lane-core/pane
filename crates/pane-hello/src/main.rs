@@ -19,14 +19,8 @@ fn run() -> pane_app::Result<()> {
 
     let mut pane = app.create_pane(
         Tag::new("Hello, pane!")
-            .commands(vec![
-                cmd("close", "Close this pane")
-                    .shortcut("Alt+W")
-                    .built_in(BuiltIn::Close),
-                cmd("save", "Save")
-                    .shortcut("Ctrl+S")
-                    .client("save"),
-            ]),
+            .command(cmd("save", "Save").shortcut("Ctrl+S").client("save"))
+            .command(cmd("close", "Close").shortcut("Alt+W").built_in(BuiltIn::Close)),
     )?;
 
     // Register keyboard shortcuts — Ctrl+S and Escape

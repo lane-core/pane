@@ -46,6 +46,24 @@ impl Tag {
         self
     }
 
+    /// Add a single command. Can be chained:
+    /// ```ignore
+    /// Tag::new("Editor")
+    ///     .command(cmd("save", "Save").shortcut("Ctrl+S").client("save"))
+    ///     .command(cmd("close", "Close").built_in(BuiltIn::Close))
+    /// ```
+    pub fn command(mut self, command: Command) -> Self {
+        if self.vocabulary.groups.is_empty() {
+            self.vocabulary.groups.push(CommandGroup {
+                label: "Commands".into(),
+                commands: vec![command],
+            });
+        } else {
+            self.vocabulary.groups[0].commands.push(command);
+        }
+        self
+    }
+
     /// Set commands (flat list, wrapped in a default group).
     pub fn commands(mut self, commands: Vec<Command>) -> Self {
         self.vocabulary.groups = vec![CommandGroup {

@@ -4,7 +4,8 @@ use std::num::NonZeroU32;
 use std::sync::mpsc;
 use std::sync::Arc;
 
-use pane_app::{Message, Messenger, Handler, LooperMessage, ShortcutFilter, KeyCombo};
+use pane_app::{Message, Messenger, Handler, LooperMessage, KeyCombo};
+use pane_app::shortcuts::ShortcutFilter;
 use pane_app::error::Result;
 use pane_proto::event::{Key, KeyEvent, KeyState, Modifiers, NamedKey};
 use pane_proto::message::PaneId;

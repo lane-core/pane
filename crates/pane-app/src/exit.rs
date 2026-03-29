@@ -32,22 +32,22 @@ impl ExitReason {
 /// its looper_tx here. When B exits, the broadcaster sends
 /// Message::PaneExited to all registered watchers.
 #[derive(Clone, Default)]
-pub struct ExitBroadcaster {
+pub(crate) struct ExitBroadcaster {
     watchers: Arc<Mutex<Vec<mpsc::SyncSender<LooperMessage>>>>,
 }
 
 impl ExitBroadcaster {
-    pub fn new() -> Self {
+    pub(crate) fn new() -> Self {
         Self::default()
     }
 
     /// Register a watcher's looper channel. Called by Messenger::monitor().
-    pub fn add_watcher(&self, tx: mpsc::SyncSender<LooperMessage>) {
+    pub(crate) fn add_watcher(&self, tx: mpsc::SyncSender<LooperMessage>) {
         self.watchers.lock().unwrap().push(tx);
     }
 
     /// Broadcast the exit to all watchers. Called when run() completes.
-    pub fn broadcast(&self, pane: PaneId, reason: ExitReason) {
+    pub(crate) fn broadcast(&self, pane: PaneId, reason: ExitReason) {
         let watchers = self.watchers.lock().unwrap();
         let msg = Message::PaneExited { pane, reason };
         for tx in watchers.iter() {
