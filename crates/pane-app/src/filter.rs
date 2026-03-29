@@ -44,10 +44,12 @@ impl Default for FilterChain {
 }
 
 impl FilterChain {
+    /// Create an empty filter chain.
     pub fn new() -> Self {
         FilterChain { filters: Vec::new() }
     }
 
+    /// Append a filter to the chain.
     pub fn add(&mut self, filter: impl MessageFilter) {
         self.filters.push(Box::new(filter));
     }

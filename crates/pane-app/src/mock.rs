@@ -91,16 +91,6 @@ impl MockCompositor {
         self.injections.push((target, event));
     }
 
-    /// Schedule a Close event for the first pane created, after a delay.
-    /// Convenience for the hello-pane test.
-    pub fn close_first_pane_after(&mut self, _delay: Duration) {
-        // We'll handle this specially in run()
-        self.injections.push((
-            PaneId::new(NonZeroU32::new(1).unwrap()),
-            CompToClient::Close { pane: PaneId::new(NonZeroU32::new(1).unwrap()) },
-        ));
-    }
-
     /// Get a handle to the message log for assertions.
     pub fn log(&self) -> Arc<Mutex<Vec<ClientToComp>>> {
         self.log.clone()
@@ -153,8 +143,10 @@ impl MockCompositor {
 
             match msg {
                 ClientToComp::CreatePane { .. } => {
-                    let id = PaneId::new(NonZeroU32::new(self.next_id).unwrap());
-                    self.next_id += 1;
+                    let id = PaneId::new(NonZeroU32::new(self.next_id)
+                        .expect("pane ID overflow in MockCompositor"));
+                    self.next_id = self.next_id.checked_add(1)
+                        .expect("pane ID counter overflow in MockCompositor");
 
                     // Send PaneCreated response
                     let _ = self.conn.sender.send(CompToClient::PaneCreated {

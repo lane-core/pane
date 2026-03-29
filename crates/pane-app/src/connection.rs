@@ -43,6 +43,7 @@ pub struct MockConnection {
 }
 
 /// Result of a successful client handshake.
+#[allow(dead_code)]
 pub struct HandshakeResult<T> {
     /// Capabilities accepted by the server.
     pub(crate) accepted: Accepted,
@@ -108,10 +109,6 @@ pub fn from_unix_stream(stream: UnixStream) -> std::io::Result<Connection> {
     })
 }
 
-/// Run the client side of the session-typed handshake.
-///
-/// Sends ClientHello, receives ServerHello, sends ClientCaps,
-/// and waits for the server's Accept/Reject decision.
 /// Run the client side of the session-typed handshake.
 ///
 /// Sends ClientHello, receives ServerHello, sends ClientCaps,

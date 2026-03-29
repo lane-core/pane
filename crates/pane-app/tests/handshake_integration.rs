@@ -18,7 +18,7 @@ fn handshake_then_hello_pane() {
     let mock_handle = thread::spawn(move || mock.run());
 
     // 3. Run client handshake
-    let hs = run_client_handshake(client_chan, "com.example.hello").unwrap();
+    let _hs = run_client_handshake(client_chan, "com.example.hello").unwrap();
     eprintln!("[test] handshake complete, accepted caps: {:?}", "(handshake ok)");
 
     // 4. Connect app using active-phase channels
