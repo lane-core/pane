@@ -143,7 +143,7 @@ This addresses the round-trip concern: reading 10 individual attribute files req
 - **AND** the result SHALL be equivalent to reading each file in `attrs/` individually
 
 ### Requirement: Pane boundary principle
-pane-fs SHALL NOT expose the internal widget hierarchy of a pane. The scriptable surface of a pane is the set of attributes its handler declares via `PropertyDecl`. Internal rendering state (view trees, widget layouts, buffer positions) is opaque.
+pane-fs SHALL NOT expose the internal widget hierarchy of a pane. The scriptable surface of a pane is the set of attributes its handler declares via `Attribute`. Internal rendering state (view trees, widget layouts, buffer positions) is opaque.
 
 This is a deliberate divergence from BeOS, where `hey` could traverse into any application's view hierarchy (`get Frame of View "statusbar" of Window 0`). BeOS's deep traversal was powerful but fragile — scripts broke when applications rearranged their internal UI.
 
@@ -155,6 +155,6 @@ In pane, the scripting contract is: a pane exposes the attributes it chooses to 
 - **AND** the filesystem SHALL NOT expose view trees, widget hierarchies, or rendering internals
 
 #### Scenario: Explicit property exposure
-- **WHEN** a pane handler declares `PropertyDecl { name: "cursor-line", type: Int }`
+- **WHEN** a pane handler declares `Attribute { name: "cursor-line", type: Int }`
 - **THEN** `/pane/<id>/attrs/cursor-line` SHALL be readable
 - **AND** scripts MAY depend on this property as part of the pane's stable scripting contract

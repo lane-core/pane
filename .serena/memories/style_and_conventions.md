@@ -13,8 +13,8 @@
 ## Architecture Patterns
 - Per-pane threading (BeOS BLooper model)
 - Three-phase protocol: session-typed handshake → typed enum active phase → session-typed teardown
-- PaneEvent is flattened from CompToClient (PaneId stripped, nesting eliminated)
-- PaneHandle (BMessenger equivalent) is cloneable Send handle
+- Message is flattened from CompToClient (PaneId stripped, nesting eliminated)
+- Messenger (BMessenger equivalent) is cloneable Send handle
 - FilterChain applies in registration order, any filter can consume
 - ExitReason distinguishes HandlerExit / CompositorClose / Disconnected
 

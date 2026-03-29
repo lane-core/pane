@@ -17,6 +17,5 @@ impl PaneId {
     }
 }
 
-// Protocol message types (PaneRequest, PaneEvent, etc.) will be defined
-// as session-typed protocol enums in protocol.rs once pane-session exists.
-// See architecture spec §7 and §12 Phase 2.
+// Active-phase protocol enums (ClientToComp, CompToClient) are in protocol.rs.
+// Session-typed handshake types (ClientHandshake, ServerHandshake) are there too.

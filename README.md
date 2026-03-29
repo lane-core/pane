@@ -74,7 +74,7 @@ kits are the programming model, not wrappers over a protocol.
 
     pane-proto      wire types, protocol enums, session definitions
     pane-session    session-typed channels (Chan<S, Transport>)
-    pane-app        application kit: App, Pane, PaneHandle, Handler
+    pane-app        application kit: App, Pane, Messenger, Handler
     pane-notify     filesystem notification (fanotify/inotify)
     pane-ui         text rendering, widgets, styling, layout
     pane-text       text buffers, structural regular expressions

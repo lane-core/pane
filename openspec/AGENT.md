@@ -24,7 +24,7 @@ openspec new change --schema pane "<name>"
 ## Specs by build phase
 
 ### Phase 1 (pane-proto) — COMPLETE ✓
-- `pane-protocol`: message types, PaneMessage wrapper, state machine, polarity markers
+- `pane-protocol`: wire types (ClientToComp, CompToClient), handshake types, session definitions
 - `cell-grid-types`: Cell, Color, CellAttrs, CellRegion, input events
 
 ### Phase 2 (pane-notify)
@@ -58,7 +58,7 @@ Things that will trip you up — not documented elsewhere in the specs:
    Direct struct construction bypasses the `width * height` invariant.
 3. **FKey requires TryFrom<u8>** — values outside 1-24 are rejected.
 4. **ProtocolState is NOT serializable** — no Serialize/Deserialize.
-5. **PaneEvent::Created includes `kind`** — multi-pane redesign added this.
+5. **Message::Ready(PaneGeometry) synthesized as first event** — the looper synthesizes this before entering the message loop.
 6. **PlumbMessage is gone** — renamed to RouteMessage. TagPlumb → TagRoute.
 7. **frame() returns Result** — errors on payloads > u32::MAX.
 8. **pane-input is not a server** — input handling is in pane-comp.

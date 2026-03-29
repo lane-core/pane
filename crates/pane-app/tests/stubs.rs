@@ -8,7 +8,7 @@ fn route_table_returns_no_match() {
 }
 
 #[test]
-fn property_decl_constructible() {
+fn attribute_constructible() {
     let prop = Attribute {
         name: "title".into(),
         description: "The pane title".into(),

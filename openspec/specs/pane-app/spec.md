@@ -13,7 +13,7 @@ This spec defines the API in terms of actual Rust type signatures. It is a compo
 This is the litmus test. A minimal pane-native application that connects to the compositor, creates a pane with a tag line, handles input events, and exits cleanly.
 
 ```rust
-use pane_app::{App, Tag, cmd, BuiltIn};
+use pane_app::{App, Tag, cmd};
 
 fn main() -> pane_app::Result<()> {
     let app = App::connect("com.example.hello")?;
@@ -22,13 +22,13 @@ fn main() -> pane_app::Result<()> {
         Tag::new("Hello").commands(vec![
             cmd("close", "Close this pane")
                 .shortcut("Alt+W")
-                .built_in(BuiltIn::Close),
+                .shortcut("Alt+W")),
         ]),
     )?;
 
     pane.run(|event| match event {
-        pane_app::PaneEvent::Key(key) if key.is_escape() => Ok(false),
-        pane_app::PaneEvent::Close => Ok(false),
+        pane_app::Message::Key(key) if key.is_escape() => Ok(false),
+        pane_app::Message::CloseRequested => Ok(false),
         _ => Ok(true),
     })
 }
@@ -261,7 +261,7 @@ pub struct Pane {
     receiver: Receiver<LooperMessage>,
     /// Sender to the compositor (for RequestClose after exit).
     comp_tx: Sender<ClientToComp>,
-    /// Sender to this pane's looper (cloned into PaneHandle).
+    /// Sender to this pane's looper (cloned into Messenger).
     looper_tx: Sender<LooperMessage>,
     /// Shared reference to the app's pane count.
     pane_count: Arc<AtomicUsize>,
@@ -312,7 +312,7 @@ impl Pane {
     /// For multi-pane applications, use `spawn()`.
     pub fn run<F>(self, handler: F) -> Result<()>
     where
-        F: FnMut(PaneEvent) -> Result<bool>,
+        F: FnMut(Message) -> Result<bool>,
     { .. }
 
     /// Run the pane's message loop with a stateful handler.
@@ -337,9 +337,9 @@ impl Pane {
 /// without owning the Pane itself. Clone freely — each clone sends to
 /// the same channels.
 #[derive(Clone)]
-pub struct PaneHandle { .. }
+pub struct Messenger { .. }
 
-impl PaneHandle {
+impl Messenger {
     /// The pane's compositor-assigned ID.
     pub fn id(&self) -> PaneId { .. }
 
@@ -365,16 +365,16 @@ impl PaneHandle {
     /// computation) post results back to the event loop for sequential
     /// processing. The event goes through the same filter chain and
     /// handler dispatch as compositor events.
-    pub fn post_event(&self, event: PaneEvent) -> Result<()> { .. }
+    pub fn send_message(&self, event: Message) -> Result<()> { .. }
 
     /// Post an event after a delay (BMessageRunner single-shot).
-    pub fn post_delayed(&self, event: PaneEvent, delay: Duration) -> Result<()> { .. }
+    pub fn send_delayed(&self, event: Message, delay: Duration) -> Result<()> { .. }
 
     /// Post an event repeatedly at an interval (BMessageRunner periodic).
     ///
     /// Returns a TimerToken for cancellation. First delivery after
     /// one interval. The timer stops when cancelled or when the pane exits.
-    pub fn post_periodic(&self, event: PaneEvent, interval: Duration) -> Result<TimerToken> { .. }
+    pub fn send_periodic(&self, event: Message, interval: Duration) -> Result<TimerToken> { .. }
 }
 
 /// Token for cancelling a periodic timer. Call cancel() explicitly.
@@ -395,11 +395,11 @@ impl Pane {
     /// Get the current geometry.
     pub fn geometry(&self) -> PaneGeometry { .. }
 
-    /// Get a PaneHandle for this pane.
-    pub fn proxy(&self) -> PaneHandle { .. }
+    /// Get a Messenger for this pane.
+    pub fn messenger(&self) -> Messenger { .. }
 
     /// Add a filter to the pane's filter chain.
-    pub fn add_filter(&mut self, filter: impl Filter) { .. }
+    pub fn add_filter(&mut self, filter: impl MessageFilter) { .. }
 }
 ```
 
@@ -407,7 +407,7 @@ impl Pane {
 
 ## 3. Events
 
-### The PaneEvent enum
+### The Message enum
 
 This is the CompToClient enum, but named for the developer. BeOS's BWindow::DispatchMessage handled system messages (B_WINDOW_RESIZED, B_KEY_DOWN, B_MOUSE_DOWN, B_QUIT_REQUESTED) and dispatched them to handler methods. Pane collapses this into a flat enum that the handler matches on.
 
@@ -421,7 +421,7 @@ This is the CompToClient enum, but named for the developer. BeOS's BWindow::Disp
 /// This is the session type guarantee transferred to the active phase:
 /// the type system enforces completeness of handling.
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub enum PaneEvent {
+pub enum Message {
     // -- Geometry --
 
     /// The pane was resized. Includes new dimensions and scale factor.
@@ -480,9 +480,9 @@ BeOS used virtual method dispatch: `BWindow::MessageReceived(BMessage*)` switche
 
 2. **The type was erased.** BMessage carried typed data, but the `what` code was a uint32. The developer had to know which fields to extract and what types they were. Getting it wrong was a runtime error.
 
-Pane's `PaneEvent` enum solves both. Rust's exhaustive match forces the developer to handle every variant (or explicitly `_ => Ok(true)` to pass). Each variant carries its own typed payload -- no field extraction, no type confusion.
+Pane's `Message` enum solves both. Rust's exhaustive match forces the developer to handle every variant (or explicitly `_ => Ok(true)` to pass). Each variant carries its own typed payload -- no field extraction, no type confusion.
 
-The tradeoff: PaneEvent is not extensible without protocol version negotiation. New variants require a new protocol version. This is deliberate -- protocol evolution is a versioned, explicit process, not a silent addition of new `what` codes that old handlers silently drop.
+The tradeoff: Message is not extensible without protocol version negotiation. New variants require a new protocol version. This is deliberate -- protocol evolution is a versioned, explicit process, not a silent addition of new `what` codes that old handlers silently drop.
 
 ---
 
@@ -516,12 +516,12 @@ pub trait Handler {
     }
 
     /// The pane gained focus.
-    fn focused(&mut self, _pane: &Pane) -> Result<bool> {
+    fn activated(&mut self, _pane: &Pane) -> Result<bool> {
         Ok(true)
     }
 
     /// The pane lost focus.
-    fn blurred(&mut self, _pane: &Pane) -> Result<bool> {
+    fn deactivated(&mut self, _pane: &Pane) -> Result<bool> {
         Ok(true)
     }
 
@@ -567,7 +567,7 @@ pub trait Handler {
 
     /// Catch-all for future event variants.
     /// Called only if no typed method matched (forward compatibility).
-    fn unhandled(&mut self, _pane: &Pane, _event: &PaneEvent) -> Result<bool> {
+    fn fallback(&mut self, _pane: &Pane, _event: &Message) -> Result<bool> {
         Ok(true)
     }
 }
@@ -649,28 +649,28 @@ Pane preserves the concept but uses a trait instead of subclassing. The trait ap
 ///
 /// Filters run in registration order. A consumed event skips all
 /// remaining filters and the handler.
-pub trait Filter: Send + 'static {
+pub trait MessageFilter: Send + 'static {
     /// Process an event. Return Pass(event) to continue dispatch
     /// (possibly with a modified event), or Consume to swallow it.
-    fn filter(&mut self, event: PaneEvent) -> FilterAction;
+    fn filter(&mut self, event: Message) -> FilterAction;
 
     /// Whether this filter is interested in this event type.
     /// Returns true by default (filter sees everything). Override
     /// to skip events your filter doesn't care about — a key-remap
     /// filter can return false for mouse events.
-    fn wants(&self, _event: &PaneEvent) -> bool { true }
+    fn wants(&self, _event: &Message) -> bool { true }
 }
 
 pub enum FilterAction {
     /// Pass the event through (possibly modified).
-    Pass(PaneEvent),
+    Pass(Message),
     /// Consume the event — the handler never sees it.
     Consume,
 }
 
 impl Pane {
     /// Add a filter that runs before the handler sees events.
-    pub fn add_filter(&mut self, filter: impl Filter) { .. }
+    pub fn add_filter(&mut self, filter: impl MessageFilter) { .. }
 }
 ```
 
@@ -681,9 +681,9 @@ The `wants()` method is a performance optimization. Most filters only care about
 ```rust
 struct LogFilter;
 
-impl Filter for LogFilter {
-    fn filter(&mut self, event: PaneEvent) -> FilterAction {
-        if let PaneEvent::Key(ref key) = event {
+impl MessageFilter for LogFilter {
+    fn filter(&mut self, event: Message) -> FilterAction {
+        if let Message::Key(ref key) = event {
             tracing::debug!(?key, "input");
         }
         FilterAction::Pass(event)
@@ -698,13 +698,13 @@ pane.add_filter(LogFilter);
 ```rust
 struct RemapFilter;
 
-impl Filter for RemapFilter {
-    fn wants(&self, event: &PaneEvent) -> bool {
-        matches!(event, PaneEvent::Key(_))
+impl MessageFilter for RemapFilter {
+    fn wants(&self, event: &Message) -> bool {
+        matches!(event, Message::Key(_))
     }
 
-    fn filter(&mut self, mut event: PaneEvent) -> FilterAction {
-        if let PaneEvent::Key(ref mut key) = event {
+    fn filter(&mut self, mut event: Message) -> FilterAction {
+        if let Message::Key(ref mut key) = event {
             // Remap Ctrl+H to Backspace
             if key.modifiers.contains(Modifiers::CTRL) && key.key == Key::Char('h') {
                 key.key = Key::Named(NamedKey::Backspace);
@@ -725,9 +725,9 @@ The looper is the per-pane message loop. It is not a public type -- developers i
 
 When `Pane::run` or `Pane::run_with` is called, the kit creates a looper on the current thread. The looper:
 
-1. Reads from a unified `LooperMessage` channel that carries both compositor messages (`FromComp(CompToClient)`) and self-delivered events (`Posted(PaneEvent)`). The dispatcher thread routes compositor messages to per-pane channels; worker threads and timers post directly via `PaneHandle::post_event()`.
+1. Reads from a unified `LooperMessage` channel that carries both compositor messages (`FromComp(CompToClient)`) and self-delivered events (`Posted(Message)`). The dispatcher thread routes compositor messages to per-pane channels; worker threads and timers post directly via `Messenger::send_message()`.
 
-2. Synthesizes `PaneEvent::Ready(geometry)` as the first event (before entering the loop).
+2. Synthesizes `Message::Ready(geometry)` as the first event (before entering the loop).
 
 3. Enters the message loop with drain-and-coalesce:
    ```
@@ -756,7 +756,7 @@ The coalescing rules: Resize events keep only the last geometry. MouseMove event
       |
       |-- pane.run()  (blocks calling thread)
       |       looper reads from LooperMessage channel
-      |       dispatches to handler/closure via PaneHandle
+      |       dispatches to handler/closure via Messenger
       |
       |   (or spawn a thread for each pane:)
       |   thread::spawn(move || pane.run(...))
@@ -771,8 +771,8 @@ Each pane thread is independent. A slow handler in pane A does not block pane B'
 - Event deserialization
 - Filter evaluation
 - Handler dispatch
-- Title/vocabulary updates (`set_title`, `set_vocabulary` via PaneHandle)
-- Content updates (`set_content` via PaneHandle)
+- Title/vocabulary updates (`set_title`, `set_vocabulary` via Messenger)
+- Content updates (`set_content` via Messenger)
 
 ### What must NOT run on the looper thread
 
@@ -1011,7 +1011,7 @@ Pane's scripting goes through the filesystem. The pane-fs FUSE mount at `/pane/`
 
 ### How the kit participates
 
-When pane-fs receives a read or write on a pane's filesystem node, it sends a protocol message to the compositor, which routes it to the appropriate pane's looper. The looper delivers it as a `PaneEvent::ScriptQuery`.
+When pane-fs receives a read or write on a pane's filesystem node, it sends a protocol message to the compositor, which routes it to the appropriate pane's looper. The looper delivers it as a `Message::ScriptQuery`.
 
 ```rust
 /// A scripting query delivered via the filesystem.
@@ -1066,12 +1066,12 @@ impl Pane {
     ///
     /// Properties are declared once at pane creation time. The declaration
     /// is sent to the compositor, which informs pane-fs.
-    pub fn declare_properties(&self, props: &[PropertyDecl]) -> Result<()> { .. }
+    pub fn declare_properties(&self, props: &[Attribute]) -> Result<()> { .. }
 }
 
 /// A property declaration for scripting.
 #[derive(Debug, Clone)]
-pub struct PropertyDecl {
+pub struct Attribute {
     /// Property name (becomes a filename under attrs/).
     pub name: String,
     /// Whether this property is readable.
@@ -1208,15 +1208,15 @@ pub type Result<T> = std::result::Result<T, Error>;
 |---|---|---|---|
 | `App` | yes | no | Owns the connection. Can be moved but not shared. |
 | `Pane` | yes | no | Consumed by `run()`/`run_with()`. |
-| `PaneHandle` | yes | yes | Cloneable cross-thread handle. `post_event()` / `set_title()` are safe. |
-| `Filter` | must be Send | -- | Moved into the looper thread. |
+| `Messenger` | yes | yes | Cloneable cross-thread handle. `send_message()` / `set_title()` are safe. |
+| `MessageFilter` | must be Send | -- | Moved into the looper thread. |
 | `Handler` | must be Send | -- | Moved into the looper thread. |
 | `TimerToken` | yes | yes | `cancel()` is atomic. |
 | `ScriptReplyToken` | yes | no | Must be used on the looper thread, but can be moved. |
 
 The threading model is identical to BeOS:
 - Each pane's looper thread owns its data exclusively
-- Cross-thread communication goes through message passing (PaneHandle::post_event, or the compositor protocol)
+- Cross-thread communication goes through message passing (Messenger::send_message, or the compositor protocol)
 - Shared state between panes uses Arc<Mutex<T>> -- the developer's choice, not the kit's
 
 Potrebic's commandments (Be Newsletter #1-4) still apply:
@@ -1250,7 +1250,7 @@ The pane-app kit does the same. The session types, the transport bridge, the cal
 
 ```
 pane-app
-  |-- pane-proto (wire types, PaneEvent, ClientToComp/CompToClient)
+  |-- pane-proto (wire types, Message, ClientToComp/CompToClient)
   |-- pane-session (Chan, Transport, SessionSource -- used internally)
   |-- pane-notify (watches routing rule directories)
   |-- std (threads, channels, atomics)
@@ -1276,7 +1276,7 @@ The content API will specialize per pane type. The current byte-slice API is the
 
 ### Multi-pane shared state patterns
 
-Applications with multiple panes need to share state (e.g., an editor with a file list pane and an editing pane). The kit provides no built-in mechanism beyond Arc<Mutex<T>> and PaneHandle::post(). Whether the kit should provide a higher-level coordination primitive (analogous to BApplication's looper serving as a central mailbox) is an open question. The current design says: use Rust's standard concurrency tools. If a common pattern emerges during early application development, the kit can add a coordination layer.
+Applications with multiple panes need to share state (e.g., an editor with a file list pane and an editing pane). The kit provides no built-in mechanism beyond Arc<Mutex<T>> and Messenger::send_message(). Whether the kit should provide a higher-level coordination primitive (analogous to BApplication's looper serving as a central mailbox) is an open question. The current design says: use Rust's standard concurrency tools. If a common pattern emerges during early application development, the kit can add a coordination layer.
 
 ### Tag line editing ownership
 

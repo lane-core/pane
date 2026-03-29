@@ -218,7 +218,7 @@ The principle: if you'd be comfortable with 30μs latency and per-file granulari
 
 pane-fs targets FUSE-over-io_uring (Linux 6.14+), which halves the overhead and eliminates concurrency bottlenecks via per-CPU queues. As a distribution that controls its kernel version, pane requires io_uring-backed FUSE — this is not an optional optimization but a baseline expectation.
 
-**The pane boundary principle.** The scriptable surface of a pane is its declared attributes, not its internal widget hierarchy. BeOS's `hey` could traverse into any application's view tree — powerful but fragile (scripts broke when apps rearranged their UI). Pane deliberately stops at the pane boundary: a pane exposes what it chooses to expose through `PropertyDecl`. The composer of the script and the author of the pane agree on a stable interface. Internal rendering state (view trees, widget layouts, buffer positions) is opaque. If a pane wants internal structure scriptable, it declares those properties explicitly.
+**The pane boundary principle.** The scriptable surface of a pane is its declared attributes, not its internal widget hierarchy. BeOS's `hey` could traverse into any application's view tree — powerful but fragile (scripts broke when apps rearranged their UI). Pane deliberately stops at the pane boundary: a pane exposes what it chooses to expose through `Attribute`. The composer of the script and the author of the pane agree on a stable interface. Internal rendering state (view trees, widget layouts, buffer positions) is opaque. If a pane wants internal structure scriptable, it declares those properties explicitly.
 
 **Control file as command interface.** Each pane's `ctl` file accepts line-oriented commands — the `hey AppName do ...` equivalent. Simple commands are `COMMAND [ARGS...]`. Structured payloads use JSON after the command name for multi-property atomic operations (the one case where the filesystem model requires design attention compared to BMessage's dynamic fields).
 
@@ -271,17 +271,17 @@ The developer's primary interface for building pane-native applications. Analogo
 
 The looper receives from a unified `LooperMessage` channel that carries both compositor messages (`FromComp`) and self-delivered events (`Posted`). Both paths run through the same filter chain and handler dispatch.
 
-**Self-delivery (PostMessage).** `PaneHandle::post_event()` posts a `PaneEvent` to the pane's own looper from any thread. This is `BLooper::PostMessage` — the mechanism for worker threads to deliver results back to the event loop for sequential processing. The PaneHandle is cloneable and `Send`; pass it to spawned threads for async work, post results back when done.
+**Self-delivery (PostMessage).** `Messenger::send_message()` posts a `Message` to the pane's own looper from any thread. This is `BLooper::PostMessage` — the mechanism for worker threads to deliver results back to the event loop for sequential processing. The Messenger is cloneable and `Send`; pass it to spawned threads for async work, post results back when done.
 
 **Message coalescing.** After each blocking `recv()`, the looper drains all queued messages and coalesces them before dispatch. Resize events keep only the last geometry. MouseMove events keep only the last position. All other events are delivered in order. This is the BWindow::DispatchMessage optimization — a drag-resize generates dozens of intermediate geometries, but the handler sees only the final one.
 
-**Timer events.** `PaneHandle::post_delayed(event, duration)` delivers an event after a delay. `PaneHandle::post_periodic(event, interval)` delivers repeatedly, returning a `TimerToken` for cancellation. This is BMessageRunner — the standard mechanism for periodic updates (weather refresh, cursor blink, auto-save). Timers deliver through the self-delivery channel, so timer events are processed sequentially by the looper like any other event.
+**Timer events.** `Messenger::send_delayed(event, duration)` delivers an event after a delay. `Messenger::send_periodic(event, interval)` delivers repeatedly, returning a `TimerToken` for cancellation. This is BMessageRunner — the standard mechanism for periodic updates (weather refresh, cursor blink, auto-save). Timers deliver through the self-delivery channel, so timer events are processed sequentially by the looper like any other event.
 
 **Handler.** Processes messages within a looper's context. The `Handler` trait has typed methods for each event kind (`ready`, `key`, `mouse`, `close_requested`, etc.) — what BWindow::DispatchMessage did internally, exposed as the API surface. Rust's exhaustive matching ensures no event variant is silently dropped.
 
 **Filters.** `Filter` trait with `filter(event) → Pass(event) | Consume` and optional `wants(&event) → bool` for selective matching. Filters run in registration order; any filter can transform or swallow an event. The `wants()` method is a performance optimization — a key-remapping filter skips mouse events entirely.
 
-**Command vocabulary.** Each pane declares its commands via the tag builder. Commands have a name, description, shortcut, action, and `enabled: bool` flag. Disabled commands appear greyed out in the command surface — the `BMenuItem::SetEnabled` pattern. The vocabulary can be updated at any time via `PaneHandle::set_vocabulary()`.
+**Command vocabulary.** Each pane declares its commands via the tag builder. Commands have a name, description, shortcut, action, and `enabled: bool` flag. Disabled commands appear greyed out in the command surface — the `BMenuItem::SetEnabled` pattern. The vocabulary can be updated at any time via `Messenger::set_vocabulary()`.
 
 **Routing.** Built into the kit, not a separate server. The kit:
 - Loads routing rules from the filesystem (`/etc/pane/route/rules/`, `~/.config/pane/route/rules/`), one file per rule

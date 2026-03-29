@@ -1,4 +1,4 @@
-//! PaneHandle tests — the BMessenger equivalent.
+//! Messenger tests — the BMessenger equivalent.
 //! Tests that the most-used developer API sends correct messages
 //! and handles disconnection gracefully.
 
@@ -14,7 +14,7 @@ fn pane_id(n: u32) -> PaneId {
     PaneId::new(NonZeroU32::new(n).unwrap())
 }
 
-// --- P1-1: Disconnected PaneHandle ---
+// --- P1-1: Disconnected Messenger ---
 
 #[test]
 fn pane_handle_send_after_disconnect() {
@@ -157,7 +157,7 @@ fn send_message_without_looper_returns_error() {
 // Happy-path self-delivery is tested in looper.rs via self_delivery_reaches_handler,
 // self_delivery_interleaved_with_comp, and self_delivery_filters_apply, which exercise
 // the full LooperMessage pipeline. with_looper() is pub(crate) so we can't construct
-// a looper-attached PaneHandle from integration tests directly.
+// a looper-attached Messenger from integration tests directly.
 
 // --- Commit 4: Timer tests ---
 // Timer methods require a looper channel (with_looper is pub(crate)), so we can only
