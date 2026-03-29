@@ -8,7 +8,7 @@
 use pane_proto::event::{Key, KeyEvent, KeyState, Modifiers};
 
 use crate::event::Message;
-use crate::filter::{Filter, FilterAction};
+use crate::filter::{MessageFilter, FilterAction};
 
 /// A key combination: key + modifiers.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -85,7 +85,7 @@ impl Default for ShortcutFilter {
     }
 }
 
-impl Filter for ShortcutFilter {
+impl MessageFilter for ShortcutFilter {
     fn wants(&self, event: &Message) -> bool {
         matches!(event, Message::Key(_))
     }

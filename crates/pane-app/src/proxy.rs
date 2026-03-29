@@ -108,7 +108,7 @@ impl Messenger {
 
     /// Request the compositor to resize this pane.
     /// The compositor decides whether to honor it (tiling may constrain).
-    pub fn request_resize(&self, width: u32, height: u32) -> Result<()> {
+    pub fn resize_to(&self, width: u32, height: u32) -> Result<()> {
         self.send(ClientToComp::RequestResize { pane: self.id, width, height })
     }
 

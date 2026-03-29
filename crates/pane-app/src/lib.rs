@@ -56,7 +56,7 @@ pub use app::App;
 pub use error::{Error, ConnectError, PaneError, Result};
 pub use event::Message;
 pub use exit::ExitReason;
-pub use filter::{Filter, FilterAction};
+pub use filter::{MessageFilter, FilterAction};
 pub use handler::Handler;
 pub use pane::Pane;
 pub use proxy::{Messenger, TimerToken};

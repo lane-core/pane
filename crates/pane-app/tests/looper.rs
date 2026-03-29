@@ -2,7 +2,7 @@ use std::num::NonZeroU32;
 use std::sync::mpsc;
 use std::sync::{Arc, Mutex};
 
-use pane_app::{Message, Handler, Filter, FilterAction, Messenger, LooperMessage};
+use pane_app::{Message, Handler, MessageFilter, FilterAction, Messenger, LooperMessage};
 use pane_app::error::Result;
 use pane_proto::event::{KeyEvent, Key, NamedKey, Modifiers, KeyState};
 use pane_proto::message::PaneId;
@@ -130,7 +130,7 @@ fn closure_ignores_wrong_pane_id() {
 
 struct ConsumeEscapeFilter;
 
-impl Filter for ConsumeEscapeFilter {
+impl MessageFilter for ConsumeEscapeFilter {
     fn filter(&mut self, event: Message) -> FilterAction {
         if let Message::Key(ref k) = event {
             if k.is_escape() {
@@ -256,7 +256,7 @@ fn empty_filter_chain_passes_all() {
 }
 
 struct TransformFilter;
-impl Filter for TransformFilter {
+impl MessageFilter for TransformFilter {
     fn filter(&mut self, event: Message) -> FilterAction {
         // Transform Focus into Blur
         if matches!(event, Message::Activated) {
@@ -294,7 +294,7 @@ fn filter_chain_ordering_transforms() {
 }
 
 struct ConsumeAllFilter;
-impl Filter for ConsumeAllFilter {
+impl MessageFilter for ConsumeAllFilter {
     fn filter(&mut self, _event: Message) -> FilterAction {
         FilterAction::Consume
     }
@@ -395,7 +395,7 @@ fn looper_error_stops_processing() {
 /// wants non-Focus events (skips Focus via wants()).
 struct SkipFocusFilter;
 
-impl Filter for SkipFocusFilter {
+impl MessageFilter for SkipFocusFilter {
     fn filter(&mut self, _event: Message) -> FilterAction {
         FilterAction::Consume
     }

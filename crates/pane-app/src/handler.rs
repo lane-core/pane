@@ -97,7 +97,7 @@ pub trait Handler: Send + 'static {
     }
 
     /// Catch-all for events not handled by other methods.
-    fn unhandled(&mut self, _proxy: &Messenger) -> Result<bool> {
+    fn fallback_handler(&mut self, _proxy: &Messenger) -> Result<bool> {
         Ok(true)
     }
 }

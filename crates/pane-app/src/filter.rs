@@ -16,7 +16,7 @@ pub enum FilterAction {
 ///
 /// Filters run in registration order. A consumed event skips all
 /// remaining filters and the handler.
-pub trait Filter: Send + 'static {
+pub trait MessageFilter: Send + 'static {
     /// Process an event. Return `Pass(event)` to continue dispatch
     /// (possibly with a modified event), or `Consume` to swallow it.
     fn filter(&mut self, event: Message) -> FilterAction;
@@ -33,7 +33,7 @@ pub trait Filter: Send + 'static {
 /// An ordered chain of filters. Events pass through each filter
 /// in sequence; any filter can consume the event.
 pub struct FilterChain {
-    filters: Vec<Box<dyn Filter>>,
+    filters: Vec<Box<dyn MessageFilter>>,
 }
 
 impl Default for FilterChain {
@@ -47,7 +47,7 @@ impl FilterChain {
         FilterChain { filters: Vec::new() }
     }
 
-    pub fn add(&mut self, filter: impl Filter) {
+    pub fn add(&mut self, filter: impl MessageFilter) {
         self.filters.push(Box::new(filter));
     }
 

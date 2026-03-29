@@ -66,7 +66,7 @@ impl Pane {
     }
 
     /// Add a filter to the pane's filter chain.
-    pub fn add_filter(&mut self, filter: impl crate::filter::Filter) {
+    pub fn add_filter(&mut self, filter: impl crate::filter::MessageFilter) {
         self.filters.add(filter);
     }
 
