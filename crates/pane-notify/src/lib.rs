@@ -39,5 +39,5 @@ mod linux;
 #[cfg(not(target_os = "linux"))]
 mod stub;
 
-pub use event::{Event, EventKind};
+pub use event::{Event, EventKind, NodeRef, StatFields, WatchFlags, AttrCause};
 pub use watcher::{Watcher, WatchHandle, WatchError};

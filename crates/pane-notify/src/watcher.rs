@@ -2,7 +2,7 @@ use std::path::Path;
 use std::sync::mpsc;
 use std::fmt;
 
-use crate::event::{Event, EventKind};
+use crate::event::{Event, WatchFlags};
 
 /// Opaque handle to a registered watch. Drop it to unregister.
 ///
@@ -70,12 +70,14 @@ impl From<std::io::Error> for WatchError {
 /// # Usage
 ///
 /// ```ignore
+/// use pane_notify::{Watcher, WatchFlags};
+///
 /// let (tx, rx) = std::sync::mpsc::channel();
 /// let watcher = Watcher::new(tx)?;
 ///
 /// // Watch a specific directory for file creation/deletion
 /// let _handle = watcher.watch_path("/etc/pane/route/rules/",
-///     EventKind::Create | EventKind::Delete)?;
+///     WatchFlags::CREATE | WatchFlags::REMOVE)?;
 ///
 /// // Events arrive on the channel
 /// while let Ok(event) = rx.recv() {
@@ -103,15 +105,15 @@ impl Watcher {
     pub fn watch_mount(
         &self,
         _mount_path: impl AsRef<Path>,
-        _kinds: &[EventKind],
+        _flags: WatchFlags,
     ) -> Result<WatchHandle, WatchError> {
         #[cfg(target_os = "linux")]
         {
-            self.watch_mount_linux(_mount_path.as_ref(), _kinds)
+            self.watch_mount_linux(_mount_path.as_ref(), _flags)
         }
         #[cfg(not(target_os = "linux"))]
         {
-            self.watch_mount_stub(_mount_path.as_ref(), _kinds)
+            self.watch_mount_stub(_mount_path.as_ref(), _flags)
         }
     }
 
@@ -124,15 +126,15 @@ impl Watcher {
     pub fn watch_path(
         &self,
         _path: impl AsRef<Path>,
-        _kinds: &[EventKind],
+        _flags: WatchFlags,
     ) -> Result<WatchHandle, WatchError> {
         #[cfg(target_os = "linux")]
         {
-            self.watch_path_linux(_path.as_ref(), _kinds)
+            self.watch_path_linux(_path.as_ref(), _flags)
         }
         #[cfg(not(target_os = "linux"))]
         {
-            self.watch_path_stub(_path.as_ref(), _kinds)
+            self.watch_path_stub(_path.as_ref(), _flags)
         }
     }
 
