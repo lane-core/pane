@@ -239,3 +239,68 @@ fn shortcut_filter_with_escape() {
 
     assert!(got_close_cmd, "Escape should be transformed to close command");
 }
+
+// --- Pulse cancellation tests ---
+
+#[test]
+fn set_pulse_rate_cancels_previous() {
+    use std::time::Duration;
+
+    let (comp_tx, _comp_rx) = mpsc::channel::<ClientToComp>();
+    let (looper_tx, looper_rx) = mpsc::sync_channel::<LooperMessage>(256);
+    let proxy = Messenger::new(pane_id(1), comp_tx).with_looper(looper_tx);
+
+    // Start a 40ms pulse
+    proxy.set_pulse_rate(Duration::from_millis(40)).unwrap();
+
+    // Wait for at least one pulse to confirm it's running
+    std::thread::sleep(Duration::from_millis(60));
+
+    // Replace with a 500ms pulse (effectively silencing it for our test window)
+    proxy.set_pulse_rate(Duration::from_millis(500)).unwrap();
+
+    // Drain any pulses that arrived before cancellation
+    while looper_rx.try_recv().is_ok() {}
+
+    // Wait 150ms — if the old 40ms timer were still alive, we'd see ~3 pulses.
+    // With only the 500ms timer, we should see zero.
+    std::thread::sleep(Duration::from_millis(150));
+
+    let mut stale_pulses = 0;
+    while looper_rx.try_recv().is_ok() {
+        stale_pulses += 1;
+    }
+
+    assert_eq!(stale_pulses, 0, "old pulse timer should have been cancelled");
+}
+
+#[test]
+fn set_pulse_rate_zero_disables() {
+    use std::time::Duration;
+
+    let (comp_tx, _comp_rx) = mpsc::channel::<ClientToComp>();
+    let (looper_tx, looper_rx) = mpsc::sync_channel::<LooperMessage>(256);
+    let proxy = Messenger::new(pane_id(1), comp_tx).with_looper(looper_tx);
+
+    // Start a 30ms pulse
+    proxy.set_pulse_rate(Duration::from_millis(30)).unwrap();
+
+    // Wait for at least one pulse
+    std::thread::sleep(Duration::from_millis(50));
+
+    // Disable
+    proxy.set_pulse_rate(Duration::ZERO).unwrap();
+
+    // Drain
+    while looper_rx.try_recv().is_ok() {}
+
+    // Wait — should see no more pulses
+    std::thread::sleep(Duration::from_millis(100));
+
+    let mut count = 0;
+    while looper_rx.try_recv().is_ok() {
+        count += 1;
+    }
+
+    assert_eq!(count, 0, "ZERO rate should disable pulse timer");
+}

@@ -16,6 +16,10 @@ use smithay::{
     utils::{Rectangle, Size, Transform},
 };
 
+use calloop::PostAction;
+use pane_session::calloop::{SessionEvent, SessionSource};
+use pane_proto::protocol::{ClientToComp, PaneGeometry};
+
 use crate::glyph_atlas::GlyphAtlas;
 use crate::pane_renderer::PaneRenderer;
 use crate::server::ProtocolServer;
@@ -82,31 +86,60 @@ impl CompState {
 
 impl CompState {
     /// Poll for completed handshakes and register new clients.
-    pub fn poll_handshakes(&mut self) {
+    /// Each client's read stream is registered as a calloop SessionSource
+    /// for event-driven message dispatch (no per-client threads).
+    pub fn poll_handshakes(
+        &mut self,
+        loop_handle: &calloop::LoopHandle<'_, CompState>,
+    ) {
         while let Ok((client_id, stream)) = self.handshake_rx.try_recv() {
-            self.server.register_client(client_id, stream);
-        }
-    }
+            let write_stream = match stream.try_clone() {
+                Ok(s) => s,
+                Err(e) => {
+                    tracing::warn!("clone stream for client {}: {}", client_id, e);
+                    continue;
+                }
+            };
 
-    /// Process pending messages from all connected clients.
-    pub fn process_client_messages(&mut self) {
-        use pane_proto::protocol::PaneGeometry;
+            self.server.register_client(client_id, write_stream);
 
-        let geometry = PaneGeometry {
-            width: self.size.w as u32,
-            height: self.size.h as u32,
-            cols: self.size.w as u16 / self.cell_width,
-            rows: self.size.h as u16 / self.cell_height,
-        };
+            let source = match SessionSource::new(stream) {
+                Ok(s) => s,
+                Err(e) => {
+                    tracing::warn!("session source for client {}: {}", client_id, e);
+                    self.server.remove_client(client_id);
+                    continue;
+                }
+            };
 
-        let (messages, disconnected) = self.server.poll_clients();
-
-        for (client_id, msg) in messages {
-            self.server.handle_message(client_id, msg, geometry);
-        }
-
-        for id in disconnected {
-            self.server.remove_client(id);
+            if let Err(e) = loop_handle.insert_source(source, move |event, _, state: &mut CompState| {
+                match event {
+                    SessionEvent::Message(bytes) => {
+                        match pane_proto::deserialize::<ClientToComp>(&bytes) {
+                            Ok(msg) => {
+                                let geometry = PaneGeometry {
+                                    width: state.size.w as u32,
+                                    height: state.size.h as u32,
+                                    cols: state.size.w as u16 / state.cell_width,
+                                    rows: state.size.h as u16 / state.cell_height,
+                                };
+                                state.server.handle_message(client_id, msg, geometry);
+                            }
+                            Err(e) => {
+                                tracing::warn!("bad message from client {}: {}", client_id, e);
+                            }
+                        }
+                        Ok(PostAction::Continue)
+                    }
+                    SessionEvent::Disconnected => {
+                        state.server.remove_client(client_id);
+                        Ok(PostAction::Remove)
+                    }
+                }
+            }) {
+                tracing::warn!("register source for client {}: {}", client_id, e);
+                self.server.remove_client(client_id);
+            }
         }
     }
 }

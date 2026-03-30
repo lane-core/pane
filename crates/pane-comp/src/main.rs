@@ -176,8 +176,12 @@ fn run(opts: &Opts) -> Result<()> {
         Ok(calloop::PostAction::Continue)
     }).map_err(|e| anyhow::anyhow!("listener source: {e}"))?;
 
-    // Frame timer — triggers rendering at ~60fps
+    // Frame timer — triggers rendering at ~60fps.
+    // Client messages dispatch immediately via calloop SessionSource
+    // callbacks (registered by poll_handshakes); the frame timer only
+    // handles handshake polling, winit events, and rendering.
     let timer = Timer::from_duration(FRAME_INTERVAL);
+    let frame_loop_handle = loop_handle.clone();
     loop_handle.insert_source(timer, move |_deadline, _metadata, state: &mut CompState| {
         // Dispatch pending winit events
         winit_evt.dispatch_new_events(|event| match event {
@@ -208,8 +212,7 @@ fn run(opts: &Opts) -> Result<()> {
         // --- Frame budget telemetry ---
         let frame_start = std::time::Instant::now();
 
-        state.poll_handshakes();
-        state.process_client_messages();
+        state.poll_handshakes(&frame_loop_handle);
 
         let protocol_elapsed = frame_start.elapsed();
 
@@ -217,7 +220,6 @@ fn run(opts: &Opts) -> Result<()> {
 
         let total_elapsed = frame_start.elapsed();
         if total_elapsed.as_millis() > 8 {
-            // Warn when frame work exceeds half the budget (8ms of 16ms)
             warn!("frame budget: protocol {}ms + render {}ms = {}ms",
                 protocol_elapsed.as_millis(),
                 (total_elapsed - protocol_elapsed).as_millis(),

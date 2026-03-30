@@ -8,19 +8,15 @@
 //! Lifecycle per client:
 //! 1. UnixListener accepts a connection
 //! 2. Handshake runs on a spawned thread (session-typed, blocking)
-//! 3. After handshake, a read pump thread feeds messages to an mpsc channel
-//! 4. The compositor polls the channel and dispatches messages
-//!
-//! TODO: Replace read pump threads with calloop SessionSource for
-//! proper event-driven handling. The current pump pattern works but
-//! adds one thread per client. SessionSource would use calloop's
-//! fd-readiness notification instead.
+//! 3. Compositor registers the socket as a calloop SessionSource for
+//!    event-driven message dispatch (no per-client threads)
+//! 4. This crate stores per-client write streams and protocol state;
+//!    the compositor (pane-comp) owns the calloop registration
 
 use std::collections::HashMap;
 use std::num::NonZeroU32;
 use std::os::unix::net::{UnixListener, UnixStream};
 use std::path::{Path, PathBuf};
-use std::sync::mpsc;
 
 use tracing::{info, warn, error};
 
@@ -34,13 +30,13 @@ use pane_session::transport::unix::UnixTransport;
 use pane_session::types::Chan;
 
 /// Per-client state tracked by the compositor.
+/// Reading is handled by calloop SessionSource in pane-comp;
+/// this struct holds only the write stream and owned pane list.
 pub struct ClientSession {
     /// The stream for writing active-phase responses back to the client.
     pub stream: UnixStream,
     /// PaneIds owned by this client.
     pub panes: Vec<PaneId>,
-    /// Incoming messages from the read pump thread.
-    pub msg_rx: Option<mpsc::Receiver<ClientToComp>>,
 }
 
 /// Per-pane state tracked by the compositor.
@@ -103,69 +99,15 @@ impl ProtocolServer {
     }
 
     /// Register a client after handshake completes.
-    /// Spawns a read pump thread that feeds messages to an mpsc channel.
-    pub fn register_client(&mut self, client_id: usize, stream: UnixStream) {
-        let write_stream = match stream.try_clone() {
-            Ok(s) => s,
-            Err(e) => {
-                warn!("clone stream for client {}: {}", client_id, e);
-                return;
-            }
-        };
-
-        let (msg_tx, msg_rx) = mpsc::channel();
-        let read_stream = stream;
-
-        // Read pump: blocks on framed reads, deserializes, sends to channel.
-        // Exits when the client disconnects or the channel closes.
-        std::thread::spawn(move || {
-            use pane_session::framing::read_framed;
-            loop {
-                match read_framed(&mut &read_stream) {
-                    Ok(bytes) => {
-                        match pane_proto::deserialize::<ClientToComp>(&bytes) {
-                            Ok(msg) => {
-                                if msg_tx.send(msg).is_err() { break; }
-                            }
-                            Err(_) => break,
-                        }
-                    }
-                    Err(_) => break,
-                }
-            }
-        });
-
+    /// Stores the write stream for sending responses. The read side
+    /// is registered as a calloop SessionSource by the compositor.
+    pub fn register_client(&mut self, client_id: usize, write_stream: UnixStream) {
         self.clients.insert(client_id, ClientSession {
             stream: write_stream,
             panes: Vec::new(),
-            msg_rx: Some(msg_rx),
         });
 
         info!("client {} registered", client_id);
-    }
-
-    /// Poll all clients for pending messages and disconnections.
-    /// Returns (messages, disconnected_client_ids).
-    pub fn poll_clients(&self) -> (Vec<(usize, ClientToComp)>, Vec<usize>) {
-        let mut messages = Vec::new();
-        let mut disconnected = Vec::new();
-
-        for (&client_id, client) in &self.clients {
-            if let Some(ref rx) = client.msg_rx {
-                loop {
-                    match rx.try_recv() {
-                        Ok(msg) => messages.push((client_id, msg)),
-                        Err(mpsc::TryRecvError::Empty) => break,
-                        Err(mpsc::TryRecvError::Disconnected) => {
-                            disconnected.push(client_id);
-                            break;
-                        }
-                    }
-                }
-            }
-        }
-
-        (messages, disconnected)
     }
 
     /// Handle an active-phase message from a client.

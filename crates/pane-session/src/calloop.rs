@@ -3,7 +3,7 @@
 //! Provides `SessionSource` — a calloop `EventSource` that fires when
 //! a unix socket has a complete length-prefixed message ready to read.
 
-use std::io::{self, Read, Write};
+use std::io::{self, Read};
 use std::os::unix::net::UnixStream;
 
 use calloop::{EventSource, Poll, PostAction, Readiness, Token, TokenFactory};

@@ -9,7 +9,7 @@
 //! - `set_title()`, `set_vocabulary()`, etc. → compositor
 //! - `send_message()` → pane's own looper (BLooper::PostMessage)
 
-use std::sync::mpsc;
+use std::sync::{Arc, Mutex, mpsc};
 
 use pane_proto::message::PaneId;
 use pane_proto::protocol::ClientToComp;
@@ -20,18 +20,41 @@ use crate::event::Message;
 use crate::exit::ExitBroadcaster;
 use crate::looper_message::LooperMessage;
 
-/// A cloneable handle for sending messages to the compositor on
-/// behalf of a specific pane, and for posting events to the pane's
-/// own looper. The BMessenger equivalent.
+/// A cloneable handle for sending messages to the compositor and
+/// posting events to a pane's own looper.
 ///
-/// Use this inside event handlers and spawned threads to update
-/// pane state without owning the Pane itself.
+/// Messenger is the thread-boundary crossing point. Your handler
+/// receives a `&Messenger` on every event; clone it and hand it
+/// to spawned threads for async work (network fetches, file I/O,
+/// computation). Those threads post results back via
+/// [`send_message`](Messenger::send_message), and the pane's
+/// event loop picks them up on its next iteration.
+///
+/// # Threading
+///
+/// `Clone + Send`. All clones target the same pane. Sending is safe
+/// from any thread — the underlying channel handles synchronization.
+///
+/// # BeOS
+///
+/// `BMessenger` (see also Haiku's
+/// [BMessenger documentation](reference/haiku-book/app/BMessenger.dox)).
+/// Key changes:
+/// - Combines outbound (to compositor) and self-delivery (to own
+///   looper) in one handle
+/// - Timer methods ([`send_delayed`](Messenger::send_delayed),
+///   [`send_periodic`](Messenger::send_periodic)) are on Messenger
+///   rather than a separate `BMessageRunner` class
 #[derive(Clone)]
 pub struct Messenger {
     pub(crate) id: PaneId,
     pub(crate) sender: mpsc::Sender<ClientToComp>,
     pub(crate) looper_tx: Option<mpsc::SyncSender<LooperMessage>>,
     pub(crate) broadcaster: ExitBroadcaster,
+    /// Shared pulse timer token — all clones of a Messenger reference
+    /// the same token so cancellation works regardless of which clone
+    /// calls set_pulse_rate.
+    pub(crate) pulse_token: Arc<Mutex<Option<TimerToken>>>,
 }
 
 impl Messenger {
@@ -39,11 +62,18 @@ impl Messenger {
     /// The looper channel is set internally by Pane — not needed
     /// for test construction where only compositor sends matter.
     pub fn new(id: PaneId, sender: mpsc::Sender<ClientToComp>) -> Self {
-        Messenger { id, sender, looper_tx: None, broadcaster: ExitBroadcaster::new() }
+        Messenger {
+            id,
+            sender,
+            looper_tx: None,
+            broadcaster: ExitBroadcaster::new(),
+            pulse_token: Arc::new(Mutex::new(None)),
+        }
     }
 
     /// Attach the looper's self-delivery channel. Internal.
-    pub(crate) fn with_looper(mut self, tx: mpsc::SyncSender<LooperMessage>) -> Self {
+    #[doc(hidden)]
+    pub fn with_looper(mut self, tx: mpsc::SyncSender<LooperMessage>) -> Self {
         self.looper_tx = Some(tx);
         self
     }
@@ -60,8 +90,10 @@ impl Messenger {
         Ok(())
     }
 
-    /// Monitor this pane: when it exits, deliver Message::PaneExited
+    /// Monitor this pane: when it exits, deliver `Message::PaneExited`
     /// to the given watcher's looper. Erlang-style crash propagation.
+    ///
+    /// No BeOS equivalent — pane adds crash monitoring that BeOS lacked.
     ///
     /// ```ignore
     /// // In pane A's handler, monitoring pane B:
@@ -137,14 +169,14 @@ impl Messenger {
     ///
     /// Cancels any previous pulse rate. Only one pulse timer per pane.
     pub fn set_pulse_rate(&self, rate: std::time::Duration) -> Result<()> {
-        // Implementation: uses send_periodic internally.
-        // A real implementation would cancel the previous timer.
-        // For now, just start a new periodic — the old one continues
-        // until the pane exits (acceptable for the prototype).
-        if rate.is_zero() {
-            return Ok(()); // TODO: cancel existing pulse timer
+        let mut token = self.pulse_token.lock().unwrap_or_else(|e| e.into_inner());
+        if let Some(prev) = token.take() {
+            prev.cancel();
         }
-        self.send_periodic(Message::Pulse, rate)?;
+        if rate.is_zero() {
+            return Ok(());
+        }
+        *token = Some(self.send_periodic(Message::Pulse, rate)?);
         Ok(())
     }
 

@@ -27,9 +27,9 @@ Design each feature against the EAct-derived session-type principles (serena: `p
 
 Small concrete items identified by auditing the codebase against the session-type principles. Not blockers — cleanup for when the relevant code is next touched.
 
-- [ ] **`pending_creates` → typestate handle** — `app.rs` uses `VecDeque<mpsc::Sender<CompToClient>>` for manual CreatePane→PaneCreated correlation. First candidate for C2 typestate refactoring (e.g., `PaneCreateFuture` consumed by the response).
-- [ ] **pane-server read pump → calloop SessionSource** — existing TODO in `pane-server/src/lib.rs:14`. Now additionally motivated by C1: when the server handles per-client heterogeneous sessions (clipboard, etc.), the read pump pattern won't scale.
-- [ ] **Pulse timer cancellation** — `Messenger::set_pulse_rate()` starts a new periodic thread but doesn't cancel the previous one (`proxy.rs:145`). Calling `set_pulse_rate` twice creates two concurrent pulse streams. Fix: store the `TimerToken` and cancel on re-set or zero.
+- [ ] **`pending_creates` → typestate handle** — `app.rs` uses `VecDeque<mpsc::Sender<CompToClient>>` for manual CreatePane→PaneCreated correlation. First candidate for C2 typestate refactoring (e.g., `PaneCreateFuture` consumed by the response). Deferred to Tier 2 protocol work (requires request IDs in CreatePane/PaneCreated).
+- [x] **pane-server read pump → calloop SessionSource** — replaced thread-per-client read pump with calloop SessionSource for event-driven message dispatch. Messages dispatch immediately on fd-readiness instead of polled once per frame.
+- [x] **Pulse timer cancellation** — `set_pulse_rate()` now cancels the previous timer via shared `Arc<Mutex<Option<TimerToken>>>`. `Duration::ZERO` cancels cleanly.
 
 ## Next
 
