@@ -5,6 +5,11 @@ use std::fmt;
 use crate::event::{Event, EventKind};
 
 /// Opaque handle to a registered watch. Drop it to unregister.
+///
+/// # BeOS
+///
+/// Replaces the `node_ref` passed to `stop_watching()`. RAII: dropping
+/// the handle unregisters the watch instead of requiring an explicit call.
 #[derive(Debug)]
 pub struct WatchHandle {
     pub(crate) _id: u64,
@@ -49,7 +54,15 @@ impl From<std::io::Error> for WatchError {
 ///
 /// Watches files and directories for changes, delivering events to a
 /// channel. The watcher automatically selects fanotify or inotify
-/// based on the watch scope:
+/// based on the watch scope.
+///
+/// # BeOS
+///
+/// Replaces `watch_node()`. Key changes:
+/// - The watcher is an object, not a global function
+/// - Events go to a channel, not a `BLooper`
+/// - Two watch scopes (mount-wide, targeted) are exposed as separate
+///   methods; the watcher selects the kernel interface automatically
 ///
 /// - `watch_mount()` — mount-wide watching via fanotify (requires CAP_SYS_ADMIN)
 /// - `watch_path()` — targeted watching via inotify

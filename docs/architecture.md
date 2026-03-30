@@ -257,43 +257,9 @@ pane-notify (fanotify/inotify abstraction)
 
 Each kit builds on the ones below it. pane-proto is the foundation — pure types and serialization, analogous to the Support Kit. pane-app is the messaging and lifecycle layer — analogous to the Application Kit. pane-ui is the rendering layer — analogous to the Interface Kit. The hierarchy ensures clean dependency ordering and prevents circular dependencies.
 
-### pane-proto — Foundation
+**Detailed kit documentation lives in the crate source** — run `cargo doc` to generate it. Each crate's `//!` doc contains its purpose, BeOS/Haiku heritage, threading model, and type roadmap. The style follows `docs/kit-documentation-style.md`.
 
-Wire types (message enums, session type definitions), inter-server protocol types, serde derivations, validation. Every other crate depends on this. Depends on pane-session for session type primitives.
-
-The session types defined here are the single source of truth for every protocol in the system. `ClientHandshake` and `ServerHandshake` are type aliases composing pane-session's `Send`/`Recv`/`Branch`/`End` primitives with pane-proto's handshake messages. When someone changes a protocol (adds a request variant, restructures the handshake), every client that doesn't update fails to compile. Protocol evolution is a refactoring operation, not a debugging expedition.
-
-### pane-app — Application Lifecycle
-
-The developer's primary interface for building pane-native applications. Analogous to BeOS's Application Kit.
-
-**Looper.** A thread with a message queue, processing messages sequentially. This is BLooper in Rust: `std::thread::spawn` a thread that reads from a channel, dispatches to handlers, runs until stopped. The looper is the concurrency primitive — each pane-native application has at least one looper (the app looper), and each window-equivalent has its own looper. Heavy work goes in spawned threads; the looper thread stays responsive.
-
-The looper receives from a unified `LooperMessage` channel that carries both compositor messages (`FromComp`) and self-delivered events (`Posted`). Both paths run through the same filter chain and handler dispatch. This single-channel design is the Phase 4 model. When Tier 2 features arrive (clipboard, observer, inter-pane messaging), each protocol relationship will be a separate typed channel into the looper, selected via multi-source select — more channels, same thread (see principle C1 in serena memory `pane/session_type_design_principles`).
-
-**Self-delivery (PostMessage).** `Messenger::send_message()` posts a `Message` to the pane's own looper from any thread. This is `BLooper::PostMessage` — the mechanism for worker threads to deliver results back to the event loop for sequential processing. The Messenger is cloneable and `Send`; pass it to spawned threads for async work, post results back when done.
-
-**Message coalescing.** After each blocking `recv()`, the looper drains all queued messages and coalesces them before dispatch. Resize events keep only the last geometry. MouseMove events keep only the last position. All other events are delivered in order. This is the BWindow::DispatchMessage optimization — a drag-resize generates dozens of intermediate geometries, but the handler sees only the final one.
-
-**Timer events.** `Messenger::send_delayed(event, duration)` delivers an event after a delay. `Messenger::send_periodic(event, interval)` delivers repeatedly, returning a `TimerToken` for cancellation. This is BMessageRunner — the standard mechanism for periodic updates (weather refresh, cursor blink, auto-save). Timers deliver through the self-delivery channel, so timer events are processed sequentially by the looper like any other event.
-
-**Handler.** Processes messages within a looper's context. The `Handler` trait has typed methods for each event kind (`ready`, `key`, `mouse`, `close_requested`, etc.) — what BWindow::DispatchMessage did internally, exposed as the API surface. Rust's exhaustive matching ensures no event variant is silently dropped.
-
-**Filters.** `Filter` trait with `filter(event) → Pass(event) | Consume` and optional `wants(&event) → bool` for selective matching. Filters run in registration order; any filter can transform or swallow an event. The `wants()` method is a performance optimization — a key-remapping filter skips mouse events entirely.
-
-**Command vocabulary.** Each pane declares its commands via the tag builder. Commands have a name, description, shortcut, action, and `enabled: bool` flag. Disabled commands appear greyed out in the command surface — the `BMenuItem::SetEnabled` pattern. The vocabulary can be updated at any time via `Messenger::set_vocabulary()`.
-
-**Routing.** Built into the kit, not a separate server. The kit:
-- Loads routing rules from the filesystem (`/etc/pane/route/rules/`, `~/.config/pane/route/rules/`), one file per rule
-- Watches rule directories via pane-notify for live updates — drop a file, gain a behavior
-- On route action: evaluates rules locally, transforms content, resolves the target
-- Queries pane-roster's service registry for multi-match scenarios
-- Quality-based selection when multiple handlers match (Translation Kit pattern)
-- Dispatches directly to the handler — sender to receiver, no intermediary
-
-**Connection management.** Session-typed connections to the compositor and other servers. The kit handles reconnection transparently — if a server restarts, the kit detects the session death and reconnects. Messages queue in the kit's send buffer during the reconnection window.
-
-**Application lifecycle.** Registration with pane-roster, launch semantics (single/exclusive/multiple), graceful shutdown.
+The subsections below cover kits that are not yet implemented as crates. Implemented kits (pane-proto, pane-session, pane-app, pane-notify) have been absorbed into their crate documentation and archived from this file.
 
 ### pane-ui — Interface
 
@@ -930,64 +896,7 @@ pane-comp needs to implement the xdg-desktop-portal ScreenCast D-Bus interface f
 
 ## Appendix: Filesystem Notification (pane-notify)
 
-*(Merged from pane-notify spec)*
-
-## ADDED Requirements
-
-### Requirement: Unified filesystem notification
-pane-notify SHALL provide a unified API for filesystem change notification that abstracts over fanotify and inotify. Consumers SHALL request watches by scope and receive events through the consumer's message queue — as messages in the looper for looper-based servers, or through a channel for channel-based consumers. The compositor is the sole exception: it receives events via a calloop event source, because calloop is scoped to the compositor (architecture spec §3, §6).
-
-#### Scenario: Mount-wide watch uses fanotify
-- **WHEN** a consumer requests watching an entire mount for attribute changes
-- **THEN** pane-notify SHALL use fanotify with FAN_MARK_FILESYSTEM and FAN_ATTRIB
-- **AND** events SHALL be delivered as messages to the consumer's looper or channel
-
-#### Scenario: Targeted watch uses inotify
-- **WHEN** a consumer requests watching a specific directory for file creation/deletion
-- **THEN** pane-notify SHALL use inotify
-
-#### Scenario: Looper integration
-- **WHEN** a looper-based server (pane-store, pane-roster, or a pane-app client) registers a pane-notify watch
-- **THEN** filesystem events SHALL be delivered as typed messages to the server's message queue
-- **AND** events SHALL be processed sequentially within the looper, like any other message
-
-#### Scenario: Compositor integration
-- **WHEN** pane-comp registers a pane-notify watch
-- **THEN** pane-notify SHALL provide a calloop-compatible event source
-- **AND** filesystem events SHALL dispatch in the same event loop iteration as other sources
-- **NOTE** This is the only consumer that uses calloop. calloop does not define the system-wide concurrency model.
-
-### Requirement: Watch scope selection
-pane-notify SHALL automatically select the appropriate kernel interface based on watch scope. Mount-wide watches SHALL use fanotify. File or directory watches SHALL use inotify. The consumer SHALL not need to specify which interface to use.
-
-#### Scenario: Consumer requests by intent
-- **WHEN** a consumer calls `watch_mount("/home", EventKind::Attrib)`
-- **THEN** pane-notify SHALL use fanotify internally
-
-- **WHEN** a consumer calls `watch_path("/etc/pane/comp/", EventKind::Create | EventKind::Delete)`
-- **THEN** pane-notify SHALL use inotify internally
-
-### Requirement: FAN_ATTRIB for xattr change detection
-pane-notify SHALL use fanotify FAN_ATTRIB events for detecting xattr changes. The VFS layer emits FS_ATTRIB (mapped to FAN_ATTRIB) after every setxattr() and removexattr() call, uniformly across all filesystems. This is the mechanism that makes pane-store's mount-wide attribute indexing possible without recursive directory walking.
-
-#### Scenario: xattr change detected
-- **WHEN** any process calls setxattr() or removexattr() on a file within a watched filesystem
-- **THEN** pane-notify SHALL receive a FAN_ATTRIB event with the file's handle (via FAN_REPORT_FID)
-- **AND** pane-notify SHALL deliver an Attrib event to the consumer
-
-#### Scenario: Consumer must disambiguate
-- **GIVEN** FAN_ATTRIB does not distinguish which attribute changed or what kind of metadata change occurred (xattr, chmod, chown, utimes all produce the same event)
-- **WHEN** a consumer receives an Attrib event
-- **THEN** the consumer is responsible for re-reading the relevant attributes and diffing against cached values
-- **NOTE** pane-store's event handler reads user.pane.* xattrs on each Attrib event and updates its index only if pane-relevant attributes changed
-
-### Requirement: Capability awareness
-fanotify with FAN_MARK_FILESYSTEM requires CAP_SYS_ADMIN. pane-notify SHALL document this requirement. Only privileged consumers (pane-store, running as a system service) can request mount-wide watches. Unprivileged consumers are limited to inotify-based targeted watches.
-
-#### Scenario: Unprivileged consumer requests mount-wide watch
-- **WHEN** an unprivileged consumer calls `watch_mount()`
-- **THEN** pane-notify SHALL return an error indicating insufficient capabilities
-- **AND** the error message SHALL suggest using `watch_path()` for targeted watching
+pane-notify is implemented. See `cargo doc -p pane-notify` for the current API documentation, including BeOS/Haiku heritage notes and watch semantics.
 
 ---
 

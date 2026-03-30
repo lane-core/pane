@@ -218,6 +218,14 @@ use pane_session::types::{Send, Recv, Branch, End};
 ///       ├─ Accepted (end)
 ///       └─ Rejected (end)
 /// ```
+///
+/// # BeOS
+///
+/// No BeOS equivalent. BeOS applications connected to app_server
+/// and immediately began sending — there was no handshake, no
+/// capability negotiation, and no typed protocol phase. The
+/// session-typed handshake ensures both sides agree on the protocol
+/// version before entering the active phase.
 pub type ClientHandshake = Send<ClientHello,
     Recv<ServerHello,
         Send<ClientCaps,

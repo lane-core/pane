@@ -12,6 +12,12 @@ pub struct PaneTitle {
 }
 
 /// The set of commands a pane offers through its command surface.
+///
+/// # BeOS
+///
+/// Replaces `BMenuBar`'s nested menu hierarchy with a flat,
+/// searchable vocabulary. Commands are typed and found by search,
+/// not browsed through nested menus.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
 pub struct CommandVocabulary {
     /// Grouped commands. Each group is a category shown as a section
@@ -34,6 +40,12 @@ pub struct CommandGroup {
 /// The handler decides what to do — close, save, route, whatever.
 /// There are no "built-in" compositor actions; the handler is always
 /// in control.
+///
+/// # BeOS
+///
+/// Replaces `BMenuItem`. Commands carry typed metadata (name,
+/// description, shortcut, enabled state) rather than being opaque
+/// menu entries.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Command {
     /// The command name as the user types it. Unique within the vocabulary.

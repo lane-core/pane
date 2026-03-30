@@ -13,6 +13,22 @@
 //! On non-Linux platforms (macOS dev), a polling stub is provided for
 //! basic testing. The real implementation requires Linux 5.1+ (fanotify
 //! with FAN_REPORT_FID) and Linux 2.6.13+ (inotify).
+//!
+//! # BeOS
+//!
+//! Descends from `BNodeMonitor` (`watch_node()` / `stop_watching()` +
+//! `B_NODE_MONITOR` messages). Key changes:
+//! - Events go to a channel instead of a `BLooper` — consumers are
+//!   not required to be loopers
+//! - Watching is by intent (mount-wide vs. targeted path) instead of
+//!   by `node_ref` — pane-notify automatically selects the right
+//!   kernel interface (fanotify or inotify)
+//! - RAII: dropping a [`WatchHandle`] unregisters the watch instead
+//!   of requiring an explicit `stop_watching()` call
+//!
+//! Haiku's `BNodeMonitor` implementation and the Haiku Book's
+//! [NodeMonitor documentation](reference/haiku-book/storage/NodeMonitor.dox)
+//! informed the design of the event kinds and watch semantics.
 
 mod event;
 mod watcher;

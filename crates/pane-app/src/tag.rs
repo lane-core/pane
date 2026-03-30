@@ -5,6 +5,16 @@ use pane_proto::protocol::CreatePaneTag;
 
 /// Builder for a pane's tag line configuration.
 ///
+/// The tag defines a pane's identity: its title and command
+/// vocabulary. You construct a Tag, pass it to
+/// [`App::create_pane`](crate::App::create_pane), and the compositor
+/// renders the title in the tab strip and makes the commands
+/// available through the command surface.
+///
+/// After creation, update dynamically via
+/// [`Messenger::set_title`](crate::Messenger::set_title) and
+/// [`Messenger::set_vocabulary`](crate::Messenger::set_vocabulary).
+///
 /// # Examples
 ///
 /// Minimal (title only):
@@ -18,6 +28,12 @@ use pane_proto::protocol::CreatePaneTag;
 ///     .command(cmd("save", "Save file").shortcut("Ctrl+S"))
 ///     .command(cmd("close", "Close pane").shortcut("Alt+W"))
 /// ```
+///
+/// # BeOS
+///
+/// No direct ancestor. Combines the title (from `BWindow`'s
+/// constructor) with the command vocabulary (a pane concept
+/// replacing menu bars).
 #[derive(Debug, Clone)]
 pub struct Tag {
     title: PaneTitle,

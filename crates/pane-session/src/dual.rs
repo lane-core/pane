@@ -2,8 +2,8 @@ use crate::types::{Send, Recv, Select, Branch, End};
 
 /// The dual of a session type — obtained by swapping Send/Recv and Select/Branch.
 ///
-/// If one endpoint follows session type S, the other must follow Dual<S>.
-/// Duality is an involution: Dual<Dual<S>> = S.
+/// If one endpoint follows session type S, the other must follow `Dual<S>`.
+/// Duality is an involution: `Dual<Dual<S>>` = S.
 ///
 /// In linear logic: negation. Send (⊗) ↔ Recv (⅋), Select (⊕) ↔ Branch (&).
 pub trait HasDual {

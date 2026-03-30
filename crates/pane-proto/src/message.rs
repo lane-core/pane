@@ -12,6 +12,7 @@ impl PaneId {
         Self(id)
     }
 
+    /// The inner `u32` value.
     pub fn get(self) -> u32 {
         self.0.get()
     }

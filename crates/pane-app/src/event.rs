@@ -6,9 +6,17 @@ use crate::exit::ExitReason;
 
 /// Events delivered to a pane's event handler.
 ///
-/// This is flatter than `CompToClient` — PaneId is stripped (the kit
-/// demuxes before the developer sees events), and nested structures
-/// are eliminated. The developer matches on this enum directly.
+/// The typed replacement for BeOS's `BMessage` `what` dispatch.
+/// Where Be used runtime matching on a `uint32` with untyped data
+/// fields, pane uses exhaustive enum matching with typed payloads.
+/// The compiler ensures every event variant is handled or explicitly
+/// ignored.
+///
+/// PaneId is stripped (the kit demuxes before you see events), and
+/// nested structures are eliminated. When using [`Pane::run`](crate::Pane::run)
+/// (closure form), you match on Message directly. When using
+/// [`Pane::run_with`](crate::Pane::run_with) (Handler form), each variant
+/// dispatches to the corresponding [`Handler`](crate::Handler) method.
 #[derive(Debug, Clone, PartialEq)]
 pub enum Message {
     /// The pane is ready (initial geometry received).

@@ -31,6 +31,22 @@ Small concrete items identified by auditing the codebase against the session-typ
 - [x] **pane-server read pump → calloop SessionSource** — replaced thread-per-client read pump with calloop SessionSource for event-driven message dispatch. Messages dispatch immediately on fd-readiness instead of polled once per frame.
 - [x] **Pulse timer cancellation** — `set_pulse_rate()` now cancels the previous timer via shared `Arc<Mutex<Option<TimerToken>>>`. `Duration::ZERO` cancels cleanly.
 
+### Haiku Book audit (retroactive)
+
+Verify existing kit implementations against their Haiku Book entries. For each implemented type with Be lineage, the Be engineer reads the corresponding `.dox` file and checks:
+- Hooks/methods we didn't implement — intentional omission or oversight?
+- Threading/locking considerations we didn't address
+- Pitfalls warned about in the Haiku docs
+- Behavioral contracts we may have diverged from without documenting
+
+- [ ] **App vs BApplication** — `reference/haiku-book/app/Application.dox`
+- [ ] **Handler vs BHandler** — `reference/haiku-book/app/Handler.dox`
+- [ ] **Messenger vs BMessenger** — `reference/haiku-book/app/Messenger.dox`
+- [ ] **Message vs BMessage** — `reference/haiku-book/app/Message.dox`
+- [ ] **MessageFilter vs BMessageFilter** — `reference/haiku-book/app/MessageFilter.dox`
+- [ ] **Pane vs BWindow** — `reference/haiku-book/interface/Window.dox`
+- [ ] **pane-notify vs BNodeMonitor** — `reference/haiku-book/storage/NodeMonitor.dox`
+
 ## Next
 
 - [ ] **pane-shell** — VT parser, PTY bridge, screen buffer. The first real application. Consult Be engineer on Terminal app architecture.

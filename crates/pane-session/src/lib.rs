@@ -11,6 +11,13 @@
 //!
 //! Theoretical basis: Caires-Pfenning/Wadler correspondence between linear
 //! logic and session types. Formal primitives verified in Lean/Agda.
+//!
+//! # BeOS
+//!
+//! No BeOS equivalent. BeOS used untyped kernel ports — any thread could
+//! send any `BMessage` to any port at any time. Session types replace
+//! that with compile-time protocol verification: the type system
+//! guarantees message ordering, branch coverage, and deadlock freedom.
 
 pub mod types;
 pub mod dual;

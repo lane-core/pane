@@ -13,6 +13,7 @@ pub enum Color {
     Rgb(u8, u8, u8),
 }
 
+/// Standard ANSI terminal color names.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum NamedColor {
     Black,

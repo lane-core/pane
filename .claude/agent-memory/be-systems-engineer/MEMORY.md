@@ -1,5 +1,6 @@
 # Be Systems Engineer — Memory Index
 
+- [reference_haiku_book_local.md](reference_haiku_book_local.md) — Haiku Book .dox files at reference/haiku-book/ in pane repo; primary API reference, key App Kit files mapped
 - [reference_haiku_source.md](reference_haiku_source.md) — Key file paths in ~/src/haiku for verifying BeOS architecture claims (app_server, messaging, scripting, translation kit)
 - [reference_scripting_protocol.md](reference_scripting_protocol.md) — BeOS scripting protocol mechanics (ResolveSpecifier chain, specifiers, property_info, hey) and mapping to pane's optics framework
 - [project_architecture_review.md](project_architecture_review.md) — Architecture spec review findings (2026-03-20): scripting absent, optics ungrounded, kits thin, pane-route stale

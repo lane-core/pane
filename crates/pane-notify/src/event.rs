@@ -1,6 +1,12 @@
 use std::path::PathBuf;
 
 /// The kinds of filesystem events pane-notify can report.
+///
+/// # BeOS
+///
+/// Maps to the opcode field of `B_NODE_MONITOR` messages:
+/// `B_ENTRY_CREATED`, `B_ENTRY_REMOVED`, `B_STAT_CHANGED`,
+/// `B_ATTR_CHANGED`, `B_ENTRY_MOVED`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum EventKind {
     /// A file or directory was created.

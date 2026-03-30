@@ -27,7 +27,9 @@ pub struct Branch<L, R>(PhantomData<(L, R)>);
 
 /// The result of receiving a branch selection from the peer.
 pub enum Offer<L, R> {
+    /// The peer selected the first (left) branch.
     Left(L),
+    /// The peer selected the second (right) branch.
     Right(R),
 }
 

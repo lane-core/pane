@@ -6,6 +6,9 @@ use crate::event::Message;
 use crate::looper_message::LooperMessage;
 
 /// Why the pane's event loop exited.
+///
+/// No BeOS equivalent — pane adds structured exit reasons for
+/// crash monitoring via [`Messenger::monitor`](crate::Messenger::monitor).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ExitReason {
     /// Handler returned Ok(false) voluntarily (e.g., user pressed Escape).

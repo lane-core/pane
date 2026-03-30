@@ -16,10 +16,34 @@ use crate::looper;
 use crate::looper_message::LooperMessage;
 use crate::proxy::Messenger;
 
-/// Handle to a pane in the compositor.
+/// Handle to a single pane in the compositor.
 ///
-/// Created by `App::create_pane()`. Use `run()` to enter the event
-/// loop on the current thread, or `run_with()` to use a Handler.
+/// Created by [`App::create_pane`](crate::App::create_pane). A Pane
+/// represents one compositor surface with its own event loop, filter
+/// chain, and shortcut table.
+///
+/// Pane is a move-only type: you configure it (add filters,
+/// shortcuts), then consume it by calling [`run`](Pane::run) or
+/// [`run_with`](Pane::run_with). Once the event loop starts,
+/// ongoing communication happens through the [`Messenger`] handle
+/// passed to your handler, not through Pane itself.
+///
+/// # Threading
+///
+/// The event loop runs on the calling thread. If you need multiple
+/// panes, spawn threads.
+///
+/// # BeOS
+///
+/// Descends from `BWindow` (see also Haiku's
+/// [BWindow documentation](reference/haiku-book/interface/Window.dox)).
+/// Key changes:
+/// - Not a looper subclass. Pane owns a looper internally but the
+///   public API is configuration + run, not direct loop control.
+/// - Consumed by `run()` — you cannot call methods on a Pane after
+///   the loop starts. Use [`Messenger`] instead.
+/// - `Lock()`/`Unlock()` replaced by `&mut self` — the borrow
+///   checker is the lock.
 pub struct Pane {
     id: PaneId,
     geometry: PaneGeometry,

@@ -22,6 +22,7 @@ pub enum Key {
     Named(NamedKey),
 }
 
+/// Named (non-character) keyboard keys.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum NamedKey {
     Enter,
@@ -46,6 +47,7 @@ pub enum NamedKey {
 pub struct FKey(u8);
 
 impl FKey {
+    /// The function key number (1-24).
     pub fn get(self) -> u8 {
         self.0
     }
@@ -85,8 +87,11 @@ pub enum KeyState {
 /// A keyboard event.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct KeyEvent {
+    /// Which key was pressed or released.
     pub key: Key,
+    /// Active modifier keys at the time of the event.
     pub modifiers: Modifiers,
+    /// Whether this is a press or release.
     pub state: KeyState,
     /// Event timestamp in microseconds since epoch. `None` for synthesized events.
     pub timestamp: Option<u64>,
@@ -122,9 +127,13 @@ pub enum MouseEventKind {
 /// A mouse event in cell coordinates.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub struct MouseEvent {
+    /// Column in the cell grid (0-based).
     pub col: u16,
+    /// Row in the cell grid (0-based).
     pub row: u16,
+    /// What happened (press, release, move, scroll).
     pub kind: MouseEventKind,
+    /// Active modifier keys at the time of the event.
     pub modifiers: Modifiers,
     /// Event timestamp in microseconds since epoch. `None` for synthesized events.
     pub timestamp: Option<u64>,

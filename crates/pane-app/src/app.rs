@@ -16,8 +16,32 @@ use crate::tag::Tag;
 
 /// The application entry point. One per process.
 ///
-/// Connects to the compositor, registers with the roster, and provides
-/// the factory for creating panes. Each pane gets its own thread.
+/// App establishes the connection to the compositor and provides
+/// the factory for creating panes. It does not run a message loop
+/// itself — each pane gets its own loop via [`Pane::run`] or
+/// [`Pane::run_with`].
+///
+/// You typically create one App at the start of main(), create your
+/// panes, then call [`run`](App::run) to block until all panes
+/// are closed.
+///
+/// # Threading
+///
+/// App itself is not `Send` — it lives on the thread that created
+/// it. A background dispatcher thread routes compositor messages to
+/// the correct pane channel.
+///
+/// # BeOS
+///
+/// Descends from `BApplication` (see also Haiku's
+/// [BApplication documentation](reference/haiku-book/app/BApplication.dox)).
+/// Key changes:
+/// - Not a looper. Be's `BApplication` inherited `BLooper` and ran
+///   the main message loop; pane's App is a connection and factory.
+///   Per-pane loops replace the application-level loop.
+/// - No `be_app` global. App is a held value, not a static.
+/// - `run()` blocks until all panes close, rather than running a
+///   message dispatch loop.
 pub struct App {
     /// Sender to the compositor (active-phase messages).
     comp_tx: mpsc::Sender<ClientToComp>,

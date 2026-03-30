@@ -12,20 +12,41 @@ use crate::proxy::Messenger;
 /// continue the event loop. `close_requested` defaults to accepting
 /// the close (returning `Ok(false)` to stop the loop).
 ///
-/// This is the BHandler pattern: override what you understand,
-/// ignore the rest. Rust's exhaustive matching via Message ensures
-/// nothing is silently dropped — every variant reaches a Handler
-/// method or the `fallback` catch-all.
+/// Each method corresponds to one [`Message`](crate::Message) variant.
+/// The looper dispatches to the matching method automatically, so you
+/// never need to write a top-level match yourself — that's what
+/// [`Pane::run`](crate::Pane::run)'s closure form is for.
 ///
-/// # Return value
+/// # Return Convention
 ///
 /// All methods return `Result<bool>`:
 /// - `Ok(true)` — continue the event loop
-/// - `Ok(false)` — exit the event loop (sends RequestClose)
-/// - `Err(e)` — exit the event loop with an error
+/// - `Ok(false)` — exit cleanly (the compositor is notified)
+/// - `Err(e)` — exit with an error
+///
+/// The default for most methods is `Ok(true)` (keep going).
+/// The exception is [`close_requested`](Handler::close_requested),
+/// which defaults to `Ok(false)` (accept the close).
+///
+/// # BeOS
+///
+/// Descends from `BHandler` (see also Haiku's
+/// [BHandler documentation](reference/haiku-book/app/BHandler.dox)).
+/// Key changes:
+/// - Per-event methods replace single `MessageReceived(BMessage*)`
+///   dispatch — exhaustive: every event reaches a method or the
+///   `fallback` catch-all
+/// - Return value controls the event loop (Be used side-effects
+///   like `PostMessage(B_QUIT_REQUESTED)`)
+/// - Trait with default methods replaces virtual class hierarchy
 pub trait Handler: Send + 'static {
-    /// Called once when the pane is ready (initial geometry received).
-    /// The Messenger allows sending messages back to the compositor.
+    /// Called once when the pane is ready and its initial geometry is known.
+    ///
+    /// This is the first event your handler sees. Use it for one-time
+    /// setup that depends on geometry: initializing a rendering buffer,
+    /// starting a pulse timer, loading initial content.
+    ///
+    /// Default: continues the event loop (`Ok(true)`).
     fn ready(&mut self, _proxy: &Messenger, _geometry: PaneGeometry) -> Result<bool> {
         Ok(true)
     }
@@ -35,12 +56,29 @@ pub trait Handler: Send + 'static {
         Ok(true)
     }
 
-    /// The pane was activated (gained focus).
+    /// The pane gained input focus.
+    ///
+    /// Override to update visual state (cursor style, selection
+    /// highlight) or start input capture.
+    ///
+    /// Default: continues the event loop (`Ok(true)`).
+    ///
+    /// # BeOS
+    ///
+    /// `BWindow::WindowActivated` with `active == true`. pane splits
+    /// the `bool active` parameter into separate `activated` /
+    /// `deactivated` hooks.
     fn activated(&mut self, _proxy: &Messenger) -> Result<bool> {
         Ok(true)
     }
 
-    /// The pane was deactivated (lost focus).
+    /// The pane lost input focus.
+    ///
+    /// Default: continues the event loop (`Ok(true)`).
+    ///
+    /// # BeOS
+    ///
+    /// `BWindow::WindowActivated` with `active == false`.
     fn deactivated(&mut self, _proxy: &Messenger) -> Result<bool> {
         Ok(true)
     }
@@ -76,12 +114,32 @@ pub trait Handler: Send + 'static {
     }
 
     /// Periodic pulse. Override for animations, status polling, clock ticks.
+    ///
+    /// Delivered at the interval set by [`Messenger::set_pulse_rate`].
+    /// Not delivered until you set a rate.
+    ///
+    /// Default: continues the event loop (`Ok(true)`).
+    ///
+    /// # BeOS
+    ///
+    /// `BWindow::Pulse`.
     fn pulse(&mut self, _proxy: &Messenger) -> Result<bool> {
         Ok(true)
     }
 
     /// The compositor requests this pane to close.
-    /// Default: accept the close (return Ok(false) to stop the loop).
+    ///
+    /// Override to implement save-before-close, confirmation dialogs,
+    /// or to refuse the close. Return `Ok(false)` to accept (stop
+    /// the loop) or `Ok(true)` to reject and keep running.
+    ///
+    /// Default: accepts the close (`Ok(false)`).
+    ///
+    /// # BeOS
+    ///
+    /// `BWindow::QuitRequested` — same semantics but the return
+    /// convention is inverted: Be returned `true` to accept,
+    /// pane returns `Ok(false)` to stop the loop.
     fn close_requested(&mut self, _proxy: &Messenger) -> Result<bool> {
         Ok(false)
     }

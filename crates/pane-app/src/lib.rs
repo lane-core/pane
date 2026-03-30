@@ -1,8 +1,32 @@
 //! Application kit for the pane desktop environment.
 //!
 //! The developer's primary interface for building pane-native applications.
-//! Equivalent to BeOS's Application Kit — BApplication, BLooper, BHandler,
-//! BMessenger translated to Rust with session types underneath.
+//! This is the descendant of BeOS's Application Kit (`BApplication`,
+//! `BLooper`, `BHandler`, `BMessenger`), redesigned for Rust with session
+//! types underneath and Haiku's 25 years of refinement as reference
+//! (see `reference/haiku-book/app/`).
+//!
+//! The kit provides five core types:
+//!
+//! - **[`App`]** — the application entry point. Connects to the compositor,
+//!   creates panes. One per process.
+//! - **[`Pane`]** — a single surface in the compositor. Configure it, then
+//!   consume it by calling [`Pane::run`] or [`Pane::run_with`].
+//! - **[`Messenger`]** — a cloneable, `Send` handle for communicating with
+//!   the compositor and posting events to a pane's own looper from any thread.
+//! - **[`Handler`]** — trait for structured event handling. Override what you
+//!   understand; all methods default to continuing the event loop.
+//! - **[`Message`]** — typed event enum delivered to handlers. Replaces
+//!   BeOS's runtime `BMessage` `what` dispatch with exhaustive matching.
+//!
+//! # Threading
+//!
+//! Each pane gets its own looper thread running a sequential message loop.
+//! Heavy work goes in spawned threads; the looper stays responsive.
+//! Worker threads post results back via [`Messenger::send_message`], and
+//! the looper picks them up on its next iteration. This is the `BLooper`
+//! model — one thread, one message queue, sequential processing — with
+//! the borrow checker replacing `Lock()`/`Unlock()`.
 //!
 //! # Quick Start
 //!
@@ -22,6 +46,11 @@
 //!     })
 //! }
 //! ```
+//!
+//! # Related Crates
+//!
+//! - [`pane_proto`] — wire types and protocol definitions that this kit wraps
+//! - [`pane_session`] — session-typed channels used for the compositor handshake
 
 pub mod app;
 pub(crate) mod connection;

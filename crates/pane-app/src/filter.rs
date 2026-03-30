@@ -1,6 +1,11 @@
 use crate::event::Message;
 
 /// What a filter decides to do with an event.
+///
+/// # BeOS
+///
+/// Replaces `filter_result` (`B_DISPATCH_MESSAGE` / `B_SKIP_MESSAGE`),
+/// renamed for clarity.
 #[derive(Debug, Clone, PartialEq)]
 pub enum FilterAction {
     /// Pass the event through (possibly modified).
@@ -9,14 +14,20 @@ pub enum FilterAction {
     Consume,
 }
 
-/// A message filter that intercepts events before the handler sees them.
+/// A filter that intercepts events before the handler sees them.
 ///
-/// Filters are the BMessageFilter equivalent: composable, cross-cutting
-/// concerns that can observe, transform, or consume events. Common uses:
-/// key remapping, logging, rate limiting, access control.
+/// Filters are composable, cross-cutting concerns: key remapping,
+/// logging, rate limiting, access control. They run in registration
+/// order via a [`FilterChain`]. Any filter can observe, transform,
+/// or consume an event.
 ///
-/// Filters run in registration order. A consumed event skips all
-/// remaining filters and the handler.
+/// # BeOS
+///
+/// `BMessageFilter`. Key changes:
+/// - Trait instead of class (no separate `filter_hook` function pointer)
+/// - `wants()` pre-filter replaces the `message_delivery` /
+///   `message_source` enum criteria — more general, same purpose
+/// - Returns [`FilterAction`] enum instead of `filter_result`
 pub trait MessageFilter: Send + 'static {
     /// Process an event. Return `Pass(event)` to continue dispatch
     /// (possibly with a modified event), or `Consume` to swallow it.
