@@ -9,7 +9,10 @@
 - **pane-hello**: canonical first app, ran successfully against real compositor in VM
 - **App::connect()**: works over real unix sockets with session-typed handshake
 
-## What's next (Phase 4 continuation)
+## What's next
+See PLAN.md at the project root for the current roadmap. PLAN.md is the living document — update it at the end of every task.
+
+## Phase 4 continuation
 1. **Compositor rendering**: pane-comp draws pane chrome (title bar), body area shows client content. Currently renders blank window.
 2. **Input routing**: smithay keyboard/mouse events → protocol → kit → handler. No input forwarding yet.
 3. **Tier 2 API features**: clipboard, observer pattern (start_watching), drag-and-drop — all need protocol + compositor work.
