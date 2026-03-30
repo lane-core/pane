@@ -15,9 +15,9 @@ use crate::exit::ExitReason;
 /// ignored.
 ///
 /// For application-defined events (worker thread results, async
-/// completions), use [`App`](Message::App) via
+/// completions), use [`App`](Message::AppMessage) via
 /// [`Messenger::post_app_message`](crate::Messenger::post_app_message).
-/// These are delivered to [`Handler::message_received`](crate::Handler::message_received).
+/// These are delivered to [`Handler::app_message`](crate::Handler::app_message).
 ///
 /// PaneId is stripped (the kit demuxes before you see events), and
 /// nested structures are eliminated. When using [`Pane::run`](crate::Pane::run)
@@ -70,13 +70,13 @@ pub enum Message {
     /// Application-defined message posted from a worker thread.
     ///
     /// Use [`Messenger::post_app_message`] to send these. The looper
-    /// delivers them to [`Handler::message_received`].
+    /// delivers them to [`Handler::app_message`].
     ///
     /// # BeOS
     ///
     /// Equivalent to app-defined `BMessage` `what` codes dispatched
     /// through `BHandler::MessageReceived`.
-    App(Box<dyn Any + Send>),
+    AppMessage(Box<dyn Any + Send>),
     /// Reply to a request sent via [`Messenger::send_and_wait`] or
     /// the async request API. Dispatches to [`Handler::reply_received`].
     ///
@@ -117,8 +117,8 @@ impl Clone for Message {
             Self::Disconnected => Self::Disconnected,
             Self::PaneExited { pane, reason } =>
                 Self::PaneExited { pane: *pane, reason: reason.clone() },
-            Self::App(_) =>
-                panic!("App messages are consumed, not cloned"),
+            Self::AppMessage(_) =>
+                panic!("AppMessage payloads are consumed, not cloned"),
             Self::Reply { .. } =>
                 panic!("Reply messages are consumed, not cloned"),
             Self::ReplyFailed { token } =>

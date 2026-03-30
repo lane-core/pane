@@ -161,7 +161,7 @@ impl Messenger {
     /// Post an application-defined message to this pane's looper.
     ///
     /// Use this from worker threads to deliver async results back to
-    /// the event loop. The value is delivered to [`Handler::message_received`].
+    /// the event loop. The value is delivered to [`Handler::app_message`].
     ///
     /// ```ignore
     /// let proxy = proxy.clone();
@@ -175,7 +175,7 @@ impl Messenger {
     ///
     /// `BMessenger::SendMessage` with an app-defined `what` code.
     pub fn post_app_message<T: Send + 'static>(&self, msg: T) -> Result<()> {
-        self.send_message(Message::App(Box::new(msg)))
+        self.send_message(Message::AppMessage(Box::new(msg)))
     }
 
     /// Monitor this pane: when it exits, deliver `Message::PaneExited`
@@ -301,7 +301,7 @@ impl Messenger {
     ///
     /// # Panics
     ///
-    /// Panics at fire time if the event is `Message::App` or `Message::Reply`
+    /// Panics at fire time if the event is `Message::AppMessage` or `Message::Reply`
     /// (these are consumed once and cannot be cloned).
     pub fn send_periodic(&self, event: Message, interval: std::time::Duration) -> Result<TimerToken>
     {

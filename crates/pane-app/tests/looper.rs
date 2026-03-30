@@ -400,7 +400,7 @@ impl MessageFilter for SkipFocusFilter {
         FilterAction::Consume
     }
 
-    fn wants(&self, event: &Message) -> bool {
+    fn matches(&self, event: &Message) -> bool {
         !matches!(event, Message::Activated)
     }
 }

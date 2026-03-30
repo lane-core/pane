@@ -183,7 +183,7 @@ pub trait Handler: Send + 'static {
     /// Downcast to your application types:
     ///
     /// ```ignore
-    /// fn message_received(&mut self, proxy: &Messenger, msg: Box<dyn Any + Send>) -> Result<bool> {
+    /// fn app_message(&mut self, proxy: &Messenger, msg: Box<dyn Any + Send>) -> Result<bool> {
     ///     if let Some(result) = msg.downcast_ref::<DownloadResult>() {
     ///         self.handle_download(proxy, result)?;
     ///     }
@@ -205,7 +205,7 @@ pub trait Handler: Send + 'static {
     /// # BeOS
     ///
     /// `BHandler::MessageReceived` for app-defined `what` codes.
-    fn message_received(&mut self, _proxy: &Messenger, _msg: Box<dyn Any + Send>) -> Result<bool> {
+    fn app_message(&mut self, _proxy: &Messenger, _msg: Box<dyn Any + Send>) -> Result<bool> {
         Ok(true)
     }
 
@@ -240,7 +240,7 @@ pub trait Handler: Send + 'static {
     /// Be's `BMessage` destructor sending `B_NO_REPLY`).
     ///
     /// Default: drops the reply port (sends ReplyFailed), continues.
-    fn handle_request(
+    fn request_received(
         &mut self,
         _proxy: &Messenger,
         _msg: Message,

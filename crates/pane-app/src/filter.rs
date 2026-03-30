@@ -25,7 +25,7 @@ pub enum FilterAction {
 ///
 /// `BMessageFilter`. Key changes:
 /// - Trait instead of class (no separate `filter_hook` function pointer)
-/// - `wants()` pre-filter replaces the `message_delivery` /
+/// - `matches()` pre-filter replaces the `message_delivery` /
 ///   `message_source` enum criteria — more general, same purpose
 /// - Returns [`FilterAction`] enum instead of `filter_result`
 /// - No retargeting (`SetTarget`/`Target`). Be's retargeting redirected
@@ -40,7 +40,7 @@ pub trait MessageFilter: Send + 'static {
     /// Returns true by default (filter sees everything). Override
     /// to skip events your filter doesn't care about — a key-remap
     /// filter can return false for mouse events, etc.
-    fn wants(&self, _event: &Message) -> bool {
+    fn matches(&self, _event: &Message) -> bool {
         true
     }
 }
@@ -72,7 +72,7 @@ impl FilterChain {
     /// event if it survived, or None if any filter consumed it.
     pub fn apply(&mut self, mut event: Message) -> Option<Message> {
         for filter in &mut self.filters {
-            if !filter.wants(&event) {
+            if !filter.matches(&event) {
                 continue;
             }
             match filter.filter(event) {

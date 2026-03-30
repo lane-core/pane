@@ -119,7 +119,7 @@ struct AppMessageHandler {
 }
 
 impl Handler for AppMessageHandler {
-    fn message_received(&mut self, _proxy: &Messenger, msg: Box<dyn Any + Send>) -> Result<bool> {
+    fn app_message(&mut self, _proxy: &Messenger, msg: Box<dyn Any + Send>) -> Result<bool> {
         if let Some(dl) = msg.downcast_ref::<DownloadComplete>() {
             *self.received.lock().unwrap() = Some((dl.path.clone(), dl.bytes));
         }
@@ -143,7 +143,7 @@ fn app_message_delivered_to_handler() {
     let handler = AppMessageHandler { received: received.clone() };
 
     // Post an app message, then close
-    tx.send(LooperMessage::Posted(Message::App(
+    tx.send(LooperMessage::Posted(Message::AppMessage(
         Box::new(DownloadComplete { path: "/tmp/file.zip".into(), bytes: 42000 }),
     ))).unwrap();
     send_comp(&tx, CompToClient::Close { pane: pane_id(1) });
@@ -168,7 +168,7 @@ fn app_message_wrong_type_continues() {
     let handler = AppMessageHandler { received: received.clone() };
 
     // Post a String (handler expects DownloadComplete), then close
-    tx.send(LooperMessage::Posted(Message::App(
+    tx.send(LooperMessage::Posted(Message::AppMessage(
         Box::new("not a DownloadComplete".to_string()),
     ))).unwrap();
     send_comp(&tx, CompToClient::Close { pane: pane_id(1) });
@@ -193,7 +193,7 @@ fn post_app_message_round_trip() {
 
     let msg = looper_rx.recv_timeout(std::time::Duration::from_secs(1)).unwrap();
     match msg {
-        LooperMessage::Posted(Message::App(payload)) => {
+        LooperMessage::Posted(Message::AppMessage(payload)) => {
             let dl = payload.downcast_ref::<DownloadComplete>().unwrap();
             assert_eq!(dl.path, "/tmp/test");
             assert_eq!(dl.bytes, 100);
@@ -208,8 +208,8 @@ fn post_app_message_round_trip() {
 struct EchoHandler;
 
 impl Handler for EchoHandler {
-    fn handle_request(&mut self, _proxy: &Messenger, msg: Message, reply_port: ReplyPort) -> Result<bool> {
-        if let Message::App(payload) = msg {
+    fn request_received(&mut self, _proxy: &Messenger, msg: Message, reply_port: ReplyPort) -> Result<bool> {
+        if let Message::AppMessage(payload) = msg {
             if let Some(n) = payload.downcast_ref::<u64>() {
                 reply_port.reply(n * 2);
                 return Ok(true);
@@ -246,7 +246,7 @@ fn send_and_wait_round_trip() {
 
     let reply = caller_proxy.send_and_wait(
         &target_for_send,
-        Message::App(Box::new(21u64)),
+        Message::AppMessage(Box::new(21u64)),
         Duration::from_secs(2),
     ).unwrap();
 
@@ -261,7 +261,7 @@ fn send_and_wait_round_trip() {
 fn reply_port_drop_sends_reply_failed() {
     struct IgnoreHandler;
     impl Handler for IgnoreHandler {
-        fn handle_request(&mut self, _proxy: &Messenger, _msg: Message, _reply_port: ReplyPort) -> Result<bool> {
+        fn request_received(&mut self, _proxy: &Messenger, _msg: Message, _reply_port: ReplyPort) -> Result<bool> {
             // reply_port dropped here → sends ReplyFailed
             Ok(true)
         }
@@ -282,7 +282,7 @@ fn reply_port_drop_sends_reply_failed() {
 
     let result = caller_proxy.send_and_wait(
         &target_for_send,
-        Message::App(Box::new(42u64)),
+        Message::AppMessage(Box::new(42u64)),
         Duration::from_secs(2),
     );
 
@@ -304,7 +304,7 @@ fn send_request_async_round_trip() {
 
     let (caller_proxy, caller_rx) = make_looper_proxy(pane_id(1));
 
-    let token = caller_proxy.send_request(&target_for_send, Message::App(Box::new(21u64))).unwrap();
+    let token = caller_proxy.send_request(&target_for_send, Message::AppMessage(Box::new(21u64))).unwrap();
 
     // The reply should arrive on the caller's looper channel
     let reply_msg = caller_rx.recv_timeout(Duration::from_secs(2)).unwrap();
@@ -328,7 +328,7 @@ fn send_and_wait_timeout() {
     /// Handler that sleeps forever on any request (never replies).
     struct BlackHoleHandler;
     impl Handler for BlackHoleHandler {
-        fn handle_request(&mut self, _proxy: &Messenger, _msg: Message, reply_port: ReplyPort) -> Result<bool> {
+        fn request_received(&mut self, _proxy: &Messenger, _msg: Message, reply_port: ReplyPort) -> Result<bool> {
             // Hold the reply port but never reply. It will be dropped
             // when the handler struct is dropped (looper exit), but the
             // caller should time out before that.
@@ -355,7 +355,7 @@ fn send_and_wait_timeout() {
     let start = std::time::Instant::now();
     let result = caller_proxy.send_and_wait(
         &target_for_send,
-        Message::App(Box::new(42u64)),
+        Message::AppMessage(Box::new(42u64)),
         Duration::from_millis(100),
     );
     let elapsed = start.elapsed();
@@ -386,7 +386,7 @@ fn target_exit_mid_request() {
     /// Handler that closes immediately on receiving a request, dropping the ReplyPort.
     struct ExitOnRequestHandler;
     impl Handler for ExitOnRequestHandler {
-        fn handle_request(&mut self, _proxy: &Messenger, _msg: Message, _reply_port: ReplyPort) -> Result<bool> {
+        fn request_received(&mut self, _proxy: &Messenger, _msg: Message, _reply_port: ReplyPort) -> Result<bool> {
             // Return false to exit the looper. reply_port is dropped -> sends ReplyFailed.
             Ok(false)
         }
@@ -407,7 +407,7 @@ fn target_exit_mid_request() {
 
     let result = caller_proxy.send_and_wait(
         &target_for_send,
-        Message::App(Box::new(99u64)),
+        Message::AppMessage(Box::new(99u64)),
         Duration::from_secs(2),
     );
 
@@ -440,7 +440,7 @@ fn multiple_concurrent_requests() {
         handles.push(std::thread::spawn(move || {
             let result = caller.send_and_wait(
                 &target,
-                Message::App(Box::new(i)),
+                Message::AppMessage(Box::new(i)),
                 Duration::from_secs(5),
             );
             let payload = result.unwrap_or_else(|e| panic!("thread {i} should get a reply, got {e:?}"));
@@ -468,7 +468,7 @@ fn reply_after_requestor_gone() {
         saved_port: Option<ReplyPort>,
     }
     impl Handler for DelayedReplyHandler {
-        fn handle_request(&mut self, _proxy: &Messenger, _msg: Message, reply_port: ReplyPort) -> Result<bool> {
+        fn request_received(&mut self, _proxy: &Messenger, _msg: Message, reply_port: ReplyPort) -> Result<bool> {
             self.saved_port = Some(reply_port);
             Ok(true)
         }
@@ -497,7 +497,7 @@ fn reply_after_requestor_gone() {
     let (caller_proxy, _) = make_looper_proxy(pane_id(1));
     let result = caller_proxy.send_and_wait(
         &target_for_send,
-        Message::App(Box::new(1u64)),
+        Message::AppMessage(Box::new(1u64)),
         Duration::from_millis(10), // very short timeout — will expire
     );
     // Caller times out — the reply channel (recv side) is now dropped
@@ -520,7 +520,7 @@ fn send_request_async_reply_failed() {
     /// Handler that drops the ReplyPort without replying.
     struct DropReplyHandler;
     impl Handler for DropReplyHandler {
-        fn handle_request(&mut self, _proxy: &Messenger, _msg: Message, _reply_port: ReplyPort) -> Result<bool> {
+        fn request_received(&mut self, _proxy: &Messenger, _msg: Message, _reply_port: ReplyPort) -> Result<bool> {
             // reply_port dropped -> sends ReplyFailed to caller's looper
             Ok(true)
         }
@@ -541,7 +541,7 @@ fn send_request_async_reply_failed() {
 
     let token = caller_proxy.send_request(
         &target_for_send,
-        Message::App(Box::new(42u64)),
+        Message::AppMessage(Box::new(42u64)),
     ).unwrap();
 
     // The ReplyFailed should arrive on the caller's looper channel
@@ -568,8 +568,8 @@ fn nested_request_no_deadlock() {
     /// Handler for target B: echoes back the value tripled.
     struct TripleHandler;
     impl Handler for TripleHandler {
-        fn handle_request(&mut self, _proxy: &Messenger, msg: Message, reply_port: ReplyPort) -> Result<bool> {
-            if let Message::App(payload) = msg {
+        fn request_received(&mut self, _proxy: &Messenger, msg: Message, reply_port: ReplyPort) -> Result<bool> {
+            if let Message::AppMessage(payload) = msg {
                 if let Some(&n) = payload.downcast_ref::<u64>() {
                     reply_port.reply(n * 3);
                     return Ok(true);
@@ -590,10 +590,10 @@ fn nested_request_no_deadlock() {
         pending: std::collections::HashMap<u64, ReplyPort>,
     }
     impl Handler for ForwardingHandler {
-        fn handle_request(&mut self, proxy: &Messenger, msg: Message, reply_port: ReplyPort) -> Result<bool> {
-            if let Message::App(ref payload) = msg {
+        fn request_received(&mut self, proxy: &Messenger, msg: Message, reply_port: ReplyPort) -> Result<bool> {
+            if let Message::AppMessage(ref payload) = msg {
                 if let Some(&n) = payload.downcast_ref::<u64>() {
-                    let b_token = proxy.send_request(&self.b_proxy, Message::App(Box::new(n))).unwrap();
+                    let b_token = proxy.send_request(&self.b_proxy, Message::AppMessage(Box::new(n))).unwrap();
                     self.pending.insert(b_token, reply_port);
                     return Ok(true);
                 }
@@ -639,7 +639,7 @@ fn nested_request_no_deadlock() {
     let (caller_proxy, _) = make_looper_proxy(pane_id(1));
     let result = caller_proxy.send_and_wait(
         &a_for_send,
-        Message::App(Box::new(7u64)),
+        Message::AppMessage(Box::new(7u64)),
         Duration::from_secs(5),
     );
 

@@ -391,7 +391,7 @@ pub fn run_handler(
                     }
                 }
                 Unwrapped::Request(msg, reply_port) => {
-                    let keep_going = handler.handle_request(&proxy, msg, reply_port)?;
+                    let keep_going = handler.request_received(&proxy, msg, reply_port)?;
                     if !keep_going {
                         return Ok(ExitReason::HandlerExit);
                     }
@@ -421,7 +421,7 @@ fn dispatch_to_handler(handler: &mut impl Handler, proxy: &Messenger, event: Mes
         Message::Pulse => handler.pulse(proxy),
         Message::Disconnected => handler.disconnected(proxy),
         Message::PaneExited { pane, reason } => handler.pane_exited(proxy, pane, reason),
-        Message::App(payload) => handler.message_received(proxy, payload),
+        Message::AppMessage(payload) => handler.app_message(proxy, payload),
         Message::Reply { token, payload } => handler.reply_received(proxy, token, payload),
         Message::ReplyFailed { token } => handler.reply_failed(proxy, token),
     }

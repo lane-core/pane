@@ -88,7 +88,7 @@ impl Default for ShortcutFilter {
 }
 
 impl MessageFilter for ShortcutFilter {
-    fn wants(&self, event: &Message) -> bool {
+    fn matches(&self, event: &Message) -> bool {
         matches!(event, Message::Key(_))
     }
 
