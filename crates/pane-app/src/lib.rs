@@ -23,10 +23,12 @@
 //!
 //! Each pane gets its own looper thread running a sequential message loop.
 //! Heavy work goes in spawned threads; the looper stays responsive.
-//! Worker threads post results back via [`Messenger::send_message`], and
-//! the looper picks them up on its next iteration. This is the `BLooper`
-//! model — one thread, one message queue, sequential processing — with
-//! the borrow checker replacing `Lock()`/`Unlock()`.
+//! Worker threads post results back via [`Messenger::post_app_message`]
+//! (for application-defined types) or [`Messenger::send_message`]
+//! (for system events), and the looper picks them up on its next
+//! iteration. This is the `BLooper` model — one thread, one message
+//! queue, sequential processing — with the borrow checker replacing
+//! `Lock()`/`Unlock()`.
 //!
 //! # Quick Start
 //!

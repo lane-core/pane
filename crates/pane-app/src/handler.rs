@@ -1,3 +1,5 @@
+use std::any::Any;
+
 use pane_proto::event::{KeyEvent, MouseEvent};
 use pane_proto::message::PaneId;
 use pane_proto::protocol::PaneGeometry;
@@ -151,6 +153,38 @@ pub trait Handler: Send + 'static {
 
     /// A monitored pane exited. Default: continue.
     fn pane_exited(&mut self, _proxy: &Messenger, _pane: PaneId, _reason: ExitReason) -> Result<bool> {
+        Ok(true)
+    }
+
+    /// Handle an application-defined message.
+    ///
+    /// Worker threads post these via [`Messenger::post_app_message`].
+    /// Downcast to your application types:
+    ///
+    /// ```ignore
+    /// fn message_received(&mut self, proxy: &Messenger, msg: Box<dyn Any + Send>) -> Result<bool> {
+    ///     if let Some(result) = msg.downcast_ref::<DownloadResult>() {
+    ///         self.handle_download(proxy, result)?;
+    ///     }
+    ///     Ok(true)
+    /// }
+    /// ```
+    ///
+    /// For compile-time exhaustiveness within your app, use a private
+    /// enum as the payload type — one downcast, then pattern match:
+    ///
+    /// ```ignore
+    /// enum WorkerResult { Download(PathBuf), Parse(Data) }
+    /// // Worker: proxy.post_app_message(WorkerResult::Download(path))
+    /// // Handler: downcast to WorkerResult, then match
+    /// ```
+    ///
+    /// Default: continues the event loop (`Ok(true)`).
+    ///
+    /// # BeOS
+    ///
+    /// `BHandler::MessageReceived` for app-defined `what` codes.
+    fn message_received(&mut self, _proxy: &Messenger, _msg: Box<dyn Any + Send>) -> Result<bool> {
         Ok(true)
     }
 

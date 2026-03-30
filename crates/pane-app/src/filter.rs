@@ -6,7 +6,7 @@ use crate::event::Message;
 ///
 /// Replaces `filter_result` (`B_DISPATCH_MESSAGE` / `B_SKIP_MESSAGE`),
 /// renamed for clarity.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug)]
 pub enum FilterAction {
     /// Pass the event through (possibly modified).
     Pass(Message),

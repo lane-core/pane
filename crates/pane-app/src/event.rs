@@ -1,3 +1,5 @@
+use std::any::Any;
+
 use pane_proto::event::{KeyEvent, MouseEvent};
 use pane_proto::message::PaneId;
 use pane_proto::protocol::{CompToClient, PaneGeometry};
@@ -12,12 +14,17 @@ use crate::exit::ExitReason;
 /// The compiler ensures every event variant is handled or explicitly
 /// ignored.
 ///
+/// For application-defined events (worker thread results, async
+/// completions), use [`App`](Message::App) via
+/// [`Messenger::post_app_message`](crate::Messenger::post_app_message).
+/// These are delivered to [`Handler::message_received`](crate::Handler::message_received).
+///
 /// PaneId is stripped (the kit demuxes before you see events), and
 /// nested structures are eliminated. When using [`Pane::run`](crate::Pane::run)
 /// (closure form), you match on Message directly. When using
 /// [`Pane::run_with`](crate::Pane::run_with) (Handler form), each variant
 /// dispatches to the corresponding [`Handler`](crate::Handler) method.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug)]
 pub enum Message {
     /// The pane is ready (initial geometry received).
     Ready(PaneGeometry),
@@ -60,6 +67,42 @@ pub enum Message {
         pane: PaneId,
         reason: ExitReason,
     },
+    /// Application-defined message posted from a worker thread.
+    ///
+    /// Use [`Messenger::post_app_message`] to send these. The looper
+    /// delivers them to [`Handler::message_received`].
+    ///
+    /// # BeOS
+    ///
+    /// Equivalent to app-defined `BMessage` `what` codes dispatched
+    /// through `BHandler::MessageReceived`.
+    App(Box<dyn Any + Send>),
+}
+
+impl Clone for Message {
+    fn clone(&self) -> Self {
+        match self {
+            Self::Ready(g) => Self::Ready(*g),
+            Self::Resize(g) => Self::Resize(*g),
+            Self::Activated => Self::Activated,
+            Self::Deactivated => Self::Deactivated,
+            Self::Key(e) => Self::Key(e.clone()),
+            Self::Mouse(e) => Self::Mouse(e.clone()),
+            Self::CloseRequested => Self::CloseRequested,
+            Self::CommandActivated => Self::CommandActivated,
+            Self::CommandDismissed => Self::CommandDismissed,
+            Self::CommandExecuted { command, args } =>
+                Self::CommandExecuted { command: command.clone(), args: args.clone() },
+            Self::CompletionRequest { token, input } =>
+                Self::CompletionRequest { token: *token, input: input.clone() },
+            Self::Pulse => Self::Pulse,
+            Self::Disconnected => Self::Disconnected,
+            Self::PaneExited { pane, reason } =>
+                Self::PaneExited { pane: *pane, reason: reason.clone() },
+            Self::App(_) =>
+                panic!("App messages are consumed by message_received, not cloned"),
+        }
+    }
 }
 
 impl Message {

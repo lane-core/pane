@@ -2,10 +2,12 @@
 //! Verifies that the default implementations return the correct values
 //! without any overrides — the contract that developers depend on.
 
+use std::any::Any;
 use std::num::NonZeroU32;
 use std::sync::mpsc;
+use std::sync::{Arc, Mutex};
 
-use pane_app::{Messenger, Handler, LooperMessage};
+use pane_app::{Message, Messenger, Handler, LooperMessage};
 use pane_app::error::Result;
 use pane_proto::event::{KeyEvent, Key, Modifiers, KeyState};
 use pane_proto::message::PaneId;
@@ -101,4 +103,100 @@ fn handler_override_close_to_continue() {
 
     pane_app::looper::run_handler(pane_id(1), rx, filters, handle, NeverCloseHandler).unwrap();
     // Loop exited on disconnect (after ignoring close) — override worked
+}
+
+// --- App message tests ---
+
+#[derive(Debug)]
+struct DownloadComplete {
+    path: String,
+    bytes: u64,
+}
+
+struct AppMessageHandler {
+    received: Arc<Mutex<Option<(String, u64)>>>,
+}
+
+impl Handler for AppMessageHandler {
+    fn message_received(&mut self, _proxy: &Messenger, msg: Box<dyn Any + Send>) -> Result<bool> {
+        if let Some(dl) = msg.downcast_ref::<DownloadComplete>() {
+            *self.received.lock().unwrap() = Some((dl.path.clone(), dl.bytes));
+        }
+        Ok(true)
+    }
+
+    fn close_requested(&mut self, _proxy: &Messenger) -> Result<bool> {
+        Ok(false)
+    }
+}
+
+#[test]
+fn app_message_delivered_to_handler() {
+    let (tx, rx) = mpsc::channel::<LooperMessage>();
+    let filters = pane_app::filter::FilterChain::new();
+    let (comp_tx, _comp_rx) = mpsc::channel::<ClientToComp>();
+    let (looper_tx, _) = mpsc::sync_channel::<LooperMessage>(256);
+    let handle = Messenger::new(pane_id(1), comp_tx).with_looper(looper_tx);
+
+    let received = Arc::new(Mutex::new(None));
+    let handler = AppMessageHandler { received: received.clone() };
+
+    // Post an app message, then close
+    tx.send(LooperMessage::Posted(Message::App(
+        Box::new(DownloadComplete { path: "/tmp/file.zip".into(), bytes: 42000 }),
+    ))).unwrap();
+    send_comp(&tx, CompToClient::Close { pane: pane_id(1) });
+    drop(tx);
+
+    pane_app::looper::run_handler(pane_id(1), rx, filters, handle, handler).unwrap();
+
+    let result = received.lock().unwrap();
+    assert_eq!(result.as_ref().unwrap().0, "/tmp/file.zip");
+    assert_eq!(result.as_ref().unwrap().1, 42000);
+}
+
+#[test]
+fn app_message_wrong_type_continues() {
+    let (tx, rx) = mpsc::channel::<LooperMessage>();
+    let filters = pane_app::filter::FilterChain::new();
+    let (comp_tx, _comp_rx) = mpsc::channel::<ClientToComp>();
+    let (looper_tx, _) = mpsc::sync_channel::<LooperMessage>(256);
+    let handle = Messenger::new(pane_id(1), comp_tx).with_looper(looper_tx);
+
+    let received = Arc::new(Mutex::new(None));
+    let handler = AppMessageHandler { received: received.clone() };
+
+    // Post a String (handler expects DownloadComplete), then close
+    tx.send(LooperMessage::Posted(Message::App(
+        Box::new("not a DownloadComplete".to_string()),
+    ))).unwrap();
+    send_comp(&tx, CompToClient::Close { pane: pane_id(1) });
+    drop(tx);
+
+    pane_app::looper::run_handler(pane_id(1), rx, filters, handle, handler).unwrap();
+
+    // Handler continued past the wrong type (default Ok(true) after failed downcast)
+    assert!(received.lock().unwrap().is_none());
+}
+
+#[test]
+fn post_app_message_round_trip() {
+    let (comp_tx, _comp_rx) = mpsc::channel::<ClientToComp>();
+    let (looper_tx, looper_rx) = mpsc::sync_channel::<LooperMessage>(256);
+    let proxy = Messenger::new(pane_id(1), comp_tx).with_looper(looper_tx);
+
+    proxy.post_app_message(DownloadComplete {
+        path: "/tmp/test".into(),
+        bytes: 100,
+    }).unwrap();
+
+    let msg = looper_rx.recv_timeout(std::time::Duration::from_secs(1)).unwrap();
+    match msg {
+        LooperMessage::Posted(Message::App(payload)) => {
+            let dl = payload.downcast_ref::<DownloadComplete>().unwrap();
+            assert_eq!(dl.path, "/tmp/test");
+            assert_eq!(dl.bytes, 100);
+        }
+        other => panic!("expected App message, got {:?}", other),
+    }
 }
