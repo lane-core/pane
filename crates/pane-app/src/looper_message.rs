@@ -5,6 +5,11 @@
 //! 2. Self-delivery (Messenger::send_message from worker threads)
 //!
 //! Both funnel into a single mpsc channel as LooperMessage variants.
+//!
+//! When Tier 2 features add new protocol relationships (clipboard,
+//! inter-pane, services), each should be a separate typed channel
+//! into the looper with multi-source select — not more variants here.
+//! See serena memory `pane/session_type_design_principles` principle C1.
 
 use pane_proto::protocol::CompToClient;
 use crate::event::Message;

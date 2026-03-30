@@ -14,3 +14,5 @@
 - [project_pane_app_kit_design.md](project_pane_app_kit_design.md) — pane-app kit design decisions (2026-03-26): App not a looper, flat enum, filesystem scripting, TOML routing rules
 - [project_fs_scripting_validation.md](project_fs_scripting_validation.md) — FS scripting validation (2026-03-28): 10 hey scenarios mapped, bet holds, no dynamic Message needed, ctl syntax + by-sig index recommended
 - [project_translation_rules.md](project_translation_rules.md) — Be-to-pane translation decision tree, naming conventions, full header audit, 10 inconsistencies found (2026-03-28)
+- [reference_decorator_architecture.md](reference_decorator_architecture.md) — Decorator class hierarchy, rendering flow, chrome/content split, threading, and mapping to pane's compositor
+- [project_eact_analysis.md](project_eact_analysis.md) — EAct paper analysis (2026-03-29): 6 design principles, sub-protocol typing strategy, heterogeneous session loop as key evolution

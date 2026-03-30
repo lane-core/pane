@@ -25,6 +25,15 @@ See PLAN.md at the project root for the current roadmap. PLAN.md is the living d
 - serena is sole memory system
 - Be engineer must be consulted before implementing new subsystems
 
+## Design guidance
+
+All Tier 2 protocol work (clipboard, observer, DnD, inter-pane messaging) should be designed against the EAct-derived session-type principles:
+- `pane/session_type_design_principles` — 6 principles (C1–C6) for protocol and API design
+- `pane/eact_analysis_gaps` — 4 structural gaps to address as features are added
+- `pane/eact_what_not_to_adopt` — explicit anti-patterns to avoid
+
+Key takeaways: sub-protocols use typestate handles at the API surface (C2), new channels into the looper are separate typed channels (C1), failure modes consider per-conversation callbacks (C3).
+
 ## Recent work completed this session
 - BeAPI naming audit (Message, Messenger, close_requested, activated/deactivated, resize_to, fallback, MessageFilter)
 - Rust idiom audit (all 30 findings fixed — no panics in library code, Debug on all public types, error source chains)

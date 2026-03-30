@@ -24,7 +24,12 @@ Pane consumed by run(). Communication during run → Messenger (Clone + Send).
 status_t / InitCheck() → Result<T, E>, fail at construction.
 
 ## Rule 7: Observers
-monitor() for death watching, filesystem for property changes.
+Two levels of failure observation:
+- **Actor-level:** monitor() + PaneExited for death watching (implemented). This is the "who died" signal.
+- **Conversation-level (future, per C3):** When inter-pane request-response exists, pending requests should resolve to failure when the peer exits — the "which interaction failed" signal. Layer on top of PaneExited, not a replacement.
+- **Property changes:** filesystem at /pane/<id>/attrs/ via pane-notify.
+
+See serena memory `pane/session_type_design_principles` principle C3 for rationale.
 
 ## Rule 8: System Services
 Separate crates/services, not globals.

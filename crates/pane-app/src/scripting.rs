@@ -51,6 +51,7 @@ pub enum ScriptOp {
 ///
 /// TODO(phase-6): implement with actual response channel.
 #[derive(Debug)]
+#[must_use = "every scripting query must receive exactly one reply — dropping the token silently loses the response"]
 pub struct ScriptReplyToken {
     _token: u64,
 }

@@ -573,6 +573,16 @@ pub trait Handler {
 }
 ```
 
+### Evolution directions
+
+The Handler trait above covers the compositor protocol — the single protocol relationship each pane currently has. As Tier 2 features add new protocol relationships (clipboard sessions, inter-pane messaging, system service channels), the handler model evolves in two ways:
+
+- **Per-channel handlers (C5).** When the looper supports multiple typed channels, handlers must declare which channel(s) they service. A clipboard handler handles clipboard protocol messages; the compositor handler handles compositor messages. The current single Handler trait splits into per-channel traits, preserving the default-method ergonomics.
+
+- **Conversation-level failure (C3).** When inter-pane request-response exists, pending requests must resolve to failure when the peer exits — not just the actor-level `pane_exited()` signal but a per-request callback or future resolution. The monitor/PaneExited mechanism remains the actor-level signal; conversation-level failure layers on top.
+
+These are design directions, not current API changes. See serena memory `pane/session_type_design_principles` for the full rationale.
+
 ### Example: a handler with state
 
 ```rust

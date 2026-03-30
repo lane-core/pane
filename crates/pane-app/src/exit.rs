@@ -31,6 +31,11 @@ impl ExitReason {
 /// When pane A monitors pane B (via Messenger::monitor()), A registers
 /// its looper_tx here. When B exits, the broadcaster sends
 /// Message::PaneExited to all registered watchers.
+///
+/// Limitation: this is actor-level notification only — it says WHO died,
+/// not WHICH pending interaction failed. When inter-pane request-response
+/// exists, conversation-level failure callbacks are needed on top of this.
+/// See serena memory `pane/eact_analysis_gaps` Gap 3.
 #[derive(Clone, Default)]
 pub(crate) struct ExitBroadcaster {
     watchers: Arc<Mutex<Vec<mpsc::SyncSender<LooperMessage>>>>,
