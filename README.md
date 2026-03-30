@@ -53,63 +53,37 @@ routing is a kit-level concern, not a central server. the kit
 evaluates rules locally and dispatches directly — sender to
 receiver, the way BeOS's BMessenger worked. no intermediary.
 
-servers
--------
+architecture
+------------
 
-small processes, each doing one thing.
+the system has two layers: servers and kits.
 
-    pane-comp       compositor, layout, chrome
-    pane-roster     app lifecycle, service registry
-    pane-store      attribute indexing, change notifications
-    pane-fs         FUSE at /pane/
-    pane-watchdog   heartbeat monitor, escalation
-
-configuration is files. plugin discovery is directories.
-no config parsers, no SIGHUP, no restart.
-
-kits
-----
+servers are small processes, each doing one thing. the compositor
+owns the display. other servers handle lifecycle, storage,
+filesystem projection, and health monitoring. configuration is
+files. plugin discovery is directories. no config parsers, no
+SIGHUP, no restart.
 
 kits are the programming model, not wrappers over a protocol.
+they provide wire types, session-typed channels, the application
+framework (application, pane, messenger, handler), filesystem
+notification, rendering, text, input, and media. a kit is the
+right abstraction for its domain — not a lowest-common-denominator
+binding.
 
-    pane-proto      wire types, protocol enums, session definitions
-    pane-session    session-typed channels (Chan<S, Transport>)
-    pane-app        application kit: App, Pane, Messenger, Handler
-    pane-notify     filesystem notification (fanotify/inotify)
-    pane-ui         text rendering, widgets, styling, layout
-    pane-text       text buffers, structural regular expressions
-    pane-input      generalized keybinding grammar
-    pane-media      PipeWire abstraction
-    pane-ai         agent infrastructure
-
-stack
------
-
-    Rust            core system layer
-    smithay         Wayland compositor
-    s6              init and service supervision
-    Nix             build system and package management
-    btrfs           target filesystem
-    Landlock        agent sandboxing
-    PipeWire        audio and media
-    Vello           widget rendering (wgpu)
-
-fonts
------
-
-    Inter           proportional, ui chrome
-    Monoid          monospace, text content and code
+the crate layout under `crates/` is the source of truth for
+what exists and what each component does.
 
 building
 --------
 
-    direnv allow            # activate nix dev shell (first time)
-    just build              # build all crates
-    just test               # run all tests (120+)
-    just test-crate pane-app   # test a specific crate
-    just lint               # clippy
-    just fmt                # rustfmt + nixfmt
-    just doc                # generate API docs
+    direnv allow               # activate nix dev shell (first time)
+    just build                 # build all crates
+    just test                  # run all tests
+    just test-crate <name>     # test a specific crate
+    just lint                  # clippy
+    just fmt                   # rustfmt + nixfmt
+    just doc                   # generate API docs
 
 license
 -------
