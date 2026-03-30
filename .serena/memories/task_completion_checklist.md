@@ -8,4 +8,4 @@ When a coding task is completed:
 4. **Count tests:** Verify test count hasn't decreased
 5. **Tee output to /tmp:** Always `| tee /tmp/test.log | tail -40` for long output
 
-Do NOT commit unless explicitly asked. Do NOT push unless explicitly asked.
+After completing a planned multi-phase task where all tests and doc builds pass, commit the results with a descriptive message. For single-file or ad-hoc changes, check before committing. Do NOT push unless explicitly asked.

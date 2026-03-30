@@ -31,21 +31,38 @@ Small concrete items identified by auditing the codebase against the session-typ
 - [x] **pane-server read pump → calloop SessionSource** — replaced thread-per-client read pump with calloop SessionSource for event-driven message dispatch. Messages dispatch immediately on fd-readiness instead of polled once per frame.
 - [x] **Pulse timer cancellation** — `set_pulse_rate()` now cancels the previous timer via shared `Arc<Mutex<Option<TimerToken>>>`. `Duration::ZERO` cancels cleanly.
 
-### Haiku Book audit (retroactive)
+### Haiku Book audit (completed)
 
-Verify existing kit implementations against their Haiku Book entries. For each implemented type with Be lineage, the Be engineer reads the corresponding `.dox` file and checks:
-- Hooks/methods we didn't implement — intentional omission or oversight?
-- Threading/locking considerations we didn't address
-- Pitfalls warned about in the Haiku docs
-- Behavioral contracts we may have diverged from without documenting
+Audited all 7 implemented types against their Haiku Book `.dox` entries. Full audit reports in session history. Summary of actionable findings:
 
-- [ ] **App vs BApplication** — `reference/haiku-book/app/Application.dox`
-- [ ] **Handler vs BHandler** — `reference/haiku-book/app/Handler.dox`
-- [ ] **Messenger vs BMessenger** — `reference/haiku-book/app/Messenger.dox`
-- [ ] **Message vs BMessage** — `reference/haiku-book/app/Message.dox`
-- [ ] **MessageFilter vs BMessageFilter** — `reference/haiku-book/app/MessageFilter.dox`
-- [ ] **Pane vs BWindow** — `reference/haiku-book/interface/Window.dox`
-- [ ] **pane-notify vs BNodeMonitor** — `reference/haiku-book/storage/NodeMonitor.dox`
+**Bug:**
+- [ ] **TimerToken cancel: `Relaxed` → `Release`/`Acquire`** — `proxy.rs` cancel flag ordering is unsound on ARM.
+
+**Must address:**
+- [ ] **Application-defined messages** — `Message` is a closed enum. Apps can't post custom events. Need `Message::App(Box<dyn Any + Send>)` or similar for async results.
+- [ ] **pane-notify Event struct** — too thin. Needs move cookie, attr name/cause, stat-change fields. Restructure `EventKind` with payload variants.
+- [ ] **pane-notify `Modify`/`Attrib` split** — conflates content writes, stat changes, xattr changes. Align with Haiku/inotify three-way distinction.
+- [ ] **pane-notify move model** — split `MovedFrom`/`MovedTo` without correlation. Unify into `Moved { from, to }` or add cookie.
+- [ ] **Synchronous send-reply** — `Messenger` has no blocking request-response. Needed for scripting + inter-pane IPC.
+- [ ] **Document `send_message()` blocking** — blocks when channel full (256). Add `try_send_message()` / timeout variant.
+
+**Should address (Tier 2 prerequisites):**
+- [ ] **`ScreenChanged` event** — DPI/scale awareness. Real Wayland capability (`wl_output` changes).
+- [ ] **`RequestActivate`** — apps can't programmatically pull focus to a pane.
+- [ ] **Fullscreen request** — `ClientToComp::SetFullscreen`.
+- [ ] **`Messenger::is_valid()`** — proactive liveness check for long-held handles.
+- [ ] **Runtime filter mutation** — no add/remove filters from within a handler. Need `Messenger::add_filter()`.
+- [ ] **Timer consolidation** — one thread per timer won't scale. Single timer service per app.
+- [ ] **pane-notify: mount/unmount events** — pane-store needs these for new volume indexing.
+- [ ] **pane-notify: recursive watching** — build into pane-notify, at least as opt-in `watch_path_recursive()`.
+- [ ] **App-level quit protocol** — no atomic "ask all panes, any can veto" for save-all-or-cancel.
+- [ ] **`RefsReceived` equivalent** — file delivery from file managers.
+
+**Document (divergences not yet recorded):**
+- [ ] **Handler: no handler chain** — intentional, undocumented. Add `# BeOS` divergence note.
+- [ ] **Handler: observer pattern decision** — Be's `StartWatching`/`SendNotices` vs pane's messaging+filesystem approach. Document the conscious choice.
+- [ ] **Filter: retargeting absent** — intentional (one handler per pane). Document.
+- [ ] **pane-notify: `WatchFlags` vs `EventKind`** — conflated. Note this will need separation for scope modifiers.
 
 ## Next
 

@@ -21,9 +21,11 @@ See PLAN.md at the project root for the current roadmap. PLAN.md is the living d
 - `cargo check` / `cargo test` works on macOS (default-members excludes pane-comp)
 - `just build-comp` cross-builds compositor via nix
 - `just vm-push` deploys to running VM via nix copy
-- docs/ is flat, specs are living documents
+- Foundational specs live in docs/ (immutable). Kit-level API docs live in Rust doc comments (source of truth for implemented crates).
+- Style guide: `docs/kit-documentation-style.md` — Be Book-derived, credits both Be and Haiku
+- Haiku Book (MIT) hosted at `reference/haiku-book/` — primary API reference for heritage
 - serena is sole memory system
-- Be engineer must be consulted before implementing new subsystems
+- Be engineer must be consulted before implementing new subsystems, producing a reading list of specific `.dox` files and a verification checklist
 
 ## Design guidance
 
@@ -34,10 +36,11 @@ All Tier 2 protocol work (clipboard, observer, DnD, inter-pane messaging) should
 
 Key takeaways: sub-protocols use typestate handles at the API surface (C2), new channels into the looper are separate typed channels (C1), failure modes consider per-conversation callbacks (C3).
 
-## Recent work completed this session
-- BeAPI naming audit (Message, Messenger, close_requested, activated/deactivated, resize_to, fallback, MessageFilter)
-- Rust idiom audit (all 30 findings fixed — no panics in library code, Debug on all public types, error source chains)
-- Documentation consolidation (openspec retired, flat docs/, serena as sole memory)
-- Crash monitoring + backpressure added
-- Pulse + ShortcutFilter + geometry control added
-- Removed Builtin/CommandAction (all commands go through handler)
+## Recent work
+- Kit API documentation: heritage annotations on all four kit crates (pane-proto, pane-session, pane-app, pane-notify)
+- Haiku Book hosted at `reference/haiku-book/` (273 .dox files, MIT)
+- Documentation style guide written (`docs/kit-documentation-style.md`)
+- `docs/pane-app.md` archived — content absorbed into pane-app crate doc comments
+- `docs/architecture.md` §4 trimmed — implemented kit descriptions removed, points to `cargo doc`
+- Retroactive Haiku Book audit in progress (PLAN.md)
+- Workflow updated: Be engineer consultations produce reading list + verification checklist
