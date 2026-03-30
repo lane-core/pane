@@ -64,6 +64,7 @@ pub mod handler;
 pub mod mock; // pub for integration tests
 pub mod pane;
 pub mod proxy;
+pub mod reply;
 pub mod shortcuts;
 pub mod tag;
 
@@ -91,6 +92,7 @@ pub use filter::{MessageFilter, FilterAction};
 pub use handler::Handler;
 pub use pane::Pane;
 pub use proxy::{Messenger, TimerToken};
+pub use reply::ReplyPort;
 pub use shortcuts::KeyCombo;
 pub use tag::{Tag, CommandBuilder, cmd};
 

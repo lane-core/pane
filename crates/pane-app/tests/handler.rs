@@ -6,8 +6,9 @@ use std::any::Any;
 use std::num::NonZeroU32;
 use std::sync::mpsc;
 use std::sync::{Arc, Mutex};
+use std::time::Duration;
 
-use pane_app::{Message, Messenger, Handler, LooperMessage};
+use pane_app::{Message, Messenger, Handler, LooperMessage, ReplyPort};
 use pane_app::error::Result;
 use pane_proto::event::{KeyEvent, Key, Modifiers, KeyState};
 use pane_proto::message::PaneId;
@@ -199,4 +200,123 @@ fn post_app_message_round_trip() {
         }
         other => panic!("expected App message, got {:?}", other),
     }
+}
+
+// --- Reply mechanism tests ---
+
+/// Handler that replies to requests with the request data doubled.
+struct EchoHandler;
+
+impl Handler for EchoHandler {
+    fn handle_request(&mut self, _proxy: &Messenger, msg: Message, reply_port: ReplyPort) -> Result<bool> {
+        if let Message::App(payload) = msg {
+            if let Some(n) = payload.downcast_ref::<u64>() {
+                reply_port.reply(n * 2);
+                return Ok(true);
+            }
+        }
+        // Unknown request — drop reply_port (sends ReplyFailed)
+        Ok(true)
+    }
+
+    fn close_requested(&mut self, _proxy: &Messenger) -> Result<bool> {
+        Ok(false)
+    }
+}
+
+/// Helper: create a proxy with looper channel, return (proxy, receiver).
+/// The proxy can be cloned and shared across threads.
+fn make_looper_proxy(id: PaneId) -> (Messenger, mpsc::Receiver<LooperMessage>) {
+    let (comp_tx, _) = mpsc::channel::<ClientToComp>();
+    let (looper_tx, looper_rx) = mpsc::sync_channel::<LooperMessage>(256);
+    (Messenger::new(id, comp_tx).with_looper(looper_tx), looper_rx)
+}
+
+#[test]
+fn send_and_wait_round_trip() {
+    let (target_proxy, target_rx) = make_looper_proxy(pane_id(2));
+    let target_for_send = target_proxy.clone();
+
+    let target_handle = std::thread::spawn(move || {
+        let filters = pane_app::filter::FilterChain::new();
+        pane_app::looper::run_handler(pane_id(2), target_rx, filters, target_proxy, EchoHandler)
+    });
+
+    let (caller_proxy, _caller_rx) = make_looper_proxy(pane_id(1));
+
+    let reply = caller_proxy.send_and_wait(
+        &target_for_send,
+        Message::App(Box::new(21u64)),
+        Duration::from_secs(2),
+    ).unwrap();
+
+    let value = reply.downcast_ref::<u64>().unwrap();
+    assert_eq!(*value, 42, "echo handler should double the value");
+
+    target_for_send.send_message(Message::CloseRequested).unwrap();
+    target_handle.join().unwrap().unwrap();
+}
+
+#[test]
+fn reply_port_drop_sends_reply_failed() {
+    struct IgnoreHandler;
+    impl Handler for IgnoreHandler {
+        fn handle_request(&mut self, _proxy: &Messenger, _msg: Message, _reply_port: ReplyPort) -> Result<bool> {
+            // reply_port dropped here → sends ReplyFailed
+            Ok(true)
+        }
+        fn close_requested(&mut self, _proxy: &Messenger) -> Result<bool> {
+            Ok(false)
+        }
+    }
+
+    let (target_proxy, target_rx) = make_looper_proxy(pane_id(2));
+    let target_for_send = target_proxy.clone();
+
+    let target_handle = std::thread::spawn(move || {
+        let filters = pane_app::filter::FilterChain::new();
+        pane_app::looper::run_handler(pane_id(2), target_rx, filters, target_proxy, IgnoreHandler)
+    });
+
+    let (caller_proxy, _) = make_looper_proxy(pane_id(1));
+
+    let result = caller_proxy.send_and_wait(
+        &target_for_send,
+        Message::App(Box::new(42u64)),
+        Duration::from_secs(2),
+    );
+
+    assert!(result.is_err(), "should get ReplyFailed when reply port is dropped");
+
+    target_for_send.send_message(Message::CloseRequested).unwrap();
+    target_handle.join().unwrap().unwrap();
+}
+
+#[test]
+fn send_request_async_round_trip() {
+    let (target_proxy, target_rx) = make_looper_proxy(pane_id(2));
+    let target_for_send = target_proxy.clone();
+
+    let target_handle = std::thread::spawn(move || {
+        let filters = pane_app::filter::FilterChain::new();
+        pane_app::looper::run_handler(pane_id(2), target_rx, filters, target_proxy, EchoHandler)
+    });
+
+    let (caller_proxy, caller_rx) = make_looper_proxy(pane_id(1));
+
+    let token = caller_proxy.send_request(&target_for_send, Message::App(Box::new(21u64))).unwrap();
+
+    // The reply should arrive on the caller's looper channel
+    let reply_msg = caller_rx.recv_timeout(Duration::from_secs(2)).unwrap();
+    match reply_msg {
+        LooperMessage::Posted(Message::Reply { token: t, payload }) => {
+            assert_eq!(t, token);
+            let value = payload.downcast_ref::<u64>().unwrap();
+            assert_eq!(*value, 42);
+        }
+        other => panic!("expected Reply, got {:?}", other),
+    }
+
+    target_for_send.send_message(Message::CloseRequested).unwrap();
+    target_handle.join().unwrap().unwrap();
 }

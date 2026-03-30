@@ -19,6 +19,7 @@ use std::time::{Duration, Instant};
 
 use pane_proto::protocol::CompToClient;
 use crate::event::Message;
+use crate::reply::ReplyPort;
 
 /// Internal message wrapper for the looper's unified channel.
 /// The looper's recv() gets these; it unwraps before dispatch.
@@ -41,4 +42,7 @@ pub enum LooperMessage {
         event: Message,
         fire_at: Instant,
     },
+    /// A message that expects a reply. The handler receives both
+    /// the message and the ReplyPort.
+    Request(Message, ReplyPort),
 }

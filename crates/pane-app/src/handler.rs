@@ -5,6 +5,7 @@ use pane_proto::message::PaneId;
 use pane_proto::protocol::PaneGeometry;
 
 use crate::error::Result;
+use crate::event::Message;
 use crate::exit::ExitReason;
 use crate::proxy::Messenger;
 
@@ -205,6 +206,46 @@ pub trait Handler: Send + 'static {
     ///
     /// `BHandler::MessageReceived` for app-defined `what` codes.
     fn message_received(&mut self, _proxy: &Messenger, _msg: Box<dyn Any + Send>) -> Result<bool> {
+        Ok(true)
+    }
+
+    /// A reply to a request sent via [`Messenger::send_request`].
+    ///
+    /// The `token` matches the one returned by `send_request`. Downcast
+    /// the payload to your expected reply type.
+    ///
+    /// Default: continues the event loop (`Ok(true)`).
+    ///
+    /// # BeOS
+    ///
+    /// Equivalent to receiving a reply `BMessage` via async `SendMessage`
+    /// with a reply handler target.
+    fn reply_received(&mut self, _proxy: &Messenger, _token: u64, _payload: Box<dyn Any + Send>) -> Result<bool> {
+        Ok(true)
+    }
+
+    /// A pending request failed — the target dropped its [`ReplyPort`](crate::ReplyPort)
+    /// without replying, or the target pane exited.
+    ///
+    /// Default: continues the event loop (`Ok(true)`).
+    fn reply_failed(&mut self, _proxy: &Messenger, _token: u64) -> Result<bool> {
+        Ok(true)
+    }
+
+    /// A request was received that expects a reply. Call
+    /// [`ReplyPort::reply`](crate::ReplyPort::reply) to respond.
+    ///
+    /// If you drop the `reply_port` without calling `.reply()`, the
+    /// requestor receives `Message::ReplyFailed` (same contract as
+    /// Be's `BMessage` destructor sending `B_NO_REPLY`).
+    ///
+    /// Default: drops the reply port (sends ReplyFailed), continues.
+    fn handle_request(
+        &mut self,
+        _proxy: &Messenger,
+        _msg: Message,
+        _reply_port: crate::ReplyPort,
+    ) -> Result<bool> {
         Ok(true)
     }
 

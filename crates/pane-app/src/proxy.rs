@@ -90,6 +90,74 @@ impl Messenger {
         Ok(())
     }
 
+    /// Send a message to another pane's looper and block for a reply.
+    ///
+    /// The target's handler receives the message via
+    /// [`Handler::handle_request`] with a [`ReplyPort`](crate::ReplyPort).
+    /// The target calls `reply_port.reply(value)` to respond.
+    ///
+    /// **Do NOT call from a looper thread** — it blocks the event loop.
+    /// Use from worker threads, CLI tools, or `App` methods only.
+    /// The async reply path (via `Handler::reply_received`) is the
+    /// deadlock-free alternative for looper-to-looper communication.
+    ///
+    /// # BeOS
+    ///
+    /// `BMessenger::SendMessage(BMessage*, BMessage* reply, timeout)` —
+    /// the synchronous send-and-wait variant. Be's classic deadlock
+    /// (mutual synchronous send between two loopers) is why pane makes
+    /// the async path primary and restricts this to non-looper callers.
+    pub fn send_and_wait(
+        &self,
+        target: &Messenger,
+        msg: Message,
+        timeout: std::time::Duration,
+    ) -> std::result::Result<Box<dyn std::any::Any + Send>, PaneError> {
+        let target_tx = target.looper_tx.as_ref().ok_or(PaneError::Disconnected)?;
+        let (reply_tx, reply_rx) = std::sync::mpsc::sync_channel::<Message>(1);
+
+        let token = next_timer_id(); // reuse the atomic counter for unique IDs
+        let reply_port = crate::reply::ReplyPort::new(token, move |msg| {
+            let _ = reply_tx.send(msg);
+        });
+
+        target_tx.send(LooperMessage::Request(msg, reply_port))
+            .map_err(|_| PaneError::Disconnected)?;
+
+        match reply_rx.recv_timeout(timeout) {
+            Ok(Message::Reply { payload, .. }) => Ok(payload),
+            Ok(Message::ReplyFailed { .. }) => Err(PaneError::Refused),
+            Ok(_) => Err(PaneError::Refused), // unexpected message type
+            Err(std::sync::mpsc::RecvTimeoutError::Timeout) => Err(PaneError::Timeout),
+            Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => Err(PaneError::Disconnected),
+        }
+    }
+
+    /// Send an async request to another pane's looper. The reply
+    /// arrives as `Message::Reply` in your handler's `reply_received`.
+    ///
+    /// Returns a token to match against when the reply arrives.
+    /// If the target drops the request without replying, your handler
+    /// receives `Message::ReplyFailed` with the same token.
+    pub fn send_request(
+        &self,
+        target: &Messenger,
+        msg: Message,
+    ) -> Result<u64> {
+        let target_tx = target.looper_tx.as_ref().ok_or(PaneError::Disconnected)?;
+        let self_tx = self.looper_tx.as_ref().ok_or(PaneError::Disconnected)?.clone();
+
+        let token = next_timer_id();
+        let reply_port = crate::reply::ReplyPort::new(token, move |msg| {
+            let _ = self_tx.send(LooperMessage::Posted(msg));
+        });
+
+        target_tx.send(LooperMessage::Request(msg, reply_port))
+            .map_err(|_| PaneError::Disconnected)?;
+
+        Ok(token)
+    }
+
     /// Post an application-defined message to this pane's looper.
     ///
     /// Use this from worker threads to deliver async results back to

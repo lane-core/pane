@@ -77,6 +77,24 @@ pub enum Message {
     /// Equivalent to app-defined `BMessage` `what` codes dispatched
     /// through `BHandler::MessageReceived`.
     App(Box<dyn Any + Send>),
+    /// Reply to a request sent via [`Messenger::send_and_wait`] or
+    /// the async request API. Dispatches to [`Handler::reply_received`].
+    ///
+    /// # BeOS
+    ///
+    /// Equivalent to the reply `BMessage` delivered via `BMessage::SendReply`.
+    Reply {
+        token: u64,
+        payload: Box<dyn Any + Send>,
+    },
+    /// A request's reply failed — the target dropped the [`ReplyPort`](crate::ReplyPort)
+    /// without replying, or the target pane exited mid-conversation.
+    /// Dispatches to [`Handler::reply_failed`].
+    ///
+    /// Per EAct principle C3: per-conversation failure notification.
+    ReplyFailed {
+        token: u64,
+    },
 }
 
 impl Clone for Message {
@@ -100,7 +118,11 @@ impl Clone for Message {
             Self::PaneExited { pane, reason } =>
                 Self::PaneExited { pane: *pane, reason: reason.clone() },
             Self::App(_) =>
-                panic!("App messages are consumed by message_received, not cloned"),
+                panic!("App messages are consumed, not cloned"),
+            Self::Reply { .. } =>
+                panic!("Reply messages are consumed, not cloned"),
+            Self::ReplyFailed { token } =>
+                Self::ReplyFailed { token: *token },
         }
     }
 }

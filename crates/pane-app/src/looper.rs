@@ -151,14 +151,30 @@ fn handle_timer_message(msg: &LooperMessage, timers: &mut Timers) -> bool {
     }
 }
 
-/// Unwrap a LooperMessage into a Message.
-/// Returns None for compositor messages with wrong pane_id and for
-/// timer control messages (handled separately by the looper).
-fn unwrap_message(msg: LooperMessage, pane_id: PaneId) -> Option<Message> {
+use crate::reply::ReplyPort;
+
+/// Result of unwrapping a LooperMessage.
+enum Unwrapped {
+    /// A normal event for dispatch.
+    Event(Message),
+    /// A request that expects a reply.
+    Request(Message, ReplyPort),
+    /// Timer control or wrong-pane message — skip.
+    Skip,
+}
+
+/// Unwrap a LooperMessage for dispatch.
+fn unwrap_message(msg: LooperMessage, pane_id: PaneId) -> Unwrapped {
     match msg {
-        LooperMessage::FromComp(comp_msg) => Message::try_from_comp(comp_msg, pane_id),
-        LooperMessage::Posted(event) => Some(event),
-        LooperMessage::AddTimer { .. } | LooperMessage::AddOneShot { .. } => None,
+        LooperMessage::FromComp(comp_msg) => {
+            match Message::try_from_comp(comp_msg, pane_id) {
+                Some(event) => Unwrapped::Event(event),
+                None => Unwrapped::Skip,
+            }
+        }
+        LooperMessage::Posted(event) => Unwrapped::Event(event),
+        LooperMessage::Request(msg, reply) => Unwrapped::Request(msg, reply),
+        LooperMessage::AddTimer { .. } | LooperMessage::AddOneShot { .. } => Unwrapped::Skip,
     }
 }
 
@@ -176,47 +192,50 @@ fn drain_and_coalesce(
     receiver: &mpsc::Receiver<LooperMessage>,
     pane_id: PaneId,
     timers: &mut Timers,
-) -> Vec<Message> {
+) -> Vec<Unwrapped> {
     let mut batch = vec![first];
     while let Ok(more) = receiver.try_recv() {
         batch.push(more);
     }
 
-    let mut events: Vec<Message> = Vec::with_capacity(batch.len());
+    let mut events: Vec<Unwrapped> = Vec::with_capacity(batch.len());
     let mut last_resize_idx: Option<usize> = None;
     let mut last_mouse_move_idx: Option<usize> = None;
 
     for msg in batch {
-        // Register timer control messages before unwrapping
         if handle_timer_message(&msg, timers) {
             continue;
         }
 
-        let event = match unwrap_message(msg, pane_id) {
-            Some(e) => e,
-            None => continue,
-        };
-
-        match &event {
-            Message::Resize(_) => {
-                if let Some(idx) = last_resize_idx {
-                    events[idx] = event;
-                } else {
-                    last_resize_idx = Some(events.len());
-                    events.push(event);
+        match unwrap_message(msg, pane_id) {
+            Unwrapped::Event(event) => {
+                match &event {
+                    Message::Resize(_) => {
+                        if let Some(idx) = last_resize_idx {
+                            events[idx] = Unwrapped::Event(event);
+                        } else {
+                            last_resize_idx = Some(events.len());
+                            events.push(Unwrapped::Event(event));
+                        }
+                    }
+                    Message::Mouse(m) if matches!(m.kind, MouseEventKind::Move) => {
+                        if let Some(idx) = last_mouse_move_idx {
+                            events[idx] = Unwrapped::Event(event);
+                        } else {
+                            last_mouse_move_idx = Some(events.len());
+                            events.push(Unwrapped::Event(event));
+                        }
+                    }
+                    _ => {
+                        events.push(Unwrapped::Event(event));
+                    }
                 }
             }
-            Message::Mouse(m) if matches!(m.kind, MouseEventKind::Move) => {
-                if let Some(idx) = last_mouse_move_idx {
-                    events[idx] = event;
-                } else {
-                    last_mouse_move_idx = Some(events.len());
-                    events.push(event);
-                }
+            req @ Unwrapped::Request(_, _) => {
+                // Requests are never coalesced — always delivered
+                events.push(req);
             }
-            _ => {
-                events.push(event);
-            }
+            Unwrapped::Skip => {}
         }
     }
 
@@ -249,37 +268,52 @@ pub fn run_closure(
             }
         };
 
-        // Fire due timers — their events go first in the batch
         let timer_events = timers.fire_due();
 
-        // Drain channel and coalesce (also registers any timer control messages)
         let mut batch = match msg {
             Some(msg) => drain_and_coalesce(msg, &receiver, pane_id, &mut timers),
             None => Vec::new(),
         };
 
-        // Prepend timer events (they fired before the channel message arrived)
+        // Prepend timer events (they fired before the channel message)
         if !timer_events.is_empty() {
-            let mut all = timer_events;
+            let mut all: Vec<Unwrapped> = timer_events.into_iter()
+                .map(Unwrapped::Event)
+                .collect();
             all.append(&mut batch);
             batch = all;
         }
 
-        for event in batch {
-            let is_close = matches!(event, Message::CloseRequested);
+        for item in batch {
+            match item {
+                Unwrapped::Event(event) => {
+                    let is_close = matches!(event, Message::CloseRequested);
 
-            let event = match filters.apply(event) {
-                Some(e) => e,
-                None => continue,
-            };
+                    let event = match filters.apply(event) {
+                        Some(e) => e,
+                        None => continue,
+                    };
 
-            let keep_going = handler(&proxy, event)?;
-            if !keep_going {
-                return Ok(if is_close {
-                    ExitReason::CompositorClose
-                } else {
-                    ExitReason::HandlerExit
-                });
+                    let keep_going = handler(&proxy, event)?;
+                    if !keep_going {
+                        return Ok(if is_close {
+                            ExitReason::CompositorClose
+                        } else {
+                            ExitReason::HandlerExit
+                        });
+                    }
+                }
+                Unwrapped::Request(msg, reply_port) => {
+                    // For closure handlers, requests are delivered as
+                    // regular messages. The reply port is dropped (sends
+                    // ReplyFailed). Use run_handler for request support.
+                    let keep_going = handler(&proxy, msg)?;
+                    drop(reply_port);
+                    if !keep_going {
+                        return Ok(ExitReason::HandlerExit);
+                    }
+                }
+                Unwrapped::Skip => {}
             }
         }
     }
@@ -313,26 +347,39 @@ pub fn run_handler(
         };
 
         if !timer_events.is_empty() {
-            let mut all = timer_events;
+            let mut all: Vec<Unwrapped> = timer_events.into_iter()
+                .map(Unwrapped::Event)
+                .collect();
             all.append(&mut batch);
             batch = all;
         }
 
-        for event in batch {
-            let is_close = matches!(event, Message::CloseRequested);
+        for item in batch {
+            match item {
+                Unwrapped::Event(event) => {
+                    let is_close = matches!(event, Message::CloseRequested);
 
-            let event = match filters.apply(event) {
-                Some(e) => e,
-                None => continue,
-            };
+                    let event = match filters.apply(event) {
+                        Some(e) => e,
+                        None => continue,
+                    };
 
-            let keep_going = dispatch_to_handler(&mut handler, &proxy, event)?;
-            if !keep_going {
-                return Ok(if is_close {
-                    ExitReason::CompositorClose
-                } else {
-                    ExitReason::HandlerExit
-                });
+                    let keep_going = dispatch_to_handler(&mut handler, &proxy, event)?;
+                    if !keep_going {
+                        return Ok(if is_close {
+                            ExitReason::CompositorClose
+                        } else {
+                            ExitReason::HandlerExit
+                        });
+                    }
+                }
+                Unwrapped::Request(msg, reply_port) => {
+                    let keep_going = handler.handle_request(&proxy, msg, reply_port)?;
+                    if !keep_going {
+                        return Ok(ExitReason::HandlerExit);
+                    }
+                }
+                Unwrapped::Skip => {}
             }
         }
     }
@@ -358,5 +405,7 @@ fn dispatch_to_handler(handler: &mut impl Handler, proxy: &Messenger, event: Mes
         Message::Disconnected => handler.disconnected(proxy),
         Message::PaneExited { pane, reason } => handler.pane_exited(proxy, pane, reason),
         Message::App(payload) => handler.message_received(proxy, payload),
+        Message::Reply { token, payload } => handler.reply_received(proxy, token, payload),
+        Message::ReplyFailed { token } => handler.reply_failed(proxy, token),
     }
 }
