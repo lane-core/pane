@@ -36,14 +36,14 @@ Small concrete items identified by auditing the codebase against the session-typ
 Audited all 7 implemented types against their Haiku Book `.dox` entries. Full audit reports in session history. Summary of actionable findings:
 
 **Bug:**
-- [ ] **TimerToken cancel: `Relaxed` → `Release`/`Acquire`** — `proxy.rs` cancel flag ordering is unsound on ARM.
+- [x] **TimerToken cancel: `Relaxed` → `Release`/`Acquire`** — fixed. Release on store, Acquire on load.
 
 **Must address:**
 - [x] **Application-defined messages** — `Message::App(Box<dyn Any + Send>)` + `Messenger::post_app_message<T>()` + `Handler::message_received()`. Sending is generic, erasure is internal.
 - [x] **pane-notify Event struct** — restructured with NodeRef, StatFields bitmask, AttrCause, move cookies. WatchFlags separated from EventKind.
 - [x] **pane-notify `Modify`/`Attrib` split** — replaced with `StatChanged { fields }` + `AttrChanged { attr, cause }`. Follows Haiku's model.
 - [x] **pane-notify move model** — `MovedFrom`/`MovedTo` with inotify cookie for correlation.
-- [ ] **Synchronous send-reply** — `Messenger` has no blocking request-response. Needed for scripting + inter-pane IPC.
+- [x] **Synchronous send-reply** — `send_and_wait` (blocking) + `send_request` (async) + `ReplyPort` (session-type handle, exactly-one-reply via ownership). Generalizes `pending_creates`.
 - [ ] **Document `send_message()` blocking** — blocks when channel full (256). Add `try_send_message()` / timeout variant.
 
 **Should address (Tier 2 prerequisites):**
@@ -52,7 +52,7 @@ Audited all 7 implemented types against their Haiku Book `.dox` entries. Full au
 - [ ] **Fullscreen request** — `ClientToComp::SetFullscreen`.
 - [ ] **`Messenger::is_valid()`** — proactive liveness check for long-held handles.
 - [ ] **Runtime filter mutation** — no add/remove filters from within a handler. Need `Messenger::add_filter()`.
-- [ ] **Timer consolidation** — one thread per timer won't scale. Single timer service per app.
+- [x] **Timer consolidation** — `recv_timeout` in the looper, zero timer threads. Timers fire through the looper's event loop.
 - [ ] **pane-notify: mount/unmount events** — pane-store needs these for new volume indexing.
 - [ ] **pane-notify: recursive watching** — build into pane-notify, at least as opt-in `watch_path_recursive()`.
 - [ ] **App-level quit protocol** — no atomic "ask all panes, any can veto" for save-all-or-cancel.
