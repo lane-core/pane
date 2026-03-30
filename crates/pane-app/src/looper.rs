@@ -31,7 +31,12 @@ struct TimerEntry {
     next_fire: Instant,
     /// None = one-shot, Some = periodic.
     interval: Option<Duration>,
-    event: Message,
+    /// How to produce the event. Periodic timers use a factory closure
+    /// (called each fire, no Clone needed). One-shots store the event
+    /// directly in `one_shot_event` and this is None.
+    make_event: Option<Box<dyn Fn() -> Message + Send>>,
+    /// The event for one-shot timers (consumed on fire).
+    one_shot_event: Option<Message>,
     /// For periodic timers: the cancellation flag shared with TimerToken.
     /// One-shot timers have no cancellation (they fire once and are removed).
     cancelled: Option<Arc<AtomicBool>>,
@@ -48,27 +53,29 @@ impl Timers {
         Self { entries: Vec::new() }
     }
 
-    /// Add a periodic timer.
+    /// Add a periodic timer with a factory closure.
     fn add_periodic(
         &mut self,
-        event: Message,
+        make_event: Box<dyn Fn() -> Message + Send>,
         interval: Duration,
         cancelled: Arc<AtomicBool>,
     ) {
         self.entries.push(TimerEntry {
             next_fire: Instant::now() + interval,
             interval: Some(interval),
-            event,
+            make_event: Some(make_event),
+            one_shot_event: None,
             cancelled: Some(cancelled),
         });
     }
 
-    /// Add a one-shot delayed event.
+    /// Add a one-shot delayed event (consumed on fire, no Clone needed).
     fn add_one_shot(&mut self, event: Message, fire_at: Instant) {
         self.entries.push(TimerEntry {
             next_fire: fire_at,
             interval: None,
-            event,
+            make_event: None,
+            one_shot_event: Some(event),
             cancelled: None,
         });
     }
@@ -97,17 +104,22 @@ impl Timers {
             }
 
             if entry.next_fire <= now {
-                fired.push(entry.event.clone());
+                // Produce the event: factory for periodic, take for one-shot
+                if let Some(ref make) = entry.make_event {
+                    fired.push(make());
+                } else if let Some(event) = entry.one_shot_event.take() {
+                    fired.push(event);
+                }
+
                 match entry.interval {
                     Some(interval) => {
-                        // Periodic: reschedule. Skip ahead if behind.
                         entry.next_fire = now + interval;
                         true
                     }
                     None => false, // One-shot: remove
                 }
             } else {
-                true // Not yet due
+                true
             }
         });
 
@@ -137,17 +149,20 @@ fn recv_with_timers(
 /// Process a LooperMessage that may be a timer control message.
 /// Returns true if it was a timer message (handled), false if it
 /// needs normal dispatch.
-fn handle_timer_message(msg: &LooperMessage, timers: &mut Timers) -> bool {
+/// Process a LooperMessage that may be a timer control message.
+/// Consumes the message if it's a timer registration.
+/// Returns true if handled, false if it needs normal dispatch.
+fn try_handle_timer(msg: LooperMessage, timers: &mut Timers) -> Option<LooperMessage> {
     match msg {
-        LooperMessage::AddTimer { event, interval, cancelled, .. } => {
-            timers.add_periodic(event.clone(), *interval, cancelled.clone());
-            true
+        LooperMessage::AddTimer { make_event, interval, cancelled, .. } => {
+            timers.add_periodic(make_event, interval, cancelled);
+            None // consumed
         }
         LooperMessage::AddOneShot { event, fire_at } => {
-            timers.add_one_shot(event.clone(), *fire_at);
-            true
+            timers.add_one_shot(event, fire_at);
+            None // consumed
         }
-        _ => false,
+        other => Some(other), // not a timer message, pass through
     }
 }
 
@@ -203,9 +218,11 @@ fn drain_and_coalesce(
     let mut last_mouse_move_idx: Option<usize> = None;
 
     for msg in batch {
-        if handle_timer_message(&msg, timers) {
-            continue;
-        }
+        // Timer registrations are consumed here (moved, not cloned)
+        let msg = match try_handle_timer(msg, timers) {
+            Some(msg) => msg, // not a timer message, continue processing
+            None => continue, // timer message consumed
+        };
 
         match unwrap_message(msg, pane_id) {
             Unwrapped::Event(event) => {

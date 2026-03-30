@@ -272,15 +272,14 @@ impl Messenger {
         if rate.is_zero() {
             return Ok(());
         }
-        *token = Some(self.send_periodic(Message::Pulse, rate)?);
+        *token = Some(self.send_periodic_fn(|| Message::Pulse, rate)?);
         Ok(())
     }
 
     /// Post an event to this pane's looper after a delay.
     ///
-    /// The looper delivers the event after the delay expires. No extra
-    /// thread is spawned — the looper integrates timers into its
-    /// `recv_timeout` loop.
+    /// The event is consumed on delivery (no Clone needed). The looper
+    /// integrates one-shots into its `recv_timeout` loop.
     ///
     /// # BeOS
     ///
@@ -296,17 +295,34 @@ impl Messenger {
 
     /// Post an event to this pane's looper repeatedly at the given interval.
     ///
-    /// Returns a TimerToken that can cancel the timer. The first delivery
-    /// happens after one interval. No extra thread is spawned — the looper
-    /// integrates timers into its `recv_timeout` loop.
+    /// Convenience wrapper that clones the event each fire. The event must
+    /// be a clonable variant (system events like Pulse, Activated, etc.).
+    /// For non-clonable events, use [`send_periodic_fn`](Messenger::send_periodic_fn).
+    ///
+    /// # Panics
+    ///
+    /// Panics at fire time if the event is `Message::App` or `Message::Reply`
+    /// (these are consumed once and cannot be cloned).
+    pub fn send_periodic(&self, event: Message, interval: std::time::Duration) -> Result<TimerToken>
+    {
+        self.send_periodic_fn(move || event.clone(), interval)
+    }
+
+    /// Post events to this pane's looper repeatedly using a factory closure.
+    ///
+    /// The closure is called each time the timer fires, producing a fresh
+    /// event. This avoids cloning and works with any event type.
     ///
     /// # BeOS
     ///
     /// `BMessageRunner` with count=`B_INFINITE_TIMEOUT`. Be's BMessageRunner
     /// was a system service in the registrar; pane integrates timers directly
     /// into each looper because `recv_timeout` makes this natural.
-    pub fn send_periodic(&self, event: Message, interval: std::time::Duration) -> Result<TimerToken>
-    {
+    pub fn send_periodic_fn(
+        &self,
+        make_event: impl Fn() -> Message + Send + 'static,
+        interval: std::time::Duration,
+    ) -> Result<TimerToken> {
         let tx = self.looper_tx.as_ref().ok_or(PaneError::Disconnected)?;
         let id = next_timer_id();
         let cancelled = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
@@ -314,7 +330,7 @@ impl Messenger {
 
         tx.send(LooperMessage::AddTimer {
             id,
-            event,
+            make_event: Box::new(make_event),
             interval,
             cancelled,
         }).map_err(|_| PaneError::Disconnected)?;

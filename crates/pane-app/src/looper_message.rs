@@ -23,17 +23,18 @@ use crate::reply::ReplyPort;
 
 /// Internal message wrapper for the looper's unified channel.
 /// The looper's recv() gets these; it unwraps before dispatch.
-#[derive(Debug)]
 pub enum LooperMessage {
     /// A message from the compositor, forwarded by the dispatcher.
     FromComp(CompToClient),
     /// A self-delivered event from a worker thread via Messenger::send_message().
     Posted(Message),
-    /// Register a periodic timer. The looper fires `event` every `interval`
-    /// until the `cancelled` flag is set.
+    /// Register a periodic timer. The looper calls `make_event` every
+    /// `interval` to produce the event, until the `cancelled` flag is set.
+    /// Using a factory closure avoids cloning — the event is produced
+    /// fresh each fire.
     AddTimer {
         id: u64,
-        event: Message,
+        make_event: Box<dyn Fn() -> Message + Send>,
         interval: Duration,
         cancelled: Arc<AtomicBool>,
     },
@@ -45,4 +46,19 @@ pub enum LooperMessage {
     /// A message that expects a reply. The handler receives both
     /// the message and the ReplyPort.
     Request(Message, ReplyPort),
+}
+
+impl std::fmt::Debug for LooperMessage {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::FromComp(msg) => f.debug_tuple("FromComp").field(msg).finish(),
+            Self::Posted(msg) => f.debug_tuple("Posted").field(msg).finish(),
+            Self::AddTimer { id, interval, .. } =>
+                f.debug_struct("AddTimer").field("id", id).field("interval", interval).finish(),
+            Self::AddOneShot { fire_at, .. } =>
+                f.debug_struct("AddOneShot").field("fire_at", fire_at).finish(),
+            Self::Request(msg, reply) =>
+                f.debug_tuple("Request").field(msg).field(reply).finish(),
+        }
+    }
 }
