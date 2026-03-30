@@ -206,7 +206,7 @@ impl Messenger {
         std::thread::spawn(move || {
             loop {
                 std::thread::sleep(interval);
-                if cancelled.load(std::sync::atomic::Ordering::Relaxed) {
+                if cancelled.load(std::sync::atomic::Ordering::Acquire) {
                     break;
                 }
                 if tx.send(LooperMessage::Posted(event.clone())).is_err() {
@@ -236,7 +236,7 @@ pub struct TimerToken {
 impl TimerToken {
     /// Cancel the periodic timer. The next scheduled delivery will not fire.
     pub fn cancel(&self) {
-        self.cancelled.store(true, std::sync::atomic::Ordering::Relaxed);
+        self.cancelled.store(true, std::sync::atomic::Ordering::Release);
     }
 }
 
