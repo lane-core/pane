@@ -180,6 +180,14 @@ impl Messenger {
     }
 
     /// Request the pane be hidden or shown.
+    ///
+    /// # BeOS
+    ///
+    /// `BWindow::Hide` / `BWindow::Show`. Be used cumulative (refcounted)
+    /// hide/show — two `Hide()` calls required two `Show()` calls. pane
+    /// uses boolean (idempotent) because the compositor owns visibility
+    /// through the layout/tag system. Client-side refcounting can be
+    /// layered on top if needed.
     pub fn set_hidden(&self, hidden: bool) -> Result<()> {
         self.send(ClientToComp::SetHidden { pane: self.id, hidden })
     }

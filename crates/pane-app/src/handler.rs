@@ -41,6 +41,26 @@ use crate::proxy::Messenger;
 /// - Return value controls the event loop (Be used side-effects
 ///   like `PostMessage(B_QUIT_REQUESTED)`)
 /// - Trait with default methods replaces virtual class hierarchy
+///
+/// # BeOS Divergences
+///
+/// **No handler chain.** Be's `SetNextHandler`/`NextHandler` delegated
+/// events through a handler chain within a looper. pane has one handler
+/// per pane — event delegation uses the [`fallback`](Handler::fallback)
+/// method instead. This is intentional: the handler chain was a
+/// workaround for C++ single-dispatch that Rust's trait system replaces.
+///
+/// **No observer pattern on Handler.** Be's `StartWatching`/`SendNotices`
+/// built pub/sub into every handler. pane uses filesystem attributes for
+/// observable state: write to `/pane/{id}/attr/{property}`, watch with
+/// `pane-notify`. This gives persistence, crash recovery, scriptability,
+/// and solves the initial-value problem that Be's approach didn't.
+///
+/// **No dynamic filter mutation.** Be allowed adding/removing filters
+/// at runtime via `AddFilter`/`RemoveFilter`. pane's filters are
+/// configured before the loop starts via [`Pane`](crate::Pane). For
+/// dynamic behavior, use internal state in a filter gated by an
+/// atomic flag.
 pub trait Handler: Send + 'static {
     /// Called once when the pane is ready and its initial geometry is known.
     ///

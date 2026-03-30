@@ -39,10 +39,10 @@ Audited all 7 implemented types against their Haiku Book `.dox` entries. Full au
 - [ ] **TimerToken cancel: `Relaxed` → `Release`/`Acquire`** — `proxy.rs` cancel flag ordering is unsound on ARM.
 
 **Must address:**
-- [ ] **Application-defined messages** — `Message` is a closed enum. Apps can't post custom events. Need `Message::App(Box<dyn Any + Send>)` or similar for async results.
-- [ ] **pane-notify Event struct** — too thin. Needs move cookie, attr name/cause, stat-change fields. Restructure `EventKind` with payload variants.
-- [ ] **pane-notify `Modify`/`Attrib` split** — conflates content writes, stat changes, xattr changes. Align with Haiku/inotify three-way distinction.
-- [ ] **pane-notify move model** — split `MovedFrom`/`MovedTo` without correlation. Unify into `Moved { from, to }` or add cookie.
+- [x] **Application-defined messages** — `Message::App(Box<dyn Any + Send>)` + `Messenger::post_app_message<T>()` + `Handler::message_received()`. Sending is generic, erasure is internal.
+- [x] **pane-notify Event struct** — restructured with NodeRef, StatFields bitmask, AttrCause, move cookies. WatchFlags separated from EventKind.
+- [x] **pane-notify `Modify`/`Attrib` split** — replaced with `StatChanged { fields }` + `AttrChanged { attr, cause }`. Follows Haiku's model.
+- [x] **pane-notify move model** — `MovedFrom`/`MovedTo` with inotify cookie for correlation.
 - [ ] **Synchronous send-reply** — `Messenger` has no blocking request-response. Needed for scripting + inter-pane IPC.
 - [ ] **Document `send_message()` blocking** — blocks when channel full (256). Add `try_send_message()` / timeout variant.
 
@@ -59,10 +59,11 @@ Audited all 7 implemented types against their Haiku Book `.dox` entries. Full au
 - [ ] **`RefsReceived` equivalent** — file delivery from file managers.
 
 **Document (divergences not yet recorded):**
-- [ ] **Handler: no handler chain** — intentional, undocumented. Add `# BeOS` divergence note.
-- [ ] **Handler: observer pattern decision** — Be's `StartWatching`/`SendNotices` vs pane's messaging+filesystem approach. Document the conscious choice.
-- [ ] **Filter: retargeting absent** — intentional (one handler per pane). Document.
-- [ ] **pane-notify: `WatchFlags` vs `EventKind`** — conflated. Note this will need separation for scope modifiers.
+- [x] **Handler: no handler chain** — documented in `# BeOS Divergences` section on Handler trait.
+- [x] **Handler: observer pattern decision** — documented on Handler + serena memory `pane/observer_pattern_decision`. Filesystem attributes, not messaging.
+- [x] **Filter: retargeting absent** — documented on MessageFilter trait.
+- [x] **pane-notify: `WatchFlags` vs `EventKind`** — separated. WatchFlags is the subscription, EventKind is the notification.
+- [x] **Show/Hide: boolean vs cumulative** — documented on `Messenger::set_hidden`. Boolean (idempotent), compositor owns visibility.
 
 ## Next
 

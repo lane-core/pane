@@ -28,6 +28,9 @@ pub enum FilterAction {
 /// - `wants()` pre-filter replaces the `message_delivery` /
 ///   `message_source` enum criteria — more general, same purpose
 /// - Returns [`FilterAction`] enum instead of `filter_result`
+/// - No retargeting (`SetTarget`/`Target`). Be's retargeting redirected
+///   a filtered message to a different handler within the same looper.
+///   pane has one handler per pane, so retargeting is meaningless.
 pub trait MessageFilter: Send + 'static {
     /// Process an event. Return `Pass(event)` to continue dispatch
     /// (possibly with a modified event), or `Consume` to swallow it.
