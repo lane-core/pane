@@ -30,6 +30,15 @@ docs/
 
 ## Process Rules
 
+**Before implementing a new subsystem or major feature:**
+Consult the be-systems-engineer agent with reference to the Be Newsletter archive and Haiku source (`/Users/lane/src/haiku/`). The consultation should cover:
+1. How did Be/Haiku implement the equivalent subsystem?
+2. What newsletter articles discuss its design rationale?
+3. What worked, what didn't, and what would they do differently?
+4. How should we adapt their approach given pane's architecture (Wayland, session types, filesystem scripting)?
+
+This grounds implementation plans in actual engineering experience rather than assumptions about how Be worked. The research archive in `docs/archive/openspec/changes/spec-tightening/` contains prior consultations that may be relevant.
+
 **After any substantial refactor** (mass rename, API restructure):
 1. Code review — correctness, idiom, consistency
 2. Stale documentation review (parallel) — all comments, specs, docs, memories
