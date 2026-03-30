@@ -10,7 +10,10 @@
 //! sequential processing. Concurrency arises from many loopers
 //! running simultaneously, not from concurrency within a looper.
 
-use std::sync::mpsc;
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::mpsc::{self, RecvTimeoutError};
+use std::time::{Duration, Instant};
 
 use pane_proto::event::MouseEventKind;
 use pane_proto::message::PaneId;
@@ -23,16 +26,146 @@ use crate::handler::Handler;
 use crate::looper_message::LooperMessage;
 use crate::proxy::Messenger;
 
+/// A pending periodic or one-shot timer, local to the looper thread.
+struct TimerEntry {
+    next_fire: Instant,
+    /// None = one-shot, Some = periodic.
+    interval: Option<Duration>,
+    event: Message,
+    /// For periodic timers: the cancellation flag shared with TimerToken.
+    /// One-shot timers have no cancellation (they fire once and are removed).
+    cancelled: Option<Arc<AtomicBool>>,
+}
+
+/// Timer state for the looper. Simple sorted vec — panes rarely have
+/// more than a handful of timers.
+struct Timers {
+    entries: Vec<TimerEntry>,
+}
+
+impl Timers {
+    fn new() -> Self {
+        Self { entries: Vec::new() }
+    }
+
+    /// Add a periodic timer.
+    fn add_periodic(
+        &mut self,
+        event: Message,
+        interval: Duration,
+        cancelled: Arc<AtomicBool>,
+    ) {
+        self.entries.push(TimerEntry {
+            next_fire: Instant::now() + interval,
+            interval: Some(interval),
+            event,
+            cancelled: Some(cancelled),
+        });
+    }
+
+    /// Add a one-shot delayed event.
+    fn add_one_shot(&mut self, event: Message, fire_at: Instant) {
+        self.entries.push(TimerEntry {
+            next_fire: fire_at,
+            interval: None,
+            event,
+            cancelled: None,
+        });
+    }
+
+    /// Time until the next timer fires. None if no timers.
+    fn next_timeout(&self) -> Option<Duration> {
+        self.entries
+            .iter()
+            .map(|e| e.next_fire)
+            .min()
+            .map(|t| t.saturating_duration_since(Instant::now()))
+    }
+
+    /// Fire all due timers, returning their events. Removes one-shots
+    /// and cancelled entries. Reschedules periodics.
+    fn fire_due(&mut self) -> Vec<Message> {
+        let now = Instant::now();
+        let mut fired = Vec::new();
+
+        self.entries.retain_mut(|entry| {
+            // Remove cancelled periodic timers
+            if let Some(ref flag) = entry.cancelled {
+                if flag.load(Ordering::Acquire) {
+                    return false;
+                }
+            }
+
+            if entry.next_fire <= now {
+                fired.push(entry.event.clone());
+                match entry.interval {
+                    Some(interval) => {
+                        // Periodic: reschedule. Skip ahead if behind.
+                        entry.next_fire = now + interval;
+                        true
+                    }
+                    None => false, // One-shot: remove
+                }
+            } else {
+                true // Not yet due
+            }
+        });
+
+        fired
+    }
+}
+
+/// Receive from the channel with optional timeout for timers.
+/// Returns Ok(Some(msg)) for a message, Ok(None) for timeout, Err for disconnect.
+fn recv_with_timers(
+    receiver: &mpsc::Receiver<LooperMessage>,
+    timers: &Timers,
+) -> std::result::Result<Option<LooperMessage>, ()> {
+    match timers.next_timeout() {
+        Some(dur) => match receiver.recv_timeout(dur) {
+            Ok(msg) => Ok(Some(msg)),
+            Err(RecvTimeoutError::Timeout) => Ok(None),
+            Err(RecvTimeoutError::Disconnected) => Err(()),
+        },
+        None => match receiver.recv() {
+            Ok(msg) => Ok(Some(msg)),
+            Err(_) => Err(()),
+        },
+    }
+}
+
+/// Process a LooperMessage that may be a timer control message.
+/// Returns true if it was a timer message (handled), false if it
+/// needs normal dispatch.
+fn handle_timer_message(msg: &LooperMessage, timers: &mut Timers) -> bool {
+    match msg {
+        LooperMessage::AddTimer { event, interval, cancelled, .. } => {
+            timers.add_periodic(event.clone(), *interval, cancelled.clone());
+            true
+        }
+        LooperMessage::AddOneShot { event, fire_at } => {
+            timers.add_one_shot(event.clone(), *fire_at);
+            true
+        }
+        _ => false,
+    }
+}
+
 /// Unwrap a LooperMessage into a Message.
-/// Returns None for compositor messages with wrong pane_id.
+/// Returns None for compositor messages with wrong pane_id and for
+/// timer control messages (handled separately by the looper).
 fn unwrap_message(msg: LooperMessage, pane_id: PaneId) -> Option<Message> {
     match msg {
         LooperMessage::FromComp(comp_msg) => Message::try_from_comp(comp_msg, pane_id),
         LooperMessage::Posted(event) => Some(event),
+        LooperMessage::AddTimer { .. } | LooperMessage::AddOneShot { .. } => None,
     }
 }
 
 /// Drain the channel after a blocking recv, then coalesce.
+///
+/// Timer control messages (AddTimer, AddOneShot) are extracted and
+/// registered with the timer state. Everything else is coalesced.
 ///
 /// Coalescing rules (from Be's BWindow::DispatchMessage):
 /// - Resize: keep only the last geometry
@@ -42,6 +175,7 @@ fn drain_and_coalesce(
     first: LooperMessage,
     receiver: &mpsc::Receiver<LooperMessage>,
     pane_id: PaneId,
+    timers: &mut Timers,
 ) -> Vec<Message> {
     let mut batch = vec![first];
     while let Ok(more) = receiver.try_recv() {
@@ -53,6 +187,11 @@ fn drain_and_coalesce(
     let mut last_mouse_move_idx: Option<usize> = None;
 
     for msg in batch {
+        // Register timer control messages before unwrapping
+        if handle_timer_message(&msg, timers) {
+            continue;
+        }
+
         let event = match unwrap_message(msg, pane_id) {
             Some(e) => e,
             None => continue,
@@ -98,16 +237,33 @@ pub fn run_closure(
     proxy: Messenger,
     mut handler: impl FnMut(&Messenger, Message) -> Result<bool>,
 ) -> std::result::Result<ExitReason, crate::error::Error> {
+    let mut timers = Timers::new();
+
     loop {
-        let msg = match receiver.recv() {
-            Ok(msg) => msg,
-            Err(_) => {
+        let msg = match recv_with_timers(&receiver, &timers) {
+            Ok(Some(msg)) => Some(msg),
+            Ok(None) => None,
+            Err(()) => {
                 let _ = handler(&proxy, Message::Disconnected);
                 return Ok(ExitReason::Disconnected);
             }
         };
 
-        let batch = drain_and_coalesce(msg, &receiver, pane_id);
+        // Fire due timers — their events go first in the batch
+        let timer_events = timers.fire_due();
+
+        // Drain channel and coalesce (also registers any timer control messages)
+        let mut batch = match msg {
+            Some(msg) => drain_and_coalesce(msg, &receiver, pane_id, &mut timers),
+            None => Vec::new(),
+        };
+
+        // Prepend timer events (they fired before the channel message arrived)
+        if !timer_events.is_empty() {
+            let mut all = timer_events;
+            all.append(&mut batch);
+            batch = all;
+        }
 
         for event in batch {
             let is_close = matches!(event, Message::CloseRequested);
@@ -137,16 +293,30 @@ pub fn run_handler(
     proxy: Messenger,
     mut handler: impl Handler,
 ) -> std::result::Result<ExitReason, crate::error::Error> {
+    let mut timers = Timers::new();
+
     loop {
-        let msg = match receiver.recv() {
-            Ok(msg) => msg,
-            Err(_) => {
+        let msg = match recv_with_timers(&receiver, &timers) {
+            Ok(Some(msg)) => Some(msg),
+            Ok(None) => None,
+            Err(()) => {
                 let _ = handler.disconnected(&proxy);
                 return Ok(ExitReason::Disconnected);
             }
         };
 
-        let batch = drain_and_coalesce(msg, &receiver, pane_id);
+        let timer_events = timers.fire_due();
+
+        let mut batch = match msg {
+            Some(msg) => drain_and_coalesce(msg, &receiver, pane_id, &mut timers),
+            None => Vec::new(),
+        };
+
+        if !timer_events.is_empty() {
+            let mut all = timer_events;
+            all.append(&mut batch);
+            batch = all;
+        }
 
         for event in batch {
             let is_close = matches!(event, Message::CloseRequested);

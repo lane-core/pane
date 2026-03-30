@@ -3,6 +3,7 @@
 use std::num::NonZeroU32;
 use std::sync::mpsc;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU32, Ordering};
 
 use pane_app::{Message, Messenger, Handler, LooperMessage, KeyCombo};
 use pane_app::shortcuts::ShortcutFilter;
@@ -249,29 +250,54 @@ fn set_pulse_rate_cancels_previous() {
     let (comp_tx, _comp_rx) = mpsc::channel::<ClientToComp>();
     let (looper_tx, looper_rx) = mpsc::sync_channel::<LooperMessage>(256);
     let proxy = Messenger::new(pane_id(1), comp_tx).with_looper(looper_tx);
+    let outer_proxy = proxy.clone();
 
-    // Start a 40ms pulse
-    proxy.set_pulse_rate(Duration::from_millis(40)).unwrap();
+    // Track pulse count and timing: after switching from 30ms to 500ms,
+    // we should stop seeing rapid pulses.
+    let fast_count = Arc::new(AtomicU32::new(0));
+    let slow_count = Arc::new(AtomicU32::new(0));
+    let switched = Arc::new(std::sync::atomic::AtomicBool::new(false));
 
-    // Wait for at least one pulse to confirm it's running
-    std::thread::sleep(Duration::from_millis(60));
+    let fc = fast_count.clone();
+    let sc = slow_count.clone();
+    let sw = switched.clone();
 
-    // Replace with a 500ms pulse (effectively silencing it for our test window)
-    proxy.set_pulse_rate(Duration::from_millis(500)).unwrap();
+    let handle = std::thread::spawn(move || {
+        let filters = pane_app::filter::FilterChain::new();
+        pane_app::looper::run_closure(pane_id(1), looper_rx, filters, proxy, move |_m, msg| {
+            if matches!(msg, Message::Pulse) {
+                if sw.load(Ordering::Relaxed) {
+                    sc.fetch_add(1, Ordering::Relaxed);
+                } else {
+                    fc.fetch_add(1, Ordering::Relaxed);
+                }
+            }
+            if matches!(msg, Message::CloseRequested) { return Ok(false); }
+            Ok(true)
+        })
+    });
 
-    // Drain any pulses that arrived before cancellation
-    while looper_rx.try_recv().is_ok() {}
+    // Start a 30ms pulse, let it run for a bit
+    outer_proxy.set_pulse_rate(Duration::from_millis(30)).unwrap();
+    std::thread::sleep(Duration::from_millis(120));
 
-    // Wait 150ms — if the old 40ms timer were still alive, we'd see ~3 pulses.
-    // With only the 500ms timer, we should see zero.
+    // Switch to 500ms — mark the switchover
+    switched.store(true, Ordering::Relaxed);
+    outer_proxy.set_pulse_rate(Duration::from_millis(500)).unwrap();
+
+    // Wait 150ms — if the old 30ms timer survived, we'd see ~5 pulses.
+    // With 500ms timer only, we should see 0.
     std::thread::sleep(Duration::from_millis(150));
 
-    let mut stale_pulses = 0;
-    while looper_rx.try_recv().is_ok() {
-        stale_pulses += 1;
-    }
+    // Stop the looper
+    outer_proxy.send_message(Message::CloseRequested).unwrap();
+    handle.join().unwrap().unwrap();
 
-    assert_eq!(stale_pulses, 0, "old pulse timer should have been cancelled");
+    let fast = fast_count.load(Ordering::Relaxed);
+    let slow = slow_count.load(Ordering::Relaxed);
+
+    assert!(fast >= 2, "should have seen fast pulses before switch, got {fast}");
+    assert_eq!(slow, 0, "old timer should be cancelled — no fast pulses after switch, got {slow}");
 }
 
 #[test]
@@ -281,26 +307,87 @@ fn set_pulse_rate_zero_disables() {
     let (comp_tx, _comp_rx) = mpsc::channel::<ClientToComp>();
     let (looper_tx, looper_rx) = mpsc::sync_channel::<LooperMessage>(256);
     let proxy = Messenger::new(pane_id(1), comp_tx).with_looper(looper_tx);
+    let outer_proxy = proxy.clone();
+
+    let count_before = Arc::new(AtomicU32::new(0));
+    let count_after = Arc::new(AtomicU32::new(0));
+    let disabled = Arc::new(std::sync::atomic::AtomicBool::new(false));
+
+    let cb = count_before.clone();
+    let ca = count_after.clone();
+    let d = disabled.clone();
+
+    let handle = std::thread::spawn(move || {
+        let filters = pane_app::filter::FilterChain::new();
+        pane_app::looper::run_closure(pane_id(1), looper_rx, filters, proxy, move |_m, msg| {
+            if matches!(msg, Message::Pulse) {
+                if d.load(Ordering::Relaxed) {
+                    ca.fetch_add(1, Ordering::Relaxed);
+                } else {
+                    cb.fetch_add(1, Ordering::Relaxed);
+                }
+            }
+            if matches!(msg, Message::CloseRequested) { return Ok(false); }
+            Ok(true)
+        })
+    });
 
     // Start a 30ms pulse
-    proxy.set_pulse_rate(Duration::from_millis(30)).unwrap();
-
-    // Wait for at least one pulse
-    std::thread::sleep(Duration::from_millis(50));
+    outer_proxy.set_pulse_rate(Duration::from_millis(30)).unwrap();
+    std::thread::sleep(Duration::from_millis(120));
 
     // Disable
-    proxy.set_pulse_rate(Duration::ZERO).unwrap();
-
-    // Drain
-    while looper_rx.try_recv().is_ok() {}
+    disabled.store(true, Ordering::Relaxed);
+    outer_proxy.set_pulse_rate(Duration::ZERO).unwrap();
 
     // Wait — should see no more pulses
-    std::thread::sleep(Duration::from_millis(100));
+    std::thread::sleep(Duration::from_millis(120));
 
-    let mut count = 0;
-    while looper_rx.try_recv().is_ok() {
-        count += 1;
-    }
+    outer_proxy.send_message(Message::CloseRequested).unwrap();
+    handle.join().unwrap().unwrap();
 
-    assert_eq!(count, 0, "ZERO rate should disable pulse timer");
+    let before = count_before.load(Ordering::Relaxed);
+    let after = count_after.load(Ordering::Relaxed);
+
+    assert!(before >= 2, "should have seen pulses before disable, got {before}");
+    assert_eq!(after, 0, "ZERO rate should disable — no pulses after, got {after}");
+}
+
+#[test]
+fn pulse_fires_through_looper_timers() {
+    use std::time::Duration;
+
+    let (comp_tx, _comp_rx) = mpsc::channel::<ClientToComp>();
+    let (looper_tx, looper_rx) = mpsc::sync_channel::<LooperMessage>(256);
+    let proxy = Messenger::new(pane_id(1), comp_tx).with_looper(looper_tx);
+    let outer_proxy = proxy.clone();
+
+    let pulse_count = Arc::new(AtomicU32::new(0));
+    let count_clone = pulse_count.clone();
+
+    // Run the looper on a thread — it will fire pulse timers internally
+    let handle = std::thread::spawn(move || {
+        let filters = pane_app::filter::FilterChain::new();
+        pane_app::looper::run_closure(pane_id(1), looper_rx, filters, proxy, move |_m, msg| {
+            if matches!(msg, Message::Pulse) {
+                let n = count_clone.fetch_add(1, Ordering::Relaxed) + 1;
+                if n >= 3 {
+                    return Ok(false); // exit after 3 pulses
+                }
+            }
+            Ok(true)
+        })
+    });
+
+    // Set pulse rate from outside the looper
+    outer_proxy.set_pulse_rate(Duration::from_millis(30)).unwrap();
+
+    // Wait for the looper to exit (after 3 pulses), with a safety timeout
+    let result = handle.join().unwrap();
+    assert!(result.is_ok(), "looper should exit cleanly");
+    assert!(
+        pulse_count.load(Ordering::Relaxed) >= 3,
+        "should have received at least 3 pulses through the looper timer, got {}",
+        pulse_count.load(Ordering::Relaxed),
+    );
 }

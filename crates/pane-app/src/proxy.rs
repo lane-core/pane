@@ -210,38 +210,46 @@ impl Messenger {
 
     /// Post an event to this pane's looper after a delay.
     ///
-    /// Spawns a thread that sleeps then delivers via self-delivery.
-    /// The BMessageRunner single-shot equivalent.
+    /// The looper delivers the event after the delay expires. No extra
+    /// thread is spawned — the looper integrates timers into its
+    /// `recv_timeout` loop.
+    ///
+    /// # BeOS
+    ///
+    /// `BMessageRunner` with count=1.
     pub fn send_delayed(&self, event: Message, delay: std::time::Duration) -> Result<()> {
-        let tx = self.looper_tx.as_ref().ok_or(PaneError::Disconnected)?.clone();
-        std::thread::spawn(move || {
-            std::thread::sleep(delay);
-            let _ = tx.send(LooperMessage::Posted(event));
-        });
+        let tx = self.looper_tx.as_ref().ok_or(PaneError::Disconnected)?;
+        tx.send(LooperMessage::AddOneShot {
+            event,
+            fire_at: std::time::Instant::now() + delay,
+        }).map_err(|_| PaneError::Disconnected)?;
         Ok(())
     }
 
     /// Post an event to this pane's looper repeatedly at the given interval.
     ///
     /// Returns a TimerToken that can cancel the timer. The first delivery
-    /// happens after one interval. The BMessageRunner periodic equivalent.
+    /// happens after one interval. No extra thread is spawned — the looper
+    /// integrates timers into its `recv_timeout` loop.
+    ///
+    /// # BeOS
+    ///
+    /// `BMessageRunner` with count=`B_INFINITE_TIMEOUT`. Be's BMessageRunner
+    /// was a system service in the registrar; pane integrates timers directly
+    /// into each looper because `recv_timeout` makes this natural.
     pub fn send_periodic(&self, event: Message, interval: std::time::Duration) -> Result<TimerToken>
     {
-        let tx = self.looper_tx.as_ref().ok_or(PaneError::Disconnected)?.clone();
+        let tx = self.looper_tx.as_ref().ok_or(PaneError::Disconnected)?;
+        let id = next_timer_id();
         let cancelled = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
-        let token = TimerToken { cancelled: cancelled.clone() };
+        let token = TimerToken { id, cancelled: cancelled.clone() };
 
-        std::thread::spawn(move || {
-            loop {
-                std::thread::sleep(interval);
-                if cancelled.load(std::sync::atomic::Ordering::Acquire) {
-                    break;
-                }
-                if tx.send(LooperMessage::Posted(event.clone())).is_err() {
-                    break;
-                }
-            }
-        });
+        tx.send(LooperMessage::AddTimer {
+            id,
+            event,
+            interval,
+            cancelled,
+        }).map_err(|_| PaneError::Disconnected)?;
 
         Ok(token)
     }
@@ -252,17 +260,26 @@ impl Messenger {
     }
 }
 
+/// Generate a unique timer ID.
+fn next_timer_id() -> u64 {
+    static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+    NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+}
+
 /// Token for cancelling a periodic timer.
 ///
 /// Created by `Messenger::send_periodic`. Drop does not cancel —
 /// call `cancel()` explicitly.
 #[derive(Debug, Clone)]
 pub struct TimerToken {
+    /// Unique timer ID (matches the `id` in `LooperMessage::AddTimer`).
+    pub(crate) id: u64,
     cancelled: std::sync::Arc<std::sync::atomic::AtomicBool>,
 }
 
 impl TimerToken {
-    /// Cancel the periodic timer. The next scheduled delivery will not fire.
+    /// Cancel the periodic timer. The looper will remove it on the
+    /// next iteration.
     pub fn cancel(&self) {
         self.cancelled.store(true, std::sync::atomic::Ordering::Release);
     }
