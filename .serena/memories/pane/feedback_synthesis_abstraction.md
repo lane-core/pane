@@ -1,0 +1,3 @@
+When synthesizing how reference systems (BeOS, Plan 9, session types) inform pane's design, focus on the philosophical ideas — why protocol discipline produces stability, why interface uniformity enables emergent composition — not on mapping specific features ("Plan 9 has X, pane has Y"). Granular design choices are misleading at this stage because they suggest decisions that could change. The potent content is the principles that clarify intention.
+
+Write at the level of ideas and what they mean. Don't presume granular design choices, but don't pretend the shape is unknown either. Right level: "protocol discipline produces stability, and here's what that means for pane's approach."
