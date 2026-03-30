@@ -80,13 +80,58 @@ impl Messenger {
 
     /// Post an event to this pane's own looper.
     ///
+    /// Check whether this messenger has an attached looper channel.
+    ///
+    /// Returns `false` if the messenger was never attached to a looper
+    /// (e.g., constructed via `Messenger::new` without `with_looper`).
+    /// A `true` return does not guarantee the next send will succeed —
+    /// the looper may exit between the check and the send.
+    ///
+    /// # BeOS
+    ///
+    /// `BMessenger::IsValid`. Be's version checked whether the target
+    /// looper's port existed, with the same caveat: validity could
+    /// change between the check and the next operation.
+    pub fn is_valid(&self) -> bool {
+        self.looper_tx.is_some()
+    }
+
+    /// Post an event to this pane's own looper.
+    ///
     /// This is the self-delivery mechanism: worker threads (network,
     /// computation) can post results back to the pane's event loop
-    /// for sequential processing. The BLooper::PostMessage equivalent.
+    /// for sequential processing. Blocks if the looper channel is full
+    /// (bounded at 256 messages — backpressure).
+    ///
+    /// Use [`try_send_message`](Messenger::try_send_message) for the
+    /// non-blocking variant.
+    ///
+    /// # BeOS
+    ///
+    /// `BLooper::PostMessage`.
     pub fn send_message(&self, event: Message) -> Result<()> {
         let tx = self.looper_tx.as_ref().ok_or(PaneError::Disconnected)?;
         tx.send(LooperMessage::Posted(event))
             .map_err(|_| PaneError::Disconnected)?;
+        Ok(())
+    }
+
+    /// Post an event to this pane's own looper, without blocking.
+    ///
+    /// Returns `Err(PaneError::ChannelFull)` if the looper's bounded
+    /// channel (256) is full. The event is returned in the error so the
+    /// caller can retry or drop it.
+    ///
+    /// Use this when blocking is unacceptable — latency-sensitive code,
+    /// timer callbacks, or fire-and-forget notifications where dropping
+    /// is preferable to stalling.
+    pub fn try_send_message(&self, event: Message) -> Result<()> {
+        let tx = self.looper_tx.as_ref().ok_or(PaneError::Disconnected)?;
+        tx.try_send(LooperMessage::Posted(event))
+            .map_err(|e| match e {
+                std::sync::mpsc::TrySendError::Full(_) => PaneError::ChannelFull,
+                std::sync::mpsc::TrySendError::Disconnected(_) => PaneError::Disconnected,
+            })?;
         Ok(())
     }
 
