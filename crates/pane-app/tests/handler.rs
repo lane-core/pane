@@ -8,7 +8,7 @@ use std::sync::mpsc;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use pane_app::{Message, Messenger, Handler, LooperMessage, ReplyPort};
+use pane_app::{Message, Messenger, Handler, LooperMessage, ReplyPort, PaneError};
 use pane_app::error::Result;
 use pane_proto::event::{KeyEvent, Key, Modifiers, KeyState};
 use pane_proto::message::PaneId;
@@ -319,4 +319,337 @@ fn send_request_async_round_trip() {
 
     target_for_send.send_message(Message::CloseRequested).unwrap();
     target_handle.join().unwrap().unwrap();
+}
+
+// --- Reply adversarial tests ---
+
+#[test]
+fn send_and_wait_timeout() {
+    /// Handler that sleeps forever on any request (never replies).
+    struct BlackHoleHandler;
+    impl Handler for BlackHoleHandler {
+        fn handle_request(&mut self, _proxy: &Messenger, _msg: Message, reply_port: ReplyPort) -> Result<bool> {
+            // Hold the reply port but never reply. It will be dropped
+            // when the handler struct is dropped (looper exit), but the
+            // caller should time out before that.
+            std::mem::forget(reply_port);
+            // Block this looper so it doesn't process the Close
+            std::thread::sleep(Duration::from_secs(5));
+            Ok(true)
+        }
+        fn close_requested(&mut self, _proxy: &Messenger) -> Result<bool> {
+            Ok(false)
+        }
+    }
+
+    let (target_proxy, target_rx) = make_looper_proxy(pane_id(2));
+    let target_for_send = target_proxy.clone();
+
+    let target_handle = std::thread::spawn(move || {
+        let filters = pane_app::filter::FilterChain::new();
+        pane_app::looper::run_handler(pane_id(2), target_rx, filters, target_proxy, BlackHoleHandler)
+    });
+
+    let (caller_proxy, _) = make_looper_proxy(pane_id(1));
+
+    let start = std::time::Instant::now();
+    let result = caller_proxy.send_and_wait(
+        &target_for_send,
+        Message::App(Box::new(42u64)),
+        Duration::from_millis(100),
+    );
+    let elapsed = start.elapsed();
+
+    assert!(result.is_err(), "should error when target never replies");
+    match result.unwrap_err() {
+        PaneError::Timeout => {} // expected
+        other => panic!("expected Timeout, got {:?}", other),
+    }
+    assert!(
+        elapsed >= Duration::from_millis(80),
+        "timeout should wait at least ~100ms, but returned in {:?}", elapsed,
+    );
+    assert!(
+        elapsed < Duration::from_millis(500),
+        "timeout should not wait much longer than 100ms, but took {:?}", elapsed,
+    );
+
+    // Clean up: dropping the sender will disconnect the target looper.
+    // The target thread is blocked in sleep(5s); we detach it.
+    drop(target_for_send);
+    drop(caller_proxy);
+    drop(target_handle);
+}
+
+#[test]
+fn target_exit_mid_request() {
+    /// Handler that closes immediately on receiving a request, dropping the ReplyPort.
+    struct ExitOnRequestHandler;
+    impl Handler for ExitOnRequestHandler {
+        fn handle_request(&mut self, _proxy: &Messenger, _msg: Message, _reply_port: ReplyPort) -> Result<bool> {
+            // Return false to exit the looper. reply_port is dropped -> sends ReplyFailed.
+            Ok(false)
+        }
+        fn close_requested(&mut self, _proxy: &Messenger) -> Result<bool> {
+            Ok(false)
+        }
+    }
+
+    let (target_proxy, target_rx) = make_looper_proxy(pane_id(2));
+    let target_for_send = target_proxy.clone();
+
+    let target_handle = std::thread::spawn(move || {
+        let filters = pane_app::filter::FilterChain::new();
+        pane_app::looper::run_handler(pane_id(2), target_rx, filters, target_proxy, ExitOnRequestHandler)
+    });
+
+    let (caller_proxy, _) = make_looper_proxy(pane_id(1));
+
+    let result = caller_proxy.send_and_wait(
+        &target_for_send,
+        Message::App(Box::new(99u64)),
+        Duration::from_secs(2),
+    );
+
+    assert!(result.is_err(), "should get error when target exits mid-request");
+    // The reply_port drop sends ReplyFailed, which maps to PaneError::Refused
+    match result.unwrap_err() {
+        PaneError::Refused => {} // expected: ReplyPort dropped without reply
+        other => panic!("expected Refused (from dropped ReplyPort), got {:?}", other),
+    }
+
+    target_handle.join().unwrap().unwrap();
+}
+
+#[test]
+fn multiple_concurrent_requests() {
+    let (target_proxy, target_rx) = make_looper_proxy(pane_id(2));
+    let target_for_send = target_proxy.clone();
+
+    let target_handle = std::thread::spawn(move || {
+        let filters = pane_app::filter::FilterChain::new();
+        pane_app::looper::run_handler(pane_id(2), target_rx, filters, target_proxy, EchoHandler)
+    });
+
+    let num_threads = 10u64;
+    let mut handles = Vec::new();
+
+    for i in 0..num_threads {
+        let target = target_for_send.clone();
+        let (caller, _rx) = make_looper_proxy(pane_id(10 + i as u32));
+        handles.push(std::thread::spawn(move || {
+            let result = caller.send_and_wait(
+                &target,
+                Message::App(Box::new(i)),
+                Duration::from_secs(5),
+            );
+            let payload = result.unwrap_or_else(|e| panic!("thread {i} should get a reply, got {e:?}"));
+            let value = *payload.downcast_ref::<u64>().expect("reply should be u64");
+            assert_eq!(value, i * 2, "thread {i} should get {}, got {value}", i * 2);
+        }));
+    }
+
+    for (i, h) in handles.into_iter().enumerate() {
+        h.join().unwrap_or_else(|_| panic!("thread {i} panicked"));
+    }
+
+    target_for_send.send_message(Message::CloseRequested).unwrap();
+    target_handle.join().unwrap().unwrap();
+}
+
+#[test]
+fn reply_after_requestor_gone() {
+    // The caller sends a blocking request with a short timeout and gives up.
+    // The target holds the ReplyPort and replies later (on pulse).
+    // The reply_fn's send should fail silently — the target must not panic.
+
+    /// Handler that stores the ReplyPort and replies on the next pulse.
+    struct DelayedReplyHandler {
+        saved_port: Option<ReplyPort>,
+    }
+    impl Handler for DelayedReplyHandler {
+        fn handle_request(&mut self, _proxy: &Messenger, _msg: Message, reply_port: ReplyPort) -> Result<bool> {
+            self.saved_port = Some(reply_port);
+            Ok(true)
+        }
+        fn pulse(&mut self, _proxy: &Messenger) -> Result<bool> {
+            if let Some(port) = self.saved_port.take() {
+                port.reply(42u64);
+            }
+            Ok(true)
+        }
+        fn close_requested(&mut self, _proxy: &Messenger) -> Result<bool> {
+            Ok(false)
+        }
+    }
+
+    let (target_proxy, target_rx) = make_looper_proxy(pane_id(2));
+    let target_for_send = target_proxy.clone();
+
+    let target_handle = std::thread::spawn(move || {
+        let filters = pane_app::filter::FilterChain::new();
+        let handler = DelayedReplyHandler { saved_port: None };
+        pane_app::looper::run_handler(pane_id(2), target_rx, filters, target_proxy, handler)
+    });
+
+    // Caller sends a blocking request with a very short timeout.
+    // The target won't reply within the timeout (it waits for pulse).
+    let (caller_proxy, _) = make_looper_proxy(pane_id(1));
+    let result = caller_proxy.send_and_wait(
+        &target_for_send,
+        Message::App(Box::new(1u64)),
+        Duration::from_millis(10), // very short timeout — will expire
+    );
+    // Caller times out — the reply channel (recv side) is now dropped
+    assert!(result.is_err(), "caller should time out");
+    drop(caller_proxy); // ensure all caller state is gone
+
+    // Now trigger pulses so the target tries to reply to the dead channel
+    target_for_send.set_pulse_rate(Duration::from_millis(10)).unwrap();
+    std::thread::sleep(Duration::from_millis(100));
+
+    // If the target panicked on the dead channel, join will fail
+    target_for_send.send_message(Message::CloseRequested).unwrap();
+    let result = target_handle.join();
+    assert!(result.is_ok(), "target should not panic when replying to gone requestor");
+    assert!(result.unwrap().is_ok(), "target looper should exit cleanly");
+}
+
+#[test]
+fn send_request_async_reply_failed() {
+    /// Handler that drops the ReplyPort without replying.
+    struct DropReplyHandler;
+    impl Handler for DropReplyHandler {
+        fn handle_request(&mut self, _proxy: &Messenger, _msg: Message, _reply_port: ReplyPort) -> Result<bool> {
+            // reply_port dropped -> sends ReplyFailed to caller's looper
+            Ok(true)
+        }
+        fn close_requested(&mut self, _proxy: &Messenger) -> Result<bool> {
+            Ok(false)
+        }
+    }
+
+    let (target_proxy, target_rx) = make_looper_proxy(pane_id(2));
+    let target_for_send = target_proxy.clone();
+
+    let target_handle = std::thread::spawn(move || {
+        let filters = pane_app::filter::FilterChain::new();
+        pane_app::looper::run_handler(pane_id(2), target_rx, filters, target_proxy, DropReplyHandler)
+    });
+
+    let (caller_proxy, caller_rx) = make_looper_proxy(pane_id(1));
+
+    let token = caller_proxy.send_request(
+        &target_for_send,
+        Message::App(Box::new(42u64)),
+    ).unwrap();
+
+    // The ReplyFailed should arrive on the caller's looper channel
+    let reply_msg = caller_rx.recv_timeout(Duration::from_secs(2))
+        .expect("should receive ReplyFailed on caller's looper channel");
+
+    match reply_msg {
+        LooperMessage::Posted(Message::ReplyFailed { token: t }) => {
+            assert_eq!(t, token, "ReplyFailed token should match request token");
+        }
+        other => panic!("expected Posted(ReplyFailed), got {:?}", other),
+    }
+
+    target_for_send.send_message(Message::CloseRequested).unwrap();
+    target_handle.join().unwrap().unwrap();
+}
+
+#[test]
+fn nested_request_no_deadlock() {
+    // Target A handles requests by forwarding an async request to B,
+    // then replying once B's reply arrives. This verifies that async
+    // requests don't block the looper.
+
+    /// Handler for target B: echoes back the value tripled.
+    struct TripleHandler;
+    impl Handler for TripleHandler {
+        fn handle_request(&mut self, _proxy: &Messenger, msg: Message, reply_port: ReplyPort) -> Result<bool> {
+            if let Message::App(payload) = msg {
+                if let Some(&n) = payload.downcast_ref::<u64>() {
+                    reply_port.reply(n * 3);
+                    return Ok(true);
+                }
+            }
+            Ok(true)
+        }
+        fn close_requested(&mut self, _proxy: &Messenger) -> Result<bool> {
+            Ok(false)
+        }
+    }
+
+    /// Handler for target A: on request, forwards to B asynchronously,
+    /// then replies to the original when B's reply arrives.
+    struct ForwardingHandler {
+        b_proxy: Messenger,
+        /// Pending: maps B's reply token to the original ReplyPort
+        pending: std::collections::HashMap<u64, ReplyPort>,
+    }
+    impl Handler for ForwardingHandler {
+        fn handle_request(&mut self, proxy: &Messenger, msg: Message, reply_port: ReplyPort) -> Result<bool> {
+            if let Message::App(ref payload) = msg {
+                if let Some(&n) = payload.downcast_ref::<u64>() {
+                    let b_token = proxy.send_request(&self.b_proxy, Message::App(Box::new(n))).unwrap();
+                    self.pending.insert(b_token, reply_port);
+                    return Ok(true);
+                }
+            }
+            Ok(true)
+        }
+        fn reply_received(&mut self, _proxy: &Messenger, token: u64, payload: Box<dyn Any + Send>) -> Result<bool> {
+            if let Some(port) = self.pending.remove(&token) {
+                if let Some(&val) = payload.downcast_ref::<u64>() {
+                    port.reply(val);
+                }
+            }
+            Ok(true)
+        }
+        fn close_requested(&mut self, _proxy: &Messenger) -> Result<bool> {
+            Ok(false)
+        }
+    }
+
+    // Set up B
+    let (b_proxy, b_rx) = make_looper_proxy(pane_id(3));
+    let b_for_a = b_proxy.clone();
+    let b_for_close = b_proxy.clone();
+    let b_handle = std::thread::spawn(move || {
+        let filters = pane_app::filter::FilterChain::new();
+        pane_app::looper::run_handler(pane_id(3), b_rx, filters, b_proxy, TripleHandler)
+    });
+
+    // Set up A (with a reference to B's proxy for forwarding)
+    let (a_proxy, a_rx) = make_looper_proxy(pane_id(2));
+    let a_for_send = a_proxy.clone();
+    let a_for_close = a_proxy.clone();
+    let a_handle = std::thread::spawn(move || {
+        let filters = pane_app::filter::FilterChain::new();
+        let handler = ForwardingHandler {
+            b_proxy: b_for_a,
+            pending: std::collections::HashMap::new(),
+        };
+        pane_app::looper::run_handler(pane_id(2), a_rx, filters, a_proxy, handler)
+    });
+
+    // Caller sends a blocking request to A with a generous timeout
+    let (caller_proxy, _) = make_looper_proxy(pane_id(1));
+    let result = caller_proxy.send_and_wait(
+        &a_for_send,
+        Message::App(Box::new(7u64)),
+        Duration::from_secs(5),
+    );
+
+    let payload = result.expect("nested request chain should complete without deadlock");
+    let value = *payload.downcast_ref::<u64>().expect("reply should be u64");
+    assert_eq!(value, 21, "7 * 3 = 21, got {value}");
+
+    // Clean up
+    a_for_close.send_message(Message::CloseRequested).unwrap();
+    b_for_close.send_message(Message::CloseRequested).unwrap();
+    a_handle.join().unwrap().unwrap();
+    b_handle.join().unwrap().unwrap();
 }

@@ -4,6 +4,7 @@ use std::num::NonZeroU32;
 use std::sync::mpsc;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU32, Ordering};
+use std::time::{Duration, Instant};
 
 use pane_app::{Message, Messenger, Handler, LooperMessage, KeyCombo};
 use pane_app::shortcuts::ShortcutFilter;
@@ -389,5 +390,274 @@ fn pulse_fires_through_looper_timers() {
         pulse_count.load(Ordering::Relaxed) >= 3,
         "should have received at least 3 pulses through the looper timer, got {}",
         pulse_count.load(Ordering::Relaxed),
+    );
+}
+
+// --- Timer adversarial tests ---
+
+/// Helper: create a Messenger with looper channel, return (proxy, looper_rx).
+fn make_looper_proxy(id: PaneId) -> (Messenger, mpsc::Receiver<LooperMessage>) {
+    let (comp_tx, _) = mpsc::channel::<ClientToComp>();
+    let (looper_tx, looper_rx) = mpsc::sync_channel::<LooperMessage>(256);
+    (Messenger::new(id, comp_tx).with_looper(looper_tx), looper_rx)
+}
+
+#[test]
+fn send_delayed_fires_through_looper() {
+    let (proxy, looper_rx) = make_looper_proxy(pane_id(1));
+    let outer_proxy = proxy.clone();
+
+    let received_at = Arc::new(std::sync::Mutex::new(None::<Instant>));
+    let received_clone = received_at.clone();
+    let start = Instant::now();
+
+    let handle = std::thread::spawn(move || {
+        let filters = pane_app::filter::FilterChain::new();
+        pane_app::looper::run_closure(pane_id(1), looper_rx, filters, proxy, move |_m, msg| {
+            // Use CommandExecuted as the delayed event (it's clonable, unlike App)
+            if matches!(msg, Message::CommandExecuted { .. }) {
+                *received_clone.lock().unwrap() = Some(Instant::now());
+                return Ok(false); // exit after receiving the delayed event
+            }
+            if matches!(msg, Message::CloseRequested) { return Ok(false); }
+            Ok(true)
+        })
+    });
+
+    // Schedule a delayed event for 50ms from now.
+    // Timer events must be Clone (fire_due clones one-shots too), so
+    // we use CommandExecuted rather than App.
+    outer_proxy.send_delayed(
+        Message::CommandExecuted { command: "delayed".into(), args: String::new() },
+        Duration::from_millis(50),
+    ).unwrap();
+
+    // Safety timeout: if the looper doesn't exit in 2 seconds, something is wrong
+    let join_result = handle.join();
+    assert!(join_result.is_ok(), "looper thread should not panic");
+    assert!(join_result.unwrap().is_ok(), "looper should exit cleanly");
+
+    let arrival = received_at.lock().unwrap()
+        .expect("delayed event should have been received");
+    let elapsed = arrival.duration_since(start);
+    assert!(
+        elapsed >= Duration::from_millis(40),
+        "delayed event arrived too early: {:?} (expected >= 40ms)", elapsed,
+    );
+    assert!(
+        elapsed < Duration::from_millis(200),
+        "delayed event arrived too late: {:?} (expected < 200ms)", elapsed,
+    );
+}
+
+#[test]
+fn multiple_concurrent_timers() {
+    let (proxy, looper_rx) = make_looper_proxy(pane_id(1));
+    let outer_proxy = proxy.clone();
+
+    // Three counters for three different periodic timers.
+    // Timer events must be Clone, so we use CommandExecuted with
+    // distinct command strings to distinguish them.
+    let count_20 = Arc::new(AtomicU32::new(0));
+    let count_40 = Arc::new(AtomicU32::new(0));
+    let count_80 = Arc::new(AtomicU32::new(0));
+    let c20 = count_20.clone();
+    let c40 = count_40.clone();
+    let c80 = count_80.clone();
+
+    let handle = std::thread::spawn(move || {
+        let filters = pane_app::filter::FilterChain::new();
+        pane_app::looper::run_closure(pane_id(1), looper_rx, filters, proxy, move |_m, msg| {
+            if let Message::CommandExecuted { ref command, .. } = msg {
+                match command.as_str() {
+                    "t20" => { c20.fetch_add(1, Ordering::Relaxed); }
+                    "t40" => { c40.fetch_add(1, Ordering::Relaxed); }
+                    "t80" => { c80.fetch_add(1, Ordering::Relaxed); }
+                    _ => {}
+                }
+            }
+            if matches!(msg, Message::CloseRequested) { return Ok(false); }
+            Ok(true)
+        })
+    });
+
+    // Start three periodic timers with different intervals
+    let _t1 = outer_proxy.send_periodic(
+        Message::CommandExecuted { command: "t20".into(), args: String::new() },
+        Duration::from_millis(20),
+    ).unwrap();
+    let _t2 = outer_proxy.send_periodic(
+        Message::CommandExecuted { command: "t40".into(), args: String::new() },
+        Duration::from_millis(40),
+    ).unwrap();
+    let _t3 = outer_proxy.send_periodic(
+        Message::CommandExecuted { command: "t80".into(), args: String::new() },
+        Duration::from_millis(80),
+    ).unwrap();
+
+    // Let them run for 200ms
+    std::thread::sleep(Duration::from_millis(200));
+    outer_proxy.send_message(Message::CloseRequested).unwrap();
+    handle.join().unwrap().unwrap();
+
+    let n20 = count_20.load(Ordering::Relaxed);
+    let n40 = count_40.load(Ordering::Relaxed);
+    let n80 = count_80.load(Ordering::Relaxed);
+
+    // 20ms timer over 200ms: expect ~10 fires (allow 4..20)
+    assert!(n20 >= 4, "20ms timer should fire at least 4 times in 200ms, got {n20}");
+    assert!(n20 <= 20, "20ms timer fired too many times: {n20}");
+
+    // 40ms timer over 200ms: expect ~5 fires (allow 2..12)
+    assert!(n40 >= 2, "40ms timer should fire at least 2 times in 200ms, got {n40}");
+    assert!(n40 <= 12, "40ms timer fired too many times: {n40}");
+
+    // 80ms timer over 200ms: expect ~2 fires (allow 1..6)
+    assert!(n80 >= 1, "80ms timer should fire at least once in 200ms, got {n80}");
+    assert!(n80 <= 6, "80ms timer fired too many times: {n80}");
+
+    // Faster timer should fire more than slower
+    assert!(n20 > n80, "20ms timer ({n20}) should fire more often than 80ms timer ({n80})");
+}
+
+#[test]
+fn timer_survives_message_burst() {
+    let (proxy, looper_rx) = make_looper_proxy(pane_id(1));
+    let outer_proxy = proxy.clone();
+
+    let pulse_count = Arc::new(AtomicU32::new(0));
+    let burst_count = Arc::new(AtomicU32::new(0));
+    let pc = pulse_count.clone();
+    let bc = burst_count.clone();
+
+    let handle = std::thread::spawn(move || {
+        let filters = pane_app::filter::FilterChain::new();
+        pane_app::looper::run_closure(pane_id(1), looper_rx, filters, proxy, move |_m, msg| {
+            match msg {
+                Message::Pulse => { pc.fetch_add(1, Ordering::Relaxed); }
+                Message::Activated => { bc.fetch_add(1, Ordering::Relaxed); }
+                Message::CloseRequested => return Ok(false),
+                _ => {}
+            }
+            Ok(true)
+        })
+    });
+
+    // Start a 20ms pulse timer
+    outer_proxy.set_pulse_rate(Duration::from_millis(20)).unwrap();
+
+    // Let a few pulses fire first
+    std::thread::sleep(Duration::from_millis(60));
+
+    // Flood the channel with 100 Posted messages
+    for _ in 0..100 {
+        let _ = outer_proxy.send_message(Message::Activated);
+    }
+
+    // Let pulses continue after the burst
+    std::thread::sleep(Duration::from_millis(100));
+
+    outer_proxy.send_message(Message::CloseRequested).unwrap();
+    handle.join().unwrap().unwrap();
+
+    let pulses = pulse_count.load(Ordering::Relaxed);
+    let bursts = burst_count.load(Ordering::Relaxed);
+
+    assert_eq!(bursts, 100, "all 100 burst messages should arrive, got {bursts}");
+    // Over ~160ms with 20ms interval, expect at least a few pulses
+    assert!(pulses >= 3, "pulse timer should survive message burst, got only {pulses} pulses");
+}
+
+#[test]
+fn cancelled_timer_never_fires_again() {
+    let (proxy, looper_rx) = make_looper_proxy(pane_id(1));
+    let outer_proxy = proxy.clone();
+
+    let fire_count = Arc::new(AtomicU32::new(0));
+    let fc = fire_count.clone();
+
+    let handle = std::thread::spawn(move || {
+        let filters = pane_app::filter::FilterChain::new();
+        pane_app::looper::run_closure(pane_id(1), looper_rx, filters, proxy, move |_m, msg| {
+            match msg {
+                Message::Activated => { fc.fetch_add(1, Ordering::Relaxed); }
+                Message::CloseRequested => return Ok(false),
+                _ => {}
+            }
+            Ok(true)
+        })
+    });
+
+    // Start a 20ms periodic timer (Activated is clonable)
+    let token = outer_proxy.send_periodic(
+        Message::Activated,
+        Duration::from_millis(20),
+    ).unwrap();
+
+    // Wait for at least 2 fires
+    std::thread::sleep(Duration::from_millis(80));
+    let count_before_cancel = fire_count.load(Ordering::Relaxed);
+    assert!(
+        count_before_cancel >= 2,
+        "timer should have fired at least twice before cancel, got {count_before_cancel}",
+    );
+
+    // Cancel the timer
+    token.cancel();
+
+    // Record the count right after cancellation, wait, then check no more fires
+    std::thread::sleep(Duration::from_millis(20)); // one tick for the looper to see the cancel
+    let count_at_cancel = fire_count.load(Ordering::Relaxed);
+    std::thread::sleep(Duration::from_millis(100));
+    let count_after_wait = fire_count.load(Ordering::Relaxed);
+
+    outer_proxy.send_message(Message::CloseRequested).unwrap();
+    handle.join().unwrap().unwrap();
+
+    assert_eq!(
+        count_at_cancel, count_after_wait,
+        "cancelled timer should not fire again: count at cancel = {count_at_cancel}, after 100ms = {count_after_wait}",
+    );
+}
+
+#[test]
+fn set_pulse_rate_rapid_changes() {
+    let (proxy, looper_rx) = make_looper_proxy(pane_id(1));
+    let outer_proxy = proxy.clone();
+
+    let pulse_count = Arc::new(AtomicU32::new(0));
+    let pc = pulse_count.clone();
+
+    let handle = std::thread::spawn(move || {
+        let filters = pane_app::filter::FilterChain::new();
+        pane_app::looper::run_closure(pane_id(1), looper_rx, filters, proxy, move |_m, msg| {
+            match msg {
+                Message::Pulse => { pc.fetch_add(1, Ordering::Relaxed); }
+                Message::CloseRequested => return Ok(false),
+                _ => {}
+            }
+            Ok(true)
+        })
+    });
+
+    // Rapidly change pulse rates 5 times. Each call cancels the previous.
+    // Rates: 10ms, 15ms, 20ms, 25ms, 500ms (final = very slow)
+    outer_proxy.set_pulse_rate(Duration::from_millis(10)).unwrap();
+    outer_proxy.set_pulse_rate(Duration::from_millis(15)).unwrap();
+    outer_proxy.set_pulse_rate(Duration::from_millis(20)).unwrap();
+    outer_proxy.set_pulse_rate(Duration::from_millis(25)).unwrap();
+    outer_proxy.set_pulse_rate(Duration::from_millis(500)).unwrap();
+
+    // Wait 200ms. With a 500ms rate, we should get 0 pulses.
+    // If any of the fast timers leaked through, we'd see many.
+    std::thread::sleep(Duration::from_millis(200));
+
+    let count = pulse_count.load(Ordering::Relaxed);
+    outer_proxy.send_message(Message::CloseRequested).unwrap();
+    handle.join().unwrap().unwrap();
+
+    assert!(
+        count <= 1,
+        "only the final 500ms rate should be active; got {count} pulses in 200ms (leaked fast timers?)",
     );
 }
