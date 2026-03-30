@@ -3,7 +3,7 @@ name = "pane-hello"
 version = "0.1.0"
 edition = "2021"
 description = "Hello pane — the canonical first pane application"
-license = "MIT"
+license = "BSD-2-Clause"
 
 [dependencies]
 pane-app = { path = "../pane-app" }

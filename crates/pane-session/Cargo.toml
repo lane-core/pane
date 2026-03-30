@@ -3,7 +3,7 @@ name = "pane-session"
 version = "0.1.0"
 edition = "2021"
 description = "Session-typed channels for the pane desktop environment. Typestate Chan<S, Transport> with crash-safe error handling, unix socket transport, and calloop integration."
-license = "MIT"
+license = "BSD-2-Clause"
 
 [dependencies]
 serde = { version = "1", features = ["derive"] }

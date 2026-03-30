@@ -3,7 +3,7 @@ name = "pane-proto"
 version = "0.1.0"
 edition = "2021"
 description = "Wire types and session protocol definitions for the pane desktop environment"
-license = "MIT"
+license = "BSD-3-Clause"
 
 [dependencies]
 serde = { version = "1", features = ["derive"] }

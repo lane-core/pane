@@ -1,23 +1,29 @@
-## ADDED Requirements
+# Licensing
 
-### Requirement: Dual license split
-The pane project SHALL use a dual-license model. Kit crates (libraries linked into client processes) SHALL be MIT licensed. Server crates (infrastructure processes) SHALL be AGPL-3.0-only licensed.
+Pane uses three licenses, chosen by what the code does and where it runs.
 
-**MIT crates (kits and protocol):** pane-proto, pane-session, pane-app, pane-ui, pane-text, pane-input, pane-store-client, pane-media, pane-ai, pane-notify
-**AGPL-3.0-only crates (servers):** pane-comp, pane-roster, pane-store, pane-fs, pane-watchdog, pane-dbus
+**BSD-3-Clause (protocol):** pane-proto
+**BSD-2-Clause (kits):** pane-session, pane-app, pane-ui, pane-text, pane-input, pane-store-client, pane-media, pane-ai, pane-notify
+**AGPL-3.0-only (servers):** pane-comp, pane-roster, pane-store, pane-fs, pane-watchdog, pane-dbus
 
-**Rationale:** MIT on kits and protocol maximizes adoption — anyone can build pane clients, and the kits ARE the developer experience. AGPL on servers ensures modifications to infrastructure are shared, including in distributed computing scenarios where the network clause applies.
+## Why three licenses
 
-**The boundary:** A kit is a library that lives inside the client process. It cannot crash independently of the application that uses it. A server is a separate process that provides infrastructure services over unix sockets. This distinction — in-process library vs. independent service — is the license boundary.
+The **protocol crate** (pane-proto) is BSD-3-Clause. It defines the wire format — what it means to speak pane. The no-endorsement clause prevents third parties from using the pane name to promote derived works without permission. Otherwise it's as permissive as BSD-2-Clause: anyone can implement the protocol, build compatible software, or fork the types. The protocol carries the project's identity, so the name matters here.
 
-#### Scenario: Proprietary pane client
-- **WHEN** a third party builds a proprietary application using pane kits (pane-proto, pane-app, pane-ui, etc.)
-- **THEN** the MIT license SHALL permit this without requiring source disclosure
+The **kit crates** are BSD-2-Clause. These are libraries that live inside the client process — the developer experience. BSD-2-Clause is permissive with no restrictions beyond attribution and the standard disclaimer. The no-endorsement clause is unnecessary for linked libraries; nobody claims endorsement by using a dependency. Anyone can build proprietary pane applications without disclosing source.
 
-#### Scenario: Modified compositor shared
-- **WHEN** someone modifies pane-comp and deploys it (locally or as a network service)
-- **THEN** the AGPL-3.0 license SHALL require sharing the modified source
+The **server crates** are AGPL-3.0-only. These are independent processes that provide infrastructure over unix sockets — the compositor, the roster, the store. AGPL ensures that modifications to shared infrastructure are contributed back, including in network-service deployments.
 
-#### Scenario: Custom agent kit usage
-- **WHEN** a third party uses pane-ai to build proprietary agent infrastructure
-- **THEN** the MIT license SHALL permit this — the kit is a library, not a service
+## The boundary
+
+A kit is a library linked into your process. A server is a separate process you talk to over a socket. The protocol is the wire-format definition shared by both sides. This three-way distinction — protocol identity, in-process library, independent service — determines the license.
+
+## What this means in practice
+
+A third party building a proprietary application with pane kits can do so freely. BSD-2-Clause requires only attribution.
+
+Someone who modifies the compositor and deploys it must share the modified source under AGPL-3.0.
+
+A company using pane-ai to build proprietary agent infrastructure can do so — the kit is a library, not a service.
+
+No one can market a product as "pane-certified" or "powered by pane" without permission. The BSD-3-Clause clause on the protocol handles this at the license level.
