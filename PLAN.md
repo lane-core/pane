@@ -2,7 +2,7 @@
 
 Current implementation roadmap. This is a living document — update it when tasks complete, priorities change, or new work is identified.
 
-**Rule:** At the end of every task, update this file. Mark completed items, add discovered work, adjust priorities. If this file is stale, the process broke.
+**Rule:** At the end of every task, update this file. Mark completed items, add discovered work, adjust priorities. If this file is stale, the process broke, and we must immediately consult the user for clarification before proceeding further.
 
 ## Now
 
