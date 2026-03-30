@@ -10,7 +10,7 @@ Current implementation roadmap. This is a living document — update it when tas
 
 Prerequisite for each item: consult Be engineer on how Be/Haiku implemented the equivalent (see docs/workflow.md).
 
-- [ ] **Rendering** — compositor draws pane chrome (title bar from Tag), body area receives client content. Currently renders blank window with glyph atlas.
+- [ ] **Rendering** — compositor draws pane chrome (title bar from Tag), body area receives client content. Currently renders blank window with glyph atlas. Revised plan at `.claude/plans/typed-sleeping-falcon.md`. Be engineer BWindow research complete. Seven parts: Decorator trait, PaneState extension, font config, TextBuffer (CPU text), GPU texture pipeline, renderer rewrite, cleanup.
 - [ ] **Input routing** — smithay keyboard/mouse events → CompToClient::Key/Mouse → kit → Handler. Currently no input forwarding from compositor to clients.
 - [ ] **Multi-pane layout** — tiling, splits, focus tracking. Currently one pane = full window.
 
@@ -44,13 +44,13 @@ Audited all 7 implemented types against their Haiku Book `.dox` entries. Full au
 - [x] **pane-notify `Modify`/`Attrib` split** — replaced with `StatChanged { fields }` + `AttrChanged { attr, cause }`. Follows Haiku's model.
 - [x] **pane-notify move model** — `MovedFrom`/`MovedTo` with inotify cookie for correlation.
 - [x] **Synchronous send-reply** — `send_and_wait` (blocking) + `send_request` (async) + `ReplyPort` (session-type handle, exactly-one-reply via ownership). Generalizes `pending_creates`.
-- [ ] **Document `send_message()` blocking** — blocks when channel full (256). Add `try_send_message()` / timeout variant.
+- [x] **Document `send_message()` blocking** — documented. Added `try_send_message()` (non-blocking, returns `ChannelFull`) and `is_valid()`.
 
 **Should address (Tier 2 prerequisites):**
 - [ ] **`ScreenChanged` event** — DPI/scale awareness. Real Wayland capability (`wl_output` changes).
 - [ ] **`RequestActivate`** — apps can't programmatically pull focus to a pane.
 - [ ] **Fullscreen request** — `ClientToComp::SetFullscreen`.
-- [ ] **`Messenger::is_valid()`** — proactive liveness check for long-held handles.
+- [x] **`Messenger::is_valid()`** — checks looper channel attachment.
 - [ ] **Runtime filter mutation** — no add/remove filters from within a handler. Need `Messenger::add_filter()`.
 - [x] **Timer consolidation** — `recv_timeout` in the looper, zero timer threads. Timers fire through the looper's event loop.
 - [ ] **pane-notify: mount/unmount events** — pane-store needs these for new volume indexing.
@@ -85,6 +85,18 @@ Audited all 7 implemented types against their Haiku Book `.dox` entries. Full au
 - [x] Rust idiom audit (30 findings, all resolved)
 - [x] Documentation consolidation (openspec retired, flat docs/)
 - [x] Dev workflow (default-members, nix copy, VM recipes, frame telemetry)
+- [x] EAct session-type design principles (C1-C6, gaps 1-4, anti-patterns)
+- [x] Haiku Book audit (7 types verified, findings addressed)
+- [x] Session-type debt: pulse timer fix, read pump → SessionSource, timer consolidation, reply mechanism
+- [x] Message::AppMessage + post_app_message (worker thread results)
+- [x] pane-notify restructure (NodeRef, StatFields, AttrCause, WatchFlags, move cookies)
+- [x] ReplyPort + send_and_wait + send_request (session-typed request-reply)
+- [x] Timer factory closures (eliminate Clone panic)
+- [x] BeOS divergence documentation (handler chain, observer pattern, filter retargeting, show/hide)
+- [x] Naming conventions audit (AppMessage, request_received, matches)
+- [x] Licensing: BSD-3-Clause protocol, BSD-2-Clause kits
+- [x] Adversarial tests: 11 new timer + reply tests
+- [x] Messenger::is_valid + try_send_message
 
 ## Session Start Checklist
 
