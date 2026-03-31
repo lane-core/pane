@@ -1,5 +1,5 @@
 {
-  description = "pane — Wayland compositor and desktop environment";
+  description = "pane — an operating environment for linux (and elsewhere)";
 
   inputs = {
     nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable";
@@ -26,7 +26,14 @@
         ./nix/modules/devshell.nix
         ./nix/modules/pre-commit.nix
         ./nix/modules/packages.nix
+        ./nix/modules/headless.nix
         ./nix/modules/compositor.nix
+        # NixOS, Darwin, and sixos module exports
+        ./nix/modules/nixos-core.nix
+        ./nix/modules/darwin-core.nix
+        ./nix/modules/sixos-core.nix
+        ./nix/modules/sixos-compositor.nix
+        ./nix/modules/sixos-desktop.nix
       ];
     };
 }
