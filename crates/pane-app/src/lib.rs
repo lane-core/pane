@@ -112,5 +112,4 @@ pub use scripting::{
     ScriptQuery, ScriptReply, ScriptResponse, ScriptableHandler, Specifier,
     SpecifierForm, ValueType,
 };
-#[doc(hidden)]
-pub use undo::{UndoableEdit, UndoPolicy, LinearPolicy, UndoManager};
+pub use undo::{UndoableEdit, UndoPolicy, LinearPolicy, UndoManager, RecordingOptic};

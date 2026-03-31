@@ -115,6 +115,7 @@ fn undo_manager_group() {
 
 use pane_app::scripting::{DynOptic, ValueType, OpKind, SpecifierForm};
 use pane_app::ScriptError;
+use pane_app::undo::RecordingOptic;
 use std::any::Any;
 
 struct SensitiveField;
@@ -139,4 +140,62 @@ impl DynOptic for SensitiveField {
 fn sensitive_optic_is_not_undoable() {
     let field = SensitiveField;
     assert!(!field.is_undoable());
+}
+
+/// A simple DynOptic that reads/writes a String field.
+struct TitleOptic;
+
+impl DynOptic for TitleOptic {
+    fn name(&self) -> &str { "title" }
+    fn get(&self, state: &dyn Any) -> Result<AttrValue, ScriptError> {
+        let s = state.downcast_ref::<String>().unwrap();
+        Ok(AttrValue::String(s.clone()))
+    }
+    fn set(&self, state: &mut dyn Any, value: AttrValue) -> Result<(), ScriptError> {
+        let s = state.downcast_mut::<String>().unwrap();
+        if let AttrValue::String(v) = value {
+            *s = v;
+        }
+        Ok(())
+    }
+    fn is_writable(&self) -> bool { true }
+    fn count(&self, _state: &dyn Any) -> Result<usize, ScriptError> { Ok(1) }
+    fn value_type(&self) -> ValueType { ValueType::String }
+    fn operations(&self) -> &'static [OpKind] { &[OpKind::Get, OpKind::Set] }
+    fn specifier_forms(&self) -> &'static [SpecifierForm] { &[SpecifierForm::Direct] }
+}
+
+#[test]
+fn recording_optic_captures_edits() {
+    let mut mgr = UndoManager::new(LinearPolicy::new());
+    let optic = TitleOptic;
+    let mut state = String::from("hello");
+
+    {
+        let mut rec = RecordingOptic::new(&optic, &mut mgr);
+        rec.set(&mut state, AttrValue::String("world".into())).unwrap();
+    }
+
+    assert_eq!(state, "world");
+    assert!(mgr.can_undo());
+    assert_eq!(mgr.undo_description(), Some("Set title"));
+
+    let edit = mgr.undo().unwrap();
+    assert_eq!(edit.old_value, Some(AttrValue::String("hello".into())));
+    assert_eq!(edit.new_value, Some(AttrValue::String("world".into())));
+}
+
+#[test]
+fn recording_optic_skips_sensitive() {
+    let mut mgr = UndoManager::new(LinearPolicy::new());
+    let optic = SensitiveField;
+    let mut state = String::from("old_password");
+
+    {
+        let mut rec = RecordingOptic::new(&optic, &mut mgr);
+        rec.set(&mut state, AttrValue::String("new_password".into())).unwrap();
+    }
+
+    // Edit happened but was not recorded
+    assert!(!mgr.can_undo());
 }

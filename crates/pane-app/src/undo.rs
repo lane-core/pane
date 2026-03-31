@@ -11,7 +11,8 @@
 
 use std::time::Instant;
 
-use crate::scripting::AttrValue;
+use crate::scripting::{AttrValue, DynOptic};
+use crate::error::ScriptError;
 
 /// A recorded state change. The core data for undo/redo.
 #[derive(Debug, Clone, PartialEq)]
@@ -244,5 +245,48 @@ impl<P: UndoPolicy> UndoManager<P> {
         self.policy.clear();
         self.edit_count = 0;
         self.save_point = None;
+    }
+}
+
+/// Wraps a DynOptic to automatically record edits for undo.
+///
+/// Instruments `set()` to capture (old_value, new_value) before
+/// and after mutation. Preserves optic laws — the underlying optic
+/// does the actual state manipulation; this wrapper only observes.
+///
+/// Skips recording for optics where `is_undoable()` returns false
+/// (sensitive properties).
+pub struct RecordingOptic<'a, P: UndoPolicy> {
+    inner: &'a dyn DynOptic,
+    undo: &'a mut UndoManager<P>,
+}
+
+impl<'a, P: UndoPolicy> RecordingOptic<'a, P> {
+    pub fn new(inner: &'a dyn DynOptic, undo: &'a mut UndoManager<P>) -> Self {
+        RecordingOptic { inner, undo }
+    }
+
+    /// Set a value through the optic, recording the edit for undo.
+    pub fn set(
+        &mut self,
+        state: &mut dyn std::any::Any,
+        value: AttrValue,
+    ) -> Result<(), ScriptError> {
+        if !self.inner.is_undoable() {
+            return self.inner.set(state, value);
+        }
+
+        let old = self.inner.get(state)?;
+        self.inner.set(state, value.clone())?;
+
+        self.undo.record(UndoableEdit {
+            property: self.inner.name().to_string(),
+            old_value: Some(old),
+            new_value: Some(value),
+            description: format!("Set {}", self.inner.name()),
+            timestamp: Instant::now(),
+        });
+
+        Ok(())
     }
 }
