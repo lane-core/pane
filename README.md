@@ -208,10 +208,38 @@ theoretical guidance for hard problems, more elegant formalizations of
 principles that were previously folk wisdom — these don't replace the original
 insights. They let us build on them with greater confidence.
 
+Combining BeOS and Plan 9 is not eclecticism — it's hybrid vigor. These two
+traditions optimized for different things (local responsiveness vs. location
+transparency) and their "incompatible" design pressures produce solutions that
+neither lineage alone could reach. The session types and optics act as the
+recombination mechanism: they force the implementation to find the common
+structure that satisfies both traditions, rather than retreating into pure
+BeOS or pure Plan 9 patterns. When the two lineages contradict, the formal
+methods often reveal a third option that transcends the contradiction entirely.
+
 The implementation is developed with substantial assistance from AI coding
-agents. This is, in a sense, an adversarial test of the design thesis: if
-sound architecture constrains implementation toward correct outcomes, then it
-should do so regardless of who — or what — is writing the code.
+agents. The relationship is explicitly dialectical: the human provides
+architectural synthesis — recognizing cross-lineage unifications (e.g., that
+BeOS live queries and Plan 9 synthetic filesystems are dual expressions of
+"namespace as indexed state with materialized views") and setting selection
+pressures. The AI handles rapid prototyping, cross-referencing theoretical
+literature against reference implementations (particularly Haiku's source),
+and navigating constraints to discover lawful solutions. Session types and
+protocol boundaries serve as caching layers for implementation knowledge,
+allowing the human to maintain focus on architectural integration while the
+AI handles syntactic recombination.
+
+The development process functions as empirical systems design — each subsystem
+extension is a controlled experiment in compositional behavior. Session-type
+boundaries prevent bad mutations from propagating (a flawed component cannot
+violate the protocol contract with its neighbors). Testing validates not just
+local correctness but emergent system properties — does this component
+introduce impedance mismatches that ripple through the protocol graph? And
+checking against BeOS/Plan 9 conventions maintains lineage purity, preventing
+drift toward "GitHub average" solutions that would fracture the system's
+coherent personality. `pane-session` was established as the foundational
+substrate before any other subsystems, ensuring that subsequent components are
+necessary implications of the session constraints rather than arbitrary choices.
 
 The least charitable reading is that this is a mean vehicle for an ambitious
 project. We think the evidence points otherwise. The synthesis required —
@@ -222,16 +250,17 @@ simultaneously. An AI agent that can reference the Be Newsletter archive, read
 Haiku source, consult Plan 9 papers, verify session type soundness, and write
 the code in a single conversation may well be above the mean for this particular
 task. The architecture is the prompt, in the deepest sense: well-chosen design
-constraints correlate with well-shaped implementations -- and our bet is that
+constraints correlate with well-shaped implementations — and our bet is that
 correlation is sufficient in our case. The modular nature of the architecture
 also entails that the code surface of the most mission-critical components of
 our infrastructure can be readily vetted by human eyes if need be.
 
-We are explicit about this process because the result should be judged on its merits,
-not on assumptions about how it was produced. Read the code. Run the tests. The
-design either holds or it doesn't. That being said, if you believe enough in what
-you see here and don't want matters to be left to chance, we welcome your help in
-building, testing, and verifying pane's architecture with us.
+We are explicit about this process because the result should be judged on its
+merits, not on assumptions about how it was produced. Read the code. Run the
+tests. The design either holds or it doesn't. That being said, if you believe
+enough in what you see here and don't want matters to be left to chance, we
+welcome your help in building, testing, and verifying pane's architecture with
+us.
 
 ## License
 
