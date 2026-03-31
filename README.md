@@ -110,6 +110,31 @@ provides the personality.
 the crate layout under `crates/` is the source of truth for
 what exists and what each component does.
 
+status
+------
+
+what exists today:
+
+    pane-proto       wire types, session-typed handshake, active-phase enums
+    pane-session     session type primitives (Chan, Send, Recv, Branch),
+                     transports (unix, tcp, tls), calloop integration
+    pane-server      compositor protocol server — handshake, client routing,
+                     identity validation, rejection. no rendering deps.
+    pane-headless    headless server binary. full protocol, dual listeners
+                     (unix + tcp), no gpu. runs on any unix-like.
+    pane-app         application kit: App, Pane, Messenger, Handler,
+                     MessageFilter, PaneCreateFuture, quit protocol,
+                     timers, shortcuts, crash monitoring, send-reply
+    pane-optic       optics: Getter/Setter/PartialGetter/PartialSetter,
+                     FieldLens/FieldAffine/FieldTraversal, composition, laws
+    pane-notify      filesystem change notification (inotify abstraction)
+    pane-comp        wayland compositor (smithay). renders blank windows.
+                     input routing and chrome rendering not yet wired.
+    pane-hello       canonical first application
+
+what's next: pane-store (attribute storage), pane-fs (computed-view
+namespace), pane-roster (federation), compositor rendering + input.
+
 building
 --------
 
@@ -120,6 +145,17 @@ building
     just lint                  # clippy
     just fmt                   # rustfmt + nixfmt
     just doc                   # generate API docs
+
+running headless:
+
+    cargo run -p pane-headless                     # unix socket
+    cargo run -p pane-headless -- --tcp 0.0.0.0:7070  # + tcp
+
+    # in another terminal:
+    cargo run -p pane-app --example hello          # basic lifecycle
+    cargo run -p pane-app --example handler        # stateful Handler
+    cargo run -p pane-app --example worker         # worker thread → handler
+    cargo run -p pane-app --example monitor        # crash monitoring
 
 on methodology
 ---------------
