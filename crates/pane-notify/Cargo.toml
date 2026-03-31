@@ -3,7 +3,7 @@ name = "pane-notify"
 version = "0.1.0"
 edition = "2021"
 description = "Filesystem notification abstraction for the pane desktop environment. Selects fanotify or inotify based on watch scope."
-license = "BSD-2-Clause"
+license = "BSD-3-Clause"
 
 [target.'cfg(target_os = "linux")'.dependencies]
 # fanotify and inotify are Linux-only syscalls

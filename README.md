@@ -88,7 +88,7 @@ building
 license
 -------
 
-    protocol and client kits    MIT
+    protocol and client kits    BSD-3-Clause
     servers                     AGPL-3.0-only
 
-    see LICENSE-MIT and LICENSE-AGPL3
+    see LICENSE-BSD3 and LICENSE-AGPL3
