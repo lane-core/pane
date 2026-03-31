@@ -27,7 +27,7 @@ Design each feature against the EAct-derived session-type principles (serena: `p
 
 Small concrete items identified by auditing the codebase against the session-type principles. Not blockers — cleanup for when the relevant code is next touched.
 
-- [ ] **`pending_creates` → typestate handle** — `app.rs` uses `HashMap<PaneId, mpsc::Sender<CreateResponse>>` for UUID-keyed CreatePane→PaneCreated/PaneRefused correlation. First candidate for C2 typestate refactoring (e.g., `PaneCreateFuture` consumed by the response). Deferred to Tier 2 protocol work.
+- [x] **`pending_creates` → typestate handle** — `PaneCreateFuture` with `wait()`/`wait_timeout()`, `#[must_use]`, Drop cancel-sender (clunk-on-abandon). Fixes orphan pane leak.
 - [x] **pane-server read pump → calloop SessionSource** — replaced thread-per-client read pump with calloop SessionSource for event-driven message dispatch. Messages dispatch immediately on fd-readiness instead of polled once per frame.
 - [x] **Pulse timer cancellation** — `set_pulse_rate()` now cancels the previous timer via shared `Arc<Mutex<Option<TimerToken>>>`. `Duration::ZERO` cancels cleanly.
 
@@ -51,11 +51,11 @@ Audited all 7 implemented types against their Haiku Book `.dox` entries. Full au
 - [ ] **`RequestActivate`** — apps can't programmatically pull focus to a pane.
 - [ ] **Fullscreen request** — `ClientToComp::SetFullscreen`.
 - [x] **`Messenger::is_valid()`** — checks looper channel attachment.
-- [ ] **Runtime filter mutation** — no add/remove filters from within a handler. Need `Messenger::add_filter()`.
+- [x] **Runtime filter mutation** — `Messenger::add_filter()`/`remove_filter()` via LooperMessage, batch-boundary timing. FilterToken for removal.
 - [x] **Timer consolidation** — `recv_timeout` in the looper, zero timer threads. Timers fire through the looper's event loop.
 - [ ] **pane-notify: mount/unmount events** — pane-store needs these for new volume indexing.
 - [ ] **pane-notify: recursive watching** — build into pane-notify, at least as opt-in `watch_path_recursive()`.
-- [ ] **App-level quit protocol** — no atomic "ask all panes, any can veto" for save-all-or-cancel.
+- [x] **App-level quit protocol** — `App::request_quit()` → `QuitResult` (Approved/Vetoed/Unreachable). `Handler::quit_requested(&self)` with &self-only constraint for deadlock freedom.
 - [ ] **`RefsReceived` equivalent** — file delivery from file managers.
 
 **Document (divergences not yet recorded):**
