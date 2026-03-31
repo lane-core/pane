@@ -112,3 +112,31 @@ fn undo_manager_group() {
     assert_eq!(edit.description, "paste");
     assert!(!mgr.can_undo());
 }
+
+use pane_app::scripting::{DynOptic, ValueType, OpKind, SpecifierForm};
+use pane_app::ScriptError;
+use std::any::Any;
+
+struct SensitiveField;
+
+impl DynOptic for SensitiveField {
+    fn name(&self) -> &str { "password" }
+    fn get(&self, _state: &dyn Any) -> Result<AttrValue, ScriptError> {
+        Ok(AttrValue::String("secret".into()))
+    }
+    fn set(&self, _state: &mut dyn Any, _value: AttrValue) -> Result<(), ScriptError> {
+        Ok(())
+    }
+    fn is_writable(&self) -> bool { true }
+    fn count(&self, _state: &dyn Any) -> Result<usize, ScriptError> { Ok(1) }
+    fn value_type(&self) -> ValueType { ValueType::String }
+    fn operations(&self) -> &'static [OpKind] { &[OpKind::Get, OpKind::Set] }
+    fn specifier_forms(&self) -> &'static [SpecifierForm] { &[SpecifierForm::Direct] }
+    fn is_undoable(&self) -> bool { false }
+}
+
+#[test]
+fn sensitive_optic_is_not_undoable() {
+    let field = SensitiveField;
+    assert!(!field.is_undoable());
+}

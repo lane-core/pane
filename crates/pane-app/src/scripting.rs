@@ -358,6 +358,11 @@ pub trait DynOptic: Send + Sync {
 
     /// Which specifier forms can address this property.
     fn specifier_forms(&self) -> &'static [SpecifierForm];
+
+    /// Whether edits to this property should be recorded for undo.
+    /// Override to false for sensitive properties (passwords, tokens).
+    /// RecordingOptic checks this before storing old/new values.
+    fn is_undoable(&self) -> bool { true }
 }
 
 // ---------------------------------------------------------------------------
