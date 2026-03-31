@@ -17,3 +17,7 @@
 - [project_translation_rules.md](project_translation_rules.md) — Be-to-pane translation decision tree, naming conventions, full header audit, 10 inconsistencies found (2026-03-28)
 - [reference_decorator_architecture.md](reference_decorator_architecture.md) — Decorator class hierarchy, rendering flow, chrome/content split, threading, and mapping to pane's compositor
 - [project_eact_analysis.md](project_eact_analysis.md) — EAct paper analysis (2026-03-29): 6 design principles, sub-protocol typing strategy, heterogeneous session loop as key evolution
+- [reference_be_naming_philosophy.md](reference_be_naming_philosophy.md) — Be API naming patterns from headers: bare getters, Set-prefix, Count+At, Is-predicates, past-participle hooks
+- [project_tllc_synthesis.md](project_tllc_synthesis.md) — TLL+C synthesis (2026-03-30): protocol/channel separation, ghost state discipline, sequential-spec principle, linearity-as-ownership
+- [project_scripting_optics_design.md](project_scripting_optics_design.md) — Scripting optics design (2026-03-30): concrete optics + DynOptic, flat request-response session, ResolveSpecifier as trait-object chain
+- [reference_haiku_rs.md](reference_haiku_rs.md) — haiku-rs Rust bindings: design choices, API coverage, comparison with pane, interop feasibility
