@@ -52,7 +52,7 @@ pub enum Message {
     },
     /// The compositor requests completions for the command surface.
     ///
-    /// Reply via the [`CompletionReplyPort`](crate::CompletionReplyPort).
+    /// Reply via the [`CompletionReplyPort`].
     /// If dropped without replying, an empty completion list is sent.
     CompletionRequest {
         input: String,

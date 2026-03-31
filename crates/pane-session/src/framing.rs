@@ -1,12 +1,17 @@
 //! Shared length-prefixed framing used by UnixTransport, SessionSource,
 //! and write_message. One implementation, used everywhere.
 
-use std::io::{self, Read, Write};
+use std::io::{self, IoSlice, Read, Write};
 
 /// Maximum message size: 16 MB.
 pub const MAX_MESSAGE_SIZE: usize = 16 * 1024 * 1024;
 
 /// Write a length-prefixed message.
+///
+/// Uses vectored I/O to send the 4-byte length prefix and body in a
+/// single syscall where possible, preventing Nagle's algorithm from
+/// splitting them into separate TCP segments.
+///
 /// Returns an error if the payload exceeds MAX_MESSAGE_SIZE or u32::MAX.
 pub fn write_framed(writer: &mut impl Write, data: &[u8]) -> io::Result<()> {
     if data.len() > MAX_MESSAGE_SIZE {
@@ -18,8 +23,21 @@ pub fn write_framed(writer: &mut impl Write, data: &[u8]) -> io::Result<()> {
     let len: u32 = data.len().try_into().map_err(|_| {
         io::Error::new(io::ErrorKind::InvalidData, "message too large for u32 length prefix")
     })?;
-    writer.write_all(&len.to_le_bytes())?;
-    writer.write_all(data)?;
+    let len_bytes = len.to_le_bytes();
+    let bufs = &[IoSlice::new(&len_bytes), IoSlice::new(data)];
+    let total = 4 + data.len();
+    // Vectored write sends both pieces in one syscall — Nagle can't split.
+    // Handles the common case (everything written at once) and the rare
+    // partial-write case (kernel buffer nearly full).
+    let n = writer.write_vectored(bufs)?;
+    if n < total {
+        if n < 4 {
+            writer.write_all(&len_bytes[n..])?;
+            writer.write_all(data)?;
+        } else {
+            writer.write_all(&data[n - 4..])?;
+        }
+    }
     writer.flush()
 }
 

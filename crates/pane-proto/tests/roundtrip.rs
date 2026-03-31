@@ -178,6 +178,7 @@ fn arb_comp_to_client() -> impl Strategy<Value = pane_proto::protocol::CompToCli
         arb_pane_id().prop_map(|pane| CompToClient::CommandDismissed { pane }),
         (arb_pane_id(), ".*", ".*").prop_map(|(pane, command, args)| CompToClient::CommandExecuted { pane, command, args }),
         (arb_pane_id(), any::<u64>(), ".*").prop_map(|(pane, token, input)| CompToClient::CompletionRequest { pane, token, input }),
+        (arb_pane_id(), ".*").prop_map(|(pane, reason)| CompToClient::PaneRefused { pane, reason }),
     ]
 }
 

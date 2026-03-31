@@ -50,6 +50,12 @@ impl TcpTransport {
         // Best-effort keepalive — failure to set is not fatal
         // (the stream still works, just with slower dead-peer detection).
         let _ = set_keepalive(&stream);
+        // TCP_NODELAY disables Nagle's algorithm as a fallback for
+        // transports that don't support vectored write. The primary
+        // defense is write_framed's vectored I/O (one syscall for
+        // length prefix + body), but NODELAY prevents splitting on
+        // any write path that misses vectored write.
+        let _ = stream.set_nodelay(true);
         TcpTransport { stream }
     }
 }

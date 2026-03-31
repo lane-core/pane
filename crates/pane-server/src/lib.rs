@@ -14,7 +14,6 @@
 //!    the compositor (pane-comp) owns the calloop registration
 
 use std::collections::HashMap;
-use std::io::Write;
 use std::net::TcpStream;
 use std::os::unix::net::{UnixListener, UnixStream};
 use std::path::{Path, PathBuf};
@@ -23,7 +22,7 @@ use tracing::{info, warn, error};
 
 use pane_proto::message::PaneId;
 use pane_proto::protocol::{
-    ClientToComp, CompToClient, PaneGeometry, PeerIdentity,
+    ClientToComp, CompToClient, PaneGeometry,
     ServerHandshake, ServerHello, Accepted, Rejected, ConnectionTopology,
 };
 use pane_session::calloop::write_message;
@@ -323,6 +322,21 @@ pub fn run_server_handshake_generic<T: pane_session::transport::Transport>(
     let signature = hello.signature.clone();
     let identity = hello.identity.clone();
 
+    // Check for rejection conditions before proceeding.
+    // Version mismatch or missing identity on TCP are hard failures —
+    // we still complete the handshake protocol (send ServerHello, recv
+    // ClientCaps) before rejecting, so the session types stay satisfied.
+    let reject_reason = if hello.version != 1 {
+        Some(format!(
+            "unsupported protocol version {} (server speaks v1)",
+            hello.version,
+        ))
+    } else if topology == ConnectionTopology::Remote && hello.identity.is_none() {
+        Some("identity required for remote connections".into())
+    } else {
+        None
+    };
+
     let server = server.send(ServerHello {
         compositor: server_name.into(),
         version: 1,
@@ -331,6 +345,16 @@ pub fn run_server_handshake_generic<T: pane_session::transport::Transport>(
 
     let (caps, server) = server.recv()?;
     info!("handshake: caps {:?}", caps.caps);
+
+    if let Some(reason) = reject_reason {
+        warn!("handshake rejected: {}", reason);
+        let server = server.select_right()?;
+        let server = server.send(Rejected { reason: reason.clone() })?;
+        server.finish();
+        return Err(pane_session::SessionError::Io(
+            std::io::Error::new(std::io::ErrorKind::PermissionDenied, reason),
+        ));
+    }
 
     let server = server.select_left()?;
     let server = server.send(Accepted {

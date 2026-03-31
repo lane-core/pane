@@ -18,7 +18,7 @@ fn handshake_then_hello_pane() {
     let mock_handle = thread::spawn(move || mock.run());
 
     // 3. Run client handshake
-    let _hs = run_client_handshake(client_chan, "com.example.hello").unwrap();
+    let _hs = run_client_handshake(client_chan, "com.example.hello", None).unwrap();
     eprintln!("[test] handshake complete, accepted caps: {:?}", "(handshake ok)");
 
     // 4. Connect app using active-phase channels
@@ -47,7 +47,7 @@ fn handshake_then_multi_pane() {
     let (client_chan, conn, mock) = MockCompositor::pair_with_handshake();
     let mock_handle = thread::spawn(move || mock.run());
 
-    run_client_handshake(client_chan, "com.test.multi").unwrap();
+    run_client_handshake(client_chan, "com.test.multi", None).unwrap();
     let app = App::connect_test("com.test.multi", conn).unwrap();
 
     // Create 3 panes — validates that the active-phase channels

@@ -90,12 +90,15 @@ impl Transport for TlsServerTransport {
 /// Performs the TLS handshake over an existing TCP stream, then wraps
 /// the result as a `TlsClientTransport` ready for session-typed use.
 pub fn connect_tls(
-    tcp_stream: TcpStream,
+    mut tcp_stream: TcpStream,
     server_name: rustls::pki_types::ServerName<'static>,
     config: Arc<rustls::ClientConfig>,
 ) -> io::Result<TlsClientTransport> {
-    let conn = rustls::ClientConnection::new(config, server_name)
+    let mut conn = rustls::ClientConnection::new(config, server_name)
         .map_err(|e| io::Error::new(io::ErrorKind::Other, e))?;
+    // Force TLS handshake to complete before wrapping — surfaces TLS
+    // errors immediately rather than deferring to first session I/O.
+    conn.complete_io(&mut tcp_stream)?;
     let stream = StreamOwned::new(conn, tcp_stream);
     Ok(TlsClientTransport::from_stream(stream))
 }
@@ -105,11 +108,14 @@ pub fn connect_tls(
 /// Performs the TLS handshake over an existing TCP stream, then wraps
 /// the result as a `TlsServerTransport` ready for session-typed use.
 pub fn accept_tls(
-    tcp_stream: TcpStream,
+    mut tcp_stream: TcpStream,
     config: Arc<rustls::ServerConfig>,
 ) -> io::Result<TlsServerTransport> {
-    let conn = rustls::ServerConnection::new(config)
+    let mut conn = rustls::ServerConnection::new(config)
         .map_err(|e| io::Error::new(io::ErrorKind::Other, e))?;
+    // Force TLS handshake to complete eagerly — like factotum's eager
+    // auth, TLS errors surface before the session-typed channel exists.
+    conn.complete_io(&mut tcp_stream)?;
     let stream = StreamOwned::new(conn, tcp_stream);
     Ok(TlsServerTransport::from_stream(stream))
 }

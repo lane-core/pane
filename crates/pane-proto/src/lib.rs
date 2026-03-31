@@ -40,5 +40,6 @@ pub use event::{KeyEvent, MouseEvent, MouseButton, MouseEventKind, Modifiers, Ke
 pub use message::PaneId;
 pub use tag::{PaneTitle, CommandVocabulary, CommandGroup, Command, Completion};
 pub use protocol::{ClientToComp, CompToClient, PaneGeometry, CreatePaneTag,
-    ClientHello, ServerHello, ClientCaps, Accepted, Rejected};
+    ClientHello, ServerHello, ClientCaps, Accepted, Rejected,
+    PeerIdentity, ConnectionTopology};
 pub use wire::{deserialize, frame, frame_length, serialize};

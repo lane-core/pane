@@ -5,7 +5,9 @@ use std::os::unix::net::UnixStream;
 use std::sync::mpsc;
 use std::thread;
 
-use pane_proto::protocol::{ClientToComp, CompToClient, ClientHello, ClientCaps, Accepted};
+use pane_proto::protocol::{
+    ClientToComp, CompToClient, ClientHello, ClientCaps, Accepted, PeerIdentity,
+};
 use pane_session::types::{Chan, Offer};
 use pane_session::transport::Transport;
 
@@ -147,19 +149,24 @@ where
 /// Sends ClientHello, receives ServerHello, sends ClientCaps,
 /// and waits for the server's Accept/Reject decision.
 ///
+/// `identity` should be `None` for local unix connections (where
+/// `SO_PEERCRED` provides identity implicitly) and `Some` for
+/// remote TCP connections.
+///
 /// On success, returns the accepted capabilities and the reclaimed
 /// transport (via `finish()`). The caller can reuse the transport
 /// for the active phase — e.g., `transport.into_stream()` for unix sockets.
 pub fn run_client_handshake<T: Transport>(
     chan: Chan<pane_proto::protocol::ClientHandshake, T>,
     signature: &str,
+    identity: Option<PeerIdentity>,
 ) -> Result<HandshakeResult<T>, crate::error::Error> {
     use crate::error::{ConnectError, Error};
 
     let chan = chan.send(ClientHello {
         signature: signature.to_string(),
         version: 1,
-        identity: None, // local connections; remote fills this in connect_remote
+        identity,
     }).map_err(|e| Error::Connect(ConnectError::Transport(e)))?;
 
     let (_server_hello, chan) = chan.recv()

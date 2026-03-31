@@ -132,6 +132,18 @@ pub enum CompToClient {
         token: u64,
         input: String,
     },
+    /// Pane creation was refused. Response to CreatePane when the
+    /// compositor cannot or will not create the requested pane.
+    ///
+    /// # BeOS
+    ///
+    /// Be could refuse window creation (resource limits, display
+    /// constraints). This makes that refusal explicit in the protocol
+    /// rather than relying on timeout.
+    PaneRefused {
+        pane: PaneId,
+        reason: String,
+    },
 }
 
 impl CompToClient {
@@ -152,6 +164,7 @@ impl CompToClient {
             CompToClient::CommandDismissed { pane } => *pane,
             CompToClient::CommandExecuted { pane, .. } => *pane,
             CompToClient::CompletionRequest { pane, .. } => *pane,
+            CompToClient::PaneRefused { pane, .. } => *pane,
         }
     }
 }

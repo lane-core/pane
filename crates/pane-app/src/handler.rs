@@ -15,7 +15,7 @@ use crate::proxy::Messenger;
 /// continue the event loop. `close_requested` defaults to accepting
 /// the close (returning `Ok(false)` to stop the loop).
 ///
-/// Each method corresponds to one [`Message`](crate::Message) variant.
+/// Each method corresponds to one [`Message`] variant.
 /// The looper dispatches to the matching method automatically, so you
 /// never need to write a top-level match yourself — that's what
 /// [`Pane::run`](crate::Pane::run)'s closure form is for.

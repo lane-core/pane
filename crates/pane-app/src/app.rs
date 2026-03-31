@@ -1,6 +1,6 @@
 //! The application entry point.
 
-use std::collections::{HashMap, VecDeque};
+use std::collections::HashMap;
 use std::sync::mpsc;
 use std::sync::{Arc, Mutex, atomic::{AtomicUsize, Ordering}};
 use std::thread;
@@ -54,8 +54,10 @@ struct CreateResponse {
 pub struct App {
     /// Sender to the compositor (active-phase messages).
     comp_tx: mpsc::Sender<ClientToComp>,
-    /// Oneshot channels for pending create_pane responses.
-    pending_creates: Arc<Mutex<VecDeque<mpsc::Sender<CreateResponse>>>>,
+    /// Oneshot channels for pending create_pane responses, keyed by
+    /// the client-proposed PaneId. UUID-keyed so PaneRefused can
+    /// correlate back to the correct caller.
+    pending_creates: Arc<Mutex<HashMap<PaneId, mpsc::Sender<CreateResponse>>>>,
     /// Application signature.
     signature: String,
     /// Live pane count.
@@ -82,7 +84,7 @@ impl App {
         let transport = pane_session::transport::unix::UnixTransport::from_stream(stream);
         let chan = pane_session::types::Chan::new(transport);
 
-        let hs = crate::connection::run_client_handshake(chan, signature)
+        let hs = crate::connection::run_client_handshake(chan, signature, None)
             .map_err(|e| match e {
                 crate::error::Error::Connect(ce) => ce,
                 other => ConnectError::Transport(
@@ -119,12 +121,15 @@ impl App {
         addr: impl std::net::ToSocketAddrs,
     ) -> std::result::Result<Self, ConnectError> {
         let stream = std::net::TcpStream::connect(addr)
-            .map_err(|_| ConnectError::NotRunning)?;
+            .map_err(|e| ConnectError::Transport(
+                pane_session::SessionError::Io(e),
+            ))?;
 
         let transport = pane_session::transport::tcp::TcpTransport::from_stream(stream);
         let chan = pane_session::types::Chan::new(transport);
 
-        let hs = crate::connection::run_client_handshake(chan, signature)
+        let identity = Some(crate::identity::local_identity());
+        let hs = crate::connection::run_client_handshake(chan, signature, identity)
             .map_err(|e| match e {
                 crate::error::Error::Connect(ce) => ce,
                 other => ConnectError::Transport(
@@ -147,8 +152,8 @@ impl App {
         let comp_tx = conn.sender;
         let pane_channels: Arc<Mutex<HashMap<PaneId, mpsc::SyncSender<LooperMessage>>>> =
             Arc::new(Mutex::new(HashMap::new()));
-        let pending_creates: Arc<Mutex<VecDeque<mpsc::Sender<CreateResponse>>>> =
-            Arc::new(Mutex::new(VecDeque::new()));
+        let pending_creates: Arc<Mutex<HashMap<PaneId, mpsc::Sender<CreateResponse>>>> =
+            Arc::new(Mutex::new(HashMap::new()));
 
         // Spawn the dispatcher thread — reads from compositor, routes to panes.
         // The dispatcher pre-registers per-pane channels when it sees PaneCreated,
@@ -164,20 +169,37 @@ impl App {
                     Err(_) => break, // connection closed
                 };
 
-                // PaneCreated: create + register the channel, then notify the caller
-                if let CompToClient::PaneCreated { pane, .. } = &msg {
-                    let mut pending = creates.lock().unwrap_or_else(|e| e.into_inner());
-                    if let Some(oneshot) = pending.pop_front() {
-                        let (pane_tx, pane_rx) = mpsc::sync_channel::<LooperMessage>(256);
-                        channels.lock().unwrap_or_else(|e| e.into_inner())
-                            .insert(*pane, pane_tx.clone());
-                        let _ = oneshot.send(CreateResponse {
-                            msg,
-                            pane_rx,
-                            pane_tx,
-                        });
-                        continue;
+                // PaneCreated / PaneRefused: correlate by PaneId, notify caller
+                match &msg {
+                    CompToClient::PaneCreated { pane, .. } => {
+                        let mut pending = creates.lock().unwrap_or_else(|e| e.into_inner());
+                        if let Some(oneshot) = pending.remove(pane) {
+                            let (pane_tx, pane_rx) = mpsc::sync_channel::<LooperMessage>(256);
+                            channels.lock().unwrap_or_else(|e| e.into_inner())
+                                .insert(*pane, pane_tx.clone());
+                            let _ = oneshot.send(CreateResponse {
+                                msg,
+                                pane_rx,
+                                pane_tx,
+                            });
+                            continue;
+                        }
                     }
+                    CompToClient::PaneRefused { pane, .. } => {
+                        let mut pending = creates.lock().unwrap_or_else(|e| e.into_inner());
+                        if let Some(oneshot) = pending.remove(pane) {
+                            // Synthesize a dummy channel — create_pane_inner
+                            // will see the PaneRefused msg and return Refused.
+                            let (pane_tx, pane_rx) = mpsc::sync_channel::<LooperMessage>(1);
+                            let _ = oneshot.send(CreateResponse {
+                                msg,
+                                pane_rx,
+                                pane_tx,
+                            });
+                            continue;
+                        }
+                    }
+                    _ => {}
                 }
 
                 // Route to the correct pane's channel (wrap as LooperMessage)
@@ -222,11 +244,12 @@ impl App {
         // Set up oneshot for the PaneCreated response.
         // The dispatcher pre-registers the channel before sending the response,
         // so there is no race between PaneCreated and channel availability.
-        let (create_tx, create_rx) = mpsc::channel();
-        self.pending_creates.lock().unwrap_or_else(|e| e.into_inner()).push_back(create_tx);
-
         // Propose a UUID for the new pane — client-chosen, server confirms.
         let proposed_id = PaneId::new();
+
+        let (create_tx, create_rx) = mpsc::channel();
+        self.pending_creates.lock().unwrap_or_else(|e| e.into_inner())
+            .insert(proposed_id, create_tx);
 
         // Send CreatePane to compositor
         self.comp_tx.send(ClientToComp::CreatePane { pane: proposed_id, tag: wire_tag })

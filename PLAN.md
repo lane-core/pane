@@ -27,7 +27,7 @@ Design each feature against the EAct-derived session-type principles (serena: `p
 
 Small concrete items identified by auditing the codebase against the session-type principles. Not blockers — cleanup for when the relevant code is next touched.
 
-- [ ] **`pending_creates` → typestate handle** — `app.rs` uses `VecDeque<mpsc::Sender<CompToClient>>` for manual CreatePane→PaneCreated correlation. First candidate for C2 typestate refactoring (e.g., `PaneCreateFuture` consumed by the response). Deferred to Tier 2 protocol work (requires request IDs in CreatePane/PaneCreated).
+- [ ] **`pending_creates` → typestate handle** — `app.rs` uses `HashMap<PaneId, mpsc::Sender<CreateResponse>>` for UUID-keyed CreatePane→PaneCreated/PaneRefused correlation. First candidate for C2 typestate refactoring (e.g., `PaneCreateFuture` consumed by the response). Deferred to Tier 2 protocol work.
 - [x] **pane-server read pump → calloop SessionSource** — replaced thread-per-client read pump with calloop SessionSource for event-driven message dispatch. Messages dispatch immediately on fd-readiness instead of polled once per frame.
 - [x] **Pulse timer cancellation** — `set_pulse_rate()` now cancels the previous timer via shared `Arc<Mutex<Option<TimerToken>>>`. `Duration::ZERO` cancels cleanly.
 
@@ -72,20 +72,20 @@ Audited all 7 implemented types against their Haiku Book `.dox` entries. Full au
 Design spec: `docs/distributed-pane.md`. Plan 9 research: `docs/superpowers/plan9-distributed-mapping.md`. Consult both the be-systems-engineer and plan9-systems-engineer agents before implementing new subsystems.
 
 **Phase 1: Network Transport + Headless Server**
-- [ ] **TcpTransport** — `pane-session/src/transport/tcp.rs`, feature `tcp` (default). Same pattern as unix.rs.
-- [ ] **Generalize SessionSource** — parameterize over `AsFd + Read`, add `UnixSessionSource` alias.
-- [ ] **Protocol extensions** — `PeerIdentity`, `ConnectionTopology`, `instance_id` in handshake types. Breaking change (pre-1.0).
-- [ ] **pane-server extensions** — `new_unmanaged()`, generic handshake over Transport, identity in ClientSession.
-- [ ] **pane-headless binary** — new crate, calloop event loop, dual listeners (unix + TCP), no smithay.
-- [ ] **App::connect_remote** — TCP connection path in pane-app, generic pump threads.
-- [ ] **TLS transport** — `pane-session/src/transport/tls.rs`, rustls, feature `tls`. Client cert identity.
+- [x] **TcpTransport** — `pane-session/src/transport/tcp.rs`. Same pattern as unix.rs.
+- [x] **Generalize SessionSource** — parameterized over `AsFd + Read`, `UnixSessionSource` alias.
+- [x] **Protocol extensions** — `PeerIdentity`, `ConnectionTopology`, `instance_id` in handshake types. `PaneRefused` variant. Server rejection on version mismatch / missing identity.
+- [x] **pane-server extensions** — `new_unmanaged()`, generic `ClientStream` enum, generic handshake over Transport with rejection.
+- [x] **pane-headless binary** — calloop event loop, dual listeners (unix + TCP), handshake timeouts.
+- [x] **App::connect_remote** — TCP connection path, identity forwarding, generic pump threads.
+- [x] **TLS transport** — `pane-session/src/transport/tls.rs`, rustls, eager handshake completion.
 
 **Phase 2: Nix Flake Architecture**
-- [ ] **Target-agnostic service definitions** — `nix/lib/services.nix`, consumed by platform backends.
-- [ ] **NixOS module** — `nixosModules.core` (systemd backend, adoption on-ramp).
-- [ ] **Darwin module** — `darwinModules.core` (launchd backend).
-- [ ] **sixos modules** — `sixosModules.core`, `.compositor`, `.desktop` (s6-rc backend, native Pane Linux).
-- [ ] **pane-headless package** — builds on all platforms.
+- [x] **Target-agnostic service definitions** — `nix/lib/services.nix`, consumed by platform backends.
+- [x] **NixOS module** — `nixosModules.core` (systemd backend, adoption on-ramp).
+- [x] **Darwin module** — `darwinModules.core` (launchd backend).
+- [x] **sixos modules** — `sixosModules.core`, `.compositor`, `.desktop` (s6-rc backend, native Pane Linux).
+- [x] **pane-headless package** — builds on all platforms.
 
 **Phase 2 specs (design complete, implement when crate is built):**
 - [ ] **pane-roster federation** — cross-instance service discovery, init system abstraction (s6/launchd/systemd).

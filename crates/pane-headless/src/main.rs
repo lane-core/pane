@@ -166,6 +166,9 @@ fn run(opts: &Opts) -> Result<()> {
                     let iid = unix_instance_id.clone();
 
                     std::thread::spawn(move || {
+                        // Timeout prevents a stalled peer from holding
+                        // the handshake thread indefinitely.
+                        let _ = stream.set_read_timeout(Some(std::time::Duration::from_secs(10)));
                         match pane_server::run_server_handshake(stream, &iid) {
                             Ok(stream) => {
                                 let _ = sender.send(CompletedHandshake::Unix(client_id, stream));
@@ -214,6 +217,7 @@ fn run(opts: &Opts) -> Result<()> {
                             use pane_session::transport::tcp::TcpTransport;
                             use pane_proto::protocol::ConnectionTopology;
 
+                            let _ = stream.set_read_timeout(Some(std::time::Duration::from_secs(10)));
                             let transport = TcpTransport::from_stream(stream);
                             match pane_server::run_server_handshake_generic(
                                 transport,

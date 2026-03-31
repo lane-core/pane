@@ -73,6 +73,15 @@ impl<S: AsFd + Read + 'static> SessionSource<S> {
     /// underlying connection (e.g., via `try_clone()` for unix/TCP streams).
     /// The `poll_stream` is registered with calloop for readiness
     /// notification; the `read_stream` is used for actual I/O.
+    ///
+    /// # Preconditions
+    ///
+    /// Both streams **must** be in non-blocking mode before calling this.
+    /// Calloop expects non-blocking fds — a blocking fd will stall the
+    /// event loop when data arrives faster than the handler drains it.
+    /// The handshake threads in pane-headless set non-blocking after the
+    /// blocking handshake completes; `UnixListener`/`TcpListener` set it
+    /// on accepted streams before registration.
     pub fn from_streams(poll_stream: S, read_stream: S) -> io::Result<Self> {
         let source = Generic::new(poll_stream, Interest::READ, calloop::Mode::Level);
         Ok(SessionSource {

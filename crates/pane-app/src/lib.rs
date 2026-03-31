@@ -58,6 +58,7 @@ pub mod app;
 pub mod completions;
 pub(crate) mod connection;
 pub mod error;
+pub(crate) mod identity;
 pub mod event;
 pub mod exit;
 pub mod filter;

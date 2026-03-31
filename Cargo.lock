@@ -1493,6 +1493,7 @@ dependencies = [
 name = "pane-app"
 version = "0.1.0"
 dependencies = [
+ "libc",
  "pane-optic",
  "pane-proto",
  "pane-session",
