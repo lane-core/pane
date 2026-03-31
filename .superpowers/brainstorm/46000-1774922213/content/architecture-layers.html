@@ -1,0 +1,85 @@
+<h2>Pane Crate Architecture: Headless Boundary</h2>
+<p class="subtitle">Current layering — everything below the red line already builds and runs headless on any unix-like with nix</p>
+
+<div class="mockup">
+  <div class="mockup-header">Dependency Graph &amp; Headless Readiness</div>
+  <div class="mockup-body" style="padding: 2rem; font-family: monospace; font-size: 0.85rem; line-height: 1.6;">
+
+    <!-- Pane Linux layer -->
+    <div style="background: #1a1a2e; border: 2px solid #e94560; border-radius: 8px; padding: 1rem; margin-bottom: 0.5rem;">
+      <div style="color: #e94560; font-weight: bold; margin-bottom: 0.5rem;">PANE LINUX (full vertical integration)</div>
+      <div style="display: flex; gap: 0.5rem; flex-wrap: wrap;">
+        <span style="background: #16213e; padding: 4px 10px; border-radius: 4px; color: #aaa;">s6 init</span>
+        <span style="background: #16213e; padding: 4px 10px; border-radius: 4px; color: #aaa;">pane-watchdog</span>
+        <span style="background: #16213e; padding: 4px 10px; border-radius: 4px; color: #aaa;">pane-roster</span>
+        <span style="background: #16213e; padding: 4px 10px; border-radius: 4px; color: #aaa;">pane-store</span>
+        <span style="background: #16213e; padding: 4px 10px; border-radius: 4px; color: #aaa;">pane-fs (FUSE)</span>
+        <span style="background: #16213e; padding: 4px 10px; border-radius: 4px; color: #aaa;">kernel, btrfs</span>
+      </div>
+    </div>
+
+    <!-- Compositor layer -->
+    <div style="background: #1a1a2e; border: 2px solid #e94560; border-radius: 8px; padding: 1rem; margin-bottom: 0.5rem;">
+      <div style="color: #e94560; font-weight: bold; margin-bottom: 0.5rem;">COMPOSITOR (Linux-only, graphical)</div>
+      <div style="display: flex; gap: 0.5rem; flex-wrap: wrap;">
+        <span style="background: #4a1942; padding: 4px 10px; border-radius: 4px; color: #eee;">pane-comp</span>
+        <span style="background: #333; padding: 4px 10px; border-radius: 4px; color: #aaa;">smithay</span>
+        <span style="background: #333; padding: 4px 10px; border-radius: 4px; color: #aaa;">wayland</span>
+        <span style="background: #333; padding: 4px 10px; border-radius: 4px; color: #aaa;">libinput</span>
+        <span style="background: #333; padding: 4px 10px; border-radius: 4px; color: #aaa;">DRM/Mesa</span>
+        <span style="background: #333; padding: 4px 10px; border-radius: 4px; color: #aaa;">cosmic-text</span>
+      </div>
+    </div>
+
+    <!-- RED LINE -->
+    <div style="border-top: 3px dashed #e94560; margin: 1rem 0; position: relative;">
+      <span style="position: absolute; top: -12px; left: 50%; transform: translateX(-50%); background: #1e1e2e; padding: 0 1rem; color: #e94560; font-weight: bold; font-size: 0.9rem;">HEADLESS BOUNDARY</span>
+    </div>
+
+    <!-- Server protocol layer -->
+    <div style="background: #0a3d2e; border: 2px solid #2ecc71; border-radius: 8px; padding: 1rem; margin-bottom: 0.5rem;">
+      <div style="color: #2ecc71; font-weight: bold; margin-bottom: 0.5rem;">PROTOCOL SERVER (headless, builds on macOS/Linux)</div>
+      <div style="display: flex; gap: 0.5rem; flex-wrap: wrap;">
+        <span style="background: #145a3a; padding: 4px 10px; border-radius: 4px; color: #eee;">pane-server</span>
+        <span style="color: #666; padding: 4px;">— socket listener, handshake, client routing. No rendering deps.</span>
+      </div>
+    </div>
+
+    <!-- App kit layer -->
+    <div style="background: #0a3d2e; border: 2px solid #2ecc71; border-radius: 8px; padding: 1rem; margin-bottom: 0.5rem;">
+      <div style="color: #2ecc71; font-weight: bold; margin-bottom: 0.5rem;">APPLICATION KIT (headless, builds everywhere)</div>
+      <div style="display: flex; gap: 0.5rem; flex-wrap: wrap;">
+        <span style="background: #145a3a; padding: 4px 10px; border-radius: 4px; color: #eee;">pane-app</span>
+        <span style="background: #145a3a; padding: 4px 10px; border-radius: 4px; color: #eee;">pane-hello</span>
+        <span style="color: #666; padding: 4px;">— App, Pane, Looper, Handler, Messenger. Zero graphics deps.</span>
+      </div>
+    </div>
+
+    <!-- Foundation layer -->
+    <div style="background: #0a3d2e; border: 2px solid #2ecc71; border-radius: 8px; padding: 1rem;">
+      <div style="color: #2ecc71; font-weight: bold; margin-bottom: 0.5rem;">FOUNDATION (pure Rust, headless, cross-platform)</div>
+      <div style="display: flex; gap: 0.5rem; flex-wrap: wrap;">
+        <span style="background: #145a3a; padding: 4px 10px; border-radius: 4px; color: #eee;">pane-session</span>
+        <span style="background: #145a3a; padding: 4px 10px; border-radius: 4px; color: #eee;">pane-proto</span>
+        <span style="background: #145a3a; padding: 4px 10px; border-radius: 4px; color: #eee;">pane-notify</span>
+        <span style="background: #145a3a; padding: 4px 10px; border-radius: 4px; color: #eee;">pane-optic</span>
+        <span style="color: #666; padding: 4px;">— session types, wire protocol, fs events, optics. serde + postcard only.</span>
+      </div>
+    </div>
+
+    <div style="margin-top: 1.5rem; color: #888; font-size: 0.8rem;">
+      <span style="color: #2ecc71;">■</span> Already headless-capable &nbsp;&nbsp;
+      <span style="color: #e94560;">■</span> Requires display server or Pane Linux infrastructure
+    </div>
+  </div>
+</div>
+
+<div style="margin-top: 1.5rem;">
+  <h3>Key Finding</h3>
+  <p>The <strong>Transport trait</strong> in pane-session is the critical abstraction. Currently two impls exist:</p>
+  <ul style="margin: 0.5rem 0; padding-left: 1.5rem; color: #ccc;">
+    <li><code>UnixTransport</code> — production IPC (unix domain sockets)</li>
+    <li><code>MemoryTransport</code> — testing (mpsc channels)</li>
+  </ul>
+  <p>Adding a <code>TcpTransport</code> (or TLS-wrapped variant) would make the entire green stack network-transparent with <strong>zero protocol changes</strong>. The session types, handshake, and active-phase enums are already serialized via postcard over length-prefixed frames.</p>
+</div>
