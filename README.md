@@ -121,6 +121,63 @@ building
     just fmt                   # rustfmt + nixfmt
     just doc                   # generate API docs
 
+on methodology
+---------------
+
+pane's design is human-authored (the fruit of my lifelong
+fascination with operating system design, going back to using
+BeOS and Plan 9 as a young hacker), standing on the shoulders
+of giants. the decision to ground the architecture in BeOS's
+systems engineering and Plan 9's distributed computing model
+was deliberate — these were the best ideas of a golden age of
+operating system design, carried out by intuition and refined
+technique by engineers whose work has aged remarkably well.
+
+the Haiku project deserves special gratitude. their decades-long
+marathon to reimplement BeOS from scratch kept the spirit of Be
+alive when it would otherwise have been lost. their source code,
+their documentation, their Haiku Book — these are invaluable to
+any effort that seeks to carry on what Be started. the author is
+a lifelong fan of the project and is deeply grateful for what
+they have built and continue to build.
+
+Plan 9's ideas were largely compatible with Be's. where Be
+proved that message-passing discipline and per-component
+threading produce responsive, stable desktops, Plan 9 proved
+that protocol uniformity and location independence produce
+systems whose capabilities exceed what any designer anticipated.
+session types, optics, and related formal frameworks give us
+tools to carry out with compiler verification what the best
+systems designers of that era achieved by skill and convention.
+better type systems, more refined theoretical guidance for hard
+problems, more elegant formalizations of principles that were
+previously folk wisdom — these don't replace the original
+insights. they let us build on them with greater confidence.
+
+the implementation is developed with substantial assistance from
+AI coding agents. this is, in a sense, an adversarial test of
+the design thesis: if sound architecture constrains implementation
+toward correct outcomes, then it should do so regardless of who
+— or what — is writing the code.
+
+the least charitable reading is that this is a mean vehicle for
+an ambitious project. we think the evidence points otherwise.
+the synthesis required — session type theory, optics, BeOS
+systems engineering, Plan 9 distributed computing, nix
+packaging, Wayland protocol, s6 service management — spans
+enough domains that no single developer could hold it all in
+working memory simultaneously. an AI agent that can reference
+the Be Newsletter archive, read Haiku source, consult Plan 9
+papers, verify session type soundness, and write the code in
+a single conversation may be more than mean for this particular
+task. the architecture is the prompt, in the deepest sense:
+well-chosen constraints lead to well-shaped implementations.
+
+we are explicit about this because the result should be judged
+on its merits, not on assumptions about how it was produced.
+read the code. run the tests. the design either holds or it
+doesn't.
+
 license
 -------
 
