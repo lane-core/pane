@@ -302,7 +302,7 @@ impl App {
             if tx.send(LooperMessage::QuitRequested { response_tx }).is_ok() {
                 responses.push((pane_id, response_rx));
             }
-            // If try_send fails (channel full/disconnected), treat as unreachable
+            // If send fails (disconnected), treat as unreachable
         }
         drop(channels); // release lock before blocking on responses
 

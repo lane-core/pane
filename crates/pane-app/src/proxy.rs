@@ -101,11 +101,8 @@ impl Messenger {
     ///
     /// This is the self-delivery mechanism: worker threads (network,
     /// computation) can post results back to the pane's event loop
-    /// for sequential processing. Blocks if the looper channel is full
-    /// (bounded at 256 messages — backpressure).
-    ///
-    /// Use [`try_send_message`](Messenger::try_send_message) for the
-    /// non-blocking variant.
+    /// for sequential processing. The channel is unbounded — this
+    /// call never blocks. Fails only if the looper has exited.
     ///
     /// # BeOS
     ///
@@ -119,16 +116,12 @@ impl Messenger {
 
     /// Post an event to this pane's own looper, without blocking.
     ///
-    /// With calloop's unbounded channel, this is equivalent to
-    /// [`send_message`](Messenger::send_message) — it only fails if
-    /// the looper is disconnected. The method is retained for API
-    /// compatibility with code that was written against the previous
-    /// bounded (256) channel.
+    /// Equivalent to [`send_message`](Messenger::send_message) — the
+    /// looper channel is unbounded, so both methods have identical
+    /// semantics. Retained for compatibility; prefer `send_message`.
+    #[deprecated(since = "0.1.0", note = "use send_message; the looper channel is unbounded")]
     pub fn try_send_message(&self, event: Message) -> Result<()> {
-        let tx = self.looper_tx.as_ref().ok_or(PaneError::Disconnected)?;
-        tx.send(LooperMessage::Posted(event))
-            .map_err(|_| PaneError::Disconnected)?;
-        Ok(())
+        self.send_message(event)
     }
 
     /// Send a message to another pane's looper and block for a reply.
@@ -318,7 +311,7 @@ impl Messenger {
     /// Post an event to this pane's looper after a delay.
     ///
     /// The event is consumed on delivery (no Clone needed). The looper
-    /// integrates one-shots into its `recv_timeout` loop.
+    /// integrates one-shots into its calloop dispatch timeout.
     ///
     /// # BeOS
     ///
@@ -356,7 +349,7 @@ impl Messenger {
     ///
     /// `BMessageRunner` with count=`B_INFINITE_TIMEOUT`. Be's BMessageRunner
     /// was a system service in the registrar; pane integrates timers directly
-    /// into each looper because `recv_timeout` makes this natural.
+    /// into each looper's calloop event loop.
     pub fn send_periodic_fn(
         &self,
         make_event: impl Fn() -> Message + Send + 'static,

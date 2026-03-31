@@ -155,9 +155,6 @@ struct LooperState {
     disconnected: bool,
 }
 
-/// Process a LooperMessage that may be a timer control message.
-/// Returns true if it was a timer message (handled), false if it
-/// needs normal dispatch.
 /// Process control messages (timer and filter registration).
 /// Consumes the message if it's a control message; returns Some
 /// for messages that need normal dispatch.
@@ -307,7 +304,9 @@ fn coalesce_batch(
     events
 }
 
-/// Convert calloop errors to io::Error for our Error type.
+/// Bridge calloop errors into our error hierarchy via `Error::Io`.
+/// calloop's error types don't map cleanly to pane's error enum,
+/// and io::Error is the catch-all variant.
 fn calloop_err(e: impl std::fmt::Display) -> std::io::Error {
     std::io::Error::new(std::io::ErrorKind::Other, e.to_string())
 }

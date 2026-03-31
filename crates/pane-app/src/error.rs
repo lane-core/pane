@@ -38,9 +38,6 @@ pub enum PaneError {
     Timeout,
     /// The pane's session was disconnected.
     Disconnected,
-    /// The looper channel is full (bounded at 256 messages).
-    /// Returned by `try_send_message` when backpressure is active.
-    ChannelFull,
     /// Calling `send_and_wait` from a looper thread would deadlock.
     /// The reply arrives on the same channel the looper is blocking on.
     /// Use `send_request` (async) for looper-to-looper communication.
@@ -75,7 +72,6 @@ impl fmt::Display for PaneError {
             PaneError::Refused => write!(f, "pane creation refused"),
             PaneError::Timeout => write!(f, "pane creation timed out"),
             PaneError::Disconnected => write!(f, "pane disconnected"),
-            PaneError::ChannelFull => write!(f, "looper channel full"),
             PaneError::WouldDeadlock => write!(f, "send_and_wait called from looper thread (would deadlock)"),
         }
     }
