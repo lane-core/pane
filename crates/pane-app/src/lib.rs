@@ -89,7 +89,7 @@ pub mod undo;
 // --- Developer-facing API ---
 
 pub use app::{App, PaneCreateFuture};
-pub use clipboard::{Clipboard, ClipboardMetadata, Sensitivity, Locality};
+pub use clipboard::{Clipboard, ClipboardMetadata, Sensitivity, Locality, ClipboardWriteLock};
 pub use error::{Error, ConnectError, PaneError, ScriptError, Result};
 pub use event::Message;
 pub use exit::{ExitReason, QuitResult};

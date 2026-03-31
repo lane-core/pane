@@ -81,3 +81,84 @@ pub enum Locality {
     /// do not see this entry (ENOENT, not empty).
     Local,
 }
+
+use std::sync::mpsc;
+
+/// Internal message from ClipboardWriteLock to the clipboard service.
+#[derive(Debug)]
+#[doc(hidden)]
+pub enum ClipboardCommand {
+    Commit {
+        clipboard: String,
+        data: Vec<u8>,
+        metadata: ClipboardMetadata,
+    },
+    Revert {
+        clipboard: String,
+    },
+}
+
+/// A typestate handle for writing to a clipboard.
+///
+/// Created by the clipboard service when a write lock is granted.
+/// Must be consumed by `commit()` or `revert()`. Drop without
+/// commit = revert (affine gap compensation, same pattern as
+/// ReplyPort and PaneCreateFuture).
+///
+/// # Session type
+///
+/// Degenerate `Send<CommitOrRevert, End>` — one action, then done.
+///
+/// # BeOS
+///
+/// BClipboard Lock/Clear/Commit/Unlock collapsed into a single
+/// typestate: lock is implicit in handle creation, commit consumes.
+#[must_use = "dropping without commit reverts the clipboard write"]
+pub struct ClipboardWriteLock {
+    clipboard: String,
+    command_tx: mpsc::Sender<ClipboardCommand>,
+    consumed: bool,
+}
+
+impl ClipboardWriteLock {
+    /// For testing — creates a lock backed by a channel.
+    #[doc(hidden)]
+    pub fn new_for_test(
+        clipboard: String,
+        command_tx: mpsc::Sender<ClipboardCommand>,
+    ) -> Self {
+        ClipboardWriteLock {
+            clipboard,
+            command_tx,
+            consumed: false,
+        }
+    }
+
+    /// Commit data to the clipboard. Consumes the lock.
+    pub fn commit(mut self, data: Vec<u8>, metadata: ClipboardMetadata) {
+        self.consumed = true;
+        let _ = self.command_tx.send(ClipboardCommand::Commit {
+            clipboard: self.clipboard.clone(),
+            data,
+            metadata,
+        });
+    }
+
+    /// Explicitly revert. Consumes the lock.
+    pub fn revert(mut self) {
+        self.consumed = true;
+        let _ = self.command_tx.send(ClipboardCommand::Revert {
+            clipboard: self.clipboard.clone(),
+        });
+    }
+}
+
+impl Drop for ClipboardWriteLock {
+    fn drop(&mut self) {
+        if !self.consumed {
+            let _ = self.command_tx.send(ClipboardCommand::Revert {
+                clipboard: self.clipboard.clone(),
+            });
+        }
+    }
+}

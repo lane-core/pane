@@ -1,6 +1,7 @@
 use pane_app::clipboard::{
     Clipboard, ClipboardMetadata, Sensitivity, Locality,
 };
+use pane_app::clipboard::ClipboardWriteLock;
 use std::time::Duration;
 
 #[test]
@@ -39,4 +40,38 @@ fn metadata_secret_with_ttl() {
         panic!("expected Secret");
     }
     assert!(matches!(meta.locality, Locality::Local));
+}
+
+#[test]
+fn write_lock_commit_consumes() {
+    let (tx, _rx) = std::sync::mpsc::channel();
+    let lock = ClipboardWriteLock::new_for_test("system".into(), tx);
+
+    lock.commit(
+        b"hello".to_vec(),
+        ClipboardMetadata {
+            content_type: "text/plain".into(),
+            sensitivity: Sensitivity::Normal,
+            locality: Locality::Any,
+        },
+    );
+    // lock is consumed — using it again would be a compile error.
+}
+
+#[test]
+fn write_lock_revert_consumes() {
+    let (tx, _rx) = std::sync::mpsc::channel();
+    let lock = ClipboardWriteLock::new_for_test("system".into(), tx);
+    lock.revert();
+}
+
+#[test]
+fn write_lock_drop_reverts() {
+    let (tx, rx) = std::sync::mpsc::channel();
+    {
+        let _lock = ClipboardWriteLock::new_for_test("system".into(), tx);
+        // dropped without commit — should send revert
+    }
+    let msg = rx.try_recv();
+    assert!(msg.is_ok(), "drop should send revert");
 }
