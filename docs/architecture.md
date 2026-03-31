@@ -8,9 +8,11 @@ The foundations spec carries the philosophy. This document carries the engineeri
 
 ## 1. Vision
 
-Pane is a desktop environment, Wayland compositor, and Linux distribution. One thing, not three. The degree of integration is NeXTSTEP-level: the user does not perceive a compositor running on a distro. They perceive pane.
+Pane is a desktop environment, Wayland compositor, and Linux distribution — and a distributed operating environment that runs on any unix-like. One thing, not five. The degree of integration is NeXTSTEP-level: the user does not perceive a compositor running on a distro. They perceive pane. And a headless pane instance in the cloud is the same system without a display — not a stripped-down version, but the foundation that the full desktop extends.
 
-The architecture recovers what made BeOS work — message-passing discipline, per-component threading, infrastructure-first design, the kit as programming model — on a platform where we don't control the kernel. Linux provides the primitives (processes, scheduling, filesystems, devices, networking) and stays out of the way. Pane provides the personality: the protocol, the compositor, the kits, the aesthetic, the extension model.
+The architecture recovers what made BeOS work — message-passing discipline, per-component threading, infrastructure-first design, the kit as programming model — and what Plan 9 proved — protocol uniformity, location independence, the network as a transparent extension of the local namespace — on a platform where we don't control the kernel. Linux provides the primitives (processes, scheduling, filesystems, devices, networking) and stays out of the way. Pane provides the personality: the protocol, the compositor, the kits, the aesthetic, the extension model.
+
+The local machine has no architectural privilege. Its display, keyboard, and low-latency I/O are performance characteristics, not structural distinctions. The local compositor is a server the user's eyes happen to be connected to. A headless instance is the same server without a display. A remote pane is the same as a local pane with higher latency. This principle — the host as contingent server — is the synthesis of BeOS's messaging discipline (everything communicates the same way) and Plan 9's location independence (nothing is special because it's local). See `docs/distributed-pane.md` for the full treatment.
 
 What session types add to the Be model: compile-time enforcement of the protocol discipline that BeOS achieved by engineering convention. The BMessage `what` code becomes a branch in a session type enum. The convention "send B_REPLY after B_REQUEST_COMPLETED" becomes a type: after `Recv<Request>`, the type is `Send<Reply>`. The guarantee is the same — protocol adherence, no stuck states, local reasoning per component — but the enforcement moves from developer skill to compiler verification.
 
@@ -76,9 +78,11 @@ The specific tree structure evolves with implementation, but the principle is fi
 
 ## 3. Server Decomposition
 
-Each server is a separate process. Servers communicate via session-typed protocols over unix sockets. Each server runs its own threaded looper — a thread with a message queue, processing messages sequentially. This is the BLooper model: each looper is an actor with a mailbox, processing one message at a time. Concurrency arises from many loopers running simultaneously, not from concurrency within a looper.
+Each server is a separate process. Servers communicate via session-typed protocols over unix sockets (locally) or TCP/TLS (across the network). Each server runs its own threaded looper — a thread with a message queue, processing messages sequentially. This is the BLooper model: each looper is an actor with a mailbox, processing one message at a time. Concurrency arises from many loopers running simultaneously, not from concurrency within a looper.
 
 The compositor is the exception: its Wayland core uses calloop for fd polling because smithay requires it. calloop is scoped to the compositor — it does not define the system-wide concurrency model. Other servers use std::thread + channels.
+
+**The core/full decomposition.** Every server has two versions: a portable *core* that runs on any unix-like (Darwin, NixOS, any Linux with nix), and a platform-optimized *full* version that leverages Pane Linux's specific infrastructure. Both expose the same protocol interface — clients do not know which version they are talking to. This decomposition is what makes the adoption funnel work: users get core versions on their existing system, then gain full versions when they move to Pane Linux. See `docs/distributed-pane.md` §5 for the complete core/full table.
 
 ### Why no router server
 
@@ -104,9 +108,23 @@ What the router was supposed to provide:
 
 The resilience research (circuit breakers, priority queues, Erlang heart patterns) remains valuable — it informs pane-watchdog's design and the kit's error handling. But the resilience is distributed into the right places rather than concentrated in a single server.
 
+### pane-headless — The Headless Server
+
+A pane server without a compositor. Speaks the full pane protocol — session-typed handshake, active-phase messaging, identity forwarding, capability negotiation — without rendering. Manages panes, routes messages, accepts both local (unix socket) and remote (TCP/TLS) connections. Builds on any unix-like. This is the foundational deployment model that the full desktop extends.
+
+**Responsibilities:**
+- Pane protocol server: accepts connections over unix sockets and TCP/TLS
+- Client management: handshake, pane creation, message routing (via pane-server)
+- Identity forwarding: `PeerIdentity` in handshake, TLS client certificate validation
+- Default geometry for headless panes (80x24, configurable)
+
+**Does not contain:** rendering, Wayland protocol, input handling, layout tree, or any graphical concern. The event loop is pure protocol: calloop with listener sources and per-client SessionSources.
+
+**Relationship to pane-comp:** pane-headless and pane-comp are parallel consumers of pane-server. pane-server provides the protocol logic; pane-headless provides a headless event loop; pane-comp provides a graphical event loop with smithay. An application connected to pane-headless cannot tell the difference from the protocol's perspective — the same `ClientToComp` / `CompToClient` messages flow in both cases.
+
 ### pane-comp — The Compositor
 
-Composites client surfaces, manages layout, renders chrome. This is the app_server equivalent — the rendering service that every client talks to.
+Composites client surfaces, manages layout, renders chrome. This is the app_server equivalent — the rendering service that every client talks to. On a full Pane Linux desktop, pane-comp is the server the user's eyes are connected to. On a headless deployment, pane-headless takes its place.
 
 **Responsibilities:**
 - Wayland protocol handling via smithay — core: wl_shm, wl_seat, xdg-shell, linux-dmabuf, viewporter, fractional-scale, presentation-time; ext- protocols (cross-compositor, preferred over wlr-): ext-session-lock, ext-idle-notify, ext-image-copy-capture, ext-data-control, ext-color-management (HDR); compositor-specific: layer-shell, xdg-decoration, input method protocols
@@ -138,15 +156,17 @@ Each pane gets its own server-side thread — not one thread per connection. A s
 
 ### pane-watchdog — System Health Monitor
 
-A minimal external process, inspired by Erlang's `heart`. Deliberately simple — the less it does, the harder it is to kill.
+A minimal external process, inspired by Erlang's `heart`. Deliberately simple — the less it does, the harder it is to kill. Part of the headless tier — not Linux-only. A headless deployment in the cloud needs health monitoring *more* than a local desktop where the user can see when things break.
 
 **Responsibilities:**
-- Heartbeat monitoring of critical infrastructure (compositor, roster) via direct pipes — not through the pane protocol
+- Heartbeat monitoring of critical infrastructure (compositor or headless server, roster) via direct pipes — not through the pane protocol
 - Detecting unresponsive components via missed heartbeats (3 missed beats at 2-second intervals = 6-second worst-case detection)
 - Triggering escalation on failure: flush journal to disk (pre-opened fd, direct write(2) — no buffered I/O, no path resolution, no allocation), broadcast persist-state alert
 - Notifying the init system to restart failed components
 
 **The external watchdog principle:** The thing being monitored cannot reliably monitor itself. Erlang solves this with heart — a separate C program with its own process, communicating through a pipe with a trivial protocol (length + opcode, 5 messages total). Pane-watchdog follows this pattern. It runs outside the pane server ecosystem. If every pane server dies, pane-watchdog is still running and can trigger recovery.
+
+**Platform-abstracted restart.** The watchdog's core (pipes, heartbeats, process monitoring) is universal unix. Process liveness: `kill(pid, 0)` everywhere, `pidfd` on Linux for race-free detection, `kqueue` `EVFILT_PROC` on Darwin. Restart notification: s6 on Pane Linux, launchd on Darwin, systemd on other Linux.
 
 **What pane-watchdog does NOT do:** routing, message dispatch, application-level functionality, circuit breaker management. It checks pulses and pulls the emergency brake. Nothing else.
 
@@ -597,21 +617,53 @@ Five properties, all present in BeOS, all recoverable in pane:
 
 ## 9. The Distribution Layer
 
-Pane is a distribution, not a DE on a distro. The integration is NeXTSTEP-level: one thing.
+Pane is a distribution, not a DE on a distro — and a distributed operating environment that runs on any unix-like, not just Pane Linux. The integration is NeXTSTEP-level for the full desktop, and the headless deployment is the foundation that makes it reachable without reinstalling your OS.
+
+### The three-layer model
+
+```
+Layer 0: nixpkgs                    120,000 packages
+Layer 1: sixos                      s6 system builder, infuse combinator, libudev-zero overlay
+Layer 2: pane flake
+         ├── pane-core              cross-platform: packages + service modules
+         └── pane-linux             sixos consumer: pane-core + compositor + desktop
+```
+
+**nixpkgs** provides packages. **sixos** (codeberg.org/amjoseph/sixos) provides the s6-based system builder — a production-grade NixOS alternative that replaces systemd with s6 and the NixOS module system with the `infuse` combinator. Deployed across workstations, servers, and a 768-core buildfarm. **Pane** provides the personality: the protocol, the compositor, the kits, the desktop experience. Each layer depends on the one below it. None forks the other.
 
 ### Nix as build substrate
 
-Nix builds the entire system — kernel through desktop — as a single, transitively-closed derivation. The system closure is one artifact: a Nix derivation whose output contains kernel, initrd, s6 boot scripts, s6-rc compiled service database, `/etc/pane/` defaults, pane server binaries, kit libraries, and a system profile linking to all installed packages.
+Nix builds the entire Pane Linux system — kernel through desktop — as a single, transitively-closed derivation via sixos. The system closure is one artifact: a Nix derivation whose output contains kernel, initrd, s6 boot scripts, s6-rc compiled service database, `/etc/pane/` defaults, pane server binaries, kit libraries, and a system profile linking to all installed packages.
 
 Nix is not the identity. It is the backstage infrastructure. The user does not interact with Nix to use pane — they interact with pane's interfaces. Nix builds the system and manages its evolution. This is the NeXTSTEP/Mach relationship: Mach provided the right primitives and was otherwise invisible. The identity was in the personality layer.
 
-**The overlay approach.** Pane does not fork nixpkgs. It depends on nixpkgs as a flake input. Pane provides:
-1. An overlay replacing `systemd.lib` with libudev-zero (breaks the transitive systemd dependency chain)
-2. A custom system builder (pane's equivalent of `nixos/`) using s6
-3. Service definitions for pane's infrastructure servers
-4. The pane packages themselves (servers, kits)
+**The overlay approach.** Pane does not fork nixpkgs or sixos. It depends on both as flake inputs. sixos provides:
+1. The libudev-zero overlay (breaks the transitive systemd dependency chain)
+2. The s6-based system builder (the `infuse` combinator replaces the NixOS module system)
+3. The s6-linux-init boot chain, s6-rc service compilation
+
+Pane provides:
+1. Service definitions for pane's infrastructure servers (target-agnostic, compiled to s6-rc/systemd/launchd by platform backend)
+2. The pane packages themselves (servers, kits, headless binary)
+3. NixOS and Darwin modules for the adoption path
 
 The ~120,000 application packages in nixpkgs are used as-is. Zero merge conflicts with upstream. Package updates come for free by bumping the nixpkgs input.
+
+### The adoption funnel
+
+Users adopt pane without reinstalling their operating system:
+
+```
+nix flake on any unix-like
+  → headless pane: server, kits, protocol, filesystem interface
+  → configuration accumulates in nix expressions (pane.services.*)
+  → add compositor, then desktop, as readiness grows
+  → the flake IS the seed of a full Pane Linux configuration
+```
+
+On Darwin, the user gets headless pane via a nix-darwin module — pane-headless supervised by launchd. On NixOS, the same via a NixOS module with systemd. On Pane Linux, the same services run natively under s6-rc. The user's `pane.services.*` configuration is the same in all cases — only the init backend changes.
+
+**The seed property.** Settings transfer because they were always nix expressions. The pane flake exports target-agnostic service definitions consumed by platform-specific backends. The user writes `pane.services.headless.enable = true` — this means the same thing whether the backend generates a systemd unit, a launchd plist, or an s6-rc service directory. When they graduate from headless-on-Darwin to full Pane Linux, their configuration carries over without migration. See `docs/distributed-pane.md` §6 for the full flake architecture.
 
 ### s6 as init
 
@@ -732,7 +784,9 @@ Both of these are things Haiku still struggles with. Pane gets them from the pla
 | **Compositor event loop** | calloop | Epoll-based, callback-oriented. Required by smithay. Scoped to the compositor only. |
 | **Session types** | `pane-session` crate: custom typestate `Chan<S, Transport>` | Transport-aware, crash-safe (Err not panic), calloop-compatible. Primitives verified in Lean/Agda. Par and dialectic as design references. |
 | **Wire format** | postcard | Serde-based, varint-encoded, compact binary. |
-| **Init system** | s6 + s6-rc | Small, composable, readiness-aware. Service directories are derivations. Compiled dependency database. |
+| **Init system** | s6 + s6-rc (via sixos) | Small, composable, readiness-aware. Service directories are derivations. Compiled dependency database. sixos provides the system builder. |
+| **System builder** | sixos | Production-grade s6-based NixOS alternative. Provides libudev-zero overlay, infuse combinator, boot chain. Pane Linux is a sixos flake. |
+| **Network transport** | TCP/TLS (rustls) | Network-transparent sessions via Transport trait. TLS for remote identity binding. Same protocol over unix sockets (local) and TCP (remote). |
 | **Build system** | Nix | Declarative, reproducible, atomic upgrades, rollback. ~120k packages via nixpkgs. |
 | **Filesystem notification** | fanotify + inotify | fanotify for mount-wide (pane-store). inotify for targeted (config, plugins). |
 | **FUSE** | Custom FUSE-over-io_uring module (on `io-uring` crate) | No existing Rust FUSE library supports io_uring. The kernel interface is small (two io_uring subcommands + standard FUSE opcodes); pane-fs needs only a bounded subset. Built directly on `/dev/fuse` + io_uring for maximum performance. |

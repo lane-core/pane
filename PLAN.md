@@ -67,6 +67,42 @@ Audited all 7 implemented types against their Haiku Book `.dox` entries. Full au
 
 ## Next
 
+### Distributed Computing Foundation
+
+Design spec: `docs/distributed-pane.md`. Plan 9 research: `docs/superpowers/plan9-distributed-mapping.md`. Consult both the be-systems-engineer and plan9-systems-engineer agents before implementing new subsystems.
+
+**Phase 1: Network Transport + Headless Server**
+- [ ] **TcpTransport** — `pane-session/src/transport/tcp.rs`, feature `tcp` (default). Same pattern as unix.rs.
+- [ ] **Generalize SessionSource** — parameterize over `AsFd + Read`, add `UnixSessionSource` alias.
+- [ ] **Protocol extensions** — `PeerIdentity`, `ConnectionTopology`, `instance_id` in handshake types. Breaking change (pre-1.0).
+- [ ] **pane-server extensions** — `new_unmanaged()`, generic handshake over Transport, identity in ClientSession.
+- [ ] **pane-headless binary** — new crate, calloop event loop, dual listeners (unix + TCP), no smithay.
+- [ ] **App::connect_remote** — TCP connection path in pane-app, generic pump threads.
+- [ ] **TLS transport** — `pane-session/src/transport/tls.rs`, rustls, feature `tls`. Client cert identity.
+
+**Phase 2: Nix Flake Architecture**
+- [ ] **Target-agnostic service definitions** — `nix/lib/services.nix`, consumed by platform backends.
+- [ ] **NixOS module** — `nixosModules.core` (systemd backend, adoption on-ramp).
+- [ ] **Darwin module** — `darwinModules.core` (launchd backend).
+- [ ] **sixos modules** — `sixosModules.core`, `.compositor`, `.desktop` (s6-rc backend, native Pane Linux).
+- [ ] **pane-headless package** — builds on all platforms.
+
+**Phase 2 specs (design complete, implement when crate is built):**
+- [ ] **pane-roster federation** — cross-instance service discovery, init system abstraction (s6/launchd/systemd).
+- [ ] **pane-store core/full** — SQLite backend (core) vs xattrs + fanotify (full).
+- [ ] **pane-fs unified namespace** — computed views, remote mounting, core/full FUSE backend.
+- [ ] **pane-watchdog** — headless tier (not Linux-only), platform-abstracted restart.
+- [ ] **Network-aware .plan** — Landlock + network namespaces from `.plan`, remote agent verification.
+
+**Architecture decisions:**
+- sixos as base for Pane Linux (not custom system builder) — see `docs/architecture.md` §9
+- Unified namespace (local + remote interleaved under `/pane/`) — see `docs/distributed-pane.md` §3
+- pane-fs as query system (BFS queries as Plan 9 synthetic filesystem paths)
+- UUIDs for globally unique PaneIds
+- Host as contingent server (no architectural privilege for local machine)
+
+### Other
+
 - [ ] **pane-shell** — VT parser, PTY bridge, screen buffer. The first real application. Consult Be engineer on Terminal app architecture.
 - [ ] **DummyRenderer headless tests** — smithay's renderer_test feature for protocol integration tests without GPU (feature flag already added).
 - [ ] **CI** — macOS job for kit crates, Ubuntu job for compositor.

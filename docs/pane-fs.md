@@ -219,3 +219,68 @@ User modification is tracked via `user.pane.modified` xattr. Nix owns the defaul
 #### Scenario: Upgrade adds new key
 - **WHEN** a system rebuild introduces a new config key `accent-color` for the compositor
 - **THEN** the activation script SHALL create `/etc/pane/comp/accent-color` with the Nix-specified default value and appropriate xattr metadata
+
+### Requirement: Unified namespace with computed views
+
+pane-fs SHALL present a unified namespace where local and remote panes are interleaved under `/pane/`. The directory hierarchy is a query system — every directory is a computed view (a filter predicate over the indexed pane state). See `docs/distributed-pane.md` §3 for the full design.
+
+Core computed views:
+- `/pane/` — all panes (local and remote)
+- `/pane/by-sig/<signature>/` — filter by application signature
+- `/pane/by-type/<type>/` — filter by pane type
+- `/pane/local/` — filter to local instance only
+- `/pane/remote/` — filter to remote instances only
+- `/pane/remote/<host>/` — filter to a specific remote host
+
+These are all equivalent projections over the same indexed state. None is privileged. `local` and `remote` are metadata properties, not architectural boundaries.
+
+PaneIds are UUIDs — globally unique by construction. The local compositor's internal bookkeeping may use compact IDs, but the canonical filesystem identity is the UUID.
+
+#### Scenario: Unified listing
+- **WHEN** `ls /pane/` is executed
+- **THEN** both local and remote panes SHALL appear as directory entries
+
+#### Scenario: Filtered listing
+- **WHEN** `ls /pane/local/` is executed
+- **THEN** only panes on the local instance SHALL appear
+
+#### Scenario: Remote pane access
+- **WHEN** `cat /pane/<uuid>/body` is executed for a remote pane
+- **THEN** pane-fs SHALL route the read to the remote instance transparently
+- **AND** the response latency SHALL reflect the network round-trip, not a hang
+
+### Requirement: Core/full FUSE backend split
+
+pane-fs SHALL support two FUSE backends:
+
+**Core (portable):** Standard FUSE via libfuse (Linux) or macFUSE/FUSE-T (Darwin). This is the default for headless deployments on any unix-like.
+
+**Full (Pane Linux):** FUSE-over-io_uring (Linux 6.14+) with per-CPU request queues. This is the baseline for the full Pane Linux distribution.
+
+Both backends expose the same `/pane/` namespace with the same semantics. The difference is performance: io_uring halves the per-operation overhead and eliminates concurrency bottlenecks.
+
+**Darwin considerations:** macFUSE requires a kernel extension (kext) which Apple has been restricting. FUSE-T is a kext-free alternative that emulates FUSE over NFS. Either works for pane-fs's purposes — the filesystem is synthetic and the operations are lightweight. pane-fs SHALL abstract over the FUSE implementation so that the backend can be selected at build time.
+
+#### Scenario: FUSE backend selection
+- **WHEN** pane-fs is built on Pane Linux
+- **THEN** the io_uring backend SHALL be used
+
+#### Scenario: FUSE on Darwin
+- **WHEN** pane-fs is built on Darwin
+- **THEN** the macFUSE or FUSE-T backend SHALL be used, selected by build configuration
+
+### Requirement: Remote namespace mounting
+
+pane-fs SHALL support transparent access to remote pane instances. Remote pane metadata is cached locally via pane-store's federation index, updated asynchronously via change notifications over the protocol. Reads go through the cache; writes route over TcpTransport to the owning instance.
+
+Connections to remote hosts SHALL be established lazily on first access, not at mount time. If a remote host is unreachable, the filesystem operation SHALL return an error (ECONNREFUSED, ETIMEDOUT) rather than blocking indefinitely.
+
+#### Scenario: Lazy remote connection
+- **WHEN** a script first reads `/pane/remote/cloud-1/` after pane-fs starts
+- **THEN** pane-fs SHALL establish a TcpTransport connection to `cloud-1`
+- **AND** subsequent accesses SHALL reuse the connection
+
+#### Scenario: Remote host unavailable
+- **WHEN** a remote host is unreachable
+- **THEN** reads of cached metadata SHALL succeed (stale data, marked as such)
+- **AND** writes SHALL return an error immediately, not block
