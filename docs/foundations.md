@@ -192,6 +192,8 @@ The same pattern held for smaller challenges. Extending PaneId from `NonZeroU32`
 
 The attitude: when a design challenge arrives, the first question is not "how do we work around this?" but "what is this challenge trying to teach us about the architecture?" The challenge is a probe into the design's assumptions. If the architecture is sound, the solution will be natural and will improve the whole system. If it isn't, the challenge has identified exactly where the architecture needs to evolve.
 
+This is the same dynamic that made BeOS excellent. Be's engineers designed for the hardest case — pervasive multithreading on consumer hardware in the mid-90s — and the discipline that demanded produced an architecture that was elegant, responsive, and stable in every case. They didn't tolerate multithreading as a necessary evil; they embraced it as a design constraint that would force them to get the abstractions right. The BLooper model, the messaging discipline, the per-window threading — these emerged from taking the hard constraint seriously rather than working around it. The result was a system that was better at everything, not just the hard case, because the architecture had been refined by the difficulty. Pane inherits this attitude: the challenges of distribution, network transparency, and headless deployment are not obstacles on the way to a desktop environment. They are the refining fire that produces one worth using.
+
 ---
 
 ## 8. The Protocol harmonizes distinct system interfaces
