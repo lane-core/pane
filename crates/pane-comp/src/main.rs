@@ -113,6 +113,7 @@ fn run(opts: &Opts) -> Result<()> {
         .map_err(|_| anyhow::anyhow!("XDG_RUNTIME_DIR not set"))?;
     let (protocol_server, listener) = server::ProtocolServer::new(std::path::Path::new(&runtime_dir))
         .map_err(|e| anyhow::anyhow!("protocol server: {e}"))?;
+    let comp_instance_id = protocol_server.instance_id.clone();
 
     let (handshake_tx, handshake_rx) = std::sync::mpsc::channel();
 
@@ -145,6 +146,7 @@ fn run(opts: &Opts) -> Result<()> {
     let generic_listener: calloop::generic::Generic<std::os::unix::net::UnixListener> = generic_listener;
 
     let hs_sender = handshake_tx;
+    let hs_instance_id = comp_instance_id;
     loop_handle.insert_source(generic_listener, move |_event, listener, state: &mut CompState| {
         // Accept all pending connections
         loop {
@@ -155,8 +157,9 @@ fn run(opts: &Opts) -> Result<()> {
                     let client_id = state.server.alloc_client_id();
                     let sender = hs_sender.clone();
 
+                    let iid = hs_instance_id.clone();
                     std::thread::spawn(move || {
-                        match server::run_server_handshake(stream) {
+                        match server::run_server_handshake(stream, &iid) {
                             Ok(stream) => {
                                 let _ = sender.send((client_id, stream));
                             }

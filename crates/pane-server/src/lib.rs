@@ -14,6 +14,8 @@
 //!    the compositor (pane-comp) owns the calloop registration
 
 use std::collections::HashMap;
+use std::io::Write;
+use std::net::TcpStream;
 use std::os::unix::net::{UnixListener, UnixStream};
 use std::path::{Path, PathBuf};
 
@@ -21,19 +23,47 @@ use tracing::{info, warn, error};
 
 use pane_proto::message::PaneId;
 use pane_proto::protocol::{
-    ClientToComp, CompToClient, PaneGeometry,
-    ServerHandshake, ServerHello, Accepted, ConnectionTopology,
+    ClientToComp, CompToClient, PaneGeometry, PeerIdentity,
+    ServerHandshake, ServerHello, Accepted, Rejected, ConnectionTopology,
 };
 use pane_session::calloop::write_message;
 use pane_session::transport::unix::UnixTransport;
 use pane_session::types::Chan;
 
+/// A client's write stream — either a unix socket or a TCP connection.
+///
+/// The protocol server is transport-agnostic: it writes responses to
+/// whichever stream type the client connected over. Reading is handled
+/// by calloop `SessionSource` (parameterized over the same stream types).
+pub enum ClientStream {
+    Unix(UnixStream),
+    Tcp(TcpStream),
+}
+
+impl ClientStream {
+    /// Clone the stream for calloop registration (read side).
+    pub fn try_clone(&self) -> std::io::Result<Self> {
+        match self {
+            ClientStream::Unix(s) => Ok(ClientStream::Unix(s.try_clone()?)),
+            ClientStream::Tcp(s) => Ok(ClientStream::Tcp(s.try_clone()?)),
+        }
+    }
+
+    /// Set the stream to non-blocking mode for calloop.
+    pub fn set_nonblocking(&self, nonblocking: bool) -> std::io::Result<()> {
+        match self {
+            ClientStream::Unix(s) => s.set_nonblocking(nonblocking),
+            ClientStream::Tcp(s) => s.set_nonblocking(nonblocking),
+        }
+    }
+}
+
 /// Per-client state tracked by the compositor.
-/// Reading is handled by calloop SessionSource in pane-comp;
+/// Reading is handled by calloop SessionSource in pane-comp/pane-headless;
 /// this struct holds only the write stream and owned pane list.
 pub struct ClientSession {
     /// The stream for writing active-phase responses back to the client.
-    pub stream: UnixStream,
+    pub stream: ClientStream,
     /// PaneIds owned by this client.
     pub panes: Vec<PaneId>,
 }
@@ -109,8 +139,9 @@ impl ProtocolServer {
 
     /// Register a client after handshake completes.
     /// Stores the write stream for sending responses. The read side
-    /// is registered as a calloop SessionSource by the compositor.
-    pub fn register_client(&mut self, client_id: usize, write_stream: UnixStream) {
+    /// is registered as a calloop SessionSource by the caller
+    /// (pane-comp or pane-headless).
+    pub fn register_client(&mut self, client_id: usize, write_stream: ClientStream) {
         self.clients.insert(client_id, ClientSession {
             stream: write_stream,
             panes: Vec::new(),
@@ -219,14 +250,21 @@ impl ProtocolServer {
             Ok(b) => b,
             Err(e) => { error!("serialize error: {}", e); return; }
         };
-        if let Err(e) = write_message(&client.stream, &bytes) {
+        let result = match &client.stream {
+            ClientStream::Unix(s) => write_message(s, &bytes),
+            ClientStream::Tcp(s) => pane_session::framing::write_framed(&mut &*s, &bytes),
+        };
+        if let Err(e) = result {
             warn!("write to client failed: {}", e);
         }
     }
 
     /// Clean up the socket file on shutdown.
+    /// No-op for `new_unmanaged()` (empty path).
     pub fn cleanup(&self) {
-        let _ = std::fs::remove_file(&self.sock_path);
+        if !self.sock_path.as_os_str().is_empty() {
+            let _ = std::fs::remove_file(&self.sock_path);
+        }
     }
 }
 
@@ -255,6 +293,7 @@ pub fn run_server_handshake(
 ) -> Result<UnixStream, pane_session::SessionError> {
     let result = run_server_handshake_generic(
         UnixTransport::from_stream(stream),
+        "pane-comp",
         instance_id,
         ConnectionTopology::Local,
     )?;
@@ -265,9 +304,11 @@ pub fn run_server_handshake(
 ///
 /// Generic over `T: Transport` — works with `UnixTransport`,
 /// `TcpTransport`, or any other transport implementation.
-/// The caller specifies the topology (Local for unix, Remote for TCP).
+/// The caller specifies the topology (Local for unix, Remote for TCP)
+/// and the server name (e.g., "pane-comp" or "pane-headless").
 pub fn run_server_handshake_generic<T: pane_session::transport::Transport>(
     transport: T,
+    server_name: &str,
     instance_id: &str,
     topology: ConnectionTopology,
 ) -> Result<ServerHandshakeResult<T>, pane_session::SessionError> {
@@ -283,7 +324,7 @@ pub fn run_server_handshake_generic<T: pane_session::transport::Transport>(
     let identity = hello.identity.clone();
 
     let server = server.send(ServerHello {
-        compositor: "pane-comp".into(),
+        compositor: server_name.into(),
         version: 1,
         instance_id: instance_id.to_string(),
     })?;

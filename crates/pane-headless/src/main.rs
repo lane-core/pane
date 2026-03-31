@@ -82,10 +82,16 @@ fn run(opts: &Opts) -> Result<()> {
     let protocol_server = pane_server::ProtocolServer::new_unmanaged();
     let instance_id = protocol_server.instance_id.clone();
 
+    // Handshake completion — either unix or TCP stream.
+    enum CompletedHandshake {
+        Unix(usize, std::os::unix::net::UnixStream),
+        Tcp(usize, std::net::TcpStream),
+    }
+
     // Handshake completion channel — spawned threads send completed
-    // (client_id, stream) pairs here. The calloop event loop picks
-    // them up via a channel event source (event-driven, not polled).
-    let (handshake_tx, handshake_rx) = calloop::channel::channel::<(usize, std::os::unix::net::UnixStream)>();
+    // handshakes here. The calloop event loop picks them up via a
+    // channel event source (event-driven, not polled).
+    let (handshake_tx, handshake_rx) = calloop::channel::channel::<CompletedHandshake>();
 
     let default_geometry = pane_proto::protocol::PaneGeometry {
         width: opts.cols as u32 * 9,  // approximate cell size
@@ -110,8 +116,15 @@ fn run(opts: &Opts) -> Result<()> {
     loop_handle.insert_source(handshake_rx, {
         let loop_handle = loop_handle.clone();
         move |event, _, state: &mut HeadlessState| {
-            if let calloop::channel::Event::Msg((client_id, stream)) = event {
-                state.register_client(client_id, stream, &loop_handle);
+            if let calloop::channel::Event::Msg(completed) = event {
+                match completed {
+                    CompletedHandshake::Unix(client_id, stream) => {
+                        state.register_unix_client(client_id, stream, &loop_handle);
+                    }
+                    CompletedHandshake::Tcp(client_id, stream) => {
+                        state.register_tcp_client(client_id, stream, &loop_handle);
+                    }
+                }
             }
         }
     }).map_err(|e| anyhow::anyhow!("handshake channel source: {e}"))?;
@@ -155,7 +168,7 @@ fn run(opts: &Opts) -> Result<()> {
                     std::thread::spawn(move || {
                         match pane_server::run_server_handshake(stream, &iid) {
                             Ok(stream) => {
-                                let _ = sender.send((client_id, stream));
+                                let _ = sender.send(CompletedHandshake::Unix(client_id, stream));
                             }
                             Err(e) => {
                                 warn!("unix handshake failed: {}", e);
@@ -204,24 +217,15 @@ fn run(opts: &Opts) -> Result<()> {
                             let transport = TcpTransport::from_stream(stream);
                             match pane_server::run_server_handshake_generic(
                                 transport,
+                                "pane-headless",
                                 &iid,
                                 ConnectionTopology::Remote,
                             ) {
                                 Ok(result) => {
-                                    // Convert TcpStream back to UnixStream? No —
-                                    // we need to handle TCP streams in the event loop.
-                                    // For now, TCP handshake completes but we need
-                                    // a way to register TCP streams with calloop.
-                                    // TODO: generalize the handshake completion channel
-                                    // to carry either stream type.
                                     let tcp_stream = result.transport.into_stream();
                                     info!("tcp handshake complete for client {} (sig: {})",
                                         client_id, result.signature);
-                                    // We can't send a TcpStream through the unix channel.
-                                    // For now, convert to a raw fd approach or use a
-                                    // separate channel. See state.rs for the solution.
-                                    let _ = (sender, tcp_stream, client_id);
-                                    warn!("TCP active phase not yet wired — handshake succeeded but client will disconnect");
+                                    let _ = sender.send(CompletedHandshake::Tcp(client_id, tcp_stream));
                                 }
                                 Err(e) => {
                                     warn!("tcp handshake failed: {}", e);
