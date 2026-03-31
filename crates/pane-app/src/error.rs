@@ -10,6 +10,8 @@ pub enum Error {
     Connect(ConnectError),
     /// Error during pane operations.
     Pane(PaneError),
+    /// Scripting protocol error.
+    Script(ScriptError),
     /// Session transport error.
     Session(pane_session::SessionError),
     /// I/O error.
@@ -39,6 +41,10 @@ pub enum PaneError {
     /// The looper channel is full (bounded at 256 messages).
     /// Returned by `try_send_message` when backpressure is active.
     ChannelFull,
+    /// Calling `send_and_wait` from a looper thread would deadlock.
+    /// The reply arrives on the same channel the looper is blocking on.
+    /// Use `send_request` (async) for looper-to-looper communication.
+    WouldDeadlock,
 }
 
 impl fmt::Display for Error {
@@ -46,6 +52,7 @@ impl fmt::Display for Error {
         match self {
             Error::Connect(e) => write!(f, "connection error: {}", e),
             Error::Pane(e) => write!(f, "pane error: {}", e),
+            Error::Script(e) => write!(f, "scripting error: {}", e),
             Error::Session(e) => write!(f, "session error: {}", e),
             Error::Io(e) => write!(f, "I/O error: {}", e),
         }
@@ -69,6 +76,7 @@ impl fmt::Display for PaneError {
             PaneError::Timeout => write!(f, "pane creation timed out"),
             PaneError::Disconnected => write!(f, "pane disconnected"),
             PaneError::ChannelFull => write!(f, "looper channel full"),
+            PaneError::WouldDeadlock => write!(f, "send_and_wait called from looper thread (would deadlock)"),
         }
     }
 }
@@ -78,6 +86,7 @@ impl std::error::Error for Error {
         match self {
             Error::Connect(e) => Some(e),
             Error::Pane(e) => Some(e),
+            Error::Script(e) => Some(e),
             Error::Session(e) => Some(e),
             Error::Io(e) => Some(e),
         }
@@ -94,6 +103,53 @@ impl std::error::Error for ConnectError {
 }
 
 impl std::error::Error for PaneError {}
+
+/// Scripting protocol errors.
+///
+/// Returned by `DynOptic` operations and the specifier resolution
+/// chain. Each variant maps to a specific failure mode in the
+/// property access path.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ScriptError {
+    /// The requested property does not exist on this handler.
+    PropertyNotFound,
+    /// Value type does not match the property's declared type.
+    TypeMismatch {
+        expected: crate::scripting::ValueType,
+        got: crate::scripting::ValueType,
+    },
+    /// Attempted to set a read-only property.
+    ReadOnly,
+    /// Index specifier out of range for a collection property.
+    IndexOutOfRange,
+    /// Specifier chain resolution failed.
+    SpecifierFailed(String),
+    /// Internal error: handler state type mismatch in DynOptic.
+    /// This indicates a bug in the optic implementation, not a
+    /// user error.
+    StateMismatch,
+}
+
+impl fmt::Display for ScriptError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            ScriptError::PropertyNotFound => write!(f, "property not found"),
+            ScriptError::TypeMismatch { expected, got } =>
+                write!(f, "type mismatch: expected {:?}, got {:?}", expected, got),
+            ScriptError::ReadOnly => write!(f, "property is read-only"),
+            ScriptError::IndexOutOfRange => write!(f, "index out of range"),
+            ScriptError::SpecifierFailed(msg) => write!(f, "specifier failed: {}", msg),
+            ScriptError::StateMismatch =>
+                write!(f, "internal: handler state type mismatch in optic"),
+        }
+    }
+}
+
+impl std::error::Error for ScriptError {}
+
+impl From<ScriptError> for Error {
+    fn from(e: ScriptError) -> Self { Error::Script(e) }
+}
 
 impl From<ConnectError> for Error {
     fn from(e: ConnectError) -> Self { Error::Connect(e) }

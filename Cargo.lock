@@ -1386,6 +1386,7 @@ dependencies = [
 name = "pane-app"
 version = "0.1.0"
 dependencies = [
+ "pane-optic",
  "pane-proto",
  "pane-session",
  "tempfile",
@@ -1421,9 +1422,14 @@ dependencies = [
 name = "pane-notify"
 version = "0.1.0"
 dependencies = [
+ "bitflags 2.11.0",
  "calloop 0.14.4",
  "tempfile",
 ]
+
+[[package]]
+name = "pane-optic"
+version = "0.1.0"
 
 [[package]]
 name = "pane-proto"

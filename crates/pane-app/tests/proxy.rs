@@ -81,13 +81,13 @@ fn pane_handle_set_content_sends_correct_message() {
 }
 
 #[test]
-fn pane_handle_set_completions_sends_correct_message() {
+fn completion_reply_port_sends_response() {
     let (tx, rx) = mpsc::channel();
-    let handle = Messenger::new(pane_id(2), tx);
+    let reply = pane_app::CompletionReplyPort::new(pane_id(2), 42, tx);
 
-    handle.set_completions(42, vec![
+    reply.reply(vec![
         Completion { text: "foo".into(), description: Some("a foo".into()) },
-    ]).unwrap();
+    ]);
 
     let msg = rx.recv().unwrap();
     match msg {
@@ -98,6 +98,24 @@ fn pane_handle_set_completions_sends_correct_message() {
             assert_eq!(completions[0].text, "foo");
         }
         other => panic!("expected CompletionResponse, got {:?}", other),
+    }
+}
+
+#[test]
+fn completion_reply_port_drop_sends_empty() {
+    let (tx, rx) = mpsc::channel();
+    {
+        let _reply = pane_app::CompletionReplyPort::new(pane_id(3), 99, tx);
+        // Dropped without calling reply()
+    }
+    let msg = rx.recv().unwrap();
+    match msg {
+        ClientToComp::CompletionResponse { pane, token, completions } => {
+            assert_eq!(pane, pane_id(3));
+            assert_eq!(token, 99);
+            assert!(completions.is_empty());
+        }
+        other => panic!("expected empty CompletionResponse, got {:?}", other),
     }
 }
 

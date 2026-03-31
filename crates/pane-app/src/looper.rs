@@ -10,6 +10,7 @@
 //! sequential processing. Concurrency arises from many loopers
 //! running simultaneously, not from concurrency within a looper.
 
+use std::cell::Cell;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{self, RecvTimeoutError};
@@ -25,6 +26,25 @@ use crate::filter::FilterChain;
 use crate::handler::Handler;
 use crate::looper_message::LooperMessage;
 use crate::proxy::Messenger;
+
+thread_local! {
+    /// True when the current thread is running a looper event loop.
+    /// Checked by `send_and_wait` to prevent deadlocks.
+    static IS_LOOPER: Cell<bool> = const { Cell::new(false) };
+}
+
+/// Returns true if the calling thread is currently running a looper.
+pub(crate) fn is_looper_thread() -> bool {
+    IS_LOOPER.with(|flag| flag.get())
+}
+
+/// RAII guard that clears IS_LOOPER on drop (including panic unwind).
+struct LooperGuard;
+impl Drop for LooperGuard {
+    fn drop(&mut self) {
+        IS_LOOPER.with(|flag| flag.set(false));
+    }
+}
 
 /// A pending periodic or one-shot timer, local to the looper thread.
 struct TimerEntry {
@@ -179,10 +199,14 @@ enum Unwrapped {
 }
 
 /// Unwrap a LooperMessage for dispatch.
-fn unwrap_message(msg: LooperMessage, pane_id: PaneId) -> Unwrapped {
+fn unwrap_message(
+    msg: LooperMessage,
+    pane_id: PaneId,
+    comp_sender: &mpsc::Sender<pane_proto::protocol::ClientToComp>,
+) -> Unwrapped {
     match msg {
         LooperMessage::FromComp(comp_msg) => {
-            match Message::try_from_comp(comp_msg, pane_id) {
+            match Message::try_from_comp(comp_msg, pane_id, comp_sender) {
                 Some(event) => Unwrapped::Event(event),
                 None => Unwrapped::Skip,
             }
@@ -206,6 +230,7 @@ fn drain_and_coalesce(
     first: LooperMessage,
     receiver: &mpsc::Receiver<LooperMessage>,
     pane_id: PaneId,
+    comp_sender: &mpsc::Sender<pane_proto::protocol::ClientToComp>,
     timers: &mut Timers,
 ) -> Vec<Unwrapped> {
     let mut batch = vec![first];
@@ -224,7 +249,7 @@ fn drain_and_coalesce(
             None => continue, // timer message consumed
         };
 
-        match unwrap_message(msg, pane_id) {
+        match unwrap_message(msg, pane_id, comp_sender) {
             Unwrapped::Event(event) => {
                 match &event {
                     Message::Resize(_) => {
@@ -256,6 +281,23 @@ fn drain_and_coalesce(
         }
     }
 
+    // Priority scan: when Close is present in a large batch, truncate
+    // the batch after Close so subsequent events don't delay teardown.
+    // Small batches are left in FIFO order — reordering would skip
+    // events that arrived before Close.
+    //
+    // This matches the Be engineer's recommendation: the real fix for
+    // input floods is compositor-side coalescing (server never sends
+    // 1000 mouse events). Client-side, we just prevent *more* events
+    // from queueing behind Close.
+    if events.len() > 16 {
+        if let Some(pos) = events.iter().position(|e| {
+            matches!(e, Unwrapped::Event(Message::CloseRequested))
+        }) {
+            events.truncate(pos + 1);
+        }
+    }
+
     events
 }
 
@@ -273,6 +315,8 @@ pub fn run_closure(
     proxy: Messenger,
     mut handler: impl FnMut(&Messenger, Message) -> Result<bool>,
 ) -> std::result::Result<ExitReason, crate::error::Error> {
+    IS_LOOPER.with(|flag| flag.set(true));
+    let _guard = LooperGuard;
     let mut timers = Timers::new();
 
     loop {
@@ -288,7 +332,7 @@ pub fn run_closure(
         let timer_events = timers.fire_due();
 
         let mut batch = match msg {
-            Some(msg) => drain_and_coalesce(msg, &receiver, pane_id, &mut timers),
+            Some(msg) => drain_and_coalesce(msg, &receiver, pane_id, &proxy.sender, &mut timers),
             None => Vec::new(),
         };
 
@@ -344,6 +388,8 @@ pub fn run_handler(
     proxy: Messenger,
     mut handler: impl Handler,
 ) -> std::result::Result<ExitReason, crate::error::Error> {
+    IS_LOOPER.with(|flag| flag.set(true));
+    let _guard = LooperGuard;
     let mut timers = Timers::new();
 
     loop {
@@ -359,7 +405,7 @@ pub fn run_handler(
         let timer_events = timers.fire_due();
 
         let mut batch = match msg {
-            Some(msg) => drain_and_coalesce(msg, &receiver, pane_id, &mut timers),
+            Some(msg) => drain_and_coalesce(msg, &receiver, pane_id, &proxy.sender, &mut timers),
             None => Vec::new(),
         };
 
@@ -416,8 +462,8 @@ fn dispatch_to_handler(handler: &mut impl Handler, proxy: &Messenger, event: Mes
         Message::CommandDismissed => handler.command_dismissed(proxy),
         Message::CommandExecuted { command, args } =>
             handler.command_executed(proxy, &command, &args),
-        Message::CompletionRequest { token, input } =>
-            handler.completion_request(proxy, token, &input),
+        Message::CompletionRequest { input, reply } =>
+            handler.completion_request(proxy, &input, reply),
         Message::Pulse => handler.pulse(proxy),
         Message::Disconnected => handler.disconnected(proxy),
         Message::PaneExited { pane, reason } => handler.pane_exited(proxy, pane, reason),

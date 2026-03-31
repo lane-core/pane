@@ -23,7 +23,7 @@
 //!
 //! Each pane gets its own looper thread running a sequential message loop.
 //! Heavy work goes in spawned threads; the looper stays responsive.
-//! Worker threads post results back via [`Messenger::post_app_message`]
+//! Worker threads post results back via [`Messenger::post_app_message`](crate::Messenger::post_app_message)
 //! (for application-defined types) or [`Messenger::send_message`]
 //! (for system events), and the looper picks them up on its next
 //! iteration. This is the `BLooper` model — one thread, one message
@@ -55,6 +55,7 @@
 //! - [`pane_session`] — session-typed channels used for the compositor handshake
 
 pub mod app;
+pub mod completions;
 pub(crate) mod connection;
 pub mod error;
 pub mod event;
@@ -85,13 +86,14 @@ pub mod scripting;
 // --- Developer-facing API ---
 
 pub use app::App;
-pub use error::{Error, ConnectError, PaneError, Result};
+pub use error::{Error, ConnectError, PaneError, ScriptError, Result};
 pub use event::Message;
 pub use exit::ExitReason;
 pub use filter::{MessageFilter, FilterAction};
 pub use handler::Handler;
 pub use pane::Pane;
 pub use proxy::{Messenger, TimerToken};
+pub use completions::CompletionReplyPort;
 pub use reply::ReplyPort;
 pub use shortcuts::KeyCombo;
 pub use tag::{Tag, CommandBuilder, cmd};
@@ -103,4 +105,8 @@ pub use connection::{run_client_handshake, HandshakeResult};
 #[doc(hidden)]
 pub use routing::{RouteTable, RouteResult, RouteCandidate};
 #[doc(hidden)]
-pub use scripting::{Attribute, ScriptQuery, ScriptOp, ScriptReplyToken};
+pub use scripting::{
+    AttrValue, DynOptic, OpKind, PropertyInfo, Resolution, ScriptOp,
+    ScriptQuery, ScriptReply, ScriptResponse, ScriptableHandler, Specifier,
+    SpecifierForm, ValueType,
+};

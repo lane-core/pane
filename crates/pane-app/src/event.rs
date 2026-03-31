@@ -4,6 +4,7 @@ use pane_proto::event::{KeyEvent, MouseEvent};
 use pane_proto::message::PaneId;
 use pane_proto::protocol::{CompToClient, PaneGeometry};
 
+use crate::completions::CompletionReplyPort;
 use crate::exit::ExitReason;
 
 /// Events delivered to a pane's event handler.
@@ -50,9 +51,12 @@ pub enum Message {
         args: String,
     },
     /// The compositor requests completions for the command surface.
+    ///
+    /// Reply via the [`CompletionReplyPort`](crate::CompletionReplyPort).
+    /// If dropped without replying, an empty completion list is sent.
     CompletionRequest {
-        token: u64,
         input: String,
+        reply: CompletionReplyPort,
     },
     /// Periodic pulse. Delivered at the rate set by
     /// Messenger::set_pulse_rate(). The blessed way to do
@@ -69,16 +73,16 @@ pub enum Message {
     },
     /// Application-defined message posted from a worker thread.
     ///
-    /// Use [`Messenger::post_app_message`] to send these. The looper
-    /// delivers them to [`Handler::app_message`].
+    /// Use [`Messenger::post_app_message`](crate::Messenger::post_app_message) to send these. The looper
+    /// delivers them to [`Handler::app_message`](crate::Handler::app_message).
     ///
     /// # BeOS
     ///
     /// Equivalent to app-defined `BMessage` `what` codes dispatched
     /// through `BHandler::MessageReceived`.
     AppMessage(Box<dyn Any + Send>),
-    /// Reply to a request sent via [`Messenger::send_and_wait`] or
-    /// the async request API. Dispatches to [`Handler::reply_received`].
+    /// Reply to a request sent via [`Messenger::send_and_wait`](crate::Messenger::send_and_wait) or
+    /// the async request API. Dispatches to [`Handler::reply_received`](crate::Handler::reply_received).
     ///
     /// # BeOS
     ///
@@ -89,7 +93,7 @@ pub enum Message {
     },
     /// A request's reply failed — the target dropped the [`ReplyPort`](crate::ReplyPort)
     /// without replying, or the target pane exited mid-conversation.
-    /// Dispatches to [`Handler::reply_failed`].
+    /// Dispatches to [`Handler::reply_failed`](crate::Handler::reply_failed).
     ///
     /// Per EAct principle C3: per-conversation failure notification.
     ReplyFailed {
@@ -111,8 +115,8 @@ impl Clone for Message {
             Self::CommandDismissed => Self::CommandDismissed,
             Self::CommandExecuted { command, args } =>
                 Self::CommandExecuted { command: command.clone(), args: args.clone() },
-            Self::CompletionRequest { token, input } =>
-                Self::CompletionRequest { token: *token, input: input.clone() },
+            Self::CompletionRequest { .. } =>
+                panic!("CompletionRequest payloads are consumed, not cloned"),
             Self::Pulse => Self::Pulse,
             Self::Disconnected => Self::Disconnected,
             Self::PaneExited { pane, reason } =>
@@ -131,7 +135,14 @@ impl Message {
     /// Convert a CompToClient message to a Message for the given pane.
     /// Takes ownership to avoid cloning — the message comes from recv().
     /// Returns None if the message is for a different pane or handled internally.
-    pub fn try_from_comp(msg: CompToClient, pane: PaneId) -> Option<Message> {
+    ///
+    /// The `comp_sender` is needed to construct `CompletionReplyPort` —
+    /// the reply goes back to the compositor over the same channel.
+    pub fn try_from_comp(
+        msg: CompToClient,
+        pane: PaneId,
+        comp_sender: &std::sync::mpsc::Sender<pane_proto::protocol::ClientToComp>,
+    ) -> Option<Message> {
         match msg {
             CompToClient::Resize { pane: p, geometry } if p == pane =>
                 Some(Message::Resize(geometry)),
@@ -152,7 +163,10 @@ impl Message {
             CompToClient::CommandExecuted { pane: p, command, args } if p == pane =>
                 Some(Message::CommandExecuted { command, args }),
             CompToClient::CompletionRequest { pane: p, token, input } if p == pane =>
-                Some(Message::CompletionRequest { token, input }),
+                Some(Message::CompletionRequest {
+                    input,
+                    reply: CompletionReplyPort::new(pane, token, comp_sender.clone()),
+                }),
             _ => None,
         }
     }

@@ -1,8 +1,8 @@
 [workspace]
 resolver = "2"
-members = ["crates/pane-proto", "crates/pane-session", "crates/pane-notify", "crates/pane-app", "crates/pane-server", "crates/pane-comp", "crates/pane-hello"]
+members = ["crates/pane-proto", "crates/pane-session", "crates/pane-notify", "crates/pane-optic", "crates/pane-app", "crates/pane-server", "crates/pane-comp", "crates/pane-hello"]
 # pane-comp requires Linux (smithay). Exclude from default cargo commands on macOS.
-default-members = ["crates/pane-proto", "crates/pane-session", "crates/pane-notify", "crates/pane-app", "crates/pane-server", "crates/pane-hello"]
+default-members = ["crates/pane-proto", "crates/pane-session", "crates/pane-notify", "crates/pane-optic", "crates/pane-app", "crates/pane-server", "crates/pane-hello"]
 
 # pane-comp requires Linux (wayland, libinput). Build explicitly:
 #   cargo build -p pane-comp  (on Linux only)

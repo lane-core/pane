@@ -132,7 +132,12 @@ pub trait Handler: Send + 'static {
     }
 
     /// The compositor requests completions for the command input.
-    fn completion_request(&mut self, _proxy: &Messenger, _token: u64, _input: &str) -> Result<bool> {
+    ///
+    /// Reply via the [`CompletionReplyPort`](crate::CompletionReplyPort).
+    /// If you drop the reply port without calling `.reply()`, an empty
+    /// completion list is sent to the compositor (the command surface
+    /// shows "no completions" rather than hanging).
+    fn completion_request(&mut self, _proxy: &Messenger, _input: &str, _reply: crate::CompletionReplyPort) -> Result<bool> {
         Ok(true)
     }
 
@@ -179,7 +184,7 @@ pub trait Handler: Send + 'static {
 
     /// Handle an application-defined message.
     ///
-    /// Worker threads post these via [`Messenger::post_app_message`].
+    /// Worker threads post these via [`Messenger::post_app_message`](crate::Messenger::post_app_message).
     /// Downcast to your application types:
     ///
     /// ```ignore
@@ -247,6 +252,22 @@ pub trait Handler: Send + 'static {
         _reply_port: crate::ReplyPort,
     ) -> Result<bool> {
         Ok(true)
+    }
+
+    /// Available scripting properties. Default: none.
+    ///
+    /// Override in handlers that implement [`ScriptableHandler`](crate::ScriptableHandler)
+    /// to return the full property list. This method exists on Handler
+    /// (not just ScriptableHandler) so that every handler is at least
+    /// minimally introspectable — an empty result is a clean answer,
+    /// not a type error at the dispatch layer.
+    ///
+    /// # BeOS
+    ///
+    /// `BHandler::GetSupportedSuites` — every handler responded, even
+    /// if only with the base `suite/vnd.Be-handler` suite.
+    fn supported_properties(&self) -> &[crate::scripting::PropertyInfo] {
+        &[]
     }
 
     /// Catch-all for events not handled by other methods.

@@ -97,6 +97,8 @@ Audited all 7 implemented types against their Haiku Book `.dox` entries. Full au
 - [x] Licensing: BSD-3-Clause protocol, BSD-2-Clause kits
 - [x] Adversarial tests: 11 new timer + reply tests
 - [x] Messenger::is_valid + try_send_message
+- [x] pane-optic crate: Getter/Setter/PartialGetter/PartialSetter traits, FieldLens/FieldAffine/FieldTraversal, composition, optic law tests
+- [x] Scripting foundation: PropertyInfo (replaces Attribute), ScriptableHandler trait, DynOptic trait, ScriptReply, CompletionReplyPort, ScriptError, AttrValue, ValueType, SpecifierForm, Specifier
 
 ## Session Start Checklist
 

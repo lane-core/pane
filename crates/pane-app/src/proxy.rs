@@ -13,7 +13,7 @@ use std::sync::{Arc, Mutex, mpsc};
 
 use pane_proto::message::PaneId;
 use pane_proto::protocol::ClientToComp;
-use pane_proto::tag::{PaneTitle, CommandVocabulary, Completion};
+use pane_proto::tag::{PaneTitle, CommandVocabulary};
 
 use crate::error::{PaneError, Result};
 use crate::event::Message;
@@ -138,7 +138,7 @@ impl Messenger {
     /// Send a message to another pane's looper and block for a reply.
     ///
     /// The target's handler receives the message via
-    /// [`Handler::handle_request`] with a [`ReplyPort`](crate::ReplyPort).
+    /// [`Handler::request_received`](crate::Handler::request_received) with a [`ReplyPort`](crate::ReplyPort).
     /// The target calls `reply_port.reply(value)` to respond.
     ///
     /// **Do NOT call from a looper thread** — it blocks the event loop.
@@ -158,6 +158,9 @@ impl Messenger {
         msg: Message,
         timeout: std::time::Duration,
     ) -> std::result::Result<Box<dyn std::any::Any + Send>, PaneError> {
+        if crate::looper::is_looper_thread() {
+            return Err(PaneError::WouldDeadlock);
+        }
         let target_tx = target.looper_tx.as_ref().ok_or(PaneError::Disconnected)?;
         let (reply_tx, reply_rx) = std::sync::mpsc::sync_channel::<Message>(1);
 
@@ -206,7 +209,7 @@ impl Messenger {
     /// Post an application-defined message to this pane's looper.
     ///
     /// Use this from worker threads to deliver async results back to
-    /// the event loop. The value is delivered to [`Handler::app_message`].
+    /// the event loop. The value is delivered to [`Handler::app_message`](crate::Handler::app_message).
     ///
     /// ```ignore
     /// let proxy = proxy.clone();
@@ -262,14 +265,9 @@ impl Messenger {
         })
     }
 
-    /// Respond to a completion request.
-    pub fn set_completions(&self, token: u64, completions: Vec<Completion>) -> Result<()> {
-        self.send(ClientToComp::CompletionResponse {
-            pane: self.id,
-            token,
-            completions,
-        })
-    }
+    // set_completions removed — completions are now replied via
+    // CompletionReplyPort, which the handler receives directly in
+    // the completion_request hook. See completions.rs.
 
     /// Request the compositor to resize this pane.
     /// The compositor decides whether to honor it (tiling may constrain).
