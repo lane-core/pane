@@ -1,6 +1,6 @@
 # pane-comp — The Compositor
 
-Composites client surfaces, manages layout, renders chrome. This is the app_server equivalent — the rendering service that every client talks to.
+Composites client surfaces, manages layout, renders chrome. On a full Pane Linux desktop, this is the server the user's eyes are connected to — the app_server equivalent. On a headless deployment, pane-headless takes its place, speaking the same protocol without rendering (see `docs/architecture.md` §3).
 
 Clients render their own content (the Wayland model). The compositor composites those client buffers with its own chrome. Visual consistency comes from the kits, not from centralized rendering — the same division of labor as BeOS's app_server/Interface Kit split.
 

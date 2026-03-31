@@ -65,7 +65,7 @@ Follow the kit documentation style guide (`docs/kit-documentation-style.md`). Ke
 5. `cargo doc` builds without warnings
 
 **When designing new protocol features or sub-protocols:**
-Consult both the be-systems-engineer (for Be/Haiku heritage) and the session-type-consultant (for protocol soundness). The session-type-consultant should review:
+Consult the be-systems-engineer (for Be/Haiku heritage), the plan9-systems-engineer (for distributed architecture and location-transparent design), and the session-type-consultant (for protocol soundness). The plan9-systems-engineer should review any feature touching state exposure, namespace design, cross-instance communication, or filesystem interfaces. The session-type-consultant should review:
 
 1. **Protocol soundness** — is the proposed session type correct? Are there stuck states, orphaned channels, or missing branches?
 2. **Ownership discipline** — do correlation IDs at the API surface have typed handles? Is ghost state recognized and documented?
