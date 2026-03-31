@@ -7,13 +7,17 @@ pane
 >
 > — Franz Kafka, "Absent-minded Window-gazing"
 
-pane is a desktop environment, compositor, and distribution for
-Linux. one thing, not three.
+pane is an operating environment for linux (and elsewhere).
+a desktop, a compositor, a distribution — and a distributed
+computing foundation that runs on any unix-like via nix.
 
-the design recovers what made BeOS work — message-passing discipline,
-per-component threading, infrastructure-first composition — on a
-modern Linux base with session types providing compile-time
-verification of the protocol discipline BeOS achieved by convention.
+the design recovers what made BeOS work — message-passing
+discipline, per-component threading, infrastructure-first
+composition — and what Plan 9 proved — protocol uniformity,
+location independence, the network as a transparent extension
+of the local namespace — on a modern linux base with session
+types providing compile-time verification of the protocol
+discipline BeOS achieved by convention.
 
 everything is a pane. every pane has a tag line (title, command
 bar, and menu in one), a body (text, widgets, or a legacy
@@ -30,6 +34,12 @@ filesystem node at /pane/ for scripts and tools, a
 semantic object for accessibility. the views are projections
 of the same state, kept consistent by optics discipline.
 
+the local machine has no architectural privilege. a headless
+pane instance in the cloud runs the same protocol as the
+desktop compositor — it's just a server without a display.
+the unified namespace at /pane/ shows all panes, local and
+remote, as computed views over the same indexed state.
+
 the system is extended through the same interfaces it uses
 internally. a routing rule is a file. a pane mode wraps a
 library with domain-specific semantics. more generally, add
@@ -38,7 +48,23 @@ the relevant directory. removing it is deleting the file.
 
 agents are system users, not applications. they have accounts,
 home directories, .plan files. they communicate through the
-same protocols and filesystem interfaces as human users.
+same protocols and filesystem interfaces as human users —
+whether they run locally or on a remote headless instance.
+
+adoption
+--------
+
+you don't reinstall your OS to try pane. add a nix flake.
+
+    nix flake on any unix-like
+      → headless pane: server, kits, protocol, filesystem
+      → configuration accumulates in nix expressions
+      → upgrade to compositor, then desktop
+      → the flake IS the seed of a full pane linux config
+
+settings transfer because they were always nix expressions.
+nixos, darwin, pane linux — same `pane.services.*` options,
+different platform backend (systemd, launchd, s6-rc).
 
 protocol
 --------
@@ -49,6 +75,11 @@ and receives, in what order, with what branches. deadlock freedom
 is guaranteed structurally. async by default; sync only when a
 response is needed.
 
+the protocol is transport-agnostic: unix sockets for local,
+tcp/tls for remote. same session types, same messages, same
+guarantees. adding a network transport required zero protocol
+changes — the transport trait is the hinge.
+
 routing is a kit-level concern, not a central server. the kit
 evaluates rules locally and dispatches directly — sender to
 receiver, the way BeOS's BMessenger worked. no intermediary.
@@ -58,11 +89,12 @@ architecture
 
 the system has two layers: servers and kits.
 
-servers are small processes, each doing one thing. the compositor
-owns the display. other servers handle lifecycle, storage,
-filesystem projection, and health monitoring. configuration is
-files. plugin discovery is directories. no config parsers, no
-SIGHUP, no restart.
+servers are small processes, each doing one thing. the
+compositor owns the display. the headless server speaks
+the same protocol without rendering. other servers handle
+lifecycle, storage, filesystem projection, and health
+monitoring. configuration is files. plugin discovery is
+directories. no config parsers, no SIGHUP, no restart.
 
 kits are the programming model, not wrappers over a protocol.
 they provide wire types, session-typed channels, the application
@@ -70,6 +102,10 @@ framework (application, pane, messenger, handler), composable
 optics for structured state access, filesystem notification,
 rendering, text, input, and media. a kit is the right abstraction
 for its domain — not a lowest-common-denominator binding.
+
+pane linux is a sixos flake (s6 + nix). sixos provides the
+init/service substrate, nixpkgs provides packages, pane
+provides the personality.
 
 the crate layout under `crates/` is the source of truth for
 what exists and what each component does.
