@@ -66,10 +66,10 @@ SIGHUP, no restart.
 
 kits are the programming model, not wrappers over a protocol.
 they provide wire types, session-typed channels, the application
-framework (application, pane, messenger, handler), filesystem
-notification, rendering, text, input, and media. a kit is the
-right abstraction for its domain — not a lowest-common-denominator
-binding.
+framework (application, pane, messenger, handler), composable
+optics for structured state access, filesystem notification,
+rendering, text, input, and media. a kit is the right abstraction
+for its domain — not a lowest-common-denominator binding.
 
 the crate layout under `crates/` is the source of truth for
 what exists and what each component does.

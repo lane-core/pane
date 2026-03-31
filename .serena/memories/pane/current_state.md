@@ -1,7 +1,8 @@
-# Pane Project Current State (2026-03-29)
+# Pane Project Current State (2026-03-30)
 
 ## What exists and works
-- **pane-app kit**: 130 tests, full BeOS-style API (App, Pane, Messenger, Message, Handler, MessageFilter)
+- **pane-app kit**: 145 tests, full BeOS-style API (App, Pane, Messenger, Message, Handler, MessageFilter, CompletionReplyPort, ReplyPort)
+- **pane-optic**: composable optic types (FieldLens, FieldAffine, FieldTraversal), composition, optic law tests. Pure crate, no pane-specific deps.
 - **pane-proto**: wire types, session-typed handshake (ClientHandshake/ServerHandshake), 20 proptest roundtrips
 - **pane-session**: session-typed channels (Chan<S,T>), memory + unix transports, calloop integration
 - **pane-server**: compositor protocol server (socket listener, handshake, message routing) — builds on macOS
@@ -37,10 +38,10 @@ All Tier 2 protocol work (clipboard, observer, DnD, inter-pane messaging) should
 Key takeaways: sub-protocols use typestate handles at the API surface (C2), new channels into the looper are separate typed channels (C1), failure modes consider per-conversation callbacks (C3).
 
 ## Recent work
+- **pane-optic crate** + scripting foundation: PropertyInfo, ScriptableHandler, DynOptic, ScriptReply, CompletionReplyPort, ScriptError, AttrValue — optic layer built as foundational infrastructure
+- **CompletionReplyPort**: ghost state eliminated from completion request (u64 token → ownership handle)
+- **Optics design brief**: `docs/optics-design-brief.md` — synthesis of profunctor optics, dependent session types, DLfActRiS, be-engineer assessments
 - Kit API documentation: heritage annotations on all four kit crates (pane-proto, pane-session, pane-app, pane-notify)
 - Haiku Book hosted at `reference/haiku-book/` (273 .dox files, MIT)
 - Documentation style guide written (`docs/kit-documentation-style.md`)
-- `docs/pane-app.md` archived — content absorbed into pane-app crate doc comments
-- `docs/architecture.md` §4 trimmed — implemented kit descriptions removed, points to `cargo doc`
-- Retroactive Haiku Book audit in progress (PLAN.md)
 - Workflow updated: Be engineer consultations produce reading list + verification checklist

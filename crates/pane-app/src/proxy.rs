@@ -78,8 +78,6 @@ impl Messenger {
         self
     }
 
-    /// Post an event to this pane's own looper.
-    ///
     /// Check whether this messenger has an attached looper channel.
     ///
     /// Returns `false` if the messenger was never attached to a looper

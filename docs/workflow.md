@@ -10,10 +10,15 @@ docs/
 ├── manifesto.md                  — historical positioning
 ├── architecture.md               — system design (Tier 2, evolves with design)
 ├── kit-documentation-style.md    — API doc style guide for kit crates
+├── naming-conventions.md         — identifier naming policy (Be conventions + Rust idiom)
 ├── aesthetic.md                  — visual design language
 ├── pane-fs.md                    — filesystem interface
 ├── pane-compositor.md            — compositor design
+├── optics-design-brief.md        — optic layer design rationale and decisions
+├── scripting-optics-design.md    — optics × session types exploration
 ├── introduction.md               — user-facing intro
+├── development-methodology.md    — development approach
+├── agent-perspective.md          — agent integration perspective
 ├── agents.md                     — agent integration
 ├── licensing.md                  — license structure
 ├── workflow.md                   — this file

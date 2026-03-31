@@ -86,7 +86,7 @@ new identifier.
 | `BWindow` | `Pane` | 2 | Architecturally different — universal surface, not window |
 | `BMessageRunner` | `TimerToken` | 2 | Configure-and-attach → method on host (translation rule 2) |
 | `filter_result` | `FilterAction` | 2 | More descriptive enum name |
-| `property_info` | `Attribute` | 2 | Modernized; aligns with BFS xattr vocabulary |
+| `property_info` | `PropertyInfo` | 1 | Faithful adaptation. Carries operations, specifier forms, value type (see optics-design-brief.md). |
 
 ---
 
@@ -246,6 +246,7 @@ Crate names in code follow `pane-{kit}` convention:
 |------------------------|-------------|---------|
 | Application Kit | `pane-app` | Application Kit |
 | Notification Kit | `pane-notify` | (new; replaces `StartWatching`) |
+| Optics | `pane-optic` | (new; composable state accessors) |
 | Protocol | `pane-proto` | (new; wire format) |
 | Session Types | `pane-session` | (new; handshake protocol) |
 

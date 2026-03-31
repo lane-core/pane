@@ -1,6 +1,8 @@
 # Scripting Protocol Design: Optics + Session Types
 
-Design exploration for pane's Phase 6 scripting protocol. Grounded in
+Design exploration for pane's scripting protocol. The optic foundation
+types (`pane-optic` crate, `ScriptableHandler`, `DynOptic`, `PropertyInfo`)
+are implemented; the wire protocol and mediator are deferred. Grounded in
 Clarke et al. "Profunctor optics, a categorical update" (Compositionality
 2023), the "Don't Fear the Profunctor Optics" tutorial, and Fu/Xi/Das
 "Dependent Session Types for Verified Concurrent Programming" (TLL+C,

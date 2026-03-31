@@ -218,7 +218,7 @@ The principle: if you'd be comfortable with 30μs latency and per-file granulari
 
 pane-fs targets FUSE-over-io_uring (Linux 6.14+), which halves the overhead and eliminates concurrency bottlenecks via per-CPU queues. As a distribution that controls its kernel version, pane requires io_uring-backed FUSE — this is not an optional optimization but a baseline expectation.
 
-**The pane boundary principle.** The scriptable surface of a pane is its declared attributes, not its internal widget hierarchy. BeOS's `hey` could traverse into any application's view tree — powerful but fragile (scripts broke when apps rearranged their UI). Pane deliberately stops at the pane boundary: a pane exposes what it chooses to expose through `Attribute`. The composer of the script and the author of the pane agree on a stable interface. Internal rendering state (view trees, widget layouts, buffer positions) is opaque. If a pane wants internal structure scriptable, it declares those properties explicitly.
+**The pane boundary principle.** The scriptable surface of a pane is its declared attributes, not its internal widget hierarchy. BeOS's `hey` could traverse into any application's view tree — powerful but fragile (scripts broke when apps rearranged their UI). Pane deliberately stops at the pane boundary: a pane exposes what it chooses to expose through `PropertyInfo` declarations. The composer of the script and the author of the pane agree on a stable interface. Internal rendering state (view trees, widget layouts, buffer positions) is opaque. If a pane wants internal structure scriptable, it declares those properties explicitly.
 
 **Control file as command interface.** Each pane's `ctl` file accepts line-oriented commands — the `hey AppName do ...` equivalent. Simple commands are `COMMAND [ARGS...]`. Structured payloads use JSON after the command name for multi-property atomic operations (the one case where the filesystem model requires design attention compared to BMessage's dynamic fields).
 
@@ -251,6 +251,7 @@ pane-ui (text, widgets, styling)
 pane-app (application lifecycle, looper, routing)
 pane-store-client (attribute access, queries)
     |
+pane-optic (composable state accessors)
 pane-proto (wire types, session definitions)
 pane-notify (fanotify/inotify abstraction)
 ```

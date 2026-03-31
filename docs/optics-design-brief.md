@@ -20,13 +20,16 @@ The optic laws are the equations of the theory. Getting the equations
 right now means every application built on top automatically satisfies
 the consistency properties.
 
-**Build now:**
-- Concrete optic types (Lens, Affine, Prism, Traversal)
+**Done:**
+- Concrete optic types (`FieldLens`, `FieldAffine`, `FieldTraversal`) — `pane-optic` crate
 - `DynOptic` trait for type-erased dynamic dispatch at protocol boundaries
-- `AttrValue` serialization type
-- `ScriptableHandler` trait
-- Route existing Messenger property methods through the optic layer
-- Optic law tests
+- `AttrValue` serialization type, `ValueType`, `OpKind`, `SpecifierForm`
+- `ScriptableHandler` trait, `PropertyInfo`, `ScriptReply`, `CompletionReplyPort`
+- `ScriptError` error domain
+- Optic law tests (GetPut, PutGet, PutPut + partial variants)
+
+**Not yet done:**
+- Route existing Messenger property methods through the optic layer (Phase 6 convergence)
 
 **Defer:**
 - Scripting wire protocol (`ScriptQuery`/`ScriptResponse`)
@@ -125,9 +128,10 @@ carried four things per property:
 3. Supported specifier forms (direct, index, name)
 4. Expected value types
 
-The current `Attribute` stub (`scripting.rs`) only has name/description/writable.
-Replace with `PropertyInfo` carrying the full operation set, specifier forms,
-and value type. This is what `GetSupportedSuites` serialized for introspection.
+`PropertyInfo` (`scripting.rs`) now carries the full operation set
+(`&'static [OpKind]`), specifier forms (`&'static [SpecifierForm]`), and
+value type (`ValueType`). Replaces the earlier `Attribute` stub. This is
+what `GetSupportedSuites` serialized for introspection.
 
 ### ResolveSpecifier: mostly internal, with one exception
 
@@ -286,7 +290,7 @@ pub trait DynOptic: Send + Sync {
     fn is_writable(&self) -> bool;
     fn count(&self, state: &dyn Any) -> Result<usize, ScriptError>;
     fn value_type(&self) -> ValueType;
-    fn operations(&self) -> &[ScriptOp];
+    fn operations(&self) -> &'static [OpKind];
     fn specifier_forms(&self) -> &[SpecifierForm];
 }
 ```
@@ -314,7 +318,7 @@ pub enum AttrValue {
 pub trait ScriptableHandler {
     type State;
     fn resolve_specifier(&self, spec: &Specifier) -> Resolution;
-    fn supported_properties(&self) -> Vec<PropertyInfo>;
+    fn supported_properties(&self) -> &'static [PropertyInfo];
     fn state_mut(&mut self) -> &mut Self::State;
 }
 ```
@@ -329,8 +333,8 @@ pub struct PropertyInfo {
     pub name: &'static str,
     pub description: &'static str,
     pub value_type: ValueType,
-    pub operations: Vec<ScriptOp>,
-    pub specifier_forms: Vec<SpecifierForm>,
+    pub operations: &'static [OpKind],
+    pub specifier_forms: &'static [SpecifierForm],
 }
 ```
 
