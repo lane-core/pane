@@ -101,6 +101,46 @@ impl App {
         Self::connect_test(signature, conn)
     }
 
+    /// Connect to a remote pane server over TCP.
+    ///
+    /// Runs the session-typed handshake with identity forwarding,
+    /// then enters the active phase. The connection is indistinguishable
+    /// from a local connection at the kit API level — Pane, Messenger,
+    /// Handler all work identically.
+    ///
+    /// # Plan 9
+    ///
+    /// This is the `import` equivalent — connecting to a remote pane
+    /// server and using it as if it were local. The local machine has
+    /// no architectural privilege; a remote server is just another
+    /// server with higher latency.
+    pub fn connect_remote(
+        signature: &str,
+        addr: impl std::net::ToSocketAddrs,
+    ) -> std::result::Result<Self, ConnectError> {
+        let stream = std::net::TcpStream::connect(addr)
+            .map_err(|_| ConnectError::NotRunning)?;
+
+        let transport = pane_session::transport::tcp::TcpTransport::from_stream(stream);
+        let chan = pane_session::types::Chan::new(transport);
+
+        let hs = crate::connection::run_client_handshake(chan, signature)
+            .map_err(|e| match e {
+                crate::error::Error::Connect(ce) => ce,
+                other => ConnectError::Transport(
+                    pane_session::SessionError::Io(
+                        std::io::Error::new(std::io::ErrorKind::Other, format!("{:?}", other)),
+                    ),
+                ),
+            })?;
+
+        let active_stream = hs.transport.into_stream();
+        let conn = crate::connection::from_tcp_stream(active_stream)
+            .map_err(|e| ConnectError::Transport(pane_session::SessionError::Io(e)))?;
+
+        Self::connect_test(signature, conn)
+    }
+
     /// Connect using a test connection (for MockCompositor).
     #[doc(hidden)]
     pub fn connect_test(signature: &str, conn: Connection) -> std::result::Result<Self, ConnectError> {

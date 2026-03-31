@@ -53,25 +53,59 @@ pub struct HandshakeResult<T> {
 
 /// Bridge a unix stream into a typed Connection.
 ///
-/// Spawns two pump threads:
-/// - Read pump: reads framed CompToClient from the stream, deserializes, sends to mpsc
-/// - Write pump: reads ClientToComp from mpsc, serializes, writes framed to stream
-///
-/// The Connection's sender/receiver are the typed mpsc endpoints.
-/// The pump threads exit when either the stream or the mpsc channels close.
+/// Convenience wrapper over [`from_stream`] for unix sockets.
 pub fn from_unix_stream(stream: UnixStream) -> std::io::Result<Connection> {
     let read_stream = stream.try_clone()?;
     let shutdown_stream = stream.try_clone()?;
     let write_stream = stream;
+    from_stream(
+        read_stream,
+        write_stream,
+        move || { let _ = shutdown_stream.shutdown(std::net::Shutdown::Both); },
+    )
+}
 
+/// Bridge a TCP stream into a typed Connection.
+///
+/// Convenience wrapper over [`from_stream`] for TCP sockets.
+pub fn from_tcp_stream(stream: std::net::TcpStream) -> std::io::Result<Connection> {
+    let read_stream = stream.try_clone()?;
+    let shutdown_stream = stream.try_clone()?;
+    let write_stream = stream;
+    from_stream(
+        read_stream,
+        write_stream,
+        move || { let _ = shutdown_stream.shutdown(std::net::Shutdown::Both); },
+    )
+}
+
+/// Bridge any Read + Write stream pair into a typed Connection.
+///
+/// Spawns two pump threads:
+/// - Read pump: reads framed CompToClient from the stream, deserializes, sends to mpsc
+/// - Write pump: reads ClientToComp from mpsc, serializes, writes framed to stream
+///
+/// The `shutdown` closure is called when the write pump exits (all senders
+/// dropped), to unblock the read pump on the other end.
+pub fn from_stream<R, W, F>(
+    read_stream: R,
+    write_stream: W,
+    shutdown: F,
+) -> std::io::Result<Connection>
+where
+    R: std::io::Read + Send + 'static,
+    W: std::io::Write + Send + 'static,
+    F: FnOnce() + Send + 'static,
+{
     let (client_tx, write_rx) = mpsc::channel::<ClientToComp>();
     let (read_tx, client_rx) = mpsc::channel::<CompToClient>();
 
     // Read pump: stream → deserialize → mpsc
     thread::spawn(move || {
         use pane_session::framing::read_framed;
+        let mut reader = read_stream;
         loop {
-            match read_framed(&mut &read_stream) {
+            match read_framed(&mut reader) {
                 Ok(bytes) => {
                     match pane_proto::deserialize::<CompToClient>(&bytes) {
                         Ok(msg) => {
@@ -90,17 +124,16 @@ pub fn from_unix_stream(stream: UnixStream) -> std::io::Result<Connection> {
     // shut down the socket to unblock the read pump.
     thread::spawn(move || {
         use pane_session::framing::write_framed;
+        let mut writer = write_stream;
         for msg in write_rx {
             match pane_proto::serialize(&msg) {
                 Ok(bytes) => {
-                    if write_framed(&mut &write_stream, &bytes).is_err() { break; }
+                    if write_framed(&mut writer, &bytes).is_err() { break; }
                 }
                 Err(_) => break,
             }
         }
-        // All senders dropped — connection closing. Shut down the socket
-        // to unblock the read pump and the remote server.
-        let _ = shutdown_stream.shutdown(std::net::Shutdown::Both);
+        shutdown();
     });
 
     Ok(Connection {
