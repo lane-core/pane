@@ -174,6 +174,30 @@ pub trait Handler: Send + 'static {
         Ok(false)
     }
 
+    /// The application is requesting to quit.
+    ///
+    /// Called by [`App::request_quit`](crate::App::request_quit) on all
+    /// panes. Return `true` to allow the quit or `false` to veto.
+    /// If any pane vetoes, no panes are closed.
+    ///
+    /// The signature is `&self` (not `&mut self`, not `&Messenger`) —
+    /// this is load-bearing for deadlock freedom. The handler can
+    /// inspect its state ("do I have unsaved data?") but cannot send
+    /// messages or mutate state. If user interaction is needed (save
+    /// dialog), veto the quit and handle it internally.
+    ///
+    /// Default: allows quit (`true`).
+    ///
+    /// # BeOS
+    ///
+    /// `BApplication::QuitRequested` → `BWindow::QuitRequested`. Be
+    /// gave full access (the handler could lock other windows, send
+    /// messages), leading to the unlock-during-iteration and stale-
+    /// pointer complexity. pane's `&self` constraint eliminates this.
+    fn quit_requested(&self) -> bool {
+        true
+    }
+
     /// The connection to the compositor was lost.
     fn disconnected(&mut self, _proxy: &Messenger) -> Result<bool> {
         Ok(false)

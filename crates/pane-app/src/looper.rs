@@ -206,6 +206,10 @@ enum Unwrapped {
     Event(Message),
     /// A request that expects a reply.
     Request(Message, ReplyPort),
+    /// App-level quit negotiation — handler must respond.
+    QuitRequested(mpsc::Sender<bool>),
+    /// Imperative quit — exit immediately.
+    Quit,
     /// Timer control or wrong-pane message — skip.
     Skip,
 }
@@ -227,6 +231,8 @@ fn unwrap_message(
         LooperMessage::Request(msg, reply) => Unwrapped::Request(msg, reply),
         LooperMessage::AddTimer { .. } | LooperMessage::AddOneShot { .. }
         | LooperMessage::AddFilter { .. } | LooperMessage::RemoveFilter { .. } => Unwrapped::Skip,
+        LooperMessage::QuitRequested { response_tx } => Unwrapped::QuitRequested(response_tx),
+        LooperMessage::Quit => Unwrapped::Quit,
     }
 }
 
@@ -291,6 +297,8 @@ fn drain_and_coalesce(
                 // Requests are never coalesced — always delivered
                 events.push(req);
             }
+            quit @ Unwrapped::QuitRequested(_) => events.push(quit),
+            quit @ Unwrapped::Quit => events.push(quit),
             Unwrapped::Skip => {}
         }
     }
@@ -388,6 +396,13 @@ pub fn run_closure(
                         return Ok(ExitReason::HandlerExit);
                     }
                 }
+                Unwrapped::QuitRequested(response_tx) => {
+                    // Closure handlers always allow quit
+                    let _ = response_tx.send(true);
+                }
+                Unwrapped::Quit => {
+                    return Ok(ExitReason::HandlerExit);
+                }
                 Unwrapped::Skip => {}
             }
         }
@@ -455,6 +470,13 @@ pub fn run_handler(
                     if !keep_going {
                         return Ok(ExitReason::HandlerExit);
                     }
+                }
+                Unwrapped::QuitRequested(response_tx) => {
+                    let allow = handler.quit_requested();
+                    let _ = response_tx.send(allow);
+                }
+                Unwrapped::Quit => {
+                    return Ok(ExitReason::HandlerExit);
                 }
                 Unwrapped::Skip => {}
             }

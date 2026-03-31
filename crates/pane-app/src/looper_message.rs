@@ -56,6 +56,14 @@ pub enum LooperMessage {
     RemoveFilter {
         id: FilterId,
     },
+    /// App-level quit negotiation. The looper calls
+    /// handler.quit_requested() and sends the result back.
+    QuitRequested {
+        response_tx: std::sync::mpsc::Sender<bool>,
+    },
+    /// Imperative close — handler is not consulted.
+    /// Sent after all panes have agreed to quit.
+    Quit,
 }
 
 impl std::fmt::Debug for LooperMessage {
@@ -73,6 +81,8 @@ impl std::fmt::Debug for LooperMessage {
                 f.debug_struct("AddFilter").field("id", id).finish(),
             Self::RemoveFilter { id } =>
                 f.debug_struct("RemoveFilter").field("id", id).finish(),
+            Self::QuitRequested { .. } => f.write_str("QuitRequested"),
+            Self::Quit => f.write_str("Quit"),
         }
     }
 }

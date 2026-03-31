@@ -29,6 +29,21 @@ impl ExitReason {
     }
 }
 
+/// Result of an app-level quit request.
+///
+/// Returned by [`App::request_quit`](crate::App::request_quit).
+/// The caller decides how to proceed based on the result.
+#[derive(Debug)]
+pub enum QuitResult {
+    /// All panes agreed to quit. They have been closed.
+    Approved,
+    /// At least one pane vetoed. No panes were closed.
+    Vetoed(Vec<PaneId>),
+    /// At least one pane was unreachable (timeout or disconnect).
+    /// The caller can decide whether to force-quit these panes.
+    Unreachable(Vec<PaneId>),
+}
+
 /// Broadcasts a pane's exit to all monitoring loopers.
 ///
 /// When pane A monitors pane B (via Messenger::monitor()), A registers

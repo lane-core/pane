@@ -59,6 +59,10 @@ pub struct App {
     /// the client-proposed PaneId. UUID-keyed so PaneRefused can
     /// correlate back to the correct caller.
     pending_creates: Arc<Mutex<HashMap<PaneId, mpsc::Sender<CreateResponse>>>>,
+    /// Live pane looper channels — shared with the dispatcher for
+    /// message routing. Used by request_quit() to send QuitRequested
+    /// to all panes.
+    pane_channels: Arc<Mutex<HashMap<PaneId, mpsc::SyncSender<LooperMessage>>>>,
     /// Application signature.
     signature: String,
     /// Live pane count.
@@ -215,6 +219,7 @@ impl App {
         Ok(App {
             comp_tx,
             pending_creates,
+            pane_channels,
             signature: signature.to_string(),
             pane_count: Arc::new(AtomicUsize::new(0)),
             done_signal: Arc::new((Mutex::new(()), std::sync::Condvar::new())),
@@ -263,6 +268,71 @@ impl App {
             done_signal: self.done_signal.clone(),
             consumed: false,
         })
+    }
+
+    /// Request all panes to quit.
+    ///
+    /// Sends `QuitRequested` to every live pane and collects responses.
+    /// If all panes agree, they are closed via `Quit`. If any pane
+    /// vetoes, no panes are closed.
+    ///
+    /// This is the all-or-nothing quit model from BeOS: a single veto
+    /// aborts the entire quit, which is correct for save-all-or-cancel UX.
+    ///
+    /// Timeout defaults to 5 seconds per pane. Remote panes (TCP) may
+    /// need the full timeout; local panes respond in microseconds.
+    ///
+    /// # BeOS
+    ///
+    /// `BApplication::QuitRequested` → `_QuitAllWindows`. Be unlocked
+    /// the application during iteration and tolerated stale window
+    /// pointers. pane uses channel-based coordination — no locks, no
+    /// stale pointers, no iteration-order sensitivity.
+    pub fn request_quit(&self) -> crate::exit::QuitResult {
+        use crate::exit::QuitResult;
+
+        let channels = self.pane_channels.lock().unwrap_or_else(|e| e.into_inner());
+        if channels.is_empty() {
+            return QuitResult::Approved;
+        }
+
+        // Send QuitRequested to all panes, collect response channels
+        let mut responses: Vec<(PaneId, mpsc::Receiver<bool>)> = Vec::new();
+        for (&pane_id, tx) in channels.iter() {
+            let (response_tx, response_rx) = mpsc::channel();
+            if tx.try_send(LooperMessage::QuitRequested { response_tx }).is_ok() {
+                responses.push((pane_id, response_rx));
+            }
+            // If try_send fails (channel full/disconnected), treat as unreachable
+        }
+        drop(channels); // release lock before blocking on responses
+
+        let mut vetoed = Vec::new();
+        let mut unreachable = Vec::new();
+        let timeout = Duration::from_secs(5);
+
+        for (pane_id, rx) in responses {
+            match rx.recv_timeout(timeout) {
+                Ok(true) => {} // pane agreed
+                Ok(false) => vetoed.push(pane_id),
+                Err(_) => unreachable.push(pane_id),
+            }
+        }
+
+        if !vetoed.is_empty() {
+            return QuitResult::Vetoed(vetoed);
+        }
+        if !unreachable.is_empty() {
+            return QuitResult::Unreachable(unreachable);
+        }
+
+        // All panes agreed — send Quit to close them
+        let channels = self.pane_channels.lock().unwrap_or_else(|e| e.into_inner());
+        for tx in channels.values() {
+            let _ = tx.try_send(LooperMessage::Quit);
+        }
+
+        QuitResult::Approved
     }
 
     /// Wait until all panes are closed.
