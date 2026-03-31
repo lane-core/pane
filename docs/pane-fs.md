@@ -253,13 +253,13 @@ PaneIds are UUIDs — globally unique by construction. The local compositor's in
 
 pane-fs SHALL support two FUSE backends:
 
-**Core (portable):** Standard FUSE via libfuse (Linux) or macFUSE/FUSE-T (Darwin). This is the default for headless deployments on any unix-like.
+**Core (portable):** Standard FUSE via libfuse (Linux) or FUSE-T (Darwin). This is the default for headless deployments on any unix-like.
 
 **Full (Pane Linux):** FUSE-over-io_uring (Linux 6.14+) with per-CPU request queues. This is the baseline for the full Pane Linux distribution.
 
 Both backends expose the same `/pane/` namespace with the same semantics. The difference is performance: io_uring halves the per-operation overhead and eliminates concurrency bottlenecks.
 
-**Darwin considerations:** macFUSE requires a kernel extension (kext) which Apple has been restricting. FUSE-T is a kext-free alternative that emulates FUSE over NFS. Either works for pane-fs's purposes — the filesystem is synthetic and the operations are lightweight. pane-fs SHALL abstract over the FUSE implementation so that the backend can be selected at build time.
+**Darwin backend: FUSE-T.** FUSE-T emulates FUSE over NFS in userspace — no kernel extension (kext) required. This is Apple-proof: it does not depend on kext loading, which Apple has been progressively restricting. pane-fs is a synthetic filesystem with lightweight operations, so the NFS translation layer is invisible to consumers.
 
 #### Scenario: FUSE backend selection
 - **WHEN** pane-fs is built on Pane Linux
@@ -267,7 +267,7 @@ Both backends expose the same `/pane/` namespace with the same semantics. The di
 
 #### Scenario: FUSE on Darwin
 - **WHEN** pane-fs is built on Darwin
-- **THEN** the macFUSE or FUSE-T backend SHALL be used, selected by build configuration
+- **THEN** the FUSE-T backend SHALL be used
 
 ### Requirement: Remote namespace mounting
 

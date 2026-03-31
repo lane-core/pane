@@ -175,7 +175,7 @@ Every server in the pane ecosystem has two versions: a portable _core_ that runs
 | Server            | Core (portable)                                    | Full (Pane Linux)                                                   |
 | ----------------- | -------------------------------------------------- | ------------------------------------------------------------------- |
 | **pane-store**    | SQLite backend, query interface, HNSW vector index | xattr backend (`user.pane.*`), fanotify mount-wide change detection |
-| **pane-fs**       | Standard FUSE (libfuse / macFUSE / FUSE-T)         | FUSE-over-io_uring (Linux 6.14+)                                    |
+| **pane-fs**       | Standard FUSE (libfuse / FUSE-T on Darwin)         | FUSE-over-io_uring (Linux 6.14+)                                    |
 | **pane-roster**   | Portable process monitoring, init-agnostic         | pidfd, s6-rc integration, s6-fdholder socket activation             |
 | **pane-watchdog** | Pipes + heartbeats, platform-abstracted restart    | pidfd, s6 restart escalation                                        |
 | **pane-notify**   | Already split: `linux.rs` / `stub.rs`              | fanotify + inotify                                                  |
