@@ -18,7 +18,8 @@ Prerequisite for each item: consult Be engineer on how Be/Haiku implemented the 
 
 Design each feature against the EAct-derived session-type principles (serena: `pane/session_type_design_principles`). Each new protocol relationship should be a separate typed channel into the looper (C1), expose typestate handles at the API surface (C2), and consider per-conversation failure (C3).
 
-- [ ] **Clipboard** — named clipboards, transactional lock/clear/commit (Be's BClipboard pattern). Needs protocol + compositor. Typestate handle: `ClipboardLock` → write → commit.
+- [ ] **Clipboard** — named clipboards, transactional lock/clear/commit (Be's BClipboard pattern). Needs protocol + compositor. Typestate handle: `ClipboardLock` → write → commit. Spec: `docs/superpowers/specs/2026-03-31-clipboard-design.md`.
+- [x] **Undo/redo framework** — `UndoPolicy` trait, `LinearPolicy`, `CoalescingPolicy`, `UndoManager` with save-point, `RecordingOptic` with sensitive exclusion via `DynOptic::is_undoable()`. Spec: `docs/superpowers/specs/2026-03-31-undo-design.md`.
 - [ ] **Observer pattern** — `Messenger::start_watching(property, watcher)` for inter-pane property change notification. Needs protocol. This is a mini-session per watcher relationship.
 - [ ] **Drag and drop** — Message::DragEnter/DragOver/Drop + Messenger::drag_message(). Needs protocol + compositor. Typestate handle: `DragSession` tracks enter→over→drop progression.
 - [ ] **Application registry** — stub kit types, implement when compositor supports it. Access point model (C4) applies here.

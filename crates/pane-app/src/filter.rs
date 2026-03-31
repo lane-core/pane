@@ -45,14 +45,15 @@ pub trait MessageFilter: Send + 'static {
     }
 }
 
-/// Unique filter identifier. Returned by [`Messenger::add_filter`]
+/// Unique filter identifier. Returned by
+/// [`Messenger::add_filter`](crate::Messenger::add_filter)
 /// inside a [`FilterToken`].
 pub type FilterId = u64;
 
 /// Token for removing a runtime filter.
 ///
-/// Created by [`Messenger::add_filter`](crate::Messenger). Pass to
-/// [`Messenger::remove_filter`](crate::Messenger) to uninstall the
+/// Created by [`Messenger::add_filter`](crate::Messenger::add_filter). Pass to
+/// [`Messenger::remove_filter`](crate::Messenger::remove_filter) to uninstall the
 /// filter. Analogous to [`TimerToken`](crate::TimerToken) for timers.
 #[derive(Debug, Clone)]
 pub struct FilterToken {

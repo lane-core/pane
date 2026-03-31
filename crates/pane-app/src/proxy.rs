@@ -382,7 +382,7 @@ impl Messenger {
     /// Add a filter to this pane's event loop at runtime.
     ///
     /// The filter takes effect before the next event batch — not
-    /// mid-batch. Returns a [`FilterToken`] for later removal via
+    /// mid-batch. Returns a [`FilterToken`](crate::FilterToken) for later removal via
     /// [`remove_filter`](Messenger::remove_filter).
     ///
     /// # BeOS
