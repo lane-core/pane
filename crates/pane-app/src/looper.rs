@@ -506,5 +506,11 @@ fn dispatch_to_handler(handler: &mut impl Handler, proxy: &Messenger, event: Mes
         Message::AppMessage(payload) => handler.app_message(proxy, payload),
         Message::Reply { token, payload } => handler.reply_received(proxy, token, payload),
         Message::ReplyFailed { token } => handler.reply_failed(proxy, token),
+        Message::ClipboardLockGranted(lock) =>
+            handler.clipboard_lock_granted(proxy, lock),
+        Message::ClipboardLockDenied { ref clipboard, ref reason } =>
+            handler.clipboard_lock_denied(proxy, clipboard, reason),
+        Message::ClipboardChanged { ref clipboard, source } =>
+            handler.clipboard_changed(proxy, clipboard, source),
     }
 }

@@ -114,6 +114,7 @@ pub enum ClipboardCommand {
 /// BClipboard Lock/Clear/Commit/Unlock collapsed into a single
 /// typestate: lock is implicit in handle creation, commit consumes.
 #[must_use = "dropping without commit reverts the clipboard write"]
+#[derive(Debug)]
 pub struct ClipboardWriteLock {
     clipboard: String,
     command_tx: mpsc::Sender<ClipboardCommand>,

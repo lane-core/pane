@@ -99,6 +99,18 @@ pub enum Message {
     ReplyFailed {
         token: u64,
     },
+    /// A clipboard write lock was granted. Handle the write and commit.
+    ClipboardLockGranted(crate::clipboard::ClipboardWriteLock),
+    /// A clipboard write lock was denied.
+    ClipboardLockDenied {
+        clipboard: String,
+        reason: String,
+    },
+    /// A watched clipboard changed.
+    ClipboardChanged {
+        clipboard: String,
+        source: PaneId,
+    },
 }
 
 impl Clone for Message {
@@ -127,6 +139,12 @@ impl Clone for Message {
                 panic!("Reply messages are consumed, not cloned"),
             Self::ReplyFailed { token } =>
                 Self::ReplyFailed { token: *token },
+            Self::ClipboardLockGranted(_) =>
+                panic!("ClipboardLockGranted cannot be cloned"),
+            Self::ClipboardLockDenied { clipboard, reason } =>
+                Self::ClipboardLockDenied { clipboard: clipboard.clone(), reason: reason.clone() },
+            Self::ClipboardChanged { clipboard, source } =>
+                Self::ClipboardChanged { clipboard: clipboard.clone(), source: *source },
         }
     }
 }

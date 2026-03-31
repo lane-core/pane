@@ -174,6 +174,44 @@ pub trait Handler: Send + 'static {
         Ok(false)
     }
 
+    /// A clipboard write lock was granted.
+    ///
+    /// Use the lock to write data and commit. Drop without commit
+    /// automatically reverts.
+    ///
+    /// Default: reverts (drops the lock without writing).
+    fn clipboard_lock_granted(
+        &mut self,
+        _proxy: &Messenger,
+        _lock: crate::clipboard::ClipboardWriteLock,
+    ) -> Result<bool> {
+        Ok(true)
+    }
+
+    /// A clipboard write lock was denied.
+    ///
+    /// Default: continues the event loop.
+    fn clipboard_lock_denied(
+        &mut self,
+        _proxy: &Messenger,
+        _clipboard: &str,
+        _reason: &str,
+    ) -> Result<bool> {
+        Ok(true)
+    }
+
+    /// A watched clipboard changed.
+    ///
+    /// Default: continues the event loop.
+    fn clipboard_changed(
+        &mut self,
+        _proxy: &Messenger,
+        _clipboard: &str,
+        _source: pane_proto::message::PaneId,
+    ) -> Result<bool> {
+        Ok(true)
+    }
+
     /// The application is requesting to quit.
     ///
     /// Called by [`App::request_quit`](crate::App::request_quit) on all
