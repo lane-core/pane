@@ -65,7 +65,14 @@ Follow the kit documentation style guide (`docs/kit-documentation-style.md`). Ke
 5. `cargo doc` builds without warnings
 
 **When designing new protocol features or sub-protocols:**
-Consult the EAct-derived session-type design principles in serena memory `pane/session_type_design_principles`. Specifically:
+Consult both the be-systems-engineer (for Be/Haiku heritage) and the session-type-consultant (for protocol soundness). The session-type-consultant should review:
+
+1. **Protocol soundness** — is the proposed session type correct? Are there stuck states, orphaned channels, or missing branches?
+2. **Ownership discipline** — do correlation IDs at the API surface have typed handles? Is ghost state recognized and documented?
+3. **Failure composition** — does the `Drop`-based recovery chain compose correctly through newtypes? Are there panic paths that bypass cleanup?
+4. **Invariant identification** — what runtime invariants does the design require? (e.g., `panic = unwind`, no custom `Drop` on wrappers, `Err` not panic on downcast failure)
+
+Also consult the EAct-derived session-type design principles in serena memory `pane/session_type_design_principles`. Specifically:
 1. New sub-protocols (clipboard, DnD, observer, inter-pane messaging) should use typestate handles at the API surface, not session-type the active-phase transport (principle C2).
 2. New channels into the looper should be designed as separate typed channels with multi-source select in mind (principle C1).
 3. Failure modes should consider per-conversation callbacks, not just actor-level death notification (principle C3).
@@ -97,13 +104,13 @@ See also `pane/eact_analysis_gaps` for structural gaps to address and `pane/eact
 
 Serena (.serena/memories/) is the sole working memory system. Project context, naming policies, process rules, and decision records live there.
 
-Be-engineer agent memory (.claude/agent-memory/) contains research notes from the architecture specification work. It's read-only reference material.
+Be-engineer agent memory (.claude/agent-memory/be-systems-engineer/) contains research notes from the architecture specification work. Session-type consultant memory (.claude/agent-memory/session-type-consultant/) contains protocol analysis notes. Both are read-only reference material.
 
 ## Building
 
 ```
 cargo check          # all macOS-buildable crates (default-members)
-cargo test           # 130+ tests
+cargo test           # 145+ tests
 just build-comp      # cross-build compositor for Linux
 just dev-comp        # build + push to VM + restart
 just vm-ssh          # SSH into test VM
