@@ -18,15 +18,17 @@ use pane_proto::protocol::CreatePaneTag;
 /// # Examples
 ///
 /// Minimal (title only):
-/// ```ignore
-/// Tag::new("Status")
+/// ```
+/// use pane_app::{Tag};
+/// Tag::new("Status");
 /// ```
 ///
 /// With commands:
-/// ```ignore
+/// ```
+/// use pane_app::{Tag, cmd};
 /// Tag::new("Editor")
 ///     .command(cmd("save", "Save file").shortcut("Ctrl+S"))
-///     .command(cmd("close", "Close pane").shortcut("Alt+W"))
+///     .command(cmd("close", "Close pane").shortcut("Alt+W"));
 /// ```
 ///
 /// # BeOS
@@ -59,10 +61,11 @@ impl Tag {
     }
 
     /// Add a single command. Can be chained:
-    /// ```ignore
+    /// ```
+    /// use pane_app::{Tag, cmd};
     /// Tag::new("Editor")
     ///     .command(cmd("save", "Save").shortcut("Ctrl+S"))
-    ///     .command(cmd("close", "Close").shortcut("Alt+W"))
+    ///     .command(cmd("close", "Close").shortcut("Alt+W"));
     /// ```
     pub fn command(mut self, command: impl Into<Command>) -> Self {
         let command = command.into();
@@ -117,8 +120,9 @@ pub struct CommandBuilder {
 ///
 /// The name is both what the user types and what the handler receives.
 ///
-/// ```ignore
-/// cmd("save", "Save the current file").shortcut("Ctrl+S")
+/// ```
+/// use pane_app::cmd;
+/// cmd("save", "Save the current file").shortcut("Ctrl+S");
 /// ```
 pub fn cmd(name: impl Into<String>, description: impl Into<String>) -> CommandBuilder {
     CommandBuilder {

@@ -40,8 +40,9 @@ struct Shortcut {
 /// Filter that intercepts key events matching registered shortcuts
 /// and transforms them into CommandExecuted messages.
 ///
-/// ```ignore
-/// use pane_app::shortcuts::{ShortcutFilter, KeyCombo};
+/// ```
+/// use pane_app::KeyCombo;
+/// use pane_app::shortcuts::ShortcutFilter;
 /// use pane_proto::event::{Key, Modifiers};
 ///
 /// let mut shortcuts = ShortcutFilter::new();
@@ -53,7 +54,7 @@ struct Shortcut {
 ///     KeyCombo::new(Key::Char('w'), Modifiers::ALT),
 ///     "close", "",
 /// );
-/// pane.add_filter(shortcuts);
+/// // Then: pane.add_filter(shortcuts) before pane.run()
 /// ```
 #[derive(Debug)]
 pub struct ShortcutFilter {
