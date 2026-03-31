@@ -24,6 +24,14 @@ Design each feature against the EAct-derived session-type principles (serena: `p
 - [ ] **Drag and drop** — Message::DragEnter/DragOver/Drop + Messenger::drag_message(). Needs protocol + compositor. Typestate handle: `DragSession` tracks enter→over→drop progression.
 - [ ] **Application registry** — stub kit types, implement when compositor supports it. Access point model (C4) applies here.
 
+### C1: Multi-Source Looper Evolution
+
+Incremental migration from single-channel looper to calloop-backed multi-source event loop. Full plan at `.claude/plans/jolly-riding-russell.md`.
+
+- [x] **Phase 1: calloop looper backend** — replaced mpsc::recv_timeout with calloop::EventLoop. LooperMessage channel is calloop::channel. All senders use calloop::channel::Sender. Unbounded channel (bounded backpressure removed). drain_channel handles calloop's 1024-msg-per-dispatch limit.
+- [ ] **Phase 2: Timer migration** — replace hand-rolled Timers struct with calloop Timer sources. TimerToken becomes non-Clone with cancel-on-drop (closes affine gap). CancelTimer message for eager source removal. Delete ~100 lines of manual deadline scheduling. Three-agent consensus spec complete.
+- [ ] **Phase 3: Channel topology split** — clipboard, observer, etc. as separate calloop sources with per-channel message types.
+
 ### Session-type debt (discovered by EAct audit)
 
 Small concrete items identified by auditing the codebase against the session-type principles. Not blockers — cleanup for when the relevant code is next touched.
