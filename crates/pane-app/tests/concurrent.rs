@@ -6,7 +6,6 @@
 //!
 //! Every test has a timeout to catch deadlocks.
 
-use std::num::NonZeroU32;
 use std::sync::mpsc;
 use std::sync::{Arc, Mutex, atomic::{AtomicUsize, Ordering}};
 use std::thread;
@@ -20,7 +19,7 @@ use pane_proto::message::PaneId;
 use pane_proto::protocol::{CompToClient, ClientToComp, PaneGeometry};
 
 fn pane_id(n: u32) -> PaneId {
-    PaneId::new(NonZeroU32::new(n).unwrap())
+    PaneId::from_uuid(uuid::Uuid::from_u128(n as u128))
 }
 
 // --- P3-A: Multi-pane dispatch under contention ---
@@ -186,8 +185,8 @@ fn coalesce_resize_flood() {
             },
         })).unwrap();
     }
-    // Terminate
-    tx.send(LooperMessage::FromComp(CompToClient::Close { pane: pane_id(1) })).unwrap();
+    // Terminate via disconnect (not Close — Close priority promotion
+    // would move it ahead of the coalesced events we're testing)
     drop(tx);
 
     let mut resize_count = 0u32;
@@ -205,7 +204,6 @@ fn coalesce_resize_flood() {
                 move_count += 1;
                 last_move_col = m.col;
             }
-            Message::CloseRequested => return Ok(false),
             _ => {}
         }
         Ok(true)
@@ -262,22 +260,20 @@ fn timer_cancellation_race() {
     // Let active timers run for 100ms
     thread::sleep(Duration::from_millis(100));
 
-    // Cancel remaining and send Close
+    // Cancel remaining and terminate via disconnect
     for token in &tokens {
         token.store(true, Ordering::Relaxed);
     }
     thread::sleep(Duration::from_millis(20)); // let threads exit
-    tx.send(LooperMessage::FromComp(CompToClient::Close { pane: pane_id(1) })).unwrap();
+    drop(looper_tx);
     drop(tx);
 
     let event_count = Arc::new(AtomicUsize::new(0));
     let count = event_count.clone();
 
     pane_app::looper::run_closure(pane_id(1), rx, filters, proxy, move |_h, event| {
-        match event {
-            Message::Activated => { count.fetch_add(1, Ordering::Relaxed); }
-            Message::CloseRequested => return Ok(false),
-            _ => {}
+        if matches!(event, Message::Activated) {
+            count.fetch_add(1, Ordering::Relaxed);
         }
         Ok(true)
     }).unwrap();
@@ -999,6 +995,117 @@ fn stress_cascading_failure() {
         "A should get exactly one PaneExited for B, got {}", exits.len());
     assert_eq!(exits[0], pane_id(3),
         "PaneExited should be for B's pane id");
+}
+
+// --- S13: CloseRequested priority under event flood ---
+
+#[test]
+fn stress_close_priority_under_flood() {
+    let (tx, rx) = mpsc::channel::<LooperMessage>();
+    let filters = pane_app::filter::FilterChain::new();
+    let (comp_tx, _comp_rx) = mpsc::channel::<ClientToComp>();
+    let proxy = Messenger::new(pane_id(1), comp_tx);
+
+    // Pre-load: 50 Focus, 1 Close, 950 more Focus.
+    // In a large batch the looper truncates after Close, discarding
+    // the 950 trailing events.
+    for _ in 0..50 {
+        tx.send(LooperMessage::FromComp(CompToClient::Focus { pane: pane_id(1) })).unwrap();
+    }
+    tx.send(LooperMessage::FromComp(CompToClient::Close { pane: pane_id(1) })).unwrap();
+    for _ in 0..950 {
+        tx.send(LooperMessage::FromComp(CompToClient::Focus { pane: pane_id(1) })).unwrap();
+    }
+    drop(tx);
+
+    let mut events_before_close = 0u32;
+
+    pane_app::looper::run_closure(pane_id(1), rx, filters, proxy, |_h, event| {
+        match event {
+            Message::CloseRequested => return Ok(false),
+            _ => events_before_close += 1,
+        }
+        Ok(true)
+    }).unwrap();
+
+    // The 50 events before Close are delivered. The 950 after Close
+    // are truncated from the batch. Without truncation, the handler
+    // would process all 1000 Focus events before reaching Close.
+    assert!(events_before_close <= 50,
+        "truncation should discard events after Close, but {events_before_close} \
+         events were processed (expected <= 50)");
+}
+
+// --- S12: Concurrent create_pane with immediate events ---
+
+#[test]
+fn stress_concurrent_create_pane() {
+    let (conn, mock) = MockCompositor::pair();
+    let inject = mock.sender();
+    let mock_handle = thread::spawn(move || mock.run());
+
+    let app = App::connect_test("com.test.create_race", conn).unwrap();
+
+    let num_panes = 10;
+
+    // Create panes and immediately inject a Focus event for each.
+    // Before the pre-registration fix, events arriving between
+    // PaneCreated dispatch and channel registration were dropped.
+    let mut panes = Vec::new();
+    for _ in 0..num_panes {
+        let pane = app.create_pane(Tag::new("Race")).unwrap();
+        let id = pane.id();
+        // Inject Focus for this pane immediately — the dispatcher
+        // should already have the channel registered.
+        let _ = inject.send(CompToClient::Focus { pane: id });
+        panes.push(pane);
+    }
+
+    // Verify all panes get unique IDs
+    let ids: Vec<_> = panes.iter().map(|p| p.id()).collect();
+    let unique: std::collections::HashSet<_> = ids.iter().collect();
+    assert_eq!(unique.len(), num_panes,
+        "all panes should have unique IDs, got {:?}", ids);
+
+    // Run each pane, verify it receives the Focus event
+    let focus_counts: Arc<Mutex<Vec<usize>>> = Arc::new(Mutex::new(vec![0; num_panes]));
+    let mut handles = Vec::new();
+
+    for (i, pane) in panes.into_iter().enumerate() {
+        let pane_id = pane.id();
+        let counts = focus_counts.clone();
+        let inj = inject.clone();
+        handles.push(thread::spawn(move || {
+            let inj2 = inj.clone();
+            thread::spawn(move || {
+                thread::sleep(Duration::from_millis(50));
+                let _ = inj2.send(CompToClient::Close { pane: pane_id });
+            });
+            pane.run(move |_proxy, event| {
+                match event {
+                    Message::Activated => {
+                        counts.lock().unwrap()[i] += 1;
+                    }
+                    Message::CloseRequested => return Ok(false),
+                    _ => {}
+                }
+                Ok(true)
+            }).unwrap();
+        }));
+    }
+
+    for h in handles {
+        h.join().unwrap();
+    }
+    drop(app);
+    mock_handle.join().unwrap();
+
+    let counts = focus_counts.lock().unwrap();
+    for (i, &count) in counts.iter().enumerate() {
+        assert_eq!(count, 1,
+            "pane {i} should receive exactly 1 Focus event, got {count} \
+             (event dropped in registration race?)");
+    }
 }
 
 // --- S11: Memory pressure (1000 requests with large payloads) ---

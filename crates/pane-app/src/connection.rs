@@ -126,6 +126,7 @@ pub fn run_client_handshake<T: Transport>(
     let chan = chan.send(ClientHello {
         signature: signature.to_string(),
         version: 1,
+        identity: None, // local connections; remote fills this in connect_remote
     }).map_err(|e| Error::Connect(ConnectError::Transport(e)))?;
 
     let (_server_hello, chan) = chan.recv()

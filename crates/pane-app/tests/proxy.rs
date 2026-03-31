@@ -2,7 +2,6 @@
 //! Tests that the most-used developer API sends correct messages
 //! and handles disconnection gracefully.
 
-use std::num::NonZeroU32;
 use std::sync::mpsc;
 
 use pane_app::Messenger;
@@ -11,7 +10,7 @@ use pane_proto::protocol::ClientToComp;
 use pane_proto::tag::{PaneTitle, CommandVocabulary, Completion};
 
 fn pane_id(n: u32) -> PaneId {
-    PaneId::new(NonZeroU32::new(n).unwrap())
+    PaneId::from_uuid(uuid::Uuid::from_u128(n as u128))
 }
 
 // --- P1-1: Disconnected Messenger ---

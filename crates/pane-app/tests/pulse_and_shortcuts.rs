@@ -1,6 +1,5 @@
 //! Tests for Pulse and ShortcutFilter.
 
-use std::num::NonZeroU32;
 use std::sync::mpsc;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU32, Ordering};
@@ -14,7 +13,7 @@ use pane_proto::message::PaneId;
 use pane_proto::protocol::{ClientToComp, CompToClient};
 
 fn pane_id(n: u32) -> PaneId {
-    PaneId::new(NonZeroU32::new(n).unwrap())
+    PaneId::from_uuid(uuid::Uuid::from_u128(n as u128))
 }
 
 fn make_proxy(id: PaneId) -> Messenger {

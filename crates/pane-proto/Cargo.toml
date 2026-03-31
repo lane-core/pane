@@ -9,6 +9,7 @@ license = "BSD-3-Clause"
 serde = { version = "1", features = ["derive"] }
 postcard = { version = "1", features = ["alloc"] }
 bitflags = { version = "2", features = ["serde"] }
+uuid = { version = "1", features = ["v4", "serde"] }
 pane-session = { path = "../pane-session" }
 
 [dev-dependencies]

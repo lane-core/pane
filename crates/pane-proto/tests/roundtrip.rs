@@ -1,5 +1,3 @@
-use std::num::NonZeroU32;
-
 use proptest::prelude::*;
 
 use pane_proto::*;
@@ -10,7 +8,7 @@ use pane_proto::attrs::AttrValue;
 // --- Arbitrary strategies ---
 
 fn arb_pane_id() -> impl Strategy<Value = PaneId> {
-    (1..=u32::MAX).prop_map(|n| PaneId::new(NonZeroU32::new(n).unwrap()))
+    any::<u128>().prop_map(|n| PaneId::from_uuid(uuid::Uuid::from_u128(n)))
 }
 
 fn arb_named_color() -> impl Strategy<Value = color::NamedColor> {
@@ -155,7 +153,7 @@ fn arb_pane_geometry() -> impl Strategy<Value = pane_proto::PaneGeometry> {
 fn arb_client_to_comp() -> impl Strategy<Value = pane_proto::protocol::ClientToComp> {
     use pane_proto::protocol::ClientToComp;
     prop_oneof![
-        proptest::option::of(arb_create_pane_tag()).prop_map(|tag| ClientToComp::CreatePane { tag }),
+        (arb_pane_id(), proptest::option::of(arb_create_pane_tag())).prop_map(|(pane, tag)| ClientToComp::CreatePane { pane, tag }),
         arb_pane_id().prop_map(|pane| ClientToComp::RequestClose { pane }),
         (arb_pane_id(), arb_pane_title()).prop_map(|(pane, title)| ClientToComp::SetTitle { pane, title }),
         (arb_pane_id(), arb_command_vocabulary()).prop_map(|(pane, vocabulary)| ClientToComp::SetVocabulary { pane, vocabulary }),
@@ -250,7 +248,7 @@ proptest! {
 
     #[test]
     fn roundtrip_client_hello(sig in ".*", ver in any::<u32>()) {
-        let hello = pane_proto::ClientHello { signature: sig, version: ver };
+        let hello = pane_proto::ClientHello { signature: sig, version: ver, identity: None };
         let bytes = serialize(&hello).unwrap();
         let decoded: pane_proto::ClientHello = deserialize(&bytes).unwrap();
         prop_assert_eq!(hello, decoded);
@@ -258,7 +256,7 @@ proptest! {
 
     #[test]
     fn roundtrip_server_hello(comp in ".*", ver in any::<u32>()) {
-        let hello = pane_proto::ServerHello { compositor: comp, version: ver };
+        let hello = pane_proto::ServerHello { compositor: comp, version: ver, instance_id: "test".into() };
         let bytes = serialize(&hello).unwrap();
         let decoded: pane_proto::ServerHello = deserialize(&bytes).unwrap();
         prop_assert_eq!(hello, decoded);

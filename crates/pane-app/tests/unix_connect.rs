@@ -6,17 +6,18 @@
 
 use std::os::unix::net::UnixListener;
 use std::thread;
-use std::num::NonZeroU32;
 
 use pane_app::{App, Tag, Message};
 use pane_proto::protocol::{
     ServerHello, Accepted, ClientToComp, CompToClient, PaneGeometry,
-    ServerHandshake,
+    ServerHandshake, ConnectionTopology,
 };
-use pane_proto::message::PaneId;
 use pane_session::framing::{read_framed, write_framed};
 use pane_session::transport::unix::UnixTransport;
 use pane_session::types::Chan;
+
+// uuid re-exported through pane-proto isn't directly available;
+// use the instance_id as a plain string.
 
 /// A minimal unix socket server that runs the compositor handshake then
 /// processes active-phase messages on the same socket.
@@ -31,16 +32,20 @@ fn run_test_server(listener: UnixListener) {
     let server = server.send(ServerHello {
         compositor: "test-server".into(),
         version: 1,
+        instance_id: "test-server-instance".into(),
     }).unwrap();
     let (_caps, server) = server.recv().unwrap();
     let server = server.select_left().unwrap();
-    let server = server.send(Accepted { caps: vec![] }).unwrap();
+    let server = server.send(Accepted {
+        caps: vec![],
+        topology: ConnectionTopology::Local,
+    }).unwrap();
 
     // finish() reclaims the transport → into_stream() gets the socket back
     let stream = server.finish().into_stream();
 
     // Phase 2: active-phase framed messaging on the same socket
-    let mut next_id = 1u32;
+    // Client-proposed PaneIds — server echoes them back
     loop {
         let bytes = match read_framed(&mut &stream) {
             Ok(b) => b,
@@ -53,11 +58,10 @@ fn run_test_server(listener: UnixListener) {
         };
 
         match msg {
-            ClientToComp::CreatePane { .. } => {
-                let id = PaneId::new(NonZeroU32::new(next_id).unwrap());
-                next_id += 1;
+            ClientToComp::CreatePane { pane, .. } => {
+                // Echo back the client-proposed PaneId
                 let response = CompToClient::PaneCreated {
-                    pane: id,
+                    pane,
                     geometry: PaneGeometry { width: 800, height: 600, cols: 80, rows: 24 },
                 };
                 let bytes = pane_proto::serialize(&response).unwrap();
@@ -92,7 +96,8 @@ fn connect_over_unix_socket() {
     let app = App::connect("com.test.unix").unwrap();
 
     let pane = app.create_pane(Tag::new("Unix Test")).unwrap();
-    assert!(pane.id().get() > 0);
+    // UUID PaneId — just verify it's valid (non-nil)
+    assert!(!pane.id().uuid().is_nil());
 
     // Validate geometry from PaneCreated arrives as Ready event
     pane.run(|_proxy, event| {

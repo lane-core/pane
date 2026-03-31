@@ -9,3 +9,4 @@ license = "AGPL-3.0-only"
 pane-proto = { path = "../pane-proto" }
 pane-session = { path = "../pane-session" }
 tracing = "0.1"
+uuid = { version = "1", features = ["v4"] }

@@ -4,7 +4,6 @@
 //! Enough to exercise the full kit API: create panes, send events,
 //! receive content updates.
 
-use std::num::NonZeroU32;
 use std::sync::mpsc;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
@@ -13,7 +12,7 @@ use pane_proto::message::PaneId;
 use pane_proto::protocol::{
     ClientToComp, CompToClient, PaneGeometry,
     ClientHandshake, ServerHandshake,
-    ServerHello, Accepted,
+    ServerHello, Accepted, ConnectionTopology,
 };
 use pane_session::transport::memory;
 use pane_session::types::Chan;
@@ -24,7 +23,6 @@ use crate::connection::Connection;
 /// A mock compositor that responds to CreatePane and RequestClose.
 pub struct MockCompositor {
     conn: MockConnection,
-    next_id: u32,
     /// Events to inject into specific panes after creation.
     injections: Vec<(PaneId, CompToClient)>,
     /// Log of received ClientToComp messages for assertions.
@@ -40,7 +38,6 @@ impl MockCompositor {
         let (conn, mock_conn) = connection::test_pair();
         let mock = MockCompositor {
             conn: mock_conn,
-            next_id: 1,
             injections: Vec::new(),
             log: Arc::new(Mutex::new(Vec::new())),
             handshake_rx: None,
@@ -75,7 +72,6 @@ impl MockCompositor {
         let (conn, mock_conn) = connection::test_pair();
         let mock = MockCompositor {
             conn: mock_conn,
-            next_id: 1,
             injections: Vec::new(),
             log: Arc::new(Mutex::new(Vec::new())),
             handshake_rx: Some(hs_rx),
@@ -115,11 +111,15 @@ impl MockCompositor {
                 let s = s.send(ServerHello {
                     compositor: "pane-mock".into(),
                     version: 1,
+                    instance_id: "pane-mock-instance".into(),
                 }).expect("handshake: send ServerHello");
                 let (caps, s) = s.recv().expect("handshake: recv ClientCaps");
                 // Always accept in mock
                 let s = s.select_left().expect("handshake: select Accept");
-                let s = s.send(Accepted { caps: caps.caps }).expect("handshake: send Accepted");
+                let s = s.send(Accepted {
+                    caps: caps.caps,
+                    topology: ConnectionTopology::Local,
+                }).expect("handshake: send Accepted");
                 let _ = hello; // used for logging if needed
                 s.close();
             }
@@ -142,11 +142,7 @@ impl MockCompositor {
             self.log.lock().unwrap().push(msg.clone());
 
             match msg {
-                ClientToComp::CreatePane { .. } => {
-                    let id = PaneId::new(NonZeroU32::new(self.next_id)
-                        .expect("pane ID overflow in MockCompositor"));
-                    self.next_id = self.next_id.checked_add(1)
-                        .expect("pane ID counter overflow in MockCompositor");
+                ClientToComp::CreatePane { pane: id, .. } => {
 
                     // Send PaneCreated response
                     let _ = self.conn.sender.send(CompToClient::PaneCreated {

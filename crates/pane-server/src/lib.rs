@@ -14,7 +14,6 @@
 //!    the compositor (pane-comp) owns the calloop registration
 
 use std::collections::HashMap;
-use std::num::NonZeroU32;
 use std::os::unix::net::{UnixListener, UnixStream};
 use std::path::{Path, PathBuf};
 
@@ -23,7 +22,7 @@ use tracing::{info, warn, error};
 use pane_proto::message::PaneId;
 use pane_proto::protocol::{
     ClientToComp, CompToClient, PaneGeometry,
-    ServerHandshake, ServerHello, Accepted,
+    ServerHandshake, ServerHello, Accepted, ConnectionTopology,
 };
 use pane_session::calloop::write_message;
 use pane_session::transport::unix::UnixTransport;
@@ -50,12 +49,13 @@ pub struct PaneState {
 /// The protocol server manages the listener socket and client state.
 pub struct ProtocolServer {
     sock_path: PathBuf,
-    next_pane_id: u32,
     /// Connected clients, indexed by client ID.
     pub clients: HashMap<usize, ClientSession>,
     /// All panes across all clients.
     pub panes: HashMap<PaneId, PaneState>,
     next_client_id: usize,
+    /// Instance identifier for federation.
+    pub instance_id: String,
 }
 
 impl ProtocolServer {
@@ -75,20 +75,13 @@ impl ProtocolServer {
         Ok((
             ProtocolServer {
                 sock_path,
-                next_pane_id: 1,
                 clients: HashMap::new(),
                 panes: HashMap::new(),
                 next_client_id: 0,
+                instance_id: uuid::Uuid::new_v4().to_string(),
             },
             listener,
         ))
-    }
-
-    /// Allocate a new PaneId.
-    pub fn alloc_pane_id(&mut self) -> PaneId {
-        let id = PaneId::new(NonZeroU32::new(self.next_pane_id).unwrap());
-        self.next_pane_id += 1;
-        id
     }
 
     /// Allocate a new client ID.
@@ -118,8 +111,7 @@ impl ProtocolServer {
         geometry: PaneGeometry,
     ) {
         match msg {
-            ClientToComp::CreatePane { tag } => {
-                let pane_id = self.alloc_pane_id();
+            ClientToComp::CreatePane { pane: pane_id, tag } => {
                 let title = tag.as_ref()
                     .map(|t| t.title.text.clone())
                     .unwrap_or_default();
@@ -231,23 +223,33 @@ impl Drop for ProtocolServer {
 /// Run the server-side handshake on a new connection.
 /// Blocking — call on a spawned thread.
 /// Returns the reclaimed stream on success.
-pub fn run_server_handshake(stream: UnixStream) -> Result<UnixStream, pane_session::SessionError> {
+pub fn run_server_handshake(
+    stream: UnixStream,
+    instance_id: &str,
+) -> Result<UnixStream, pane_session::SessionError> {
     let transport = UnixTransport::from_stream(stream);
     let server: Chan<ServerHandshake, _> = Chan::new(transport);
 
     let (hello, server) = server.recv()?;
     info!("handshake: client '{}' v{}", hello.signature, hello.version);
+    if let Some(ref id) = hello.identity {
+        info!("handshake: remote identity {}@{} (uid {})", id.username, id.hostname, id.uid);
+    }
 
     let server = server.send(ServerHello {
         compositor: "pane-comp".into(),
         version: 1,
+        instance_id: instance_id.to_string(),
     })?;
 
     let (caps, server) = server.recv()?;
     info!("handshake: caps {:?}", caps.caps);
 
     let server = server.select_left()?;
-    let server = server.send(Accepted { caps: caps.caps })?;
+    let server = server.send(Accepted {
+        caps: caps.caps,
+        topology: ConnectionTopology::Local,
+    })?;
 
     let transport = server.finish();
     Ok(transport.into_stream())

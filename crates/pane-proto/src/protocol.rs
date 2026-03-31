@@ -18,7 +18,10 @@ use crate::tag::{PaneTitle, CommandVocabulary, Completion};
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum ClientToComp {
     /// Create a new pane with the given tag configuration.
+    /// The client proposes a UUID PaneId; the compositor confirms
+    /// (PaneCreated) or rejects (PaneRefused).
     CreatePane {
+        pane: PaneId,
         tag: Option<CreatePaneTag>,
     },
     /// Request to close a pane.
@@ -162,6 +165,33 @@ pub struct ClientHello {
     pub signature: String,
     /// Protocol version.
     pub version: u32,
+    /// Peer identity for remote connections. `None` for local unix
+    /// sockets (where `SO_PEERCRED` provides identity implicitly).
+    ///
+    /// Sent early (before capability negotiation) so the server can
+    /// make access control decisions before proceeding. Mirrors 9P's
+    /// Tauth placement before Tattach.
+    pub identity: Option<PeerIdentity>,
+}
+
+/// Identity of a remote peer, declared during handshake.
+///
+/// For remote TCP/TLS connections, the server validates this against
+/// the TLS client certificate. For local unix sockets, identity is
+/// implicit via `SO_PEERCRED` and this field is `None`.
+///
+/// # BeOS
+///
+/// No equivalent — Be's app_server connected over kernel ports where
+/// identity was ambient. This extends the model for network transparency.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PeerIdentity {
+    /// Unix username on the peer's system.
+    pub username: String,
+    /// Numeric UID on the peer's system.
+    pub uid: u32,
+    /// Hostname of the peer's system.
+    pub hostname: String,
 }
 
 /// Server hello — compositor's response to ClientHello.
@@ -171,6 +201,11 @@ pub struct ServerHello {
     pub compositor: String,
     /// Protocol version (may differ from client's).
     pub version: u32,
+    /// Instance identifier for federation and discovery.
+    /// A UUID that uniquely identifies this pane server instance.
+    /// Used by pane-roster for cross-instance service discovery
+    /// and by pane-fs for routing writes to the owning instance.
+    pub instance_id: String,
 }
 
 /// Client capabilities — sent after ServerHello.
@@ -185,6 +220,25 @@ pub struct ClientCaps {
 pub struct Accepted {
     /// Resolved capabilities (intersection of requested and supported).
     pub caps: Vec<String>,
+    /// Connection topology, classified by the server from the transport.
+    /// The client does not declare this — the server infers it.
+    pub topology: ConnectionTopology,
+}
+
+/// Connection topology as classified by the server.
+///
+/// The server knows the transport type (unix socket vs TCP) and
+/// classifies the connection accordingly. The client receives this
+/// in `Accepted` and uses it for routing decisions (e.g., preferring
+/// local handlers over remote ones for latency-sensitive operations).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum ConnectionTopology {
+    /// Local unix socket connection (same machine).
+    Local,
+    /// Remote network connection (TCP/TLS).
+    Remote,
+    /// Connection via an intermediate pane instance (future federation).
+    Federated,
 }
 
 /// Handshake rejected — compositor rejects the client.

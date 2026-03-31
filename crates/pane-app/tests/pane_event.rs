@@ -1,4 +1,3 @@
-use std::num::NonZeroU32;
 use std::sync::mpsc;
 
 use pane_app::Message;
@@ -7,7 +6,7 @@ use pane_proto::message::PaneId;
 use pane_proto::protocol::{CompToClient, ClientToComp, PaneGeometry};
 
 fn pane_id(n: u32) -> PaneId {
-    PaneId::new(NonZeroU32::new(n).unwrap())
+    PaneId::from_uuid(uuid::Uuid::from_u128(n as u128))
 }
 
 fn test_geometry() -> PaneGeometry {

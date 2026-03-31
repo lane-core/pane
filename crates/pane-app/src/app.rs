@@ -14,6 +14,15 @@ use crate::looper_message::LooperMessage;
 use crate::pane::Pane;
 use crate::tag::Tag;
 
+/// Response from the dispatcher to create_pane_inner.
+/// The dispatcher pre-registers the channel so there is no race
+/// between PaneCreated dispatch and channel availability.
+struct CreateResponse {
+    msg: CompToClient,
+    pane_rx: mpsc::Receiver<LooperMessage>,
+    pane_tx: mpsc::SyncSender<LooperMessage>,
+}
+
 /// The application entry point. One per process.
 ///
 /// App establishes the connection to the compositor and provides
@@ -45,12 +54,8 @@ use crate::tag::Tag;
 pub struct App {
     /// Sender to the compositor (active-phase messages).
     comp_tx: mpsc::Sender<ClientToComp>,
-    /// Per-pane channels, keyed by PaneId. The dispatcher thread
-    /// forwards CompToClient messages (wrapped as LooperMessage) to
-    /// the right pane's channel.
-    pane_channels: Arc<Mutex<HashMap<PaneId, mpsc::SyncSender<LooperMessage>>>>,
     /// Oneshot channels for pending create_pane responses.
-    pending_creates: Arc<Mutex<VecDeque<mpsc::Sender<CompToClient>>>>,
+    pending_creates: Arc<Mutex<VecDeque<mpsc::Sender<CreateResponse>>>>,
     /// Application signature.
     signature: String,
     /// Live pane count.
@@ -102,10 +107,12 @@ impl App {
         let comp_tx = conn.sender;
         let pane_channels: Arc<Mutex<HashMap<PaneId, mpsc::SyncSender<LooperMessage>>>> =
             Arc::new(Mutex::new(HashMap::new()));
-        let pending_creates: Arc<Mutex<VecDeque<mpsc::Sender<CompToClient>>>> =
+        let pending_creates: Arc<Mutex<VecDeque<mpsc::Sender<CreateResponse>>>> =
             Arc::new(Mutex::new(VecDeque::new()));
 
-        // Spawn the dispatcher thread — reads from compositor, routes to panes
+        // Spawn the dispatcher thread — reads from compositor, routes to panes.
+        // The dispatcher pre-registers per-pane channels when it sees PaneCreated,
+        // eliminating the race between response delivery and channel availability.
         let channels = pane_channels.clone();
         let creates = pending_creates.clone();
         let receiver = conn.receiver;
@@ -117,11 +124,18 @@ impl App {
                     Err(_) => break, // connection closed
                 };
 
-                // Check if this is a PaneCreated response to a pending create
-                if let CompToClient::PaneCreated { .. } = &msg {
+                // PaneCreated: create + register the channel, then notify the caller
+                if let CompToClient::PaneCreated { pane, .. } = &msg {
                     let mut pending = creates.lock().unwrap_or_else(|e| e.into_inner());
                     if let Some(oneshot) = pending.pop_front() {
-                        let _ = oneshot.send(msg);
+                        let (pane_tx, pane_rx) = mpsc::sync_channel::<LooperMessage>(256);
+                        channels.lock().unwrap_or_else(|e| e.into_inner())
+                            .insert(*pane, pane_tx.clone());
+                        let _ = oneshot.send(CreateResponse {
+                            msg,
+                            pane_rx,
+                            pane_tx,
+                        });
                         continue;
                     }
                 }
@@ -137,7 +151,6 @@ impl App {
 
         Ok(App {
             comp_tx,
-            pane_channels,
             pending_creates,
             signature: signature.to_string(),
             pane_count: Arc::new(AtomicUsize::new(0)),
@@ -166,43 +179,36 @@ impl App {
 
     fn create_pane_inner(&self, wire_tag: Option<CreatePaneTag>) -> Result<Pane> {
 
-        // Set up oneshot for the PaneCreated response
+        // Set up oneshot for the PaneCreated response.
+        // The dispatcher pre-registers the channel before sending the response,
+        // so there is no race between PaneCreated and channel availability.
         let (create_tx, create_rx) = mpsc::channel();
         self.pending_creates.lock().unwrap_or_else(|e| e.into_inner()).push_back(create_tx);
 
+        // Propose a UUID for the new pane — client-chosen, server confirms.
+        let proposed_id = PaneId::new();
+
         // Send CreatePane to compositor
-        self.comp_tx.send(ClientToComp::CreatePane { tag: wire_tag })
+        self.comp_tx.send(ClientToComp::CreatePane { pane: proposed_id, tag: wire_tag })
             .map_err(|_| PaneError::Disconnected)?;
 
         // Wait for PaneCreated (with timeout)
         let response = create_rx.recv_timeout(std::time::Duration::from_secs(5))
             .map_err(|_| PaneError::Timeout)?;
 
-        let (pane_id, geometry) = match response {
+        let (pane_id, geometry) = match response.msg {
             CompToClient::PaneCreated { pane, geometry } => (pane, geometry),
             _ => return Err(PaneError::Refused.into()),
         };
 
-        // Register the per-pane channel IMMEDIATELY after receiving PaneCreated.
-        // There is a small race window between the dispatcher forwarding PaneCreated
-        // and this registration — events arriving in that window are dropped.
-        // The proper fix (Stage 3) is to have the dispatcher pre-register the channel
-        // or buffer events for unknown pane IDs. For now, the window is microseconds
-        // and only affects events sent by the compositor in the same batch as PaneCreated.
-        // Bounded channel: backpressure prevents unbounded memory growth
-        // from a chatty compositor or rapid self-delivery. 256 is generous —
-        // the looper drains and coalesces on each wakeup, so the queue
-        // should rarely exceed single digits under normal operation.
-        let (pane_tx, pane_rx) = mpsc::sync_channel::<LooperMessage>(256);
-        self.pane_channels.lock().unwrap_or_else(|e| e.into_inner()).insert(pane_id, pane_tx.clone());
         self.pane_count.fetch_add(1, Ordering::Relaxed);
 
         Ok(Pane::new(
             pane_id,
             geometry,
-            pane_rx,
+            response.pane_rx,
             self.comp_tx.clone(),
-            pane_tx,
+            response.pane_tx,
             self.pane_count.clone(),
             self.done_signal.clone(),
         ))

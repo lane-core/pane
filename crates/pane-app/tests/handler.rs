@@ -3,7 +3,6 @@
 //! without any overrides — the contract that developers depend on.
 
 use std::any::Any;
-use std::num::NonZeroU32;
 use std::sync::mpsc;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
@@ -15,7 +14,7 @@ use pane_proto::message::PaneId;
 use pane_proto::protocol::{ClientToComp, CompToClient};
 
 fn pane_id(n: u32) -> PaneId {
-    PaneId::new(NonZeroU32::new(n).unwrap())
+    PaneId::from_uuid(uuid::Uuid::from_u128(n as u128))
 }
 
 fn make_handle(id: PaneId) -> (Messenger, mpsc::Receiver<ClientToComp>) {
@@ -652,4 +651,61 @@ fn nested_request_no_deadlock() {
     b_for_close.send_message(Message::CloseRequested).unwrap();
     a_handle.join().unwrap().unwrap();
     b_handle.join().unwrap().unwrap();
+}
+
+// --- Deadlock guard test ---
+
+#[test]
+fn send_and_wait_from_looper_returns_would_deadlock() {
+    // If send_and_wait is called from a looper thread, it should
+    // return WouldDeadlock instead of deadlocking.
+    let (target_proxy, target_rx) = make_looper_proxy(pane_id(2));
+    let target_for_send = target_proxy.clone();
+
+    let target_handle = std::thread::spawn(move || {
+        let filters = pane_app::filter::FilterChain::new();
+        pane_app::looper::run_handler(pane_id(2), target_rx, filters, target_proxy, EchoHandler)
+    });
+
+    let (proxy, looper_rx) = make_looper_proxy(pane_id(1));
+    let outer_proxy = proxy.clone();
+
+    let result_holder = Arc::new(Mutex::new(None::<std::result::Result<Box<dyn Any + Send>, PaneError>>));
+    let rh = result_holder.clone();
+    let target_clone = target_for_send.clone();
+
+    let handle = std::thread::spawn(move || {
+        let filters = pane_app::filter::FilterChain::new();
+        pane_app::looper::run_closure(pane_id(1), looper_rx, filters, proxy, move |_m, msg| {
+            if matches!(msg, Message::Activated) {
+                // Try send_and_wait from INSIDE the looper — should be caught
+                let result = _m.send_and_wait(
+                    &target_clone,
+                    Message::AppMessage(Box::new(42u64)),
+                    Duration::from_millis(100),
+                );
+                *rh.lock().unwrap() = Some(result);
+                return Ok(false); // exit after testing
+            }
+            if matches!(msg, Message::CloseRequested) { return Ok(false); }
+            Ok(true)
+        })
+    });
+
+    // Trigger the test by posting Activated
+    outer_proxy.send_message(Message::Activated).unwrap();
+
+    handle.join().unwrap().unwrap();
+
+    let result = result_holder.lock().unwrap().take()
+        .expect("handler should have attempted send_and_wait");
+    match result {
+        Err(PaneError::WouldDeadlock) => {} // correct
+        Err(other) => panic!("expected WouldDeadlock, got {:?}", other),
+        Ok(_) => panic!("send_and_wait from looper should not succeed"),
+    }
+
+    // Clean up target
+    target_for_send.send_message(Message::CloseRequested).unwrap();
+    target_handle.join().unwrap().unwrap();
 }

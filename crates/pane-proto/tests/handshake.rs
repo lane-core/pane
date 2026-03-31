@@ -11,7 +11,7 @@ use pane_session::types::{Chan, Offer};
 
 use pane_proto::protocol::{
     ClientHandshake, ServerHandshake,
-    ClientHello, ServerHello, ClientCaps, Accepted, Rejected,
+    ClientHello, ServerHello, ClientCaps, Accepted, Rejected, ConnectionTopology,
 };
 
 /// Run a successful handshake: client connects, server accepts.
@@ -24,11 +24,13 @@ fn handshake_accept_flow() {
         let (hello, server) = server.recv().unwrap();
         assert_eq!(hello.signature, "com.example.hello");
         assert_eq!(hello.version, 1);
+        assert!(hello.identity.is_none());
 
         // Server: send ServerHello
         let server = server.send(ServerHello {
             compositor: "pane-test".into(),
             version: 1,
+            instance_id: "test-instance".into(),
         }).unwrap();
 
         // Server: recv ClientCaps
@@ -39,6 +41,7 @@ fn handshake_accept_flow() {
         let server = server.select_left().unwrap();
         let server = server.send(Accepted {
             caps: vec!["clipboard".into()],
+            topology: ConnectionTopology::Local,
         }).unwrap();
 
         server.close();
@@ -48,11 +51,13 @@ fn handshake_accept_flow() {
     let client = client.send(ClientHello {
         signature: "com.example.hello".into(),
         version: 1,
+        identity: None,
     }).unwrap();
 
     // Client: recv ServerHello
     let (hello, client) = client.recv().unwrap();
     assert_eq!(hello.compositor, "pane-test");
+    assert_eq!(hello.instance_id, "test-instance");
 
     // Client: send ClientCaps
     let client = client.send(ClientCaps {
@@ -64,6 +69,7 @@ fn handshake_accept_flow() {
         Offer::Left(chan) => {
             let (accepted, chan) = chan.recv().unwrap();
             assert_eq!(accepted.caps, vec!["clipboard"]);
+            assert_eq!(accepted.topology, ConnectionTopology::Local);
             chan.close();
         }
         Offer::Right(_) => panic!("expected Accept, got Reject"),
@@ -84,6 +90,7 @@ fn handshake_reject_flow() {
         let server = server.send(ServerHello {
             compositor: "pane-test".into(),
             version: 1,
+            instance_id: "test-instance".into(),
         }).unwrap();
 
         let (_caps, server) = server.recv().unwrap();
@@ -100,6 +107,7 @@ fn handshake_reject_flow() {
     let client = client.send(ClientHello {
         signature: "com.evil.malware".into(),
         version: 1,
+        identity: None,
     }).unwrap();
 
     let (_hello, client) = client.recv().unwrap();
@@ -130,11 +138,15 @@ fn handshake_finish_reclaims_transport() {
         let server = server.send(ServerHello {
             compositor: "pane-test".into(),
             version: 1,
+            instance_id: "test-instance".into(),
         }).unwrap();
         let (_caps, server) = server.recv().unwrap();
 
         let server = server.select_left().unwrap();
-        let server = server.send(Accepted { caps: vec![] }).unwrap();
+        let server = server.send(Accepted {
+            caps: vec![],
+            topology: ConnectionTopology::Local,
+        }).unwrap();
 
         // finish() reclaims the transport instead of closing
         let _transport = server.finish();
@@ -144,6 +156,7 @@ fn handshake_finish_reclaims_transport() {
     let client = client.send(ClientHello {
         signature: "com.test".into(),
         version: 1,
+        identity: None,
     }).unwrap();
     let (_hello, client) = client.recv().unwrap();
     let client = client.send(ClientCaps { caps: vec![] }).unwrap();
