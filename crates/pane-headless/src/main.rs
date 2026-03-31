@@ -1,0 +1,274 @@
+//! Headless pane server.
+//!
+//! Speaks the full pane protocol — session-typed handshake, active-phase
+//! messaging, identity forwarding — without rendering. This is the
+//! foundational deployment model that the full desktop extends.
+//!
+//! Accepts both local (unix socket) and remote (TCP) connections.
+//! Builds on any unix-like. No smithay, no Wayland, no GPU.
+//!
+//! # Architecture
+//!
+//! pane-headless and pane-comp are parallel consumers of pane-server's
+//! `ProtocolServer`. pane-server provides the protocol logic;
+//! pane-headless provides a headless calloop event loop; pane-comp
+//! provides a graphical event loop with smithay. An application
+//! connected to pane-headless cannot tell the difference from the
+//! protocol's perspective.
+//!
+//! # Plan 9
+//!
+//! In Plan 9, the terminal was just a server that happened to have a
+//! screen. pane-headless is the same server without the screen.
+
+mod state;
+
+use std::net::TcpListener;
+use std::os::unix::net::UnixListener;
+
+use calloop::EventLoop;
+use anyhow::Result;
+use bpaf::Bpaf;
+use tracing::{info, warn};
+
+use state::HeadlessState;
+
+/// Headless pane server — protocol without rendering
+#[derive(Debug, Clone, Bpaf)]
+#[bpaf(options, version)]
+struct Opts {
+    /// Unix socket path (default: $XDG_RUNTIME_DIR/pane/compositor.sock)
+    #[bpaf(long("socket"), fallback(String::new()))]
+    unix_socket: String,
+
+    /// TCP listen address (e.g., 0.0.0.0:7070). Omit to disable TCP.
+    #[bpaf(long("tcp"), argument("ADDR"), optional)]
+    tcp_listen: Option<String>,
+
+    /// Default geometry columns
+    #[bpaf(long, fallback(80u16))]
+    cols: u16,
+
+    /// Default geometry rows
+    #[bpaf(long, fallback(24u16))]
+    rows: u16,
+
+    /// Log level (error, warn, info, debug, trace)
+    #[bpaf(long("log"), fallback("info".to_string()))]
+    log_level: String,
+}
+
+fn main() {
+    let opts = opts().run();
+
+    tracing_subscriber::fmt()
+        .with_env_filter(
+            tracing_subscriber::EnvFilter::try_from_default_env()
+                .unwrap_or_else(|_| format!("pane_headless={}", opts.log_level).into()),
+        )
+        .init();
+
+    info!("pane-headless starting");
+
+    if let Err(e) = run(&opts) {
+        eprintln!("pane-headless fatal: {e:?}");
+        std::process::exit(1);
+    }
+
+    info!("pane-headless shutdown");
+}
+
+fn run(opts: &Opts) -> Result<()> {
+    let protocol_server = pane_server::ProtocolServer::new_unmanaged();
+    let instance_id = protocol_server.instance_id.clone();
+
+    // Handshake completion channel — spawned threads send completed
+    // (client_id, stream) pairs here. The calloop event loop picks
+    // them up via a channel event source (event-driven, not polled).
+    let (handshake_tx, handshake_rx) = calloop::channel::channel::<(usize, std::os::unix::net::UnixStream)>();
+
+    let default_geometry = pane_proto::protocol::PaneGeometry {
+        width: opts.cols as u32 * 9,  // approximate cell size
+        height: opts.rows as u32 * 17,
+        cols: opts.cols,
+        rows: opts.rows,
+    };
+
+    let mut headless_state = HeadlessState {
+        server: protocol_server,
+        running: true,
+        default_geometry,
+    };
+
+    // --- calloop event loop ---
+    let mut event_loop: EventLoop<'_, HeadlessState> =
+        EventLoop::try_new().map_err(|e| anyhow::anyhow!("calloop init: {e}"))?;
+
+    let loop_handle = event_loop.handle();
+
+    // --- handshake completion channel (event-driven, not timer-polled) ---
+    loop_handle.insert_source(handshake_rx, {
+        let loop_handle = loop_handle.clone();
+        move |event, _, state: &mut HeadlessState| {
+            if let calloop::channel::Event::Msg((client_id, stream)) = event {
+                state.register_client(client_id, stream, &loop_handle);
+            }
+        }
+    }).map_err(|e| anyhow::anyhow!("handshake channel source: {e}"))?;
+
+    // --- unix listener ---
+    let unix_path = if opts.unix_socket.is_empty() {
+        let runtime_dir = std::env::var("XDG_RUNTIME_DIR")
+            .map_err(|_| anyhow::anyhow!("XDG_RUNTIME_DIR not set (use --socket to specify)"))?;
+        let pane_dir = std::path::PathBuf::from(&runtime_dir).join("pane");
+        std::fs::create_dir_all(&pane_dir)?;
+        pane_dir.join("compositor.sock")
+    } else {
+        std::path::PathBuf::from(&opts.unix_socket)
+    };
+
+    let _ = std::fs::remove_file(&unix_path);
+    let unix_listener = UnixListener::bind(&unix_path)?;
+    unix_listener.set_nonblocking(true)?;
+    info!("unix: listening on {}", unix_path.display());
+
+    let unix_source = calloop::generic::Generic::new(
+        unix_listener,
+        calloop::Interest::READ,
+        calloop::Mode::Level,
+    );
+
+    let unix_hs_tx = handshake_tx.clone();
+    let unix_instance_id = instance_id.clone();
+    loop_handle.insert_source(unix_source, move |_event, listener, state: &mut HeadlessState| {
+        loop {
+            match listener.accept() {
+                Ok((stream, _addr)) => {
+                    info!("new unix client connection");
+                    // Accepted stream inherits non-blocking from listener;
+                    // the handshake thread does blocking I/O.
+                    stream.set_nonblocking(false).ok();
+                    let client_id = state.server.alloc_client_id();
+                    let sender = unix_hs_tx.clone();
+                    let iid = unix_instance_id.clone();
+
+                    std::thread::spawn(move || {
+                        match pane_server::run_server_handshake(stream, &iid) {
+                            Ok(stream) => {
+                                let _ = sender.send((client_id, stream));
+                            }
+                            Err(e) => {
+                                warn!("unix handshake failed: {}", e);
+                            }
+                        }
+                    });
+                }
+                Err(ref e) if e.kind() == std::io::ErrorKind::WouldBlock => break,
+                Err(e) => {
+                    warn!("unix accept error: {}", e);
+                    break;
+                }
+            }
+        }
+        Ok(calloop::PostAction::Continue)
+    }).map_err(|e| anyhow::anyhow!("unix listener source: {e}"))?;
+
+    // --- TCP listener (optional) ---
+    if let Some(ref addr) = opts.tcp_listen {
+        let tcp_listener = TcpListener::bind(addr)?;
+        tcp_listener.set_nonblocking(true)?;
+        info!("tcp: listening on {}", addr);
+
+        let tcp_source = calloop::generic::Generic::new(
+            tcp_listener,
+            calloop::Interest::READ,
+            calloop::Mode::Level,
+        );
+
+        let tcp_hs_tx = handshake_tx.clone();
+        let tcp_instance_id = instance_id.clone();
+        loop_handle.insert_source(tcp_source, move |_event, listener, state: &mut HeadlessState| {
+            loop {
+                match listener.accept() {
+                    Ok((stream, addr)) => {
+                        info!("new tcp client connection from {}", addr);
+                        stream.set_nonblocking(false).ok();
+                        let client_id = state.server.alloc_client_id();
+                        let sender = tcp_hs_tx.clone();
+                        let iid = tcp_instance_id.clone();
+
+                        std::thread::spawn(move || {
+                            use pane_session::transport::tcp::TcpTransport;
+                            use pane_proto::protocol::ConnectionTopology;
+
+                            let transport = TcpTransport::from_stream(stream);
+                            match pane_server::run_server_handshake_generic(
+                                transport,
+                                &iid,
+                                ConnectionTopology::Remote,
+                            ) {
+                                Ok(result) => {
+                                    // Convert TcpStream back to UnixStream? No —
+                                    // we need to handle TCP streams in the event loop.
+                                    // For now, TCP handshake completes but we need
+                                    // a way to register TCP streams with calloop.
+                                    // TODO: generalize the handshake completion channel
+                                    // to carry either stream type.
+                                    let tcp_stream = result.transport.into_stream();
+                                    info!("tcp handshake complete for client {} (sig: {})",
+                                        client_id, result.signature);
+                                    // We can't send a TcpStream through the unix channel.
+                                    // For now, convert to a raw fd approach or use a
+                                    // separate channel. See state.rs for the solution.
+                                    let _ = (sender, tcp_stream, client_id);
+                                    warn!("TCP active phase not yet wired — handshake succeeded but client will disconnect");
+                                }
+                                Err(e) => {
+                                    warn!("tcp handshake failed: {}", e);
+                                }
+                            }
+                        });
+                    }
+                    Err(ref e) if e.kind() == std::io::ErrorKind::WouldBlock => break,
+                    Err(e) => {
+                        warn!("tcp accept error: {}", e);
+                        break;
+                    }
+                }
+            }
+            Ok(calloop::PostAction::Continue)
+        }).map_err(|e| anyhow::anyhow!("tcp listener source: {e}"))?;
+    }
+
+    // --- signal handling ---
+    // On SIGINT/SIGTERM, set running = false to exit the loop.
+    // calloop's signal source requires the signals crate on some platforms.
+    // For now, use ctrlc for portability.
+    let loop_signal = event_loop.get_signal();
+    ctrlc::set_handler(move || {
+        loop_signal.stop();
+    }).map_err(|e| anyhow::anyhow!("signal handler: {e}"))?;
+
+    // --- main loop ---
+    info!("pane-headless ready (geometry: {}x{}, {}x{} cells)",
+        default_geometry.width, default_geometry.height,
+        default_geometry.cols, default_geometry.rows);
+
+    while headless_state.running {
+        match event_loop.dispatch(None, &mut headless_state) {
+            Ok(_) => {}
+            Err(calloop::Error::IoError(ref e)) if e.kind() == std::io::ErrorKind::Interrupted => {
+                // Signal received — loop will exit via running flag
+                headless_state.running = false;
+            }
+            Err(e) => {
+                return Err(anyhow::anyhow!("event loop error: {e}"));
+            }
+        }
+    }
+
+    // Cleanup unix socket
+    let _ = std::fs::remove_file(&unix_path);
+
+    Ok(())
+}

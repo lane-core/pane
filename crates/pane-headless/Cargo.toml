@@ -1,0 +1,17 @@
+[package]
+name = "pane-headless"
+version = "0.1.0"
+edition = "2021"
+description = "Headless pane server — speaks the full pane protocol without rendering. Runs on any unix-like."
+license = "AGPL-3.0-only"
+
+[dependencies]
+pane-proto = { path = "../pane-proto" }
+pane-session = { path = "../pane-session" }
+pane-server = { path = "../pane-server" }
+calloop = "0.14"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+anyhow = "1"
+bpaf = { version = "0.9", features = ["derive"] }
+ctrlc = "3"
