@@ -60,7 +60,10 @@ This grounds implementation plans in actual engineering experience rather than a
 Follow the kit documentation style guide (`docs/kit-documentation-style.md`). Key requirements:
 1. Every public type and method has a doc comment
 2. Core types get full treatment: overview, threading, heritage
-3. Heritage annotations (`# BeOS` sections) credit both Be and Haiku
+3. Heritage annotations credit both lineages where they apply:
+   - `# BeOS` sections for Be/Haiku heritage (type mapping, method naming, behavioral divergences)
+   - `# Plan 9` sections for Plan 9/Inferno heritage (distributed model, namespace design, protocol patterns)
+   - Both sections may appear on the same type when it draws from both traditions
 4. Hook methods document trigger, default behavior, and concrete use case
 5. `cargo doc` builds without warnings
 
@@ -98,13 +101,20 @@ See also `pane/eact_analysis_gaps` for structural gaps to address and `pane/eact
 3. Present options with consequences
 4. Wait for direction
 
-**API naming:** Default to BeOS identifier conventions (snake_case per Rust). Deviations require explicit justification and are tracked in serena memory (pane/beapi_divergences).
+**API naming:** Default to BeOS identifier conventions (snake_case per Rust). Deviations require explicit justification and are tracked in serena memory (`pane/beapi_divergences`). Plan 9 design lineage and divergences are tracked in serena memory (`pane/plan9_divergences`).
 
 ## Memory
 
-Serena (.serena/memories/) is the sole working memory system. Project context, naming policies, process rules, and decision records live there.
+Serena (.serena/memories/) is the sole working memory system. Project context, naming policies, process rules, and decision records live there. Key divergence trackers:
+- `pane/beapi_divergences` — every naming/structural deviation from BeOS with rationale
+- `pane/plan9_divergences` — every adaptation of Plan 9 concepts with rationale
 
-Be-engineer agent memory (.claude/agent-memory/be-systems-engineer/) contains research notes from the architecture specification work. Session-type consultant memory (.claude/agent-memory/session-type-consultant/) contains protocol analysis notes. Both are read-only reference material.
+Agent memories (.claude/agent-memory/) contain research notes from consultations:
+- `be-systems-engineer/` — Be/Haiku architecture research
+- `plan9-systems-engineer/` — Plan 9/Inferno distributed systems research
+- `session-type-consultant/` — protocol analysis and session-type gap analysis
+
+These are read-only reference material.
 
 ## Building
 

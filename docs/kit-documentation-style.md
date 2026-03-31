@@ -212,14 +212,25 @@ Resize(PaneGeometry),
 
 ---
 
-## Heritage Annotations: `# BeOS`
+## Heritage Annotations: `# BeOS` and `# Plan 9`
 
-A section placed *last* in the doc comment, after all functional
-documentation. Its purpose is context — helping developers who
-know BeOS find their footing, and helping all developers understand
-why the API has its shape.
+Heritage sections are placed *last* in the doc comment, after all
+functional documentation. Their purpose is context — helping
+developers understand why the API has its shape by tracing its
+lineage to Be and Plan 9.
 
-**Format on types with clear ancestry** (list *changes*, not similarities):
+pane draws from two traditions:
+- **BeOS/Haiku** — the application kit (threading model, handler
+  pattern, messenger, filter chain, timer model)
+- **Plan 9/Inferno** — the distributed architecture (per-process
+  namespaces, synthetic filesystems, 9P-inspired protocols,
+  location-transparent connectivity, clunk-on-abandon)
+
+A type or method may have annotations from one or both traditions.
+
+### `# BeOS` format
+
+**On types with clear ancestry** (list *changes*, not similarities):
 
 ```rust
 /// # BeOS
@@ -232,7 +243,7 @@ why the API has its shape.
 /// - Per-event methods replace single `MessageReceived(BMessage*)`
 ```
 
-**Format on types with trivial mapping** (one line):
+**On types with trivial mapping** (one line):
 
 ```rust
 /// # BeOS
@@ -240,20 +251,57 @@ why the API has its shape.
 /// `BMessenger`.
 ```
 
-**Types with no Be precedent:** omit the section entirely. Do not
-write "No direct ancestor."
+### `# Plan 9` format
 
-**On methods:** only when the mapping is non-obvious or semantics
-diverged.
+**On types/methods with Plan 9 lineage** (cite the specific concept):
 
-**Rules:**
+```rust
+/// # Plan 9
+///
+/// `import` — connecting to a remote server and using it as if
+/// local. The local machine has no architectural privilege; a
+/// remote server is just another server with higher latency.
+```
+
+**On types bridging both traditions:**
+
+```rust
+/// # BeOS
+///
+/// `BApplication` — but not a looper. Per-pane loops replace
+/// the application-level loop.
+///
+/// # Plan 9
+///
+/// `connect_remote` is the `import` equivalent — mounting a
+/// remote pane server into the local application's namespace.
+```
+
+### When to use each
+
+| Lineage | Use `# BeOS` | Use `# Plan 9` |
+|---------|-------------|----------------|
+| Type/method naming | When name derives from Be | (Plan 9 didn't influence naming) |
+| Threading model | Looper, Handler, per-pane threads | Per-process event loop model |
+| Distribution | (Be was single-machine) | Remote connectivity, namespace, identity |
+| Protocol | (Be used kernel ports) | 9P patterns: clunk, walk, stateful sessions |
+| Filesystem | (Be had BFS attributes) | Synthetic filesystem, ctl files, union dirs |
+
+### Rules
+
 1. Heritage sections are always last, after `# Examples`, `# Panics`,
    `# Errors`, `# Safety`
-2. List *changes*, not similarities
-3. When a pane concept is a genuine novelty (command surface, tag),
-   don't force a Be mapping
-4. Reference the Haiku Book when Haiku's documentation informed the
+2. `# BeOS` before `# Plan 9` when both appear (Be came first historically)
+3. List *changes*, not similarities
+4. When a pane concept is a genuine novelty (command surface, tag),
+   don't force a heritage mapping
+5. Reference the Haiku Book when Haiku's documentation informed the
    design or when Haiku extended the original Be concept
+6. Cite specific Plan 9 concepts (`import`, `clunk`, `alarm(2)`,
+   `/proc/*/ctl`, factotum) rather than vague references to "the
+   Plan 9 philosophy"
+7. Divergences from both traditions are tracked in serena memory:
+   `pane/beapi_divergences` and `pane/plan9_divergences`
 
 ---
 
@@ -299,9 +347,11 @@ Before merging documentation changes:
 - [ ] Every public type has `///` with at least a brief
 - [ ] Every public method has `///` with at least a brief
 - [ ] Core types have full treatment (overview, threading, heritage)
-- [ ] `# BeOS` sections present on types/methods with clear ancestry
-- [ ] `# BeOS` sections absent on types with no Be precedent
+- [ ] `# BeOS` sections present on types/methods with Be ancestry
+- [ ] `# Plan 9` sections present on types/methods with Plan 9 lineage
+- [ ] Heritage sections absent on types with no precedent in either tradition
 - [ ] `# BeOS` sections reference Haiku where Haiku extended the original
+- [ ] `# Plan 9` sections cite specific concepts (not vague philosophy)
 - [ ] `# Threading` sections present on types with threading implications
 - [ ] Hook methods document trigger, default, and use case
 - [ ] Message variants document trigger, dispatch target, and Be ancestor
