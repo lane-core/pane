@@ -1,13 +1,13 @@
 # BeAPI Naming Policy
 
-Default: use BeAPI identifier names faithfully, in snake_case, minus the B prefix.
+**Full guide:** `docs/naming-conventions.md` — decision tree, method patterns, divergence protocol.
 
-Deviations require explicit justification and must be recorded in the divergences tracker.
+**Summary:** Three tiers, applied in order:
 
-Valid deviation reasons:
-1. A much more widespread contemporary convention justifies it
-2. The concept is genuinely architecturally different in pane
+1. **Faithful adaptation** (default) — Be name, drop B prefix, Rust case conventions.
+2. **Justified divergence** — new name when concept is architecturally different. Requires divergence tracker entry.
+3. **Rust idiom** — standard patterns (iterators, Result, From/Into, builders) when Rust has an established convention Be lacked.
 
-Do NOT invent new names just because they "sound better." The Be API was battle-tested. Faithful adoption enforces sane design.
+"Sounds better" is not a reason. Ask "what did Be call this?" before coining anything.
 
 Early design decisions are NOT immutable. Rename now while the cost is zero.

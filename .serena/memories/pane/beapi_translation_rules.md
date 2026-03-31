@@ -35,4 +35,16 @@ See serena memory `pane/session_type_design_principles` principle C3 for rationa
 Separate crates/services, not globals.
 
 ## Naming
+
+**Full guide:** `docs/naming-conventions.md`
+
 CamelCase → snake_case. Message variants match handler methods: Message::CloseRequested ↔ Handler::close_requested().
+
+Method patterns (adapted from Be, convergent with Rust):
+- **Getters:** bare name — `name()`, `id()`, `handler_count()`
+- **Setters:** `set_` prefix — `set_name()`, `set_pulse_rate()`
+- **Predicates:** `is_` prefix — `is_locked()`, `is_hidden()`
+- **Mutating ops:** verb + object — `add_handler()`, `remove_handler()`
+- **Notification hooks:** past-participle — `activated()`, `resized()`, `close_requested()`
+- **Commands:** imperative — `quit()`, `show()`, `hide()`
+- **Collections:** iterators (replacing Be's Count+At); `thing_count()` + `thing(index)` only when index is semantic
