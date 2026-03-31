@@ -83,7 +83,6 @@ pub use looper_message::LooperMessage;
 pub mod routing;
 #[doc(hidden)]
 pub mod scripting;
-#[doc(hidden)]
 pub mod undo;
 
 // --- Developer-facing API ---
@@ -114,4 +113,4 @@ pub use scripting::{
     SpecifierForm, ValueType,
 };
 #[doc(hidden)]
-pub use undo::{UndoableEdit, UndoPolicy, LinearPolicy};
+pub use undo::{UndoableEdit, UndoPolicy, LinearPolicy, UndoManager};

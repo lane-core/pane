@@ -184,3 +184,65 @@ impl UndoPolicy for LinearPolicy {
         self.active_group = None;
     }
 }
+
+/// Convenience wrapper combining an UndoPolicy with save-point tracking.
+pub struct UndoManager<P: UndoPolicy = LinearPolicy> {
+    policy: P,
+    save_point: Option<usize>,
+    edit_count: usize,
+}
+
+impl<P: UndoPolicy> UndoManager<P> {
+    pub fn new(policy: P) -> Self {
+        UndoManager {
+            policy,
+            save_point: Some(0),
+            edit_count: 0,
+        }
+    }
+
+    pub fn record(&mut self, edit: UndoableEdit) {
+        self.policy.record(edit);
+        self.edit_count += 1;
+    }
+
+    pub fn undo(&mut self) -> Option<UndoableEdit> {
+        let edit = self.policy.undo()?;
+        self.edit_count = self.edit_count.wrapping_sub(1);
+        Some(edit)
+    }
+
+    pub fn redo(&mut self) -> Option<UndoableEdit> {
+        let edit = self.policy.redo()?;
+        self.edit_count += 1;
+        Some(edit)
+    }
+
+    pub fn mark_saved(&mut self) {
+        self.save_point = Some(self.edit_count);
+    }
+
+    pub fn is_saved(&self) -> bool {
+        self.save_point == Some(self.edit_count)
+    }
+
+    pub fn can_undo(&self) -> bool { self.policy.can_undo() }
+    pub fn can_redo(&self) -> bool { self.policy.can_redo() }
+    pub fn undo_description(&self) -> Option<&str> { self.policy.undo_description() }
+    pub fn redo_description(&self) -> Option<&str> { self.policy.redo_description() }
+
+    pub fn begin_group(&mut self, description: &str) {
+        self.policy.begin_group(description);
+    }
+
+    pub fn end_group(&mut self) {
+        self.policy.end_group();
+        self.edit_count += 1;
+    }
+
+    pub fn clear(&mut self) {
+        self.policy.clear();
+        self.edit_count = 0;
+        self.save_point = None;
+    }
+}
