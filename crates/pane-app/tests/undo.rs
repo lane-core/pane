@@ -1,4 +1,4 @@
-use pane_app::undo::{UndoableEdit, LinearPolicy, UndoPolicy, UndoManager};
+use pane_app::undo::{UndoableEdit, LinearPolicy, UndoPolicy, UndoManager, CoalescingPolicy};
 use pane_app::scripting::AttrValue;
 use std::time::Instant;
 
@@ -198,4 +198,81 @@ fn recording_optic_skips_sensitive() {
 
     // Edit happened but was not recorded
     assert!(!mgr.can_undo());
+}
+
+use std::time::Duration;
+
+#[test]
+fn coalescing_groups_same_property() {
+    let mut policy = CoalescingPolicy::new(
+        LinearPolicy::new(),
+        Duration::from_secs(2),
+    );
+
+    let now = Instant::now();
+
+    policy.record(UndoableEdit {
+        property: "text".into(),
+        old_value: Some(AttrValue::String("h".into())),
+        new_value: Some(AttrValue::String("he".into())),
+        description: "typing".into(),
+        timestamp: now,
+    });
+
+    policy.record(UndoableEdit {
+        property: "text".into(),
+        old_value: Some(AttrValue::String("he".into())),
+        new_value: Some(AttrValue::String("hel".into())),
+        description: "typing".into(),
+        timestamp: now,
+    });
+
+    policy.record(UndoableEdit {
+        property: "text".into(),
+        old_value: Some(AttrValue::String("hel".into())),
+        new_value: Some(AttrValue::String("hell".into())),
+        description: "typing".into(),
+        timestamp: now,
+    });
+
+    // Three edits coalesced into one — single undo gets back to "h"
+    assert!(policy.can_undo());
+    let edit = policy.undo().unwrap();
+    assert_eq!(edit.old_value, Some(AttrValue::String("h".into())));
+    assert_eq!(edit.new_value, Some(AttrValue::String("hell".into())));
+    assert!(!policy.can_undo());
+}
+
+#[test]
+fn coalescing_breaks_on_different_property() {
+    let mut policy = CoalescingPolicy::new(
+        LinearPolicy::new(),
+        Duration::from_secs(2),
+    );
+
+    let now = Instant::now();
+
+    policy.record(UndoableEdit {
+        property: "text".into(),
+        old_value: Some(AttrValue::String("a".into())),
+        new_value: Some(AttrValue::String("ab".into())),
+        description: "typing".into(),
+        timestamp: now,
+    });
+
+    // Different property breaks coalescing
+    policy.record(UndoableEdit {
+        property: "title".into(),
+        old_value: Some(AttrValue::String("old".into())),
+        new_value: Some(AttrValue::String("new".into())),
+        description: "set title".into(),
+        timestamp: now,
+    });
+
+    // Two separate undo steps
+    assert!(policy.can_undo());
+    policy.undo(); // undoes title change
+    assert!(policy.can_undo());
+    policy.undo(); // undoes text change
+    assert!(!policy.can_undo());
 }

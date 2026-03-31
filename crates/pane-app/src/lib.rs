@@ -112,4 +112,4 @@ pub use scripting::{
     ScriptQuery, ScriptReply, ScriptResponse, ScriptableHandler, Specifier,
     SpecifierForm, ValueType,
 };
-pub use undo::{UndoableEdit, UndoPolicy, LinearPolicy, UndoManager, RecordingOptic};
+pub use undo::{UndoableEdit, UndoPolicy, LinearPolicy, UndoManager, RecordingOptic, CoalescingPolicy};

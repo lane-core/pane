@@ -9,7 +9,7 @@
 //!
 //! Both feed into the same UndoPolicy.
 
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use crate::scripting::{AttrValue, DynOptic};
 use crate::error::ScriptError;
@@ -288,5 +288,95 @@ impl<'a, P: UndoPolicy> RecordingOptic<'a, P> {
         });
 
         Ok(())
+    }
+}
+
+/// Wraps another policy, grouping adjacent same-property edits
+/// within a timeout into a single undo unit.
+///
+/// Be's BTextView got this right for typing: consecutive character
+/// insertions become one undo step, broken when the cursor moves
+/// or a timeout expires.
+pub struct CoalescingPolicy<P: UndoPolicy = LinearPolicy> {
+    inner: P,
+    timeout: Duration,
+    pending: Option<UndoableEdit>,
+}
+
+impl<P: UndoPolicy> CoalescingPolicy<P> {
+    pub fn new(inner: P, timeout: Duration) -> Self {
+        CoalescingPolicy {
+            inner,
+            timeout,
+            pending: None,
+        }
+    }
+
+    fn flush(&mut self) {
+        if let Some(edit) = self.pending.take() {
+            self.inner.record(edit);
+        }
+    }
+}
+
+impl<P: UndoPolicy> UndoPolicy for CoalescingPolicy<P> {
+    fn record(&mut self, edit: UndoableEdit) {
+        if let Some(ref mut pending) = self.pending {
+            let same_property = pending.property == edit.property;
+            let within_timeout = edit.timestamp
+                .duration_since(pending.timestamp) < self.timeout;
+
+            if same_property && within_timeout {
+                pending.new_value = edit.new_value;
+                pending.timestamp = edit.timestamp;
+                return;
+            }
+
+            self.flush();
+        }
+
+        self.pending = Some(edit);
+    }
+
+    fn undo(&mut self) -> Option<UndoableEdit> {
+        self.flush();
+        self.inner.undo()
+    }
+
+    fn redo(&mut self) -> Option<UndoableEdit> {
+        self.inner.redo()
+    }
+
+    fn can_undo(&self) -> bool {
+        self.pending.is_some() || self.inner.can_undo()
+    }
+
+    fn can_redo(&self) -> bool { self.inner.can_redo() }
+
+    fn undo_description(&self) -> Option<&str> {
+        if let Some(ref pending) = self.pending {
+            Some(&pending.description)
+        } else {
+            self.inner.undo_description()
+        }
+    }
+
+    fn redo_description(&self) -> Option<&str> {
+        self.inner.redo_description()
+    }
+
+    fn begin_group(&mut self, description: &str) {
+        self.flush();
+        self.inner.begin_group(description);
+    }
+
+    fn end_group(&mut self) {
+        self.flush();
+        self.inner.end_group();
+    }
+
+    fn clear(&mut self) {
+        self.pending = None;
+        self.inner.clear();
     }
 }
