@@ -49,3 +49,21 @@ Agents participating as system users from the earliest phases enable:
 **The feedback loop tightens.** When the agent infrastructure is part of the development environment, every improvement to the agent model is immediately tested by the agents that use it to help build the system. The agent kit's ergonomics are validated by the agents that depend on it. Problems surface in development, not after release.
 
 This is the development methodology's deepest implication: **pane is developed by its own inhabitants from the earliest possible moment.** The guide agent that helps new users (foundations §1) begins its life as the agent that helps the developer build pane.
+
+## Headless-First Development
+
+pane-headless eliminates the compositor as a development bottleneck. Before headless, every subsystem that needed to *run* was gated on pane-comp being functional enough to connect to — a graphical compositor running in a Linux VM, cross-compiled from macOS. This serialized development: kit work, protocol extensions, and server features all competed for the same narrow path through the compositor.
+
+With pane-headless, the path widens. Every subsystem that communicates via the pane protocol can develop and test against the headless server:
+
+- **pane-roster** — service registration, federation, init abstraction
+- **pane-store** — attribute indexing, queries, live query notifications
+- **pane-fs** — unified namespace, computed views, remote mounting
+- **Scripting protocol** — optic-addressed property access, specifier chains
+- **AI kit** — agent lifecycle, `.plan` governance, memory management
+- **Routing** — content-to-handler dispatch, roster queries
+- **pane-shell** — protocol side (PTY bridge, content updates); only rendering needs the compositor
+
+The compositor becomes the last mile: chrome rendering, input dispatch from libinput, layout tree visualization, Wayland legacy client support. Everything else can be built, tested, and even *deployed* before the compositor is feature-complete. Development parallelizes aggressively — compositor rendering work and subsystem development no longer compete for the same bottleneck.
+
+This is not merely an efficiency gain. It changes the development *sequence*. The subsystems that define pane's character — the scripting protocol, the AI kit, the unified namespace, the composition model — can be built first, against headless, and the compositor can be built to present what already works. The infrastructure comes first; the visual presentation follows. This is infrastructure-first design (foundations §7) applied to the development process itself.

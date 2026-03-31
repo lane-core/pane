@@ -240,6 +240,8 @@ Network-transparent pane enables compositions that no individual feature was des
 
 **Multi-machine workflows.** A music production setup: local machine runs the UI panes, a rack server runs DSP processing panes, a NAS hosts the project files. All three are pane instances. The unified namespace shows every pane. pane-store indexes attributes across all instances. A routing rule says "when I activate an audio file, open it in the DSP pane on the rack server." The user sees one workspace. The infrastructure sees three machines.
 
+**Development velocity.** pane-headless eliminates the compositor as a development bottleneck. Before headless, every subsystem that needed to run was gated on pane-comp being functional enough to connect to — a graphical compositor running in a VM. With pane-headless, subsystem development parallelizes: pane-roster, pane-store, pane-fs, the scripting protocol, the AI kit, and routing all develop and test against the headless server. The compositor becomes the last mile — chrome rendering, input dispatch, layout visualization, Wayland legacy support. Everything else can be built, tested, and even deployed before the compositor is feature-complete.
+
 **The guide agent.** The onboarding agent described in the introduction doc — the guide who teaches pane by using pane — can run on a remote instance with more compute than the user's machine. The guide's panes appear locally. The user learns the system from a fellow inhabitant who happens to live in the cloud.
 
 ---
