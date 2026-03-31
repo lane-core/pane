@@ -5,6 +5,8 @@
 
 pub mod memory;
 pub mod tcp;
+#[cfg(feature = "tls")]
+pub mod tls;
 pub mod unix;
 
 use crate::error::SessionError;
