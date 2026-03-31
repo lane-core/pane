@@ -57,11 +57,13 @@ use crate::proxy::Messenger;
 /// `pane-notify`. This gives persistence, crash recovery, scriptability,
 /// and solves the initial-value problem that Be's approach didn't.
 ///
-/// **No dynamic filter mutation.** Be allowed adding/removing filters
-/// at runtime via `AddFilter`/`RemoveFilter`. pane's filters are
-/// configured before the loop starts via [`Pane`](crate::Pane). For
-/// dynamic behavior, use internal state in a filter gated by an
-/// atomic flag.
+/// **Runtime filter mutation via Messenger.** Be allowed adding/removing
+/// filters at runtime via `AddFilter`/`RemoveFilter` under the looper
+/// lock, which had a latent self-modification-during-iteration bug.
+/// pane defers filter mutation via the looper's message channel:
+/// [`Messenger::add_filter`](crate::Messenger) and
+/// [`Messenger::remove_filter`](crate::Messenger). Mutations take
+/// effect before the next event batch, not mid-batch.
 pub trait Handler: Send + 'static {
     /// Called once when the pane is ready and its initial geometry is known.
     ///

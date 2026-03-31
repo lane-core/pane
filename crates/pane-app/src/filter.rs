@@ -45,10 +45,28 @@ pub trait MessageFilter: Send + 'static {
     }
 }
 
+/// Unique filter identifier. Returned by [`Messenger::add_filter`]
+/// inside a [`FilterToken`].
+pub type FilterId = u64;
+
+/// Token for removing a runtime filter.
+///
+/// Created by [`Messenger::add_filter`](crate::Messenger). Pass to
+/// [`Messenger::remove_filter`](crate::Messenger) to uninstall the
+/// filter. Analogous to [`TimerToken`](crate::TimerToken) for timers.
+#[derive(Debug, Clone)]
+pub struct FilterToken {
+    /// The filter's unique ID.
+    pub(crate) id: FilterId,
+}
+
 /// An ordered chain of filters. Events pass through each filter
 /// in sequence; any filter can consume the event.
+///
+/// Filters are keyed by [`FilterId`] so they can be removed at
+/// runtime via [`Messenger::remove_filter`](crate::Messenger).
 pub struct FilterChain {
-    filters: Vec<Box<dyn MessageFilter>>,
+    filters: Vec<(FilterId, Box<dyn MessageFilter>)>,
 }
 
 impl Default for FilterChain {
@@ -63,15 +81,28 @@ impl FilterChain {
         FilterChain { filters: Vec::new() }
     }
 
-    /// Append a filter to the chain.
+    /// Append a filter to the chain (no ID — for static filters
+    /// added before the loop starts).
     pub fn add(&mut self, filter: impl MessageFilter) {
-        self.filters.push(Box::new(filter));
+        self.filters.push((0, Box::new(filter)));
+    }
+
+    /// Append a filter with a specific ID (for runtime mutation).
+    pub(crate) fn add_with_id(&mut self, id: FilterId, filter: Box<dyn MessageFilter>) {
+        self.filters.push((id, filter));
+    }
+
+    /// Remove a filter by ID. Returns true if found.
+    pub(crate) fn remove_by_id(&mut self, id: FilterId) -> bool {
+        let before = self.filters.len();
+        self.filters.retain(|(fid, _)| *fid != id);
+        self.filters.len() < before
     }
 
     /// Run the event through all filters. Returns the (possibly modified)
     /// event if it survived, or None if any filter consumed it.
     pub fn apply(&mut self, mut event: Message) -> Option<Message> {
-        for filter in &mut self.filters {
+        for (_, filter) in &mut self.filters {
             if !filter.matches(&event) {
                 continue;
             }

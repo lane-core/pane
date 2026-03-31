@@ -19,6 +19,7 @@ use std::time::{Duration, Instant};
 
 use pane_proto::protocol::CompToClient;
 use crate::event::Message;
+use crate::filter::{FilterId, MessageFilter};
 use crate::reply::ReplyPort;
 
 /// Internal message wrapper for the looper's unified channel.
@@ -46,6 +47,15 @@ pub enum LooperMessage {
     /// A message that expects a reply. The handler receives both
     /// the message and the ReplyPort.
     Request(Message, ReplyPort),
+    /// Add a filter to the chain at runtime. Processed between batches.
+    AddFilter {
+        id: FilterId,
+        filter: Box<dyn MessageFilter>,
+    },
+    /// Remove a filter by ID. No-op if already removed.
+    RemoveFilter {
+        id: FilterId,
+    },
 }
 
 impl std::fmt::Debug for LooperMessage {
@@ -59,6 +69,10 @@ impl std::fmt::Debug for LooperMessage {
                 f.debug_struct("AddOneShot").field("fire_at", fire_at).finish(),
             Self::Request(msg, reply) =>
                 f.debug_tuple("Request").field(msg).field(reply).finish(),
+            Self::AddFilter { id, .. } =>
+                f.debug_struct("AddFilter").field("id", id).finish(),
+            Self::RemoveFilter { id } =>
+                f.debug_struct("RemoveFilter").field("id", id).finish(),
         }
     }
 }

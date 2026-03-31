@@ -379,6 +379,44 @@ impl Messenger {
         Ok(token)
     }
 
+    /// Add a filter to this pane's event loop at runtime.
+    ///
+    /// The filter takes effect before the next event batch — not
+    /// mid-batch. Returns a [`FilterToken`] for later removal via
+    /// [`remove_filter`](Messenger::remove_filter).
+    ///
+    /// # BeOS
+    ///
+    /// `BLooper::AddCommonFilter` / `BHandler::AddFilter`. Be's version
+    /// required the looper lock and mutated the filter list directly,
+    /// which had a latent self-modification-during-iteration bug.
+    /// pane defers mutation via the looper's message channel, making it
+    /// safe from any thread.
+    pub fn add_filter(&self, filter: impl crate::filter::MessageFilter) -> Result<crate::filter::FilterToken> {
+        let tx = self.looper_tx.as_ref().ok_or(PaneError::Disconnected)?;
+        let id = next_filter_id();
+        tx.send(LooperMessage::AddFilter {
+            id,
+            filter: Box::new(filter),
+        }).map_err(|_| PaneError::Disconnected)?;
+        Ok(crate::filter::FilterToken { id })
+    }
+
+    /// Remove a runtime filter by its token.
+    ///
+    /// No-op if the filter was already removed. The removal takes
+    /// effect before the next event batch.
+    ///
+    /// # BeOS
+    ///
+    /// `BLooper::RemoveCommonFilter` / `BHandler::RemoveFilter`.
+    pub fn remove_filter(&self, token: &crate::filter::FilterToken) -> Result<()> {
+        let tx = self.looper_tx.as_ref().ok_or(PaneError::Disconnected)?;
+        tx.send(LooperMessage::RemoveFilter { id: token.id })
+            .map_err(|_| PaneError::Disconnected)?;
+        Ok(())
+    }
+
     fn send(&self, msg: ClientToComp) -> Result<()> {
         self.sender.send(msg).map_err(|_| PaneError::Disconnected)?;
         Ok(())
@@ -387,6 +425,12 @@ impl Messenger {
 
 /// Generate a unique timer ID.
 fn next_timer_id() -> u64 {
+    static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+    NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+}
+
+/// Generate a unique filter ID.
+fn next_filter_id() -> crate::filter::FilterId {
     static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
     NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
 }

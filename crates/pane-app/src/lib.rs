@@ -90,7 +90,7 @@ pub use app::{App, PaneCreateFuture};
 pub use error::{Error, ConnectError, PaneError, ScriptError, Result};
 pub use event::Message;
 pub use exit::ExitReason;
-pub use filter::{MessageFilter, FilterAction};
+pub use filter::{MessageFilter, FilterAction, FilterToken};
 pub use handler::Handler;
 pub use pane::Pane;
 pub use proxy::{Messenger, TimerToken};

@@ -169,20 +169,32 @@ fn recv_with_timers(
 /// Process a LooperMessage that may be a timer control message.
 /// Returns true if it was a timer message (handled), false if it
 /// needs normal dispatch.
-/// Process a LooperMessage that may be a timer control message.
-/// Consumes the message if it's a timer registration.
-/// Returns true if handled, false if it needs normal dispatch.
-fn try_handle_timer(msg: LooperMessage, timers: &mut Timers) -> Option<LooperMessage> {
+/// Process control messages (timer and filter registration).
+/// Consumes the message if it's a control message; returns Some
+/// for messages that need normal dispatch.
+fn try_handle_control(
+    msg: LooperMessage,
+    timers: &mut Timers,
+    filters: &mut crate::filter::FilterChain,
+) -> Option<LooperMessage> {
     match msg {
         LooperMessage::AddTimer { make_event, interval, cancelled, .. } => {
             timers.add_periodic(make_event, interval, cancelled);
-            None // consumed
+            None
         }
         LooperMessage::AddOneShot { event, fire_at } => {
             timers.add_one_shot(event, fire_at);
-            None // consumed
+            None
         }
-        other => Some(other), // not a timer message, pass through
+        LooperMessage::AddFilter { id, filter } => {
+            filters.add_with_id(id, filter);
+            None
+        }
+        LooperMessage::RemoveFilter { id } => {
+            filters.remove_by_id(id);
+            None
+        }
+        other => Some(other),
     }
 }
 
@@ -213,7 +225,8 @@ fn unwrap_message(
         }
         LooperMessage::Posted(event) => Unwrapped::Event(event),
         LooperMessage::Request(msg, reply) => Unwrapped::Request(msg, reply),
-        LooperMessage::AddTimer { .. } | LooperMessage::AddOneShot { .. } => Unwrapped::Skip,
+        LooperMessage::AddTimer { .. } | LooperMessage::AddOneShot { .. }
+        | LooperMessage::AddFilter { .. } | LooperMessage::RemoveFilter { .. } => Unwrapped::Skip,
     }
 }
 
@@ -232,6 +245,7 @@ fn drain_and_coalesce(
     pane_id: PaneId,
     comp_sender: &mpsc::Sender<pane_proto::protocol::ClientToComp>,
     timers: &mut Timers,
+    filters: &mut crate::filter::FilterChain,
 ) -> Vec<Unwrapped> {
     let mut batch = vec![first];
     while let Ok(more) = receiver.try_recv() {
@@ -243,10 +257,10 @@ fn drain_and_coalesce(
     let mut last_mouse_move_idx: Option<usize> = None;
 
     for msg in batch {
-        // Timer registrations are consumed here (moved, not cloned)
-        let msg = match try_handle_timer(msg, timers) {
-            Some(msg) => msg, // not a timer message, continue processing
-            None => continue, // timer message consumed
+        // Control messages (timer/filter registration) are consumed here
+        let msg = match try_handle_control(msg, timers, filters) {
+            Some(msg) => msg, // not a control message, continue processing
+            None => continue, // control message consumed
         };
 
         match unwrap_message(msg, pane_id, comp_sender) {
@@ -332,7 +346,7 @@ pub fn run_closure(
         let timer_events = timers.fire_due();
 
         let mut batch = match msg {
-            Some(msg) => drain_and_coalesce(msg, &receiver, pane_id, &proxy.sender, &mut timers),
+            Some(msg) => drain_and_coalesce(msg, &receiver, pane_id, &proxy.sender, &mut timers, &mut filters),
             None => Vec::new(),
         };
 
@@ -405,7 +419,7 @@ pub fn run_handler(
         let timer_events = timers.fire_due();
 
         let mut batch = match msg {
-            Some(msg) => drain_and_coalesce(msg, &receiver, pane_id, &proxy.sender, &mut timers),
+            Some(msg) => drain_and_coalesce(msg, &receiver, pane_id, &proxy.sender, &mut timers, &mut filters),
             None => Vec::new(),
         };
 
