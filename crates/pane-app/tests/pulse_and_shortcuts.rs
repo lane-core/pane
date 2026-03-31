@@ -5,6 +5,7 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::time::{Duration, Instant};
 
+use calloop::channel::{self, Sender};
 use pane_app::{Message, Messenger, Handler, LooperMessage, KeyCombo};
 use pane_app::shortcuts::ShortcutFilter;
 use pane_app::error::Result;
@@ -21,7 +22,7 @@ fn make_proxy(id: PaneId) -> Messenger {
     Messenger::new(id, tx)
 }
 
-fn send_comp(tx: &mpsc::Sender<LooperMessage>, msg: CompToClient) {
+fn send_comp(tx: &Sender<LooperMessage>, msg: CompToClient) {
     tx.send(LooperMessage::FromComp(msg)).unwrap();
 }
 
@@ -29,7 +30,7 @@ fn send_comp(tx: &mpsc::Sender<LooperMessage>, msg: CompToClient) {
 
 #[test]
 fn pulse_dispatches_to_handler() {
-    let (tx, rx) = mpsc::channel::<LooperMessage>();
+    let (tx, rx) = channel::channel::<LooperMessage>();
     let filters = pane_app::filter::FilterChain::new();
     let proxy = make_proxy(pane_id(1));
 
@@ -67,7 +68,7 @@ fn pulse_handler_method() {
         }
     }
 
-    let (tx, rx) = mpsc::channel::<LooperMessage>();
+    let (tx, rx) = channel::channel::<LooperMessage>();
     let filters = pane_app::filter::FilterChain::new();
     let proxy = make_proxy(pane_id(1));
     let count = Arc::new(Mutex::new(0u32));
@@ -89,7 +90,7 @@ fn pulse_handler_method() {
 
 #[test]
 fn shortcut_filter_transforms_key_to_command() {
-    let (tx, rx) = mpsc::channel::<LooperMessage>();
+    let (tx, rx) = channel::channel::<LooperMessage>();
     let mut filters = pane_app::filter::FilterChain::new();
 
     let mut shortcuts = ShortcutFilter::new();
@@ -128,7 +129,7 @@ fn shortcut_filter_transforms_key_to_command() {
 
 #[test]
 fn shortcut_filter_passes_unmatched_keys() {
-    let (tx, rx) = mpsc::channel::<LooperMessage>();
+    let (tx, rx) = channel::channel::<LooperMessage>();
     let mut filters = pane_app::filter::FilterChain::new();
 
     let mut shortcuts = ShortcutFilter::new();
@@ -165,7 +166,7 @@ fn shortcut_filter_passes_unmatched_keys() {
 
 #[test]
 fn shortcut_filter_ignores_key_release() {
-    let (tx, rx) = mpsc::channel::<LooperMessage>();
+    let (tx, rx) = channel::channel::<LooperMessage>();
     let mut filters = pane_app::filter::FilterChain::new();
 
     let mut shortcuts = ShortcutFilter::new();
@@ -205,7 +206,7 @@ fn shortcut_filter_ignores_key_release() {
 
 #[test]
 fn shortcut_filter_with_escape() {
-    let (tx, rx) = mpsc::channel::<LooperMessage>();
+    let (tx, rx) = channel::channel::<LooperMessage>();
     let mut filters = pane_app::filter::FilterChain::new();
 
     let mut shortcuts = ShortcutFilter::new();
@@ -248,7 +249,7 @@ fn set_pulse_rate_cancels_previous() {
     use std::time::Duration;
 
     let (comp_tx, _comp_rx) = mpsc::channel::<ClientToComp>();
-    let (looper_tx, looper_rx) = mpsc::sync_channel::<LooperMessage>(256);
+    let (looper_tx, looper_rx) = channel::channel::<LooperMessage>();
     let proxy = Messenger::new(pane_id(1), comp_tx).with_looper(looper_tx);
     let outer_proxy = proxy.clone();
 
@@ -305,7 +306,7 @@ fn set_pulse_rate_zero_disables() {
     use std::time::Duration;
 
     let (comp_tx, _comp_rx) = mpsc::channel::<ClientToComp>();
-    let (looper_tx, looper_rx) = mpsc::sync_channel::<LooperMessage>(256);
+    let (looper_tx, looper_rx) = channel::channel::<LooperMessage>();
     let proxy = Messenger::new(pane_id(1), comp_tx).with_looper(looper_tx);
     let outer_proxy = proxy.clone();
 
@@ -358,7 +359,7 @@ fn pulse_fires_through_looper_timers() {
     use std::time::Duration;
 
     let (comp_tx, _comp_rx) = mpsc::channel::<ClientToComp>();
-    let (looper_tx, looper_rx) = mpsc::sync_channel::<LooperMessage>(256);
+    let (looper_tx, looper_rx) = channel::channel::<LooperMessage>();
     let proxy = Messenger::new(pane_id(1), comp_tx).with_looper(looper_tx);
     let outer_proxy = proxy.clone();
 
@@ -394,10 +395,10 @@ fn pulse_fires_through_looper_timers() {
 
 // --- Timer adversarial tests ---
 
-/// Helper: create a Messenger with looper channel, return (proxy, looper_rx).
-fn make_looper_proxy(id: PaneId) -> (Messenger, mpsc::Receiver<LooperMessage>) {
+/// Helper: create a Messenger with looper channel, return (proxy, looper_channel).
+fn make_looper_proxy(id: PaneId) -> (Messenger, channel::Channel<LooperMessage>) {
     let (comp_tx, _) = mpsc::channel::<ClientToComp>();
-    let (looper_tx, looper_rx) = mpsc::sync_channel::<LooperMessage>(256);
+    let (looper_tx, looper_rx) = channel::channel::<LooperMessage>();
     (Messenger::new(id, comp_tx).with_looper(looper_tx), looper_rx)
 }
 

@@ -20,6 +20,9 @@ use crate::event::Message;
 use crate::exit::ExitBroadcaster;
 use crate::looper_message::LooperMessage;
 
+/// Type alias for the calloop channel sender used by loopers.
+pub(crate) type LooperSender = calloop::channel::Sender<LooperMessage>;
+
 /// A cloneable handle for sending messages to the compositor and
 /// posting events to a pane's own looper.
 ///
@@ -49,7 +52,7 @@ use crate::looper_message::LooperMessage;
 pub struct Messenger {
     pub(crate) id: PaneId,
     pub(crate) sender: mpsc::Sender<ClientToComp>,
-    pub(crate) looper_tx: Option<mpsc::SyncSender<LooperMessage>>,
+    pub(crate) looper_tx: Option<LooperSender>,
     pub(crate) broadcaster: ExitBroadcaster,
     /// Shared pulse timer token — all clones of a Messenger reference
     /// the same token so cancellation works regardless of which clone
@@ -73,7 +76,7 @@ impl Messenger {
 
     /// Attach the looper's self-delivery channel. Internal.
     #[doc(hidden)]
-    pub fn with_looper(mut self, tx: mpsc::SyncSender<LooperMessage>) -> Self {
+    pub fn with_looper(mut self, tx: LooperSender) -> Self {
         self.looper_tx = Some(tx);
         self
     }
@@ -116,20 +119,15 @@ impl Messenger {
 
     /// Post an event to this pane's own looper, without blocking.
     ///
-    /// Returns `Err(PaneError::ChannelFull)` if the looper's bounded
-    /// channel (256) is full. The event is returned in the error so the
-    /// caller can retry or drop it.
-    ///
-    /// Use this when blocking is unacceptable — latency-sensitive code,
-    /// timer callbacks, or fire-and-forget notifications where dropping
-    /// is preferable to stalling.
+    /// With calloop's unbounded channel, this is equivalent to
+    /// [`send_message`](Messenger::send_message) — it only fails if
+    /// the looper is disconnected. The method is retained for API
+    /// compatibility with code that was written against the previous
+    /// bounded (256) channel.
     pub fn try_send_message(&self, event: Message) -> Result<()> {
         let tx = self.looper_tx.as_ref().ok_or(PaneError::Disconnected)?;
-        tx.try_send(LooperMessage::Posted(event))
-            .map_err(|e| match e {
-                std::sync::mpsc::TrySendError::Full(_) => PaneError::ChannelFull,
-                std::sync::mpsc::TrySendError::Disconnected(_) => PaneError::Disconnected,
-            })?;
+        tx.send(LooperMessage::Posted(event))
+            .map_err(|_| PaneError::Disconnected)?;
         Ok(())
     }
 

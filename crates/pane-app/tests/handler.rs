@@ -7,6 +7,7 @@ use std::sync::mpsc;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
+use calloop::channel::{self, Sender};
 use pane_app::{Message, Messenger, Handler, LooperMessage, ReplyPort, PaneError};
 use pane_app::error::Result;
 use pane_proto::event::{KeyEvent, Key, Modifiers, KeyState};
@@ -22,7 +23,7 @@ fn make_handle(id: PaneId) -> (Messenger, mpsc::Receiver<ClientToComp>) {
     (Messenger::new(id, tx), rx)
 }
 
-fn send_comp(tx: &mpsc::Sender<LooperMessage>, msg: CompToClient) {
+fn send_comp(tx: &Sender<LooperMessage>, msg: CompToClient) {
     tx.send(LooperMessage::FromComp(msg)).unwrap();
 }
 
@@ -43,7 +44,7 @@ impl Handler for NeverCloseHandler {
 #[test]
 fn handler_default_close_returns_false() {
     // Default close_requested returns Ok(false) — the loop should exit
-    let (tx, rx) = mpsc::channel::<LooperMessage>();
+    let (tx, rx) = channel::channel::<LooperMessage>();
     let filters = pane_app::filter::FilterChain::new();
     let (handle, _comp_rx) = make_handle(pane_id(1));
 
@@ -57,7 +58,7 @@ fn handler_default_close_returns_false() {
 #[test]
 fn handler_default_key_returns_true() {
     // Default key returns Ok(true) — the loop should continue
-    let (tx, rx) = mpsc::channel::<LooperMessage>();
+    let (tx, rx) = channel::channel::<LooperMessage>();
     let filters = pane_app::filter::FilterChain::new();
     let (handle, _comp_rx) = make_handle(pane_id(1));
 
@@ -81,7 +82,7 @@ fn handler_default_key_returns_true() {
 #[test]
 fn handler_default_disconnect_returns_false() {
     // Default disconnected returns Ok(false)
-    let (tx, rx) = mpsc::channel::<LooperMessage>();
+    let (tx, rx) = channel::channel::<LooperMessage>();
     let filters = pane_app::filter::FilterChain::new();
     let (handle, _comp_rx) = make_handle(pane_id(1));
 
@@ -93,7 +94,7 @@ fn handler_default_disconnect_returns_false() {
 #[test]
 fn handler_override_close_to_continue() {
     // NeverCloseHandler overrides close to return Ok(true) — loop continues
-    let (tx, rx) = mpsc::channel::<LooperMessage>();
+    let (tx, rx) = channel::channel::<LooperMessage>();
     let filters = pane_app::filter::FilterChain::new();
     let (handle, _comp_rx) = make_handle(pane_id(1));
 
@@ -132,10 +133,10 @@ impl Handler for AppMessageHandler {
 
 #[test]
 fn app_message_delivered_to_handler() {
-    let (tx, rx) = mpsc::channel::<LooperMessage>();
+    let (tx, rx) = channel::channel::<LooperMessage>();
     let filters = pane_app::filter::FilterChain::new();
     let (comp_tx, _comp_rx) = mpsc::channel::<ClientToComp>();
-    let (looper_tx, _) = mpsc::sync_channel::<LooperMessage>(256);
+    let (looper_tx, _looper_rx) = channel::channel::<LooperMessage>();
     let handle = Messenger::new(pane_id(1), comp_tx).with_looper(looper_tx);
 
     let received = Arc::new(Mutex::new(None));
@@ -157,10 +158,10 @@ fn app_message_delivered_to_handler() {
 
 #[test]
 fn app_message_wrong_type_continues() {
-    let (tx, rx) = mpsc::channel::<LooperMessage>();
+    let (tx, rx) = channel::channel::<LooperMessage>();
     let filters = pane_app::filter::FilterChain::new();
     let (comp_tx, _comp_rx) = mpsc::channel::<ClientToComp>();
-    let (looper_tx, _) = mpsc::sync_channel::<LooperMessage>(256);
+    let (looper_tx, _looper_rx) = channel::channel::<LooperMessage>();
     let handle = Messenger::new(pane_id(1), comp_tx).with_looper(looper_tx);
 
     let received = Arc::new(Mutex::new(None));
@@ -182,7 +183,7 @@ fn app_message_wrong_type_continues() {
 #[test]
 fn post_app_message_round_trip() {
     let (comp_tx, _comp_rx) = mpsc::channel::<ClientToComp>();
-    let (looper_tx, looper_rx) = mpsc::sync_channel::<LooperMessage>(256);
+    let (looper_tx, looper_rx) = channel::channel::<LooperMessage>();
     let proxy = Messenger::new(pane_id(1), comp_tx).with_looper(looper_tx);
 
     proxy.post_app_message(DownloadComplete {
@@ -190,7 +191,8 @@ fn post_app_message_round_trip() {
         bytes: 100,
     }).unwrap();
 
-    let msg = looper_rx.recv_timeout(std::time::Duration::from_secs(1)).unwrap();
+    let msg = recv_one(looper_rx, Duration::from_secs(1))
+        .expect("should receive app message");
     match msg {
         LooperMessage::Posted(Message::AppMessage(payload)) => {
             let dl = payload.downcast_ref::<DownloadComplete>().unwrap();
@@ -223,11 +225,30 @@ impl Handler for EchoHandler {
     }
 }
 
-/// Helper: create a proxy with looper channel, return (proxy, receiver).
+/// Receive one message from a calloop channel (test spy helper).
+fn recv_one(
+    ch: channel::Channel<LooperMessage>,
+    timeout: Duration,
+) -> Option<LooperMessage> {
+    let mut event_loop: calloop::EventLoop<'_, Option<LooperMessage>> =
+        calloop::EventLoop::try_new().unwrap();
+    event_loop.handle().insert_source(ch, |event, _, result| {
+        if let calloop::channel::Event::Msg(msg) = event {
+            if result.is_none() {
+                *result = Some(msg);
+            }
+        }
+    }).unwrap();
+    let mut result = None;
+    event_loop.dispatch(Some(timeout), &mut result).unwrap();
+    result
+}
+
+/// Helper: create a proxy with looper channel, return (proxy, channel).
 /// The proxy can be cloned and shared across threads.
-fn make_looper_proxy(id: PaneId) -> (Messenger, mpsc::Receiver<LooperMessage>) {
+fn make_looper_proxy(id: PaneId) -> (Messenger, channel::Channel<LooperMessage>) {
     let (comp_tx, _) = mpsc::channel::<ClientToComp>();
-    let (looper_tx, looper_rx) = mpsc::sync_channel::<LooperMessage>(256);
+    let (looper_tx, looper_rx) = channel::channel::<LooperMessage>();
     (Messenger::new(id, comp_tx).with_looper(looper_tx), looper_rx)
 }
 
@@ -306,7 +327,8 @@ fn send_request_async_round_trip() {
     let token = caller_proxy.send_request(&target_for_send, Message::AppMessage(Box::new(21u64))).unwrap();
 
     // The reply should arrive on the caller's looper channel
-    let reply_msg = caller_rx.recv_timeout(Duration::from_secs(2)).unwrap();
+    let reply_msg = recv_one(caller_rx, Duration::from_secs(2))
+        .expect("should receive Reply on caller's looper channel");
     match reply_msg {
         LooperMessage::Posted(Message::Reply { token: t, payload }) => {
             assert_eq!(t, token);
@@ -544,7 +566,7 @@ fn send_request_async_reply_failed() {
     ).unwrap();
 
     // The ReplyFailed should arrive on the caller's looper channel
-    let reply_msg = caller_rx.recv_timeout(Duration::from_secs(2))
+    let reply_msg = recv_one(caller_rx, Duration::from_secs(2))
         .expect("should receive ReplyFailed on caller's looper channel");
 
     match reply_msg {

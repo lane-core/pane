@@ -13,7 +13,7 @@
 use std::cell::Cell;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::mpsc::{self, RecvTimeoutError};
+use std::sync::mpsc;
 use std::time::{Duration, Instant};
 
 use pane_proto::event::MouseEventKind;
@@ -147,23 +147,12 @@ impl Timers {
     }
 }
 
-/// Receive from the channel with optional timeout for timers.
-/// Returns Ok(Some(msg)) for a message, Ok(None) for timeout, Err for disconnect.
-fn recv_with_timers(
-    receiver: &mpsc::Receiver<LooperMessage>,
-    timers: &Timers,
-) -> std::result::Result<Option<LooperMessage>, ()> {
-    match timers.next_timeout() {
-        Some(dur) => match receiver.recv_timeout(dur) {
-            Ok(msg) => Ok(Some(msg)),
-            Err(RecvTimeoutError::Timeout) => Ok(None),
-            Err(RecvTimeoutError::Disconnected) => Err(()),
-        },
-        None => match receiver.recv() {
-            Ok(msg) => Ok(Some(msg)),
-            Err(_) => Err(()),
-        },
-    }
+/// State shared with the calloop event loop callbacks.
+struct LooperState {
+    /// Messages accumulated during the current dispatch cycle.
+    batch: Vec<LooperMessage>,
+    /// Set when all channel senders are dropped.
+    disconnected: bool,
 }
 
 /// Process a LooperMessage that may be a timer control message.
@@ -236,28 +225,23 @@ fn unwrap_message(
     }
 }
 
-/// Drain the channel after a blocking recv, then coalesce.
+/// Coalesce a batch of LooperMessages.
 ///
-/// Timer control messages (AddTimer, AddOneShot) are extracted and
-/// registered with the timer state. Everything else is coalesced.
+/// Timer control messages (AddTimer, AddOneShot, AddFilter, RemoveFilter)
+/// are extracted and registered with the timer/filter state. Everything
+/// else is coalesced.
 ///
 /// Coalescing rules (from Be's BWindow::DispatchMessage):
 /// - Resize: keep only the last geometry
 /// - MouseMove: keep only the last position
 /// - Everything else: deliver in order
-fn drain_and_coalesce(
-    first: LooperMessage,
-    receiver: &mpsc::Receiver<LooperMessage>,
+fn coalesce_batch(
+    batch: Vec<LooperMessage>,
     pane_id: PaneId,
-    comp_sender: &mpsc::Sender<pane_proto::protocol::ClientToComp>,
+    comp_sender: &std::sync::mpsc::Sender<pane_proto::protocol::ClientToComp>,
     timers: &mut Timers,
     filters: &mut crate::filter::FilterChain,
 ) -> Vec<Unwrapped> {
-    let mut batch = vec![first];
-    while let Ok(more) = receiver.try_recv() {
-        batch.push(more);
-    }
-
     let mut events: Vec<Unwrapped> = Vec::with_capacity(batch.len());
     let mut last_resize_idx: Option<usize> = None;
     let mut last_mouse_move_idx: Option<usize> = None;
@@ -323,6 +307,31 @@ fn drain_and_coalesce(
     events
 }
 
+/// Convert calloop errors to io::Error for our Error type.
+fn calloop_err(e: impl std::fmt::Display) -> std::io::Error {
+    std::io::Error::new(std::io::ErrorKind::Other, e.to_string())
+}
+
+/// Drain all remaining ready messages from the calloop event loop.
+///
+/// calloop's channel delivers at most 1024 messages per dispatch
+/// (MAX_EVENTS_CHECK). When the looper has a burst of messages
+/// (e.g., resize flood), we need to drain all of them before
+/// coalescing so the batch is complete.
+fn drain_channel(
+    event_loop: &mut calloop::EventLoop<'_, LooperState>,
+    state: &mut LooperState,
+) -> std::result::Result<(), crate::error::Error> {
+    loop {
+        let len = state.batch.len();
+        event_loop.dispatch(Some(Duration::ZERO), state).map_err(calloop_err)?;
+        if state.batch.len() == len {
+            break;
+        }
+    }
+    Ok(())
+}
+
 /// Run the event loop with a closure handler.
 ///
 /// The closure receives a Messenger (for sending messages back to the
@@ -332,7 +341,7 @@ fn drain_and_coalesce(
 /// - Err to exit with error
 pub fn run_closure(
     pane_id: PaneId,
-    receiver: mpsc::Receiver<LooperMessage>,
+    channel: calloop::channel::Channel<LooperMessage>,
     mut filters: FilterChain,
     proxy: Messenger,
     mut handler: impl FnMut(&Messenger, Message) -> Result<bool>,
@@ -341,33 +350,49 @@ pub fn run_closure(
     let _guard = LooperGuard;
     let mut timers = Timers::new();
 
+    let mut event_loop: calloop::EventLoop<'_, LooperState> =
+        calloop::EventLoop::try_new().map_err(calloop_err)?;
+    let handle = event_loop.handle();
+
+    handle.insert_source(channel, |event, _, state| {
+        match event {
+            calloop::channel::Event::Msg(msg) => state.batch.push(msg),
+            calloop::channel::Event::Closed => state.disconnected = true,
+        }
+    }).map_err(calloop_err)?;
+
+    let mut state = LooperState { batch: Vec::new(), disconnected: false };
+
     loop {
-        let msg = match recv_with_timers(&receiver, &timers) {
-            Ok(Some(msg)) => Some(msg),
-            Ok(None) => None,
-            Err(()) => {
-                let _ = handler(&proxy, Message::Disconnected);
-                return Ok(ExitReason::Disconnected);
-            }
+        let timeout = timers.next_timeout();
+        event_loop.dispatch(timeout, &mut state).map_err(calloop_err)?;
+
+        // calloop's channel delivers at most 1024 messages per dispatch.
+        // Drain remaining without blocking to match the old try_recv loop.
+        drain_channel(&mut event_loop, &mut state)?;
+
+        let batch = std::mem::take(&mut state.batch);
+        let disconnected = state.disconnected;
+
+        // Don't fire timers after disconnect (matches pre-calloop behavior:
+        // disconnect exits without processing pending timers)
+        let timer_events = if !disconnected {
+            timers.fire_due()
+        } else {
+            Vec::new()
         };
 
-        let timer_events = timers.fire_due();
+        let mut events = coalesce_batch(batch, pane_id, &proxy.sender, &mut timers, &mut filters);
 
-        let mut batch = match msg {
-            Some(msg) => drain_and_coalesce(msg, &receiver, pane_id, &proxy.sender, &mut timers, &mut filters),
-            None => Vec::new(),
-        };
-
-        // Prepend timer events (they fired before the channel message)
         if !timer_events.is_empty() {
             let mut all: Vec<Unwrapped> = timer_events.into_iter()
                 .map(Unwrapped::Event)
                 .collect();
-            all.append(&mut batch);
-            batch = all;
+            all.append(&mut events);
+            events = all;
         }
 
-        for item in batch {
+        for item in events {
             match item {
                 Unwrapped::Event(event) => {
                     let is_close = matches!(event, Message::CloseRequested);
@@ -406,13 +431,18 @@ pub fn run_closure(
                 Unwrapped::Skip => {}
             }
         }
+
+        if disconnected {
+            let _ = handler(&proxy, Message::Disconnected);
+            return Ok(ExitReason::Disconnected);
+        }
     }
 }
 
 /// Run the event loop with a Handler trait implementation.
 pub fn run_handler(
     pane_id: PaneId,
-    receiver: mpsc::Receiver<LooperMessage>,
+    channel: calloop::channel::Channel<LooperMessage>,
     mut filters: FilterChain,
     proxy: Messenger,
     mut handler: impl Handler,
@@ -421,32 +451,44 @@ pub fn run_handler(
     let _guard = LooperGuard;
     let mut timers = Timers::new();
 
+    let mut event_loop: calloop::EventLoop<'_, LooperState> =
+        calloop::EventLoop::try_new().map_err(calloop_err)?;
+    let handle = event_loop.handle();
+
+    handle.insert_source(channel, |event, _, state| {
+        match event {
+            calloop::channel::Event::Msg(msg) => state.batch.push(msg),
+            calloop::channel::Event::Closed => state.disconnected = true,
+        }
+    }).map_err(calloop_err)?;
+
+    let mut state = LooperState { batch: Vec::new(), disconnected: false };
+
     loop {
-        let msg = match recv_with_timers(&receiver, &timers) {
-            Ok(Some(msg)) => Some(msg),
-            Ok(None) => None,
-            Err(()) => {
-                let _ = handler.disconnected(&proxy);
-                return Ok(ExitReason::Disconnected);
-            }
+        let timeout = timers.next_timeout();
+        event_loop.dispatch(timeout, &mut state).map_err(calloop_err)?;
+        drain_channel(&mut event_loop, &mut state)?;
+
+        let batch = std::mem::take(&mut state.batch);
+        let disconnected = state.disconnected;
+
+        let timer_events = if !disconnected {
+            timers.fire_due()
+        } else {
+            Vec::new()
         };
 
-        let timer_events = timers.fire_due();
-
-        let mut batch = match msg {
-            Some(msg) => drain_and_coalesce(msg, &receiver, pane_id, &proxy.sender, &mut timers, &mut filters),
-            None => Vec::new(),
-        };
+        let mut events = coalesce_batch(batch, pane_id, &proxy.sender, &mut timers, &mut filters);
 
         if !timer_events.is_empty() {
             let mut all: Vec<Unwrapped> = timer_events.into_iter()
                 .map(Unwrapped::Event)
                 .collect();
-            all.append(&mut batch);
-            batch = all;
+            all.append(&mut events);
+            events = all;
         }
 
-        for item in batch {
+        for item in events {
             match item {
                 Unwrapped::Event(event) => {
                     let is_close = matches!(event, Message::CloseRequested);
@@ -480,6 +522,11 @@ pub fn run_handler(
                 }
                 Unwrapped::Skip => {}
             }
+        }
+
+        if disconnected {
+            let _ = handler.disconnected(&proxy);
+            return Ok(ExitReason::Disconnected);
         }
     }
 }

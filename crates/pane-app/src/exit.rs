@@ -1,9 +1,10 @@
-use std::sync::{Arc, Mutex, mpsc};
+use std::sync::{Arc, Mutex};
 
 use pane_proto::message::PaneId;
 
 use crate::event::Message;
 use crate::looper_message::LooperMessage;
+use crate::proxy::LooperSender;
 
 /// Why the pane's event loop exited.
 ///
@@ -56,7 +57,7 @@ pub enum QuitResult {
 /// See serena memory `pane/eact_analysis_gaps` Gap 3.
 #[derive(Clone, Default)]
 pub(crate) struct ExitBroadcaster {
-    watchers: Arc<Mutex<Vec<mpsc::SyncSender<LooperMessage>>>>,
+    watchers: Arc<Mutex<Vec<LooperSender>>>,
 }
 
 impl ExitBroadcaster {
@@ -65,20 +66,20 @@ impl ExitBroadcaster {
     }
 
     /// Register a watcher's looper channel. Called by Messenger::monitor().
-    pub(crate) fn add_watcher(&self, tx: mpsc::SyncSender<LooperMessage>) {
+    pub(crate) fn add_watcher(&self, tx: LooperSender) {
         self.watchers.lock().unwrap_or_else(|e| e.into_inner()).push(tx);
     }
 
     /// Broadcast the exit to all watchers. Called when run() completes.
     ///
-    /// Non-blocking: uses try_send to avoid stalling if a watcher's
-    /// channel is full. Watchers with full or disconnected channels
-    /// are pruned — exit notifications are advisory.
+    /// Non-blocking: calloop channels are unbounded so send never blocks.
+    /// Watchers with disconnected channels are pruned — exit
+    /// notifications are advisory.
     pub(crate) fn broadcast(&self, pane: PaneId, reason: ExitReason) {
         let mut watchers = self.watchers.lock().unwrap_or_else(|e| e.into_inner());
         let msg = Message::PaneExited { pane, reason };
         watchers.retain(|tx| {
-            tx.try_send(LooperMessage::Posted(msg.clone())).is_ok()
+            tx.send(LooperMessage::Posted(msg.clone())).is_ok()
         });
     }
 }
@@ -86,47 +87,53 @@ impl ExitBroadcaster {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::time::Duration;
 
     fn pane_id(n: u32) -> PaneId {
         PaneId::from_uuid(uuid::Uuid::from_u128(n as u128))
     }
 
-    #[test]
-    fn broadcast_nonblocking_under_backpressure() {
-        let broadcaster = ExitBroadcaster::new();
-        let mut healthy_rxs = Vec::new();
-        let mut full_rxs = Vec::new();
-
-        // 10 watchers with empty channels
-        for _ in 0..10 {
-            let (tx, rx) = mpsc::sync_channel::<LooperMessage>(256);
-            broadcaster.add_watcher(tx);
-            healthy_rxs.push(rx);
-        }
-
-        // 10 watchers with channels filled to capacity
-        for _ in 0..10 {
-            let (tx, rx) = mpsc::sync_channel::<LooperMessage>(4);
-            // Fill to capacity
-            for _ in 0..4 {
-                tx.send(LooperMessage::Posted(Message::Activated)).unwrap();
+    /// Receive one message from a calloop channel (test helper).
+    fn recv_one(
+        channel: calloop::channel::Channel<LooperMessage>,
+        timeout: Duration,
+    ) -> Option<LooperMessage> {
+        let mut event_loop: calloop::EventLoop<'_, Option<LooperMessage>> =
+            calloop::EventLoop::try_new().unwrap();
+        event_loop.handle().insert_source(channel, |event, _, result| {
+            if let calloop::channel::Event::Msg(msg) = event {
+                *result = Some(msg);
             }
+        }).unwrap();
+        let mut result = None;
+        event_loop.dispatch(Some(timeout), &mut result).unwrap();
+        result
+    }
+
+    #[test]
+    fn broadcast_delivers_to_watchers() {
+        let broadcaster = ExitBroadcaster::new();
+
+        // 10 watchers with live channels
+        let mut rxs = Vec::new();
+        for _ in 0..10 {
+            let (tx, rx) = calloop::channel::channel::<LooperMessage>();
             broadcaster.add_watcher(tx);
-            full_rxs.push(rx);
+            rxs.push(rx);
         }
 
-        // Broadcast should complete immediately (not block on full channels)
         let id = pane_id(1);
         let start = std::time::Instant::now();
         broadcaster.broadcast(id, ExitReason::HandlerExit);
         let elapsed = start.elapsed();
 
-        assert!(elapsed < std::time::Duration::from_millis(100),
+        assert!(elapsed < Duration::from_millis(100),
             "broadcast should be non-blocking, took {:?}", elapsed);
 
-        // Healthy watchers should receive the notification
-        for (i, rx) in healthy_rxs.iter().enumerate() {
-            let msg = rx.try_recv().expect(&format!("healthy watcher {i} should receive notification"));
+        // All watchers should receive the notification
+        for (i, rx) in rxs.into_iter().enumerate() {
+            let msg = recv_one(rx, Duration::from_secs(1))
+                .unwrap_or_else(|| panic!("watcher {i} should receive notification"));
             match msg {
                 LooperMessage::Posted(Message::PaneExited { pane, reason }) => {
                     assert_eq!(pane, id);
@@ -135,31 +142,39 @@ mod tests {
                 other => panic!("expected PaneExited, got {:?}", other),
             }
         }
+    }
 
-        // Full watchers should NOT have received it (their channels were full)
-        for (i, rx) in full_rxs.iter().enumerate() {
-            // Drain the 4 pre-filled messages
-            for _ in 0..4 {
-                let msg = rx.try_recv().unwrap();
-                assert!(matches!(msg, LooperMessage::Posted(Message::Activated)),
-                    "full watcher {i}: pre-filled message should be Activated");
-            }
-            // No PaneExited should follow
-            assert!(rx.try_recv().is_err(),
-                "full watcher {i} should not have received PaneExited");
+    #[test]
+    fn broadcast_prunes_disconnected_watchers() {
+        let broadcaster = ExitBroadcaster::new();
+
+        // 5 healthy watchers (keep receivers alive)
+        let mut healthy_rxs = Vec::new();
+        for _ in 0..5 {
+            let (tx, rx) = calloop::channel::channel::<LooperMessage>();
+            healthy_rxs.push(rx); // keep receiver alive so channel stays open
+            broadcaster.add_watcher(tx);
         }
 
-        // Second broadcast should only reach the 10 healthy watchers
-        // (full watchers were pruned)
+        // 5 disconnected watchers (receiver already dropped)
+        for _ in 0..5 {
+            let (tx, rx) = calloop::channel::channel::<LooperMessage>();
+            drop(rx); // disconnect
+            broadcaster.add_watcher(tx);
+        }
+
+        // First broadcast: sends to all, but disconnected fail and get pruned
+        broadcaster.broadcast(pane_id(1), ExitReason::HandlerExit);
+
+        // Second broadcast: should only attempt the 5 healthy watchers
         broadcaster.broadcast(pane_id(2), ExitReason::Disconnected);
-        let mut second_count = 0;
-        for rx in &healthy_rxs {
-            if rx.try_recv().is_ok() {
-                second_count += 1;
-            }
-        }
-        assert_eq!(second_count, 10,
-            "second broadcast should reach all 10 healthy watchers, got {second_count}");
+
+        // Verify the watcher list was pruned
+        let watchers = broadcaster.watchers.lock().unwrap();
+        assert_eq!(watchers.len(), 5,
+            "disconnected watchers should have been pruned, got {}", watchers.len());
+
+        drop(healthy_rxs); // keep alive until assertions complete
     }
 }
 

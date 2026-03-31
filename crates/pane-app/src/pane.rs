@@ -14,7 +14,7 @@ use crate::filter::FilterChain;
 use crate::handler::Handler;
 use crate::looper;
 use crate::looper_message::LooperMessage;
-use crate::proxy::Messenger;
+use crate::proxy::{Messenger, LooperSender};
 
 /// Handle to a single pane in the compositor.
 ///
@@ -47,9 +47,9 @@ use crate::proxy::Messenger;
 pub struct Pane {
     id: PaneId,
     geometry: PaneGeometry,
-    receiver: mpsc::Receiver<LooperMessage>,
+    receiver: calloop::channel::Channel<LooperMessage>,
     comp_tx: mpsc::Sender<ClientToComp>,
-    looper_tx: mpsc::SyncSender<LooperMessage>,
+    looper_tx: LooperSender,
     pane_count: Arc<AtomicUsize>,
     done_signal: Arc<(std::sync::Mutex<()>, std::sync::Condvar)>,
     filters: FilterChain,
@@ -60,9 +60,9 @@ impl Pane {
     pub(crate) fn new(
         id: PaneId,
         geometry: PaneGeometry,
-        receiver: mpsc::Receiver<LooperMessage>,
+        receiver: calloop::channel::Channel<LooperMessage>,
         comp_tx: mpsc::Sender<ClientToComp>,
-        looper_tx: mpsc::SyncSender<LooperMessage>,
+        looper_tx: LooperSender,
         pane_count: Arc<AtomicUsize>,
         done_signal: Arc<(std::sync::Mutex<()>, std::sync::Condvar)>,
     ) -> Self {

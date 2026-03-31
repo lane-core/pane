@@ -13,6 +13,7 @@ use crate::connection::Connection;
 use crate::error::{ConnectError, PaneError, Result};
 use crate::looper_message::LooperMessage;
 use crate::pane::Pane;
+use crate::proxy::LooperSender;
 use crate::tag::Tag;
 
 /// Response from the dispatcher to create_pane_inner.
@@ -20,8 +21,8 @@ use crate::tag::Tag;
 /// between PaneCreated dispatch and channel availability.
 struct CreateResponse {
     msg: CompToClient,
-    pane_rx: mpsc::Receiver<LooperMessage>,
-    pane_tx: mpsc::SyncSender<LooperMessage>,
+    pane_rx: calloop::channel::Channel<LooperMessage>,
+    pane_tx: LooperSender,
 }
 
 /// The application entry point. One per process.
@@ -62,7 +63,7 @@ pub struct App {
     /// Live pane looper channels — shared with the dispatcher for
     /// message routing. Used by request_quit() to send QuitRequested
     /// to all panes.
-    pane_channels: Arc<Mutex<HashMap<PaneId, mpsc::SyncSender<LooperMessage>>>>,
+    pane_channels: Arc<Mutex<HashMap<PaneId, LooperSender>>>,
     /// Application signature.
     signature: String,
     /// Live pane count.
@@ -155,7 +156,7 @@ impl App {
     #[doc(hidden)]
     pub fn connect_test(signature: &str, conn: Connection) -> std::result::Result<Self, ConnectError> {
         let comp_tx = conn.sender;
-        let pane_channels: Arc<Mutex<HashMap<PaneId, mpsc::SyncSender<LooperMessage>>>> =
+        let pane_channels: Arc<Mutex<HashMap<PaneId, LooperSender>>> =
             Arc::new(Mutex::new(HashMap::new()));
         let pending_creates: Arc<Mutex<HashMap<PaneId, mpsc::Sender<CreateResponse>>>> =
             Arc::new(Mutex::new(HashMap::new()));
@@ -179,7 +180,7 @@ impl App {
                     CompToClient::PaneCreated { pane, .. } => {
                         let mut pending = creates.lock().unwrap_or_else(|e| e.into_inner());
                         if let Some(oneshot) = pending.remove(pane) {
-                            let (pane_tx, pane_rx) = mpsc::sync_channel::<LooperMessage>(256);
+                            let (pane_tx, pane_rx) = calloop::channel::channel::<LooperMessage>();
                             channels.lock().unwrap_or_else(|e| e.into_inner())
                                 .insert(*pane, pane_tx.clone());
                             let _ = oneshot.send(CreateResponse {
@@ -193,9 +194,7 @@ impl App {
                     CompToClient::PaneRefused { pane, .. } => {
                         let mut pending = creates.lock().unwrap_or_else(|e| e.into_inner());
                         if let Some(oneshot) = pending.remove(pane) {
-                            // Synthesize a dummy channel — create_pane_inner
-                            // will see the PaneRefused msg and return Refused.
-                            let (pane_tx, pane_rx) = mpsc::sync_channel::<LooperMessage>(1);
+                            let (pane_tx, pane_rx) = calloop::channel::channel::<LooperMessage>();
                             let _ = oneshot.send(CreateResponse {
                                 msg,
                                 pane_rx,
@@ -300,7 +299,7 @@ impl App {
         let mut responses: Vec<(PaneId, mpsc::Receiver<bool>)> = Vec::new();
         for (&pane_id, tx) in channels.iter() {
             let (response_tx, response_rx) = mpsc::channel();
-            if tx.try_send(LooperMessage::QuitRequested { response_tx }).is_ok() {
+            if tx.send(LooperMessage::QuitRequested { response_tx }).is_ok() {
                 responses.push((pane_id, response_rx));
             }
             // If try_send fails (channel full/disconnected), treat as unreachable
@@ -329,7 +328,7 @@ impl App {
         // All panes agreed — send Quit to close them
         let channels = self.pane_channels.lock().unwrap_or_else(|e| e.into_inner());
         for tx in channels.values() {
-            let _ = tx.try_send(LooperMessage::Quit);
+            let _ = tx.send(LooperMessage::Quit);
         }
 
         QuitResult::Approved

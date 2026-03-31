@@ -1,6 +1,7 @@
 use std::sync::mpsc;
 use std::sync::{Arc, Mutex};
 
+use calloop::channel::{self, Sender};
 use pane_app::{Message, Handler, MessageFilter, FilterAction, Messenger, LooperMessage};
 use pane_app::error::Result;
 use pane_proto::event::{KeyEvent, Key, NamedKey, Modifiers, KeyState};
@@ -18,7 +19,7 @@ fn make_proxy(id: PaneId) -> Messenger {
 }
 
 /// Send a CompToClient message through a LooperMessage channel.
-fn send_comp(tx: &mpsc::Sender<LooperMessage>, msg: CompToClient) {
+fn send_comp(tx: &Sender<LooperMessage>, msg: CompToClient) {
     tx.send(LooperMessage::FromComp(msg)).unwrap();
 }
 
@@ -42,7 +43,7 @@ fn close_msg() -> CompToClient {
 
 #[test]
 fn closure_receives_key_and_exits() {
-    let (tx, rx) = mpsc::channel::<LooperMessage>();
+    let (tx, rx) = channel::channel::<LooperMessage>();
     let filters = pane_app::filter::FilterChain::new();
     let proxy = make_proxy(pane_id(1));
 
@@ -65,7 +66,7 @@ fn closure_receives_key_and_exits() {
 
 #[test]
 fn closure_handles_close() {
-    let (tx, rx) = mpsc::channel::<LooperMessage>();
+    let (tx, rx) = channel::channel::<LooperMessage>();
     let filters = pane_app::filter::FilterChain::new();
     let proxy = make_proxy(pane_id(1));
 
@@ -86,7 +87,7 @@ fn closure_handles_close() {
 
 #[test]
 fn closure_handles_channel_close_as_disconnect() {
-    let (tx, rx) = mpsc::channel::<LooperMessage>();
+    let (tx, rx) = channel::channel::<LooperMessage>();
     let filters = pane_app::filter::FilterChain::new();
     let proxy = make_proxy(pane_id(1));
 
@@ -105,7 +106,7 @@ fn closure_handles_channel_close_as_disconnect() {
 
 #[test]
 fn closure_ignores_wrong_pane_id() {
-    let (tx, rx) = mpsc::channel::<LooperMessage>();
+    let (tx, rx) = channel::channel::<LooperMessage>();
     let filters = pane_app::filter::FilterChain::new();
     let proxy = make_proxy(pane_id(1));
 
@@ -142,7 +143,7 @@ impl MessageFilter for ConsumeEscapeFilter {
 
 #[test]
 fn filter_consumes_event() {
-    let (tx, rx) = mpsc::channel::<LooperMessage>();
+    let (tx, rx) = channel::channel::<LooperMessage>();
     let mut filters = pane_app::filter::FilterChain::new();
     filters.add(ConsumeEscapeFilter);
     let proxy = make_proxy(pane_id(1));
@@ -209,7 +210,7 @@ impl Handler for TestHandler {
 
 #[test]
 fn handler_dispatches_to_correct_methods() {
-    let (tx, rx) = mpsc::channel::<LooperMessage>();
+    let (tx, rx) = channel::channel::<LooperMessage>();
     let filters = pane_app::filter::FilterChain::new();
     let log = Arc::new(Mutex::new(Vec::new()));
     let proxy = make_proxy(pane_id(1));
@@ -236,7 +237,7 @@ fn handler_dispatches_to_correct_methods() {
 
 #[test]
 fn empty_filter_chain_passes_all() {
-    let (tx, rx) = mpsc::channel::<LooperMessage>();
+    let (tx, rx) = channel::channel::<LooperMessage>();
     let filters = pane_app::filter::FilterChain::new(); // no filters
     let proxy = make_proxy(pane_id(1));
 
@@ -267,7 +268,7 @@ impl MessageFilter for TransformFilter {
 
 #[test]
 fn filter_chain_ordering_transforms() {
-    let (tx, rx) = mpsc::channel::<LooperMessage>();
+    let (tx, rx) = channel::channel::<LooperMessage>();
     let mut filters = pane_app::filter::FilterChain::new();
     filters.add(TransformFilter); // transforms Focus → Blur
     let proxy = make_proxy(pane_id(1));
@@ -301,7 +302,7 @@ impl MessageFilter for ConsumeAllFilter {
 
 #[test]
 fn filter_consume_all_then_disconnect() {
-    let (tx, rx) = mpsc::channel::<LooperMessage>();
+    let (tx, rx) = channel::channel::<LooperMessage>();
     let mut filters = pane_app::filter::FilterChain::new();
     filters.add(ConsumeAllFilter);
     let proxy = make_proxy(pane_id(1));
@@ -327,7 +328,7 @@ fn filter_consume_all_then_disconnect() {
 
 #[test]
 fn looper_handler_error_propagates() {
-    let (tx, rx) = mpsc::channel::<LooperMessage>();
+    let (tx, rx) = channel::channel::<LooperMessage>();
     let filters = pane_app::filter::FilterChain::new();
     let proxy = make_proxy(pane_id(1));
 
@@ -343,7 +344,7 @@ fn looper_handler_error_propagates() {
 
 #[test]
 fn looper_processes_all_queued_before_disconnect() {
-    let (tx, rx) = mpsc::channel::<LooperMessage>();
+    let (tx, rx) = channel::channel::<LooperMessage>();
     let filters = pane_app::filter::FilterChain::new();
     let proxy = make_proxy(pane_id(1));
 
@@ -366,7 +367,7 @@ fn looper_processes_all_queued_before_disconnect() {
 
 #[test]
 fn looper_error_stops_processing() {
-    let (tx, rx) = mpsc::channel::<LooperMessage>();
+    let (tx, rx) = channel::channel::<LooperMessage>();
     let filters = pane_app::filter::FilterChain::new();
     let proxy = make_proxy(pane_id(1));
 
@@ -406,7 +407,7 @@ impl MessageFilter for SkipFocusFilter {
 
 #[test]
 fn filter_wants_skips_uninterested() {
-    let (tx, rx) = mpsc::channel::<LooperMessage>();
+    let (tx, rx) = channel::channel::<LooperMessage>();
     let mut filters = pane_app::filter::FilterChain::new();
     filters.add(SkipFocusFilter);
     let proxy = make_proxy(pane_id(1));
@@ -437,7 +438,7 @@ fn filter_wants_skips_uninterested() {
 #[test]
 fn filter_wants_default_true() {
     // A filter with no wants() override should see all events (backward compat)
-    let (tx, rx) = mpsc::channel::<LooperMessage>();
+    let (tx, rx) = channel::channel::<LooperMessage>();
     let mut filters = pane_app::filter::FilterChain::new();
     filters.add(ConsumeAllFilter);
     let proxy = make_proxy(pane_id(1));
@@ -461,7 +462,7 @@ fn filter_wants_default_true() {
 
 #[test]
 fn self_delivery_reaches_handler() {
-    let (tx, rx) = mpsc::channel::<LooperMessage>();
+    let (tx, rx) = channel::channel::<LooperMessage>();
     let filters = pane_app::filter::FilterChain::new();
     let proxy = make_proxy(pane_id(1));
 
@@ -482,7 +483,7 @@ fn self_delivery_reaches_handler() {
 
 #[test]
 fn self_delivery_interleaved_with_comp() {
-    let (tx, rx) = mpsc::channel::<LooperMessage>();
+    let (tx, rx) = channel::channel::<LooperMessage>();
     let filters = pane_app::filter::FilterChain::new();
     let proxy = make_proxy(pane_id(1));
 
@@ -503,7 +504,7 @@ fn self_delivery_interleaved_with_comp() {
 
 #[test]
 fn self_delivery_filters_apply() {
-    let (tx, rx) = mpsc::channel::<LooperMessage>();
+    let (tx, rx) = channel::channel::<LooperMessage>();
     let mut filters = pane_app::filter::FilterChain::new();
     filters.add(ConsumeEscapeFilter);
     let proxy = make_proxy(pane_id(1));
@@ -556,7 +557,7 @@ fn mouse_move_msg(col: u16, row: u16) -> CompToClient {
 fn coalesce_resize_keeps_last() {
     // Pre-load 3 resizes + close before starting the looper.
     // All messages are buffered, so drain_and_coalesce sees them all.
-    let (tx, rx) = mpsc::channel::<LooperMessage>();
+    let (tx, rx) = channel::channel::<LooperMessage>();
     let filters = pane_app::filter::FilterChain::new();
     let proxy = make_proxy(pane_id(1));
 
@@ -583,7 +584,7 @@ fn coalesce_resize_keeps_last() {
 
 #[test]
 fn coalesce_mouse_move_keeps_last() {
-    let (tx, rx) = mpsc::channel::<LooperMessage>();
+    let (tx, rx) = channel::channel::<LooperMessage>();
     let filters = pane_app::filter::FilterChain::new();
     let proxy = make_proxy(pane_id(1));
 
@@ -612,7 +613,7 @@ fn coalesce_mouse_move_keeps_last() {
 
 #[test]
 fn coalesce_preserves_press_release() {
-    let (tx, rx) = mpsc::channel::<LooperMessage>();
+    let (tx, rx) = channel::channel::<LooperMessage>();
     let filters = pane_app::filter::FilterChain::new();
     let proxy = make_proxy(pane_id(1));
 
@@ -659,7 +660,7 @@ fn coalesce_preserves_press_release() {
 
 #[test]
 fn coalesce_no_coalesce_focus_blur() {
-    let (tx, rx) = mpsc::channel::<LooperMessage>();
+    let (tx, rx) = channel::channel::<LooperMessage>();
     let filters = pane_app::filter::FilterChain::new();
     let proxy = make_proxy(pane_id(1));
 
@@ -684,7 +685,7 @@ fn coalesce_no_coalesce_focus_blur() {
 #[test]
 fn single_message_no_coalesce() {
     // Regression guard: a single message should pass through unmodified
-    let (tx, rx) = mpsc::channel::<LooperMessage>();
+    let (tx, rx) = channel::channel::<LooperMessage>();
     let filters = pane_app::filter::FilterChain::new();
     let proxy = make_proxy(pane_id(1));
 

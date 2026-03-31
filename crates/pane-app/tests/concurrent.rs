@@ -11,6 +11,7 @@ use std::sync::{Arc, Mutex, atomic::{AtomicUsize, Ordering}};
 use std::thread;
 use std::time::Duration;
 
+use calloop::channel;
 use pane_app::{App, Tag, Message, Messenger, LooperMessage, Handler, ReplyPort};
 use pane_app::error::Result;
 use pane_app::mock::MockCompositor;
@@ -161,7 +162,7 @@ fn self_delivery_burst_from_workers() {
 
 #[test]
 fn coalesce_resize_flood() {
-    let (tx, rx) = mpsc::channel::<LooperMessage>();
+    let (tx, rx) = channel::channel::<LooperMessage>();
     let filters = pane_app::filter::FilterChain::new();
     let (comp_tx, _comp_rx) = mpsc::channel::<ClientToComp>();
     let proxy = Messenger::new(pane_id(1), comp_tx);
@@ -219,7 +220,7 @@ fn coalesce_resize_flood() {
 
 #[test]
 fn timer_cancellation_race() {
-    let (tx, rx) = mpsc::channel::<LooperMessage>();
+    let (tx, rx) = channel::channel::<LooperMessage>();
     let (comp_tx, _comp_rx) = mpsc::channel::<ClientToComp>();
     let filters = pane_app::filter::FilterChain::new();
     let looper_tx = tx.clone();
@@ -378,10 +379,38 @@ fn looper_shutdown_under_active_posting() {
 // ============================================================
 
 /// Create a Messenger with looper channel attached.
-fn make_looper_proxy(id: PaneId) -> (Messenger, mpsc::Receiver<LooperMessage>) {
+fn make_looper_proxy(id: PaneId) -> (Messenger, channel::Channel<LooperMessage>) {
     let (comp_tx, _) = mpsc::channel::<ClientToComp>();
-    let (looper_tx, looper_rx) = mpsc::sync_channel::<LooperMessage>(256);
+    let (looper_tx, looper_rx) = channel::channel::<LooperMessage>();
     (Messenger::new(id, comp_tx).with_looper(looper_tx), looper_rx)
+}
+
+/// Create a Messenger with a looper channel that bridges to an mpsc
+/// receiver for test spying. Use when a test needs to read messages
+/// directly from the channel without running a looper.
+fn make_spy_proxy(id: PaneId) -> (Messenger, mpsc::Receiver<LooperMessage>) {
+    let (comp_tx, _) = mpsc::channel::<ClientToComp>();
+    let (looper_tx, calloop_rx) = channel::channel::<LooperMessage>();
+    let (spy_tx, spy_rx) = mpsc::channel::<LooperMessage>();
+
+    thread::spawn(move || {
+        let mut event_loop: calloop::EventLoop<'_, (mpsc::Sender<LooperMessage>, bool)> =
+            calloop::EventLoop::try_new().unwrap();
+        event_loop.handle().insert_source(calloop_rx, |event, _, state| {
+            match event {
+                calloop::channel::Event::Msg(msg) => { let _ = state.0.send(msg); }
+                calloop::channel::Event::Closed => state.1 = true,
+            }
+        }).unwrap();
+        let mut state = (spy_tx, false);
+        while !state.1 {
+            if event_loop.dispatch(Some(Duration::from_secs(1)), &mut state).is_err() {
+                break;
+            }
+        }
+    });
+
+    (Messenger::new(id, comp_tx).with_looper(looper_tx), spy_rx)
 }
 
 /// Handler that replies to requests: doubles u64, triples u32.
@@ -806,10 +835,10 @@ fn stress_mixed_sync_async_requests() {
         }));
     }
 
-    // 10 async senders
+    // 10 async senders (use spy proxy for direct recv)
     for i in 0..10u64 {
         let target = target_for_send.clone();
-        let (caller, caller_rx) = make_looper_proxy(pane_id(200 + i as u32));
+        let (caller, caller_rx) = make_spy_proxy(pane_id(200 + i as u32));
         let ac = async_count.clone();
         handles.push(thread::spawn(move || {
             let mut pending = std::collections::HashMap::new();
@@ -866,7 +895,7 @@ fn stress_async_reply_ordering() {
         pane_app::looper::run_handler(pane_id(2), target_rx, filters, target_proxy, EchoHandler)
     });
 
-    let (caller_proxy, caller_rx) = make_looper_proxy(pane_id(1));
+    let (caller_proxy, caller_rx) = make_spy_proxy(pane_id(1));
 
     // Send 50 async requests rapidly
     let mut pending = std::collections::HashMap::new();
@@ -930,7 +959,7 @@ fn stress_cascading_failure() {
     let (b_proxy, b_rx) = make_looper_proxy(pane_id(3));
     let b_for_a = b_proxy.clone();
 
-    let (a_proxy, a_rx) = make_looper_proxy(pane_id(2));
+    let (a_proxy, a_rx) = make_spy_proxy(pane_id(2));
 
     let b_handle = thread::spawn(move || {
         let filters = pane_app::filter::FilterChain::new();
@@ -1001,7 +1030,7 @@ fn stress_cascading_failure() {
 
 #[test]
 fn stress_close_priority_under_flood() {
-    let (tx, rx) = mpsc::channel::<LooperMessage>();
+    let (tx, rx) = channel::channel::<LooperMessage>();
     let filters = pane_app::filter::FilterChain::new();
     let (comp_tx, _comp_rx) = mpsc::channel::<ClientToComp>();
     let proxy = Messenger::new(pane_id(1), comp_tx);
