@@ -9,6 +9,7 @@ license = "BSD-3-Clause"
 serde = { version = "1", features = ["derive"] }
 postcard = { version = "1", features = ["alloc"] }
 calloop = "0.14.4"
+socket2 = "0.5"
 
 [dev-dependencies]
 proptest = "1"

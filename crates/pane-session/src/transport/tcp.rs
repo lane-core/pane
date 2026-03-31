@@ -41,7 +41,15 @@ impl TcpTransport {
     }
 
     /// Wrap an existing TCP stream as a session transport.
+    ///
+    /// Enables TCP keepalive with aggressive intervals to detect
+    /// half-open connections promptly. Without this, a crashed peer
+    /// (no RST sent) leaves `recv_raw()` blocking for 2+ hours
+    /// under default kernel keepalive settings.
     pub fn from_stream(stream: TcpStream) -> Self {
+        // Best-effort keepalive — failure to set is not fatal
+        // (the stream still works, just with slower dead-peer detection).
+        let _ = set_keepalive(&stream);
         TcpTransport { stream }
     }
 }
@@ -55,6 +63,22 @@ impl Transport for TcpTransport {
     fn recv_raw(&mut self) -> Result<Vec<u8>, SessionError> {
         Ok(framing::read_framed(&mut self.stream)?)
     }
+}
+
+/// Configure TCP keepalive with aggressive intervals for prompt
+/// dead-peer detection. Interval: 10s idle, 5s probe interval,
+/// 3 probes = 25s worst-case detection.
+fn set_keepalive(stream: &TcpStream) -> io::Result<()> {
+    use std::time::Duration;
+    let sock = socket2::SockRef::from(stream);
+    let keepalive = socket2::TcpKeepalive::new()
+        .with_time(Duration::from_secs(10))
+        .with_interval(Duration::from_secs(5));
+    // with_retries is linux-only; set where available
+    #[cfg(target_os = "linux")]
+    let keepalive = keepalive.with_retries(3);
+    sock.set_tcp_keepalive(&keepalive)?;
+    Ok(())
 }
 
 /// Accept a connection from a TCP listener and wrap it as a
