@@ -9,6 +9,16 @@
 //! This is the BLooper model: one thread, one message queue,
 //! sequential processing. Concurrency arises from many loopers
 //! running simultaneously, not from concurrency within a looper.
+//!
+//! # Plan 9
+//!
+//! The per-pane looper is the per-process namespace principle applied
+//! to event dispatch. In Plan 9, each process has its own namespace —
+//! processes share nothing by default and compose through explicit
+//! binding. Similarly, each pane has its own looper — panes share no
+//! event state and compose through message passing. This property is
+//! what makes distribution work: a remote pane's looper runs on the
+//! remote host with the same dispatch semantics as a local one.
 
 use std::cell::Cell;
 use std::sync::Arc;

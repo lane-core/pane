@@ -197,6 +197,15 @@ pub struct ClientHello {
 ///
 /// No equivalent — Be's app_server connected over kernel ports where
 /// identity was ambient. This extends the model for network transparency.
+///
+/// # Plan 9
+///
+/// `factotum(4)` held per-user credentials and authenticated
+/// connections via the `auth(5)` 9P message. PeerIdentity is
+/// simpler: the client self-reports its unix identity during the
+/// handshake. Full factotum-style mutual authentication is
+/// deferred — this provides identity *forwarding*, not
+/// cryptographic *verification*.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PeerIdentity {
     /// Unix username on the peer's system.

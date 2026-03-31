@@ -18,8 +18,13 @@
 //!
 //! # Plan 9
 //!
-//! In Plan 9, the terminal was just a server that happened to have a
-//! screen. pane-headless is the same server without the screen.
+//! In Plan 9, the CPU server ran processes and exported its namespace
+//! to terminals via `exportfs(4)`. The terminal was just a client
+//! with a display. pane-headless is the CPU server: it runs pane
+//! protocol logic and exports to any connected client. pane-comp is
+//! the terminal: same protocol, plus a screen. `drawterm` connected
+//! to CPU servers without being a full Plan 9 machine — analogous
+//! to a pane client connecting to pane-headless from any platform.
 
 mod state;
 

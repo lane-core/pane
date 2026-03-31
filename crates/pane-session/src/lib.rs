@@ -18,6 +18,17 @@
 //! send any `BMessage` to any port at any time. Session types replace
 //! that with compile-time protocol verification: the type system
 //! guarantees message ordering, branch coverage, and deadlock freedom.
+//!
+//! # Plan 9
+//!
+//! 9P provides protocol structure through convention and the `intro(5)`
+//! specification: clients and servers agree on message ordering (attach
+//! before walk, walk before open, open before read). Errors are caught
+//! at runtime when a server receives an unexpected message. Session
+//! types move this structure into the type system — 9P's `intro(5)`
+//! rules become compile-time constraints. The transport trait mirrors
+//! 9P's transport independence: the same protocol runs over unix
+//! sockets, TCP, or in-memory channels.
 
 pub mod types;
 pub mod dual;

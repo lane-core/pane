@@ -25,7 +25,8 @@ docs/
 ├── archive/                      — historical research and past changes
 reference/
 ├── README.md                     — what's here and why
-└── haiku-book/                   — Haiku Book API reference (MIT, from haiku/haiku)
+├── haiku-book/                   — Haiku Book API reference (MIT, from haiku/haiku)
+└── plan9/                        — Plan 9 man pages and papers (MIT, Plan 9 Foundation)
 ```
 
 **Specs are living documents.** Edit them directly when the design evolves. No formal change proposals — the git history is the change record.

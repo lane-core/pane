@@ -48,6 +48,13 @@ pub(crate) type LooperSender = calloop::channel::Sender<LooperMessage>;
 /// - Timer methods ([`send_delayed`](Messenger::send_delayed),
 ///   [`send_periodic`](Messenger::send_periodic)) are on Messenger
 ///   rather than a separate `BMessageRunner` class
+///
+/// # Plan 9
+///
+/// Transport-transparent like 9P file descriptors. A Messenger from
+/// `App::connect` (local) and one from `App::connect_remote` (TCP)
+/// expose identical operations — the transport boundary is in the
+/// connection setup, not in the handle.
 #[derive(Clone)]
 pub struct Messenger {
     pub(crate) id: PaneId,

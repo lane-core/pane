@@ -53,6 +53,17 @@ struct CreateResponse {
 /// - No `be_app` global. App is a held value, not a static.
 /// - `run()` blocks until all panes close, rather than running a
 ///   message dispatch loop.
+///
+/// # Plan 9
+///
+/// The connection model follows Plan 9's `mount`/`import` pattern:
+/// a client attaches to a server via a transport-independent
+/// connection, then operates as if the server's resources were
+/// local. `App::connect` (unix socket) and `App::connect_remote`
+/// (TCP) are the same operation over different transports — the
+/// distinction is latency, not architecture. This is the "host as
+/// contingent server" principle: the local machine has no
+/// architectural privilege.
 pub struct App {
     /// Sender to the compositor (active-phase messages).
     comp_tx: mpsc::Sender<ClientToComp>,
@@ -359,6 +370,14 @@ impl App {
 /// transition to terminal. Follows the same affine pattern as
 /// [`ReplyPort`](crate::ReplyPort): normal path consumes via a
 /// method, Drop path compensates.
+///
+/// # Plan 9
+///
+/// Clunk-on-abandon. In 9P, every fid must be explicitly clunked
+/// by the client; if a client abandons a fid, the server leaks.
+/// `PaneCreateFuture` applies the same discipline: if dropped
+/// without calling `wait()`, the Drop impl sends `RequestClose`
+/// to clean up the server-side pane. See `clunk(5)`.
 #[must_use = "dropping a PaneCreateFuture leaks a pane on the server — call .wait()"]
 pub struct PaneCreateFuture {
     response_rx: mpsc::Receiver<CreateResponse>,

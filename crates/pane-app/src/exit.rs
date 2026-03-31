@@ -55,6 +55,14 @@ pub enum QuitResult {
 /// not WHICH pending interaction failed. When inter-pane request-response
 /// exists, conversation-level failure callbacks are needed on top of this.
 /// See serena memory `pane/eact_analysis_gaps` Gap 3.
+///
+/// # Plan 9
+///
+/// Plan 9 handled process death through `/proc/{pid}/status` polling.
+/// ExitBroadcaster is push-based instead — watchers register once and
+/// receive notification on exit, closer to Erlang's monitors than
+/// Plan 9's proc filesystem. The divergence is deliberate: push-based
+/// notification works across machine boundaries without polling.
 #[derive(Clone, Default)]
 pub(crate) struct ExitBroadcaster {
     watchers: Arc<Mutex<Vec<LooperSender>>>,

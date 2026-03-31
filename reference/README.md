@@ -40,3 +40,12 @@ Be, Inc. designed the original API. the Haiku project
 (https://www.haiku-os.org/) spent 25 years extending, refining,
 and documenting it. both contributions are invaluable to pane's
 design and are credited in pane's API documentation.
+
+plan9
+-----
+
+selected documentation from Plan 9 from Bell Labs — man pages and
+papers that informed pane's distributed architecture, protocol
+design, and namespace model. see `plan9/README.md` for details.
+
+MIT licensed by the Plan 9 Foundation. see `plan9/LICENSE`.
