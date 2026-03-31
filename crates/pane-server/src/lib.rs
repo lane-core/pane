@@ -84,6 +84,22 @@ impl ProtocolServer {
         ))
     }
 
+    /// Create a protocol server without managing a listener socket.
+    ///
+    /// The caller is responsible for listener creation and cleanup.
+    /// Use this when the server accepts connections from multiple
+    /// transports (unix + TCP) or when socket lifecycle is managed
+    /// externally (s6-fdholder).
+    pub fn new_unmanaged() -> Self {
+        ProtocolServer {
+            sock_path: PathBuf::new(),
+            clients: HashMap::new(),
+            panes: HashMap::new(),
+            next_client_id: 0,
+            instance_id: uuid::Uuid::new_v4().to_string(),
+        }
+    }
+
     /// Allocate a new client ID.
     pub fn alloc_client_id(&mut self) -> usize {
         let id = self.next_client_id;
@@ -220,6 +236,16 @@ impl Drop for ProtocolServer {
     }
 }
 
+/// Result of a successful server-side handshake.
+pub struct ServerHandshakeResult<T> {
+    /// The reclaimed transport, for active-phase reuse.
+    pub transport: T,
+    /// Application signature from ClientHello.
+    pub signature: String,
+    /// Peer identity (if declared — remote connections only).
+    pub identity: Option<pane_proto::protocol::PeerIdentity>,
+}
+
 /// Run the server-side handshake on a new connection.
 /// Blocking — call on a spawned thread.
 /// Returns the reclaimed stream on success.
@@ -227,14 +253,34 @@ pub fn run_server_handshake(
     stream: UnixStream,
     instance_id: &str,
 ) -> Result<UnixStream, pane_session::SessionError> {
-    let transport = UnixTransport::from_stream(stream);
-    let server: Chan<ServerHandshake, _> = Chan::new(transport);
+    let result = run_server_handshake_generic(
+        UnixTransport::from_stream(stream),
+        instance_id,
+        ConnectionTopology::Local,
+    )?;
+    Ok(result.transport.into_stream())
+}
+
+/// Run the server-side handshake over any transport.
+///
+/// Generic over `T: Transport` — works with `UnixTransport`,
+/// `TcpTransport`, or any other transport implementation.
+/// The caller specifies the topology (Local for unix, Remote for TCP).
+pub fn run_server_handshake_generic<T: pane_session::transport::Transport>(
+    transport: T,
+    instance_id: &str,
+    topology: ConnectionTopology,
+) -> Result<ServerHandshakeResult<T>, pane_session::SessionError> {
+    let server: Chan<ServerHandshake, T> = Chan::new(transport);
 
     let (hello, server) = server.recv()?;
     info!("handshake: client '{}' v{}", hello.signature, hello.version);
     if let Some(ref id) = hello.identity {
         info!("handshake: remote identity {}@{} (uid {})", id.username, id.hostname, id.uid);
     }
+
+    let signature = hello.signature.clone();
+    let identity = hello.identity.clone();
 
     let server = server.send(ServerHello {
         compositor: "pane-comp".into(),
@@ -248,9 +294,9 @@ pub fn run_server_handshake(
     let server = server.select_left()?;
     let server = server.send(Accepted {
         caps: caps.caps,
-        topology: ConnectionTopology::Local,
+        topology,
     })?;
 
     let transport = server.finish();
-    Ok(transport.into_stream())
+    Ok(ServerHandshakeResult { transport, signature, identity })
 }
