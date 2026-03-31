@@ -4,6 +4,7 @@
 //! Session types handle the protocol structure; the transport handles the plumbing.
 
 pub mod memory;
+pub mod tcp;
 pub mod unix;
 
 use crate::error::SessionError;
