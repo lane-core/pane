@@ -25,7 +25,7 @@ fn handshake_then_hello_pane() {
     let app = App::connect_test("com.example.hello", conn).unwrap();
 
     // 5. Create pane and run
-    let pane = app.create_pane(Tag::new("Hello")).unwrap();
+    let pane = app.create_pane(Tag::new("Hello")).unwrap().wait().unwrap();
     // Pane exits on Ready — validates the full handshake→create→run flow
     pane.run(|_proxy, event| {
         match event {
@@ -52,9 +52,9 @@ fn handshake_then_multi_pane() {
 
     // Create 3 panes — validates that the active-phase channels
     // work correctly after the handshake
-    let pane1 = app.create_pane(Tag::new("One")).unwrap();
-    let pane2 = app.create_pane(Tag::new("Two")).unwrap();
-    let pane3 = app.create_pane(Tag::new("Three")).unwrap();
+    let pane1 = app.create_pane(Tag::new("One")).unwrap().wait().unwrap();
+    let pane2 = app.create_pane(Tag::new("Two")).unwrap().wait().unwrap();
+    let pane3 = app.create_pane(Tag::new("Three")).unwrap().wait().unwrap();
 
     // Each pane gets a unique ID
     assert_ne!(pane1.id(), pane2.id());

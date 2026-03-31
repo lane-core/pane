@@ -95,7 +95,7 @@ fn connect_over_unix_socket() {
     // App::connect() finds the socket, runs handshake, enters active phase
     let app = App::connect("com.test.unix").unwrap();
 
-    let pane = app.create_pane(Tag::new("Unix Test")).unwrap();
+    let pane = app.create_pane(Tag::new("Unix Test")).unwrap().wait().unwrap();
     // UUID PaneId — just verify it's valid (non-nil)
     assert!(!pane.id().uuid().is_nil());
 

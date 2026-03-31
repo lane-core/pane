@@ -4,6 +4,7 @@ use std::collections::HashMap;
 use std::sync::mpsc;
 use std::sync::{Arc, Mutex, atomic::{AtomicUsize, Ordering}};
 use std::thread;
+use std::time::Duration;
 
 use pane_proto::message::PaneId;
 use pane_proto::protocol::{ClientToComp, CompToClient, CreatePaneTag};
@@ -223,9 +224,11 @@ impl App {
 
     /// Create a new pane with the given tag configuration.
     ///
-    /// Blocks until the compositor responds with PaneCreated or
-    /// times out after 5 seconds.
-    pub fn create_pane(&self, tag: Tag) -> Result<Pane> {
+    /// Returns a [`PaneCreateFuture`] that must be consumed via
+    /// [`wait()`](PaneCreateFuture::wait) to obtain the [`Pane`].
+    /// Dropping the future without calling `wait()` automatically
+    /// cleans up the server-side pane (clunk-on-abandon).
+    pub fn create_pane(&self, tag: Tag) -> Result<PaneCreateFuture> {
         let wire_tag = Some(tag.into_wire());
         self.create_pane_inner(wire_tag)
     }
@@ -235,15 +238,11 @@ impl App {
     /// Component panes have no title or command surface — they are
     /// building blocks meant to be interacted with through their
     /// parent pane's tag or their own content area.
-    pub fn create_component_pane(&self) -> Result<Pane> {
+    pub fn create_component_pane(&self) -> Result<PaneCreateFuture> {
         self.create_pane_inner(None)
     }
 
-    fn create_pane_inner(&self, wire_tag: Option<CreatePaneTag>) -> Result<Pane> {
-
-        // Set up oneshot for the PaneCreated response.
-        // The dispatcher pre-registers the channel before sending the response,
-        // so there is no race between PaneCreated and channel availability.
+    fn create_pane_inner(&self, wire_tag: Option<CreatePaneTag>) -> Result<PaneCreateFuture> {
         // Propose a UUID for the new pane — client-chosen, server confirms.
         let proposed_id = PaneId::new();
 
@@ -255,26 +254,15 @@ impl App {
         self.comp_tx.send(ClientToComp::CreatePane { pane: proposed_id, tag: wire_tag })
             .map_err(|_| PaneError::Disconnected)?;
 
-        // Wait for PaneCreated (with timeout)
-        let response = create_rx.recv_timeout(std::time::Duration::from_secs(5))
-            .map_err(|_| PaneError::Timeout)?;
-
-        let (pane_id, geometry) = match response.msg {
-            CompToClient::PaneCreated { pane, geometry } => (pane, geometry),
-            _ => return Err(PaneError::Refused.into()),
-        };
-
-        self.pane_count.fetch_add(1, Ordering::Relaxed);
-
-        Ok(Pane::new(
-            pane_id,
-            geometry,
-            response.pane_rx,
-            self.comp_tx.clone(),
-            response.pane_tx,
-            self.pane_count.clone(),
-            self.done_signal.clone(),
-        ))
+        Ok(PaneCreateFuture {
+            response_rx: create_rx,
+            proposed_id,
+            comp_tx: self.comp_tx.clone(),
+            pending_creates: self.pending_creates.clone(),
+            pane_count: self.pane_count.clone(),
+            done_signal: self.done_signal.clone(),
+            consumed: false,
+        })
     }
 
     /// Wait until all panes are closed.
@@ -287,6 +275,95 @@ impl App {
     }
 }
 
+
+/// A handle to a pane that is being created on the server.
+///
+/// Returned by [`App::create_pane`] and [`App::create_component_pane`].
+/// Must be consumed via [`wait()`](PaneCreateFuture::wait) to obtain
+/// the [`Pane`]. If dropped without calling `wait()`, the server-side
+/// pane is automatically cleaned up via `RequestClose` — the
+/// clunk-on-abandon pattern from 9P.
+///
+/// # Session type
+///
+/// Degenerate `Recv<CreateResponse, End>` — receive one message,
+/// transition to terminal. Follows the same affine pattern as
+/// [`ReplyPort`](crate::ReplyPort): normal path consumes via a
+/// method, Drop path compensates.
+#[must_use = "dropping a PaneCreateFuture leaks a pane on the server — call .wait()"]
+pub struct PaneCreateFuture {
+    response_rx: mpsc::Receiver<CreateResponse>,
+    proposed_id: PaneId,
+    comp_tx: mpsc::Sender<ClientToComp>,
+    pending_creates: Arc<Mutex<HashMap<PaneId, mpsc::Sender<CreateResponse>>>>,
+    pane_count: Arc<AtomicUsize>,
+    done_signal: Arc<(Mutex<()>, std::sync::Condvar)>,
+    /// Set to true by wait()/wait_timeout() — tells Drop to skip
+    /// the cancel-sender logic since the response was consumed.
+    consumed: bool,
+}
+
+impl PaneCreateFuture {
+    /// Wait for the compositor to create the pane (default 5s timeout).
+    pub fn wait(self) -> Result<Pane> {
+        self.wait_timeout(Duration::from_secs(5))
+    }
+
+    /// Wait for the compositor to create the pane with a custom timeout.
+    pub fn wait_timeout(mut self, timeout: Duration) -> Result<Pane> {
+        let response = self.response_rx.recv_timeout(timeout)
+            .map_err(|_| PaneError::Timeout)?;
+
+        let (pane_id, geometry) = match response.msg {
+            CompToClient::PaneCreated { pane, geometry } => (pane, geometry),
+            _ => return Err(PaneError::Refused.into()),
+        };
+
+        self.pane_count.fetch_add(1, Ordering::Relaxed);
+        self.consumed = true;
+
+        Ok(Pane::new(
+            pane_id,
+            geometry,
+            response.pane_rx,
+            self.comp_tx.clone(),
+            response.pane_tx,
+            self.pane_count.clone(),
+            self.done_signal.clone(),
+        ))
+    }
+}
+
+impl Drop for PaneCreateFuture {
+    fn drop(&mut self) {
+        if self.consumed {
+            return;
+        }
+        // The future was dropped without calling wait().
+        // The server may have already created (or be about to create) the pane.
+        // Replace our pending_creates entry with a cancel-sender that
+        // auto-closes the orphan pane when PaneCreated arrives.
+        let comp_tx = self.comp_tx.clone();
+        let pane_id = self.proposed_id;
+        let (cancel_tx, cancel_rx) = mpsc::channel();
+
+        if let Ok(mut pending) = self.pending_creates.lock() {
+            pending.insert(pane_id, cancel_tx);
+        }
+
+        // Spawn a lightweight cleanup thread. It blocks until the
+        // dispatcher delivers the response (or the connection dies),
+        // then sends RequestClose if the pane was created.
+        thread::spawn(move || {
+            if let Ok(response) = cancel_rx.recv_timeout(Duration::from_secs(10)) {
+                if matches!(response.msg, CompToClient::PaneCreated { .. }) {
+                    let _ = comp_tx.send(ClientToComp::RequestClose { pane: pane_id });
+                }
+            }
+            // PaneRefused or timeout: nothing to clean up
+        });
+    }
+}
 
 impl std::fmt::Debug for App {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {

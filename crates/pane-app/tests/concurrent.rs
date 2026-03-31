@@ -38,7 +38,7 @@ fn multi_pane_concurrent_dispatch() {
     // Create all panes, collect their IDs
     let mut panes = Vec::new();
     for _ in 0..num_panes {
-        let pane = app.create_pane(Tag::new("Stress")).unwrap();
+        let pane = app.create_pane(Tag::new("Stress")).unwrap().wait().unwrap();
         panes.push(pane);
     }
 
@@ -108,7 +108,7 @@ fn self_delivery_burst_from_workers() {
     let mock_handle = thread::spawn(move || mock.run());
 
     let app = App::connect_test("com.test.burst", conn).unwrap();
-    let pane = app.create_pane(Tag::new("Burst")).unwrap();
+    let pane = app.create_pane(Tag::new("Burst")).unwrap().wait().unwrap();
     let pane_id = pane.id();
     let proxy = pane.messenger();
 
@@ -335,7 +335,7 @@ fn looper_shutdown_under_active_posting() {
     let mock_handle = thread::spawn(move || mock.run());
 
     let app = App::connect_test("com.test.shutdown", conn).unwrap();
-    let pane = app.create_pane(Tag::new("Shutdown")).unwrap();
+    let pane = app.create_pane(Tag::new("Shutdown")).unwrap().wait().unwrap();
     let pane_id = pane.id();
     let proxy = pane.messenger();
 
@@ -1053,7 +1053,7 @@ fn stress_concurrent_create_pane() {
     // PaneCreated dispatch and channel registration were dropped.
     let mut panes = Vec::new();
     for _ in 0..num_panes {
-        let pane = app.create_pane(Tag::new("Race")).unwrap();
+        let pane = app.create_pane(Tag::new("Race")).unwrap().wait().unwrap();
         let id = pane.id();
         // Inject Focus for this pane immediately — the dispatcher
         // should already have the channel registered.

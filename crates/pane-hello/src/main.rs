@@ -20,7 +20,7 @@ fn run() -> pane_app::Result<()> {
         Tag::new("Hello, pane!")
             .command(cmd("save", "Save").shortcut("Ctrl+S"))
             .command(cmd("close", "Close").shortcut("Alt+W")),
-    )?;
+    )?.wait()?;
 
     // Register keyboard shortcuts — Ctrl+S and Escape
     pane.add_shortcut(KeyCombo::new(Key::Char('s'), Modifiers::CTRL), "save", "");

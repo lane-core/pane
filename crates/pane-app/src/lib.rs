@@ -40,7 +40,7 @@
 //!     let pane = app.create_pane(
 //!         Tag::new("Hello")
 //!             .command(cmd("close", "Close").shortcut("Alt+W")),
-//!     )?;
+//!     )?.wait()?;
 //!     pane.run(|_messenger, msg| match msg {
 //!         Message::Key(key) if key.is_escape() => Ok(false),
 //!         Message::CloseRequested => Ok(false),
@@ -86,7 +86,7 @@ pub mod scripting;
 
 // --- Developer-facing API ---
 
-pub use app::App;
+pub use app::{App, PaneCreateFuture};
 pub use error::{Error, ConnectError, PaneError, ScriptError, Result};
 pub use event::Message;
 pub use exit::ExitReason;

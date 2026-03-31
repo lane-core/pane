@@ -22,7 +22,7 @@ fn hello_pane_lifecycle() {
     let pane = app.create_pane(
         Tag::new("Hello")
             .command(cmd("close", "Close this pane").shortcut("Alt+W")),
-    ).unwrap();
+    ).unwrap().wait().unwrap();
 
     let pane_id = pane.id();
     eprintln!("[test] pane created with id {:?}", pane_id);
