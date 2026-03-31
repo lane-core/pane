@@ -55,6 +55,7 @@
 //! - [`pane_session`] — session-typed channels used for the compositor handshake
 
 pub mod app;
+pub mod clipboard;
 pub mod completions;
 pub(crate) mod connection;
 pub mod error;
@@ -88,6 +89,7 @@ pub mod undo;
 // --- Developer-facing API ---
 
 pub use app::{App, PaneCreateFuture};
+pub use clipboard::{Clipboard, ClipboardMetadata, Sensitivity, Locality};
 pub use error::{Error, ConnectError, PaneError, ScriptError, Result};
 pub use event::Message;
 pub use exit::{ExitReason, QuitResult};
