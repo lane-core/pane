@@ -71,7 +71,7 @@ Builder methods use bare names per Rust convention, not `set_`/`add_` prefixes:
 | `Lock()`/`Unlock()` | `&mut self` on Handler | Borrow checker replaces locking. |
 | Dynamic `BMessage` fields | Typed `Message` enum + filesystem scripting | Two roles separated. |
 | Deep view traversal | Pane boundary principle — declared Attributes only | Stable scripting contracts. |
-| Unbounded kernel port | Bounded sync_channel(256) | Backpressure. |
+| Unbounded kernel port | Unbounded calloop channel | Be's kernel ports were unbounded; pane briefly used bounded sync_channel(256) for backpressure but reverted to unbounded with the calloop migration — real backpressure happens at the compositor level, not the looper channel. |
 | `be_app` global | `App` is a held value | No globals. |
 | No crash monitoring | `Messenger::monitor()` + `Message::PaneExited` | Erlang-style. |
 | C++ overloading for SendMessage | Distinct method names (`send_message`, `send_and_wait`, `send_request`) | Tier 3: Rust doesn't overload. |
