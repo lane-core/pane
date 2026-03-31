@@ -183,7 +183,7 @@ Running headless:
 > — Mamimi, FLCL
 
 pane's design is human-authored (the fruit of my lifelong fascination with
-operating system design, going back to using BeOS and Plan 9 as a young
+operating system design, going back to using BeOS and Plan 9 as a young teenage
 hacker), standing on the shoulders of giants. The decision to ground the
 architecture in BeOS's systems engineering and Plan 9's distributed computing
 model was deliberate — these were the best ideas of a golden age of operating
@@ -220,13 +220,18 @@ computing, nix packaging, Wayland protocol, s6 service management — spans
 enough domains that no single developer could hold it all in working memory
 simultaneously. An AI agent that can reference the Be Newsletter archive, read
 Haiku source, consult Plan 9 papers, verify session type soundness, and write
-the code in a single conversation may be more than mean for this particular
-task. The architecture is the prompt, in the deepest sense: well-chosen
-constraints lead to well-shaped implementations.
+the code in a single conversation may well be above the mean for this particular
+task. The architecture is the prompt, in the deepest sense: well-chosen design
+constraints correlate with well-shaped implementations -- and our bet is that
+correlation is sufficient in our case. The modular nature of the architecture
+also entails that the code surface of the most mission-critical components of
+our infrastructure can be readily vetted by human eyes if need be.
 
-We are explicit about this because the result should be judged on its merits,
+We are explicit about this process because the result should be judged on its merits,
 not on assumptions about how it was produced. Read the code. Run the tests. The
-design either holds or it doesn't.
+design either holds or it doesn't. That being said, if you believe enough in what
+you see here and don't want matters to be left to chance, we welcome your help in
+building, testing, and verifying pane's architecture with us.
 
 ## License
 
