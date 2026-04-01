@@ -59,12 +59,23 @@ impl ClientStream {
 
 /// Per-client state tracked by the compositor.
 /// Reading is handled by calloop SessionSource in pane-comp/pane-headless;
-/// this struct holds only the write stream and owned pane list.
+/// this struct holds only the write stream, identity, and owned pane list.
 pub struct ClientSession {
     /// The stream for writing active-phase responses back to the client.
     pub stream: ClientStream,
     /// PaneIds owned by this client.
     pub panes: Vec<PaneId>,
+    /// Peer identity from the handshake (remote TCP connections only).
+    /// `None` for local unix socket connections where identity is
+    /// implicit via `SO_PEERCRED`.
+    ///
+    /// # Plan 9
+    ///
+    /// 9P's `Tattach` stored `uname` per-connection. The auth fid
+    /// established before attach cryptographically bound the identity.
+    /// pane stores the self-reported identity here; full verification
+    /// is deferred to TLS certificate validation.
+    pub identity: Option<pane_proto::protocol::PeerIdentity>,
 }
 
 /// Per-pane state tracked by the compositor.
@@ -137,16 +148,36 @@ impl ProtocolServer {
     }
 
     /// Register a client after handshake completes.
-    /// Stores the write stream for sending responses. The read side
-    /// is registered as a calloop SessionSource by the caller
-    /// (pane-comp or pane-headless).
-    pub fn register_client(&mut self, client_id: usize, write_stream: ClientStream) {
+    /// Stores the write stream and identity for sending responses.
+    /// The read side is registered as a calloop SessionSource by
+    /// the caller (pane-comp or pane-headless).
+    pub fn register_client(
+        &mut self,
+        client_id: usize,
+        write_stream: ClientStream,
+        identity: Option<pane_proto::protocol::PeerIdentity>,
+    ) {
+        if let Some(ref id) = identity {
+            info!("client {} registered ({}@{})", client_id, id.username, id.hostname);
+        } else {
+            info!("client {} registered (local)", client_id);
+        }
         self.clients.insert(client_id, ClientSession {
             stream: write_stream,
             panes: Vec::new(),
+            identity,
         });
+    }
 
-        info!("client {} registered", client_id);
+    /// Check whether `client_id` owns `pane`.
+    ///
+    /// # Plan 9
+    ///
+    /// 9P scoped fids per-connection — a client could only reference
+    /// fids from its own session. pane uses globally unique PaneIds
+    /// (for federation), so ownership must be checked at runtime.
+    fn pane_owned_by(&self, client_id: usize, pane: &PaneId) -> bool {
+        self.panes.get(pane).map_or(false, |s| s.client_id == client_id)
     }
 
     /// Handle an active-phase message from a client.
@@ -157,6 +188,7 @@ impl ProtocolServer {
         geometry: PaneGeometry,
     ) {
         match msg {
+            // CreatePane introduces a new pane — no ownership check needed.
             ClientToComp::CreatePane { pane: pane_id, tag } => {
                 let title = tag.as_ref()
                     .map(|t| t.title.text.clone())
@@ -177,6 +209,10 @@ impl ProtocolServer {
             }
 
             ClientToComp::RequestClose { pane } => {
+                if !self.pane_owned_by(client_id, &pane) {
+                    warn!("client {} attempted close on pane {:?} it does not own", client_id, pane);
+                    return;
+                }
                 info!("client {} requesting close for pane {:?}", client_id, pane);
                 self.panes.remove(&pane);
                 if let Some(client) = self.clients.get_mut(&client_id) {
@@ -187,6 +223,7 @@ impl ProtocolServer {
             }
 
             ClientToComp::SetTitle { pane, title } => {
+                if !self.pane_owned_by(client_id, &pane) { return; }
                 if let Some(state) = self.panes.get_mut(&pane) {
                     state.title = title.text.clone();
                     info!("pane {:?} title: '{}'", pane, state.title);
@@ -194,25 +231,28 @@ impl ProtocolServer {
             }
 
             ClientToComp::SetVocabulary { pane, .. } => {
+                if !self.pane_owned_by(client_id, &pane) { return; }
                 info!("pane {:?} vocabulary updated", pane);
             }
 
             ClientToComp::SetContent { pane, .. } => {
+                if !self.pane_owned_by(client_id, &pane) { return; }
                 let _ = pane; // content rendering comes later
             }
 
-            ClientToComp::CompletionResponse { .. } => {}
+            ClientToComp::CompletionResponse { pane, .. } => {
+                if !self.pane_owned_by(client_id, &pane) { return; }
+            }
 
             ClientToComp::RequestResize { pane, width, height } => {
+                if !self.pane_owned_by(client_id, &pane) { return; }
                 info!("pane {:?} requested resize to {}x{}", pane, width, height);
-                // Compositor decides whether to honor — tiling may constrain.
-                // For now, acknowledge with the requested geometry.
                 if let Some(client) = self.clients.get_mut(&client_id) {
                     let response = CompToClient::Resize {
                         pane,
                         geometry: PaneGeometry {
                             width, height,
-                            cols: (width as u16) / 9,  // approximate cell size
+                            cols: (width as u16) / 9,
                             rows: (height as u16) / 17,
                         },
                     };
@@ -221,14 +261,14 @@ impl ProtocolServer {
             }
 
             ClientToComp::SetSizeLimits { pane, min_width, min_height, max_width, max_height } => {
+                if !self.pane_owned_by(client_id, &pane) { return; }
                 info!("pane {:?} size limits: {}x{} - {}x{}", pane,
                     min_width, min_height, max_width, max_height);
-                // Store for layout engine (not yet implemented)
             }
 
             ClientToComp::SetHidden { pane, hidden } => {
+                if !self.pane_owned_by(client_id, &pane) { return; }
                 info!("pane {:?} hidden={}", pane, hidden);
-                // Visibility control (not yet implemented)
             }
         }
     }

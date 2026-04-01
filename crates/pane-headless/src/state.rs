@@ -49,7 +49,9 @@ impl HeadlessState {
             }
         };
 
-        self.server.register_client(client_id, ClientStream::Unix(write_stream));
+        // Unix clients have no PeerIdentity — kernel provides
+        // identity via SO_PEERCRED.
+        self.server.register_client(client_id, ClientStream::Unix(write_stream), None);
 
         let source = match SessionSource::new(stream) {
             Ok(s) => s,
@@ -68,6 +70,7 @@ impl HeadlessState {
         &mut self,
         client_id: usize,
         stream: TcpStream,
+        identity: Option<pane_proto::protocol::PeerIdentity>,
         loop_handle: &calloop::LoopHandle<'_, HeadlessState>,
     ) {
         let write_stream = match stream.try_clone() {
@@ -78,7 +81,7 @@ impl HeadlessState {
             }
         };
 
-        self.server.register_client(client_id, ClientStream::Tcp(write_stream));
+        self.server.register_client(client_id, ClientStream::Tcp(write_stream), identity);
 
         // Set non-blocking for calloop
         if let Err(e) = stream.set_nonblocking(true) {

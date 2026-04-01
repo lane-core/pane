@@ -101,7 +101,7 @@ impl CompState {
                 }
             };
 
-            self.server.register_client(client_id, pane_server::ClientStream::Unix(write_stream));
+            self.server.register_client(client_id, pane_server::ClientStream::Unix(write_stream), None);
 
             let source = match SessionSource::new(stream) {
                 Ok(s) => s,

@@ -209,7 +209,7 @@ impl<P: UndoPolicy> UndoManager<P> {
 
     pub fn undo(&mut self) -> Option<UndoableEdit> {
         let edit = self.policy.undo()?;
-        self.edit_count = self.edit_count.wrapping_sub(1);
+        self.edit_count = self.edit_count.saturating_sub(1);
         Some(edit)
     }
 

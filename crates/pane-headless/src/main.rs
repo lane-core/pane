@@ -134,10 +134,10 @@ fn run(opts: &Opts) -> Result<()> {
         Arc::new(Mutex::new(file))
     });
 
-    // Handshake completion — either unix or TCP stream.
+    // Handshake completion — either unix or TCP stream, with identity.
     enum CompletedHandshake {
         Unix(usize, std::os::unix::net::UnixStream),
-        Tcp(usize, std::net::TcpStream),
+        Tcp(usize, std::net::TcpStream, Option<pane_proto::protocol::PeerIdentity>),
     }
 
     // Handshake completion channel — spawned threads send completed
@@ -175,8 +175,8 @@ fn run(opts: &Opts) -> Result<()> {
                     CompletedHandshake::Unix(client_id, stream) => {
                         state.register_unix_client(client_id, stream, &loop_handle);
                     }
-                    CompletedHandshake::Tcp(client_id, stream) => {
-                        state.register_tcp_client(client_id, stream, &loop_handle);
+                    CompletedHandshake::Tcp(client_id, stream, identity) => {
+                        state.register_tcp_client(client_id, stream, identity, &loop_handle);
                     }
                 }
             }
@@ -315,7 +315,7 @@ fn run(opts: &Opts) -> Result<()> {
                                         let tcp_stream = result.transport.into_inner().into_stream();
                                         info!("tcp handshake complete for client {} (sig: {})",
                                             client_id, result.signature);
-                                        let _ = sender.send(CompletedHandshake::Tcp(client_id, tcp_stream));
+                                        let _ = sender.send(CompletedHandshake::Tcp(client_id, tcp_stream, result.identity));
                                     }
                                     Err(e) => warn!("tcp handshake failed: {}", e),
                                 }
@@ -330,7 +330,7 @@ fn run(opts: &Opts) -> Result<()> {
                                         let tcp_stream = result.transport.into_stream();
                                         info!("tcp handshake complete for client {} (sig: {})",
                                             client_id, result.signature);
-                                        let _ = sender.send(CompletedHandshake::Tcp(client_id, tcp_stream));
+                                        let _ = sender.send(CompletedHandshake::Tcp(client_id, tcp_stream, result.identity));
                                     }
                                     Err(e) => warn!("tcp handshake failed: {}", e),
                                 }

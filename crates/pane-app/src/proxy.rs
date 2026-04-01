@@ -334,14 +334,15 @@ impl Messenger {
 
     /// Post an event to this pane's looper repeatedly at the given interval.
     ///
-    /// Convenience wrapper that clones the event each fire. The event must
-    /// be a clonable variant (system events like Pulse, Activated, etc.).
-    /// For non-clonable events, use [`send_periodic_fn`](Messenger::send_periodic_fn).
+    /// Clones the event each fire. Only works with clonable variants
+    /// (Pulse, Activated, CommandExecuted, etc.). Panics at fire time
+    /// on variants carrying linear handles (AppMessage, Reply,
+    /// CompletionRequest, ClipboardLockGranted).
     ///
-    /// # Panics
-    ///
-    /// Panics at fire time if the event is `Message::AppMessage` or `Message::Reply`
-    /// (these are consumed once and cannot be cloned).
+    /// Prefer [`send_periodic_fn`](Messenger::send_periodic_fn) which
+    /// produces fresh events via a factory closure — no Clone needed,
+    /// no panic risk.
+    #[deprecated(since = "0.1.0", note = "use send_periodic_fn; Message::Clone is a partial function")]
     pub fn send_periodic(&self, event: Message, interval: std::time::Duration) -> Result<TimerToken>
     {
         self.send_periodic_fn(move || event.clone(), interval)
