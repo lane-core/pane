@@ -14,7 +14,7 @@ Default policy: use Be name (snake_case). Deviations are exceptions.
 | `BMessenger` | `Messenger` | Faithful |
 | `BHandler` | `Handler` | Faithful |
 | `BMenuBar`/`BMenuItem` | `Tag`/`CommandBuilder` | Architectural: command surface, not menu bar. |
-| `BMessageRunner` | `TimerToken` (receipt from `send_periodic`) | Rule 2: method on host, not standalone type. |
+| `BMessageRunner` | `TimerToken` (receipt from `send_periodic_fn`) | Rule 2: method on host, not standalone type. Cancel-on-drop matches BMessageRunner's cancel-on-destruct. |
 | `property_info` | `PropertyInfo` | Faithful adaptation of Be's property_info tables. Carries operations, specifier forms, value type. Replaced earlier `Attribute` stub. |
 | `BHandler::ResolveSpecifier` + `GetSupportedSuites` | `ScriptableHandler` trait | Separate companion trait to Handler (not supertrait). Be had these on BHandler because every handler participated in the scripting chain; pane has one handler per pane, chain walk is inter-process. |
 | (none) | `CompletionReplyPort` | Novel: typed ownership handle for completion responses. Consumed by `.reply()`, Drop sends empty list. No Be equivalent (Be's completion was synchronous within app_server). |

@@ -1531,6 +1531,8 @@ dependencies = [
  "pane-proto",
  "pane-server",
  "pane-session",
+ "rustls",
+ "rustls-pemfile",
  "tracing",
  "tracing-subscriber",
 ]

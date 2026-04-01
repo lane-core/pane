@@ -29,7 +29,7 @@
 mod state;
 
 use std::fs::{File, OpenOptions};
-use std::io::Write;
+use std::io::{BufReader, Write};
 use std::net::TcpListener;
 use std::os::unix::net::UnixListener;
 use std::sync::{Arc, Mutex};
@@ -69,6 +69,14 @@ struct Opts {
     /// Logs all handshake and active-phase messages with timestamps.
     #[bpaf(long("protocol-trace"), argument("FILE"), optional)]
     protocol_trace: Option<String>,
+
+    /// PEM certificate file for TLS. Requires --tls-key.
+    #[bpaf(long("tls-cert"), argument("FILE"), optional)]
+    tls_cert: Option<String>,
+
+    /// PEM private key file for TLS. Requires --tls-cert.
+    #[bpaf(long("tls-key"), argument("FILE"), optional)]
+    tls_key: Option<String>,
 }
 
 fn main() {
@@ -133,6 +141,39 @@ fn run(opts: &Opts) -> Result<()> {
         info!("protocol trace: {}", path);
         Arc::new(Mutex::new(file))
     });
+
+    // --- TLS configuration (optional) ---
+    //
+    // When --tls-cert and --tls-key are both provided, TCP connections
+    // are wrapped in TLS before the session-typed handshake. The TLS
+    // handshake completes eagerly (blocking) on the spawned thread,
+    // then the session-typed handshake runs over the encrypted channel.
+    // After both handshakes complete, the TlsServerTransport is
+    // unwrapped back to a raw TcpStream for calloop registration —
+    // TLS is a handshake-phase concern, not an active-phase one (the
+    // active phase uses calloop's non-blocking I/O on the raw fd).
+    //
+    // # Plan 9
+    //
+    // Plan 9's exportfs had `-e 'rc4_256 sha1'` for encrypted export
+    // (see `reference/plan9/man/4/exportfs`). The encryption wrapped
+    // the 9P connection at the transport layer via ssl(3), transparent
+    // to the protocol above. pane follows the same layering: TLS wraps
+    // TCP below the session types, invisible to the protocol.
+    let tls_config: Option<Arc<rustls::ServerConfig>> = match (&opts.tls_cert, &opts.tls_key) {
+        (Some(cert_path), Some(key_path)) => {
+            let config = load_tls_config(cert_path, key_path)?;
+            info!("tls: loaded cert={} key={}", cert_path, key_path);
+            Some(Arc::new(config))
+        }
+        (None, None) => None,
+        (Some(_), None) => {
+            anyhow::bail!("--tls-cert requires --tls-key");
+        }
+        (None, Some(_)) => {
+            anyhow::bail!("--tls-key requires --tls-cert");
+        }
+    };
 
     // Handshake completion — either unix or TCP stream, with identity.
     enum CompletedHandshake {
@@ -268,7 +309,11 @@ fn run(opts: &Opts) -> Result<()> {
     if let Some(ref addr) = opts.tcp_listen {
         let tcp_listener = TcpListener::bind(addr)?;
         tcp_listener.set_nonblocking(true)?;
-        info!("tcp: listening on {}", addr);
+        if tls_config.is_some() {
+            info!("tcp+tls: listening on {}", addr);
+        } else {
+            info!("tcp: listening on {}", addr);
+        }
 
         let tcp_source = calloop::generic::Generic::new(
             tcp_listener,
@@ -279,6 +324,7 @@ fn run(opts: &Opts) -> Result<()> {
         let tcp_hs_tx = handshake_tx.clone();
         let tcp_instance_id = instance_id.clone();
         let tcp_trace = trace_writer.clone();
+        let tcp_tls = tls_config.clone();
         loop_handle.insert_source(tcp_source, move |_event, listener, state: &mut HeadlessState| {
             loop {
                 match listener.accept() {
@@ -289,6 +335,7 @@ fn run(opts: &Opts) -> Result<()> {
                         let sender = tcp_hs_tx.clone();
                         let iid = tcp_instance_id.clone();
                         let trace = tcp_trace.clone();
+                        let tls = tcp_tls.clone();
 
                         std::thread::spawn(move || {
                             use pane_session::transport::tcp::TcpTransport;
@@ -296,43 +343,109 @@ fn run(opts: &Opts) -> Result<()> {
                             use pane_proto::protocol::ConnectionTopology;
 
                             let _ = stream.set_read_timeout(Some(std::time::Duration::from_secs(10)));
-                            let transport = TcpTransport::from_stream(stream);
 
-                            if let Some(ref tw) = trace {
-                                let label = format!("tcp:{}:{}", addr, client_id);
-                                let proxy = ProxyTransport::new(
-                                    transport,
-                                    TraceFile(tw.clone()),
-                                    label,
-                                );
-                                match pane_server::run_server_handshake_generic(
-                                    proxy,
-                                    "pane-headless",
-                                    &iid,
-                                    ConnectionTopology::Remote,
-                                ) {
-                                    Ok(result) => {
-                                        let tcp_stream = result.transport.into_inner().into_stream();
-                                        info!("tcp handshake complete for client {} (sig: {})",
-                                            client_id, result.signature);
-                                        let _ = sender.send(CompletedHandshake::Tcp(client_id, tcp_stream, result.identity));
+                            if let Some(ref server_config) = tls {
+                                // TLS path: wrap the TCP stream in TLS, then
+                                // run the session-typed handshake over the
+                                // encrypted channel. ProxyTransport wraps the
+                                // TlsServerTransport so tracing sees decrypted
+                                // protocol messages, not TLS ciphertext.
+                                use pane_session::transport::tls::accept_tls;
+
+                                let tls_transport = match accept_tls(stream, server_config.clone()) {
+                                    Ok(t) => t,
+                                    Err(e) => {
+                                        warn!("tls handshake failed for {}: {}", addr, e);
+                                        return;
                                     }
-                                    Err(e) => warn!("tcp handshake failed: {}", e),
+                                };
+
+                                if let Some(ref tw) = trace {
+                                    let label = format!("tcp+tls:{}:{}", addr, client_id);
+                                    let proxy = ProxyTransport::new(
+                                        tls_transport,
+                                        TraceFile(tw.clone()),
+                                        label,
+                                    );
+                                    match pane_server::run_server_handshake_generic(
+                                        proxy,
+                                        "pane-headless",
+                                        &iid,
+                                        ConnectionTopology::Remote,
+                                    ) {
+                                        Ok(result) => {
+                                            // Unwrap: ProxyTransport → TlsServerTransport →
+                                            // StreamOwned → TcpStream. After handshake, the
+                                            // raw stream is registered with calloop for
+                                            // non-blocking active-phase I/O.
+                                            let tcp_stream = result.transport
+                                                .into_inner()
+                                                .into_stream()
+                                                .sock;
+                                            info!("tcp+tls handshake complete for client {} (sig: {})",
+                                                client_id, result.signature);
+                                            let _ = sender.send(CompletedHandshake::Tcp(client_id, tcp_stream, result.identity));
+                                        }
+                                        Err(e) => warn!("tcp+tls handshake failed: {}", e),
+                                    }
+                                } else {
+                                    match pane_server::run_server_handshake_generic(
+                                        tls_transport,
+                                        "pane-headless",
+                                        &iid,
+                                        ConnectionTopology::Remote,
+                                    ) {
+                                        Ok(result) => {
+                                            let tcp_stream = result.transport
+                                                .into_stream()
+                                                .sock;
+                                            info!("tcp+tls handshake complete for client {} (sig: {})",
+                                                client_id, result.signature);
+                                            let _ = sender.send(CompletedHandshake::Tcp(client_id, tcp_stream, result.identity));
+                                        }
+                                        Err(e) => warn!("tcp+tls handshake failed: {}", e),
+                                    }
                                 }
                             } else {
-                                match pane_server::run_server_handshake_generic(
-                                    transport,
-                                    "pane-headless",
-                                    &iid,
-                                    ConnectionTopology::Remote,
-                                ) {
-                                    Ok(result) => {
-                                        let tcp_stream = result.transport.into_stream();
-                                        info!("tcp handshake complete for client {} (sig: {})",
-                                            client_id, result.signature);
-                                        let _ = sender.send(CompletedHandshake::Tcp(client_id, tcp_stream, result.identity));
+                                // Plaintext TCP path (no TLS configured).
+                                let transport = TcpTransport::from_stream(stream);
+
+                                if let Some(ref tw) = trace {
+                                    let label = format!("tcp:{}:{}", addr, client_id);
+                                    let proxy = ProxyTransport::new(
+                                        transport,
+                                        TraceFile(tw.clone()),
+                                        label,
+                                    );
+                                    match pane_server::run_server_handshake_generic(
+                                        proxy,
+                                        "pane-headless",
+                                        &iid,
+                                        ConnectionTopology::Remote,
+                                    ) {
+                                        Ok(result) => {
+                                            let tcp_stream = result.transport.into_inner().into_stream();
+                                            info!("tcp handshake complete for client {} (sig: {})",
+                                                client_id, result.signature);
+                                            let _ = sender.send(CompletedHandshake::Tcp(client_id, tcp_stream, result.identity));
+                                        }
+                                        Err(e) => warn!("tcp handshake failed: {}", e),
                                     }
-                                    Err(e) => warn!("tcp handshake failed: {}", e),
+                                } else {
+                                    match pane_server::run_server_handshake_generic(
+                                        transport,
+                                        "pane-headless",
+                                        &iid,
+                                        ConnectionTopology::Remote,
+                                    ) {
+                                        Ok(result) => {
+                                            let tcp_stream = result.transport.into_stream();
+                                            info!("tcp handshake complete for client {} (sig: {})",
+                                                client_id, result.signature);
+                                            let _ = sender.send(CompletedHandshake::Tcp(client_id, tcp_stream, result.identity));
+                                        }
+                                        Err(e) => warn!("tcp handshake failed: {}", e),
+                                    }
                                 }
                             }
                         });
@@ -379,4 +492,35 @@ fn run(opts: &Opts) -> Result<()> {
     let _ = std::fs::remove_file(&unix_path);
 
     Ok(())
+}
+
+/// Load a TLS server configuration from PEM certificate and key files.
+///
+/// The certificate file may contain a chain (leaf + intermediates).
+/// The key file must contain exactly one private key (PKCS#8 or
+/// PKCS#1/SEC1).
+fn load_tls_config(cert_path: &str, key_path: &str) -> Result<rustls::ServerConfig> {
+    let cert_file = File::open(cert_path)
+        .map_err(|e| anyhow::anyhow!("cannot open TLS cert {}: {}", cert_path, e))?;
+    let key_file = File::open(key_path)
+        .map_err(|e| anyhow::anyhow!("cannot open TLS key {}: {}", key_path, e))?;
+
+    let certs: Vec<_> = rustls_pemfile::certs(&mut BufReader::new(cert_file))
+        .collect::<std::result::Result<Vec<_>, _>>()
+        .map_err(|e| anyhow::anyhow!("invalid PEM certificate {}: {}", cert_path, e))?;
+
+    if certs.is_empty() {
+        anyhow::bail!("no certificates found in {}", cert_path);
+    }
+
+    let key = rustls_pemfile::private_key(&mut BufReader::new(key_file))
+        .map_err(|e| anyhow::anyhow!("invalid PEM key {}: {}", key_path, e))?
+        .ok_or_else(|| anyhow::anyhow!("no private key found in {}", key_path))?;
+
+    let config = rustls::ServerConfig::builder()
+        .with_no_client_auth()
+        .with_single_cert(certs, key)
+        .map_err(|e| anyhow::anyhow!("TLS config error: {}", e))?;
+
+    Ok(config)
 }
