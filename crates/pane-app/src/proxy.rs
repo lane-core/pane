@@ -46,7 +46,7 @@ pub(crate) type LooperSender = calloop::channel::Sender<LooperMessage>;
 /// - Combines outbound (to compositor) and self-delivery (to own
 ///   looper) in one handle
 /// - Timer methods ([`send_delayed`](Messenger::send_delayed),
-///   [`send_periodic`](Messenger::send_periodic)) are on Messenger
+///   [`send_periodic_fn`](Messenger::send_periodic_fn)) are on Messenger
 ///   rather than a separate `BMessageRunner` class
 ///
 /// # Plan 9
@@ -410,7 +410,7 @@ fn next_filter_id() -> crate::filter::FilterId {
 
 /// Token for cancelling a periodic timer.
 ///
-/// Created by `Messenger::send_periodic`. Dropping the token cancels
+/// Created by [`Messenger::send_periodic_fn`]. Dropping the token cancels
 /// the timer (affine: every timer lifecycle terminates). Call
 /// `cancel()` explicitly if you need cancellation before drop.
 ///

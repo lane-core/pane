@@ -25,11 +25,26 @@ use crate::exit::ExitReason;
 /// (closure form), you match on Message directly. When using
 /// [`Pane::run_with`](crate::Pane::run_with) (Handler form), each variant
 /// dispatches to the corresponding [`Handler`](crate::Handler) method.
+///
+/// # BeOS
+///
+/// Replaces `BMessage` `what` dispatch. Key differences:
+/// - No dynamic data fields — each variant carries a typed payload.
+/// - No `uint32` code namespace — Rust enum variants, not global codes.
+/// - App-defined messages use [`AppMessage`](Message::AppMessage) with
+///   `Box<dyn Any + Send>`, not a subrange of the `what` code space.
+/// - PaneId is stripped before delivery (demuxed at the dispatcher).
 #[derive(Debug)]
 pub enum Message {
     /// The pane is ready (initial geometry received).
+    /// Always the first event delivered.
     Ready(PaneGeometry),
     /// The pane was resized.
+    ///
+    /// # BeOS
+    ///
+    /// `B_WINDOW_RESIZED` / `BWindow::FrameResized`. Delivers full
+    /// `PaneGeometry` (pixels + cells). Trailing resizes are coalesced.
     Resize(PaneGeometry),
     /// The pane was activated (gained focus).
     Activated,
@@ -40,6 +55,12 @@ pub enum Message {
     /// Mouse input.
     Mouse(MouseEvent),
     /// The compositor requests this pane to close.
+    ///
+    /// # BeOS
+    ///
+    /// `B_QUIT_REQUESTED` / `BWindow::QuitRequested`. Be returned
+    /// `true` to accept; pane returns `Ok(false)` — the return value
+    /// means "keep running", not "should quit".
     CloseRequested,
     /// The command surface was activated.
     CommandActivated,
@@ -61,6 +82,12 @@ pub enum Message {
     /// Periodic pulse. Delivered at the rate set by
     /// Messenger::set_pulse_rate(). The blessed way to do
     /// animations, status polling, clock ticks.
+    ///
+    /// # BeOS
+    ///
+    /// `B_PULSE` / `BWindow::Pulse`. Be ran pulse via `BMessageRunner`
+    /// in the registrar; pane integrates the timer into the looper's
+    /// calloop event loop via [`Messenger::set_pulse_rate`](crate::Messenger::set_pulse_rate).
     Pulse,
     /// The connection to the compositor was lost.
     Disconnected,
@@ -161,6 +188,9 @@ impl Message {
         pane: PaneId,
         comp_sender: &std::sync::mpsc::Sender<pane_proto::protocol::ClientToComp>,
     ) -> Option<Message> {
+        // Explicit match on every CompToClient variant — no catch-all.
+        // This ensures the compiler flags new variants when the protocol
+        // evolves, rather than silently dropping them.
         match msg {
             CompToClient::Resize { pane: p, geometry } if p == pane =>
                 Some(Message::Resize(geometry)),
@@ -185,7 +215,25 @@ impl Message {
                     input,
                     reply: CompletionReplyPort::new(pane, token, comp_sender.clone()),
                 }),
-            _ => None,
+
+            // Infrastructure messages — not surfaced to handlers.
+            // PaneCreated/PaneRefused are handled by the dispatcher
+            // in app.rs before reaching try_from_comp.
+            CompToClient::CloseAck { .. } => None,
+            CompToClient::PaneCreated { .. } => None,
+            CompToClient::PaneRefused { .. } => None,
+
+            // Wrong-pane messages (pane ID doesn't match this looper).
+            CompToClient::Resize { .. }
+            | CompToClient::Focus { .. }
+            | CompToClient::Blur { .. }
+            | CompToClient::Key { .. }
+            | CompToClient::Mouse { .. }
+            | CompToClient::Close { .. }
+            | CompToClient::CommandActivated { .. }
+            | CompToClient::CommandDismissed { .. }
+            | CompToClient::CommandExecuted { .. }
+            | CompToClient::CompletionRequest { .. } => None,
         }
     }
 }

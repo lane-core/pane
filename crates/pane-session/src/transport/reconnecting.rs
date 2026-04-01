@@ -208,47 +208,59 @@ impl ReconnectingTransport {
 
     /// Attempt to reconnect to the server.
     ///
-    /// Returns `Ok(())` if reconnection succeeds, `Err` if the timeout
-    /// has expired.
+    /// Iterates with exponential backoff until reconnection succeeds
+    /// or the timeout expires. On success, replays buffered messages.
+    /// If replay fails (connection died again), re-enters the loop.
+    ///
+    /// # Plan 9
+    ///
+    /// `aan(8)` used an iterative reconnection loop. This follows
+    /// the same pattern — no recursion, bounded by timeout.
     fn try_reconnect(&mut self) -> Result<(), SessionError> {
-        let (since, backoff) = match &self.state {
-            ConnState::Disconnected { since, backoff } => (*since, *backoff),
-            ConnState::Connected(_) => return Ok(()),
-        };
+        loop {
+            let (since, backoff) = match &self.state {
+                ConnState::Disconnected { since, backoff } => (*since, *backoff),
+                ConnState::Connected(_) => return Ok(()),
+            };
 
-        if since.elapsed() > self.config.timeout {
-            return Err(SessionError::Disconnected);
-        }
-
-        // Sleep for the current backoff before attempting
-        std::thread::sleep(backoff);
-
-        if since.elapsed() > self.config.timeout {
-            return Err(SessionError::Disconnected);
-        }
-
-        match TcpStream::connect(&self.config.addr) {
-            Ok(stream) => {
-                configure_stream(&stream);
-                self.state = ConnState::Connected(stream);
-                // Replay buffered messages
-                self.replay_buffer()?;
-                Ok(())
+            if since.elapsed() > self.config.timeout {
+                return Err(SessionError::Disconnected);
             }
-            Err(_) => {
-                // Increase backoff, capped at max
-                let next_backoff = (backoff * 2).min(self.config.max_backoff);
-                self.state = ConnState::Disconnected {
-                    since,
-                    backoff: next_backoff,
-                };
-                // Recurse to try again (bounded by timeout)
-                self.try_reconnect()
+
+            std::thread::sleep(backoff);
+
+            if since.elapsed() > self.config.timeout {
+                return Err(SessionError::Disconnected);
+            }
+
+            match TcpStream::connect(&self.config.addr) {
+                Ok(stream) => {
+                    configure_stream(&stream);
+                    self.state = ConnState::Connected(stream);
+                    // Replay buffered messages — if replay fails due
+                    // to a broken connection, re-enter the loop.
+                    match self.replay_buffer() {
+                        Ok(()) => return Ok(()),
+                        Err(SessionError::Disconnected) => continue,
+                        Err(e) => return Err(e),
+                    }
+                }
+                Err(_) => {
+                    let next_backoff = (backoff * 2).min(self.config.max_backoff);
+                    self.state = ConnState::Disconnected {
+                        since,
+                        backoff: next_backoff,
+                    };
+                }
             }
         }
     }
 
     /// Replay all buffered messages over the (re)established connection.
+    ///
+    /// If a write fails with a disconnect-class error, transitions to
+    /// disconnected state and returns `Err(Disconnected)` — the caller
+    /// (try_reconnect) re-enters its loop to retry.
     fn replay_buffer(&mut self) -> Result<(), SessionError> {
         let stream = match &mut self.state {
             ConnState::Connected(s) => s,
@@ -257,12 +269,10 @@ impl ReconnectingTransport {
 
         while let Some(data) = self.send_buffer.pop_front() {
             if let Err(e) = framing::write_framed(stream, &data) {
-                // Replay failed — go back to disconnected state
                 self.send_buffer.push_front(data);
                 let e = SessionError::from(e);
                 if matches!(e, SessionError::Disconnected) {
                     self.enter_disconnected();
-                    return self.try_reconnect();
                 }
                 return Err(e);
             }

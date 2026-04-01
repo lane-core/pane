@@ -129,6 +129,13 @@ impl Pane {
     ///     _ => Ok(true),
     /// })
     /// ```
+    ///
+    /// # BeOS
+    ///
+    /// `BLooper::Run` + `BWindow::Show`. Be's `Run()` spawned a new
+    /// thread; pane's `run()` executes on the calling thread. The
+    /// caller spawns if they want a separate thread. `run()` consumes
+    /// the `Pane`, matching Be's ownership transfer to the looper thread.
     pub fn run(self, mut handler: impl FnMut(&Messenger, Message) -> Result<bool>) -> Result<()> {
         let Pane { id, geometry, receiver, mut filters, comp_tx, looper_tx, pane_count, done_signal, shortcuts, .. } = self;
         if !shortcuts.is_empty() {
@@ -168,6 +175,13 @@ impl Pane {
     /// ```ignore
     /// pane.run_with(Weather { city: "SF".into(), data: None })
     /// ```
+    ///
+    /// # BeOS
+    ///
+    /// Same as [`run`](Pane::run) but dispatches through the
+    /// [`Handler`] trait — replaces the pattern of subclassing
+    /// `BWindow` and overriding `MessageReceived`, `FrameResized`,
+    /// `WindowActivated`, etc.
     pub fn run_with(self, mut handler: impl Handler) -> Result<()> {
         let Pane { id, geometry, receiver, mut filters, comp_tx, looper_tx, pane_count, done_signal, shortcuts, .. } = self;
         if !shortcuts.is_empty() {

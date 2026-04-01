@@ -26,6 +26,16 @@ use std::time::Duration;
 ///
 /// "system" is the well-known default (platform clipboard bridge).
 /// Other names are application-defined (kill-ring, registers, etc.).
+///
+/// # BeOS
+///
+/// Descends from `BClipboard`. Key changes:
+/// - Not a locker — Be required `Lock()`/`Unlock()` around access.
+///   pane uses typestate: [`ClipboardWriteLock`] is the locked state,
+///   `commit()` consuming the lock is the unlock.
+/// - Named by construction, not global — Be had `be_clipboard`.
+///   pane has `Clipboard::system()` as a factory.
+/// - Raw bytes + MIME type instead of `BMessage` data fields.
 #[derive(Debug, Clone)]
 pub struct Clipboard {
     name: String,
