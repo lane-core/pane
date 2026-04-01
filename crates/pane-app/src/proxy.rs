@@ -129,8 +129,18 @@ impl Messenger {
     ///
     /// **Do NOT call from a looper thread** — it blocks the event loop.
     /// Use from worker threads, CLI tools, or `App` methods only.
-    /// The async reply path (via `Handler::reply_received`) is the
-    /// deadlock-free alternative for looper-to-looper communication.
+    /// The async reply path ([`send_request`](Messenger::send_request)
+    /// + [`Handler::reply_received`](crate::Handler::reply_received))
+    /// is the deadlock-free alternative for looper-to-looper
+    /// communication.
+    ///
+    /// The thread-local guard catches self-deadlock (calling
+    /// `send_and_wait` from your own looper). It does NOT catch
+    /// mutual deadlock: looper A calls `send_and_wait` targeting B
+    /// while B simultaneously targets A. Both pass the thread-local
+    /// check (neither is targeting itself) but both block forever.
+    /// This is the same limitation BeOS had — use `send_request`
+    /// for all looper-to-looper communication.
     ///
     /// # BeOS
     ///

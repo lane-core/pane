@@ -41,7 +41,10 @@ pub trait UndoPolicy: Send + 'static {
     /// Redo. Behavior is policy-dependent.
     fn redo(&mut self) -> Option<UndoableEdit>;
 
+    /// Whether there is anything to undo.
     fn can_undo(&self) -> bool;
+
+    /// Whether there is anything to redo.
     fn can_redo(&self) -> bool;
 
     /// Human-readable description of what undo would do.
@@ -50,8 +53,10 @@ pub trait UndoPolicy: Send + 'static {
     /// Human-readable description of what redo would do.
     fn redo_description(&self) -> Option<&str>;
 
-    /// Group multiple edits into a single undo unit.
+    /// Start grouping subsequent edits into a single undo unit.
     fn begin_group(&mut self, description: &str);
+
+    /// End the current edit group.
     fn end_group(&mut self);
 
     /// Clear all history.
@@ -113,6 +118,7 @@ impl UndoEntry {
 }
 
 impl LinearPolicy {
+    /// Create a linear undo policy with empty stacks.
     pub fn new() -> Self {
         LinearPolicy {
             undo_stack: Vec::new(),
@@ -194,6 +200,8 @@ pub struct UndoManager<P: UndoPolicy = LinearPolicy> {
 }
 
 impl<P: UndoPolicy> UndoManager<P> {
+    /// Create an undo manager with the given policy. Starts in the
+    /// "saved" state (no edits recorded).
     pub fn new(policy: P) -> Self {
         UndoManager {
             policy,
@@ -202,45 +210,59 @@ impl<P: UndoPolicy> UndoManager<P> {
         }
     }
 
+    /// Record an edit. Advances the edit counter.
     pub fn record(&mut self, edit: UndoableEdit) {
         self.policy.record(edit);
         self.edit_count += 1;
     }
 
+    /// Undo the most recent edit. Returns the reversed edit, or None.
     pub fn undo(&mut self) -> Option<UndoableEdit> {
         let edit = self.policy.undo()?;
         self.edit_count = self.edit_count.saturating_sub(1);
         Some(edit)
     }
 
+    /// Redo a previously undone edit. Returns the re-applied edit, or None.
     pub fn redo(&mut self) -> Option<UndoableEdit> {
         let edit = self.policy.redo()?;
         self.edit_count += 1;
         Some(edit)
     }
 
+    /// Mark the current state as "saved." [`is_saved`](UndoManager::is_saved)
+    /// returns true until the next edit or undo.
     pub fn mark_saved(&mut self) {
         self.save_point = Some(self.edit_count);
     }
 
+    /// Whether the current edit count matches the last save point.
     pub fn is_saved(&self) -> bool {
         self.save_point == Some(self.edit_count)
     }
 
+    /// Whether there is anything to undo.
     pub fn can_undo(&self) -> bool { self.policy.can_undo() }
+    /// Whether there is anything to redo.
     pub fn can_redo(&self) -> bool { self.policy.can_redo() }
+    /// Human-readable description of what undo would do.
     pub fn undo_description(&self) -> Option<&str> { self.policy.undo_description() }
+    /// Human-readable description of what redo would do.
     pub fn redo_description(&self) -> Option<&str> { self.policy.redo_description() }
 
+    /// Start grouping subsequent edits into a single undo unit.
     pub fn begin_group(&mut self, description: &str) {
         self.policy.begin_group(description);
     }
 
+    /// End the current group. The group counts as one edit for
+    /// save-point tracking.
     pub fn end_group(&mut self) {
         self.policy.end_group();
         self.edit_count += 1;
     }
 
+    /// Clear all history. Resets the save point.
     pub fn clear(&mut self) {
         self.policy.clear();
         self.edit_count = 0;

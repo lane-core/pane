@@ -130,6 +130,13 @@ impl Pane {
     /// })
     /// ```
     ///
+    /// **Note:** Closure handlers cannot reply to requests. If another
+    /// pane sends a request via [`Messenger::send_request`] or
+    /// [`Messenger::send_and_wait`], the closure sees the message but
+    /// the [`ReplyPort`](crate::ReplyPort) is dropped — the requestor
+    /// receives `ReplyFailed`. Use [`run_with`](Pane::run_with) with a
+    /// [`Handler`] implementation if you need request-reply support.
+    ///
     /// # BeOS
     ///
     /// `BLooper::Run` + `BWindow::Show`. Be's `Run()` spawned a new

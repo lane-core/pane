@@ -83,6 +83,15 @@ pub enum Sensitivity {
 }
 
 /// Locality constraint for clipboard entries.
+///
+/// # Plan 9
+///
+/// When rio ran recursively, the inner instance delegated to the
+/// parent's `/dev/snarf` — clipboard federation was implicit via
+/// namespace inheritance. pane makes federation explicit: `Any`
+/// entries are visible across instances (equivalent to delegating
+/// to the parent's snarf), `Local` entries are scoped to one
+/// instance. The `.plan` file controls sharing policy.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Locality {
     /// Readable from any instance (local or remote).

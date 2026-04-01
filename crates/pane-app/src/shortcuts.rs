@@ -18,6 +18,7 @@ pub struct KeyCombo {
 }
 
 impl KeyCombo {
+    /// Create a key combination from a key and modifier set.
     pub fn new(key: Key, modifiers: Modifiers) -> Self {
         KeyCombo { key, modifiers }
     }
