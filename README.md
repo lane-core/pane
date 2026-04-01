@@ -217,8 +217,8 @@ structure that satisfies both traditions, rather than retreating into pure
 BeOS or pure Plan 9 patterns. When the two lineages contradict, the formal
 methods often reveal a third option that transcends the contradiction entirely.
 
-The implementation is developed with substantial assistance from AI coding
-agents. The relationship is explicitly dialectical: the human provides
+The implementation is developed with substantial assistance from Claude
+(Anthropic) via the Claude Code CLI. The relationship is explicitly dialectical: the human provides
 architectural synthesis — recognizing cross-lineage unifications (e.g., that
 BeOS live queries and Plan 9 synthetic filesystems are dual expressions of
 "namespace as indexed state with materialized views") and setting selection
@@ -255,8 +255,9 @@ correlation is sufficient in our case. The modular nature of the architecture
 also entails that the code surface of the most mission-critical components of
 our infrastructure can be readily vetted by human eyes if need be.
 
-We are explicit about this process because the result should be judged on its
-merits, not on assumptions about how it was produced. Read the code. Run the
+Individual commits record human design direction and agent execution steps,
+including the model used. We are explicit about this process because the result
+should be judged on its merits, not on assumptions about how it was produced. Read the code. Run the
 tests. The design either holds or it doesn't. That being said, if you believe
 enough in what you see here and don't want matters to be left to chance, we
 welcome your help in building, testing, and verifying pane's architecture with
