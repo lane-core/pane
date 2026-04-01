@@ -37,20 +37,20 @@ Incremental migration from single-channel looper to calloop-backed multi-source 
 Full findings in serena memory `pane/code_review_findings_2026_03_31`.
 
 **Critical (fix before TCP deployment):**
-- [ ] **Server pane ownership check** — `handle_message` in pane-server accepts any PaneId without verifying `client_id` ownership. Add `pane_owned_by()` guard. 9P scoped fids per-connection; pane needs runtime equivalent.
-- [ ] **Store identity after handshake** — `PeerIdentity` from TCP handshake is discarded. Add `identity: Option<PeerIdentity>` to `ClientSession`.
-- [x] **Remove `send_periodic`** — `Message::Clone` is a partial function (panics on 4 variants carrying linear handles). Removed `send_periodic` and `try_send_message`; `send_periodic_fn` is the only periodic API. `Clone` impl kept for internal use only (ExitBroadcaster).
+- [x] **Server pane ownership check** — `pane_owned_by()` guard on every match arm except CreatePane.
+- [x] **Store identity after handshake** — `ClientSession.identity` stored, threaded through `CompletedHandshake`.
+- [x] **Remove `send_periodic`** — removed along with `try_send_message`. `send_periodic_fn` is the only periodic API.
 
 **Moderate (fix soon):**
-- [ ] **Exhaustive `try_from_comp` match** — replace `_ => None` catch-all with explicit arms for all CompToClient variants. Prevents silent swallowing of future variants.
-- [ ] **Document mutual `send_and_wait` deadlock** — same bug as BeOS. Thread-local check prevents self-deadlock but not A↔B mutual. Document `send_request` as deadlock-free alternative.
-- [ ] **Document closure handler request asymmetry** — `Pane::run` drops ReplyPort silently. Add `tracing::warn!` and prominent doc note.
-- [ ] **Fix UndoManager `wrapping_sub`** — `edit_count` can wrap to usize::MAX after clear+undo. Use `saturating_sub`.
-- [ ] **Convert `try_reconnect` to iterative loop** — mutual recursion via `replay_buffer` is fragile.
+- [x] **Exhaustive `try_from_comp` match** — all 13 CompToClient variants explicit, no catch-all.
+- [ ] **Document mutual `send_and_wait` deadlock** — same bug as BeOS. Document `send_request` as deadlock-free alternative.
+- [ ] **Document closure handler request asymmetry** — `Pane::run` drops ReplyPort silently.
+- [x] **Fix UndoManager `wrapping_sub`** — `saturating_sub`.
+- [x] **Convert `try_reconnect` to iterative loop** — no recursion, bounded by timeout.
 - [ ] **TLS integration in pane-headless** — transport exists, listener is plaintext-only.
 
 **Documentation debt:**
-- [ ] **`# BeOS` annotations** — Message enum, Resize/CloseRequested/Pulse variants, Clipboard struct, Pane::run/run_with (Be engineer drafted text)
+- [x] **`# BeOS` annotations** — Message enum, Resize/CloseRequested/Pulse, Clipboard, Pane::run/run_with.
 - [ ] **`# Plan 9` annotation** — Locality enum (snarf federation)
 - [ ] **UndoManager/UndoPolicy doc comments** — public methods lack docs
 
