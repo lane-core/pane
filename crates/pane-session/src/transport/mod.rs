@@ -4,6 +4,8 @@
 //! Session types handle the protocol structure; the transport handles the plumbing.
 
 pub mod memory;
+pub mod proxy;
+pub mod reconnecting;
 pub mod tcp;
 #[cfg(feature = "tls")]
 pub mod tls;

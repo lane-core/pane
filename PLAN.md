@@ -115,8 +115,8 @@ Design spec: `docs/distributed-pane.md`. Plan 9 research: `docs/superpowers/plan
 Concrete patterns extracted from vendored Plan 9 man pages and papers. See serena memory `pane/plan9_reference_insights` for full citations.
 
 **Near-term (implementable now):**
-- [ ] **Protocol tracing transport** — `ProxyTransport` wrapper that logs all protocol messages between app and compositor. The Transport trait makes this a trivial wrapper. Add `--protocol-trace <file>` flag to pane-headless. From `exportfs -d` and the `iostats` pattern in the names paper.
-- [ ] **`ReconnectingTransport`** — transparent filter that buffers messages during temporary disconnection and replays on reconnection (configurable timeout). From `aan(8)`, used via `import -p`. Critical for mobile/WiFi.
+- [x] **Protocol tracing transport** — `ProxyTransport` wrapper that logs all protocol messages between app and compositor. `--protocol-trace <file>` flag on pane-headless traces handshake (via ProxyTransport) and active-phase incoming messages. From `exportfs -d` and the `iostats` pattern in the names paper.
+- [x] **`ReconnectingTransport`** — transparent filter that buffers messages during temporary disconnection and replays on reconnection (configurable timeout, default 60s). Client-side only (server-side buffering deferred). From `aan(8)`, used via `import -p`. Critical for mobile/WiFi.
 
 **Medium-term (needs subsystem prerequisites):**
 - [ ] **Blocking-read event files** (pane-fs prerequisite) — `/pane/<id>/event` blocks on read until state changes. The Plan 9 observer pattern: no subscription, just blocking reads. Cheapest way to make pane scriptable. From `rio(4)` wctl.

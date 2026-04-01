@@ -17,6 +17,17 @@ pub struct MemoryTransport {
     rx: mpsc::Receiver<Vec<u8>>,
 }
 
+impl MemoryTransport {
+    /// Create a transport from raw channel endpoints.
+    ///
+    /// Prefer [`pair()`] for most uses. This constructor is for cases
+    /// where you need to wrap the transport in another layer (e.g.,
+    /// `ProxyTransport`) before creating the session channel.
+    pub fn new(tx: mpsc::Sender<Vec<u8>>, rx: mpsc::Receiver<Vec<u8>>) -> Self {
+        MemoryTransport { tx, rx }
+    }
+}
+
 impl Transport for MemoryTransport {
     fn send_raw(&mut self, data: &[u8]) -> Result<(), SessionError> {
         self.tx

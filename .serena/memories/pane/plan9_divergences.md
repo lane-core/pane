@@ -74,11 +74,11 @@ Default policy: when pane draws on Plan 9, cite the specific concept and documen
 | plumber `click` attribute: cursor context refines regex match | (not yet designed — should be adopted) | The click attribute pattern lets the plumber narrow a text selection to the semantically relevant portion. pane routing rules should support content-refinement. See plumb(6) `click` description. |
 | plumber BUGS: "file name space is fixed" | Kit-level routing evaluates in app's own namespace | Confirmed from plumber(4) BUGS section. The plumber couldn't route messages involving files in newly mounted services because it used its own fixed namespace. pane avoids this by design. |
 
-## Connection Resilience (UPDATED from primary sources)
+## Connection Resilience (IMPLEMENTED)
 
 | Plan 9 | pane | Rationale |
 |--------|------|-----------|
-| `aan(8)` filter — always-available network, buffers messages during temporary disconnection | (not yet implemented) | import(4) `-p` flag pushes aan onto connections. aan is a transparent filter between app and transport. pane should implement a `ReconnectingTransport` wrapper that buffers outgoing messages and replays on reconnection, with configurable timeout. Critical for mobile/WiFi scenarios. |
+| `aan(8)` filter — always-available network, buffers messages during temporary disconnection, retransmits unacknowledged data after reconnection | `ReconnectingTransport` in `pane-session/src/transport/reconnecting.rs` | Wraps TCP transport with reconnection + message buffering + replay. Configurable timeout (default 60s vs aan's 1 day). **Divergence:** aan was a symmetric filter applied to both client and server via `import -p`/`exportfs`; `ReconnectingTransport` is currently client-side only. Server-side buffering requires a matching component. Also: aan used a custom sequence-number protocol for reliable delivery; pane replays buffered messages at the framing layer, which is simpler but loses server-side messages sent during disconnection. |
 
 ## Export / Namespace Filtering (UPDATED from primary sources)
 
@@ -86,12 +86,12 @@ Default policy: when pane draws on Plan 9, cite the specific concept and documen
 |--------|------|-----------|
 | `exportfs -P patternfile` — regex `+`/`-` patterns on path names | `.plan` file governs what a remote observer can see | exportfs(4) confirms: "For a file to be exported, all lines with prefix `+` must match and all those with prefix `-` must not match." pane's `.plan` should use structured predicates (signature, type, sensitivity) rather than path regexes. |
 
-## Diagnostic / Debugging Patterns (NEW — from primary sources)
+## Diagnostic / Debugging Patterns (IMPLEMENTED)
 
 | Plan 9 | pane | Rationale |
 |--------|------|-----------|
-| `iostats` — transparent 9P proxy that monitors file operations | (not yet designed) | The names paper describes encapsulating a process in a monitored namespace. pane should support a diagnostic transport wrapper (ProxyTransport) that logs all protocol messages between app and compositor. The Transport trait makes this natural. |
-| `exportfs -d` — log all 9P traffic to a debug file | (not yet designed) | exportfs(4) confirms: `-d -f dbgfile` logs all 9P traffic. pane-headless should support protocol tracing to a file for debugging distributed sessions. |
+| `iostats` — transparent 9P proxy that monitors file operations | `ProxyTransport` wrapper in `pane-session/src/transport/proxy.rs` | Wraps any Transport impl, logs all send/recv with timestamps and hex preview. The names paper pattern applied to pane's Transport trait. |
+| `exportfs -d` — log all 9P traffic to a debug file | `--protocol-trace <file>` flag on pane-headless | Logs handshake messages (via ProxyTransport) and active-phase incoming messages to a file. Divergence: pane logs at both transport and application layers; Plan 9 logged only at the 9P layer. |
 
 ## Terminal / Window Architecture (NEW — from primary sources)
 

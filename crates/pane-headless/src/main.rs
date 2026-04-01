@@ -28,8 +28,11 @@
 
 mod state;
 
+use std::fs::{File, OpenOptions};
+use std::io::Write;
 use std::net::TcpListener;
 use std::os::unix::net::UnixListener;
+use std::sync::{Arc, Mutex};
 
 use calloop::EventLoop;
 use anyhow::Result;
@@ -61,6 +64,11 @@ struct Opts {
     /// Log level (error, warn, info, debug, trace)
     #[bpaf(long("log"), fallback("info".to_string()))]
     log_level: String,
+
+    /// Write protocol trace to this file (iostats/exportfs -d pattern).
+    /// Logs all handshake and active-phase messages with timestamps.
+    #[bpaf(long("protocol-trace"), argument("FILE"), optional)]
+    protocol_trace: Option<String>,
 }
 
 fn main() {
@@ -83,9 +91,48 @@ fn main() {
     info!("pane-headless shutdown");
 }
 
+/// Shared protocol trace writer. Arc<Mutex<File>> allows multiple
+/// connections (each on their own handshake thread) to log to the
+/// same file concurrently.
+type TraceWriter = Arc<Mutex<File>>;
+
+/// Adapter that implements `Write` by forwarding to the shared trace file.
+/// Used as the writer for `ProxyTransport` instances.
+struct TraceFile(TraceWriter);
+
+impl Write for TraceFile {
+    fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+        match self.0.lock() {
+            Ok(mut f) => f.write(buf),
+            Err(_) => Ok(buf.len()), // poisoned mutex — silently discard
+        }
+    }
+
+    fn flush(&mut self) -> std::io::Result<()> {
+        match self.0.lock() {
+            Ok(mut f) => f.flush(),
+            Err(_) => Ok(()),
+        }
+    }
+}
+
 fn run(opts: &Opts) -> Result<()> {
     let protocol_server = pane_server::ProtocolServer::new_unmanaged();
     let instance_id = protocol_server.instance_id.clone();
+
+    // Open protocol trace file if requested
+    let trace_writer: Option<TraceWriter> = opts.protocol_trace.as_ref().map(|path| {
+        let file = OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(path)
+            .unwrap_or_else(|e| {
+                eprintln!("pane-headless: cannot open trace file {}: {}", path, e);
+                std::process::exit(1);
+            });
+        info!("protocol trace: {}", path);
+        Arc::new(Mutex::new(file))
+    });
 
     // Handshake completion — either unix or TCP stream.
     enum CompletedHandshake {
@@ -109,6 +156,8 @@ fn run(opts: &Opts) -> Result<()> {
         server: protocol_server,
         running: true,
         default_geometry,
+        trace_writer: trace_writer.clone(),
+        trace_epoch: std::time::Instant::now(),
     };
 
     // --- calloop event loop ---
@@ -158,6 +207,7 @@ fn run(opts: &Opts) -> Result<()> {
 
     let unix_hs_tx = handshake_tx.clone();
     let unix_instance_id = instance_id.clone();
+    let unix_trace = trace_writer.clone();
     loop_handle.insert_source(unix_source, move |_event, listener, state: &mut HeadlessState| {
         loop {
             match listener.accept() {
@@ -169,17 +219,37 @@ fn run(opts: &Opts) -> Result<()> {
                     let client_id = state.server.alloc_client_id();
                     let sender = unix_hs_tx.clone();
                     let iid = unix_instance_id.clone();
+                    let trace = unix_trace.clone();
 
                     std::thread::spawn(move || {
-                        // Timeout prevents a stalled peer from holding
-                        // the handshake thread indefinitely.
                         let _ = stream.set_read_timeout(Some(std::time::Duration::from_secs(10)));
-                        match pane_server::run_server_handshake(stream, &iid) {
-                            Ok(stream) => {
-                                let _ = sender.send(CompletedHandshake::Unix(client_id, stream));
+                        if let Some(ref tw) = trace {
+                            // Trace handshake via ProxyTransport
+                            use pane_session::transport::proxy::ProxyTransport;
+                            use pane_session::transport::unix::UnixTransport;
+                            use pane_proto::protocol::ConnectionTopology;
+                            let label = format!("unix:{}", client_id);
+                            let transport = UnixTransport::from_stream(stream);
+                            let proxy = ProxyTransport::new(transport, TraceFile(tw.clone()), label);
+                            match pane_server::run_server_handshake_generic(
+                                proxy,
+                                "pane-headless",
+                                &iid,
+                                ConnectionTopology::Local,
+                            ) {
+                                Ok(result) => {
+                                    let inner = result.transport.into_inner();
+                                    let stream = inner.into_stream();
+                                    let _ = sender.send(CompletedHandshake::Unix(client_id, stream));
+                                }
+                                Err(e) => warn!("unix handshake failed: {}", e),
                             }
-                            Err(e) => {
-                                warn!("unix handshake failed: {}", e);
+                        } else {
+                            match pane_server::run_server_handshake(stream, &iid) {
+                                Ok(stream) => {
+                                    let _ = sender.send(CompletedHandshake::Unix(client_id, stream));
+                                }
+                                Err(e) => warn!("unix handshake failed: {}", e),
                             }
                         }
                     });
@@ -208,6 +278,7 @@ fn run(opts: &Opts) -> Result<()> {
 
         let tcp_hs_tx = handshake_tx.clone();
         let tcp_instance_id = instance_id.clone();
+        let tcp_trace = trace_writer.clone();
         loop_handle.insert_source(tcp_source, move |_event, listener, state: &mut HeadlessState| {
             loop {
                 match listener.accept() {
@@ -217,27 +288,51 @@ fn run(opts: &Opts) -> Result<()> {
                         let client_id = state.server.alloc_client_id();
                         let sender = tcp_hs_tx.clone();
                         let iid = tcp_instance_id.clone();
+                        let trace = tcp_trace.clone();
 
                         std::thread::spawn(move || {
                             use pane_session::transport::tcp::TcpTransport;
+                            use pane_session::transport::proxy::ProxyTransport;
                             use pane_proto::protocol::ConnectionTopology;
 
                             let _ = stream.set_read_timeout(Some(std::time::Duration::from_secs(10)));
                             let transport = TcpTransport::from_stream(stream);
-                            match pane_server::run_server_handshake_generic(
-                                transport,
-                                "pane-headless",
-                                &iid,
-                                ConnectionTopology::Remote,
-                            ) {
-                                Ok(result) => {
-                                    let tcp_stream = result.transport.into_stream();
-                                    info!("tcp handshake complete for client {} (sig: {})",
-                                        client_id, result.signature);
-                                    let _ = sender.send(CompletedHandshake::Tcp(client_id, tcp_stream));
+
+                            if let Some(ref tw) = trace {
+                                let label = format!("tcp:{}:{}", addr, client_id);
+                                let proxy = ProxyTransport::new(
+                                    transport,
+                                    TraceFile(tw.clone()),
+                                    label,
+                                );
+                                match pane_server::run_server_handshake_generic(
+                                    proxy,
+                                    "pane-headless",
+                                    &iid,
+                                    ConnectionTopology::Remote,
+                                ) {
+                                    Ok(result) => {
+                                        let tcp_stream = result.transport.into_inner().into_stream();
+                                        info!("tcp handshake complete for client {} (sig: {})",
+                                            client_id, result.signature);
+                                        let _ = sender.send(CompletedHandshake::Tcp(client_id, tcp_stream));
+                                    }
+                                    Err(e) => warn!("tcp handshake failed: {}", e),
                                 }
-                                Err(e) => {
-                                    warn!("tcp handshake failed: {}", e);
+                            } else {
+                                match pane_server::run_server_handshake_generic(
+                                    transport,
+                                    "pane-headless",
+                                    &iid,
+                                    ConnectionTopology::Remote,
+                                ) {
+                                    Ok(result) => {
+                                        let tcp_stream = result.transport.into_stream();
+                                        info!("tcp handshake complete for client {} (sig: {})",
+                                            client_id, result.signature);
+                                        let _ = sender.send(CompletedHandshake::Tcp(client_id, tcp_stream));
+                                    }
+                                    Err(e) => warn!("tcp handshake failed: {}", e),
                                 }
                             }
                         });

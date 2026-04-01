@@ -4,8 +4,12 @@
 //! any rendering concerns. Analogous to `CompState` in pane-comp
 //! minus smithay, the glyph atlas, and the renderer.
 
+use std::fs::File;
+use std::io::Write;
 use std::net::TcpStream;
 use std::os::unix::net::UnixStream;
+use std::sync::{Arc, Mutex};
+use std::time::Instant;
 
 use tracing::{info, warn};
 
@@ -22,6 +26,11 @@ pub struct HeadlessState {
     pub running: bool,
     /// Default geometry for headless panes.
     pub default_geometry: PaneGeometry,
+    /// Protocol trace file, shared across all client connections.
+    /// `None` when `--protocol-trace` is not specified.
+    pub trace_writer: Option<Arc<Mutex<File>>>,
+    /// Epoch for trace timestamps.
+    pub trace_epoch: Instant,
 }
 
 impl HeadlessState {
@@ -99,6 +108,37 @@ impl HeadlessState {
         self.insert_client_source(client_id, source, loop_handle);
     }
 
+    /// Log an active-phase protocol message to the trace file.
+    ///
+    /// Best-effort — trace write failures are silently ignored.
+    /// Tracing must never break the server.
+    fn trace_message(&self, client_id: usize, direction: &str, bytes: &[u8], label: &str) {
+        if let Some(ref tw) = self.trace_writer {
+            let elapsed = self.trace_epoch.elapsed();
+            let preview_len = bytes.len().min(64);
+            let hex: String = bytes[..preview_len]
+                .iter()
+                .map(|b| format!("{:02x}", b))
+                .collect::<Vec<_>>()
+                .join(" ");
+            let truncated = if bytes.len() > 64 { "..." } else { "" };
+            if let Ok(mut f) = tw.lock() {
+                let _ = writeln!(
+                    f,
+                    "{:>4}.{:03} client-{} {} {} {} bytes [{}{}]",
+                    elapsed.as_secs(),
+                    elapsed.subsec_millis(),
+                    client_id,
+                    direction,
+                    label,
+                    bytes.len(),
+                    hex,
+                    truncated,
+                );
+            }
+        }
+    }
+
     /// Insert a calloop SessionSource for a client and wire up message dispatch.
     fn insert_client_source<S>(
         &mut self,
@@ -113,6 +153,7 @@ impl HeadlessState {
         if let Err(e) = loop_handle.insert_source(source, move |event, _, state: &mut HeadlessState| {
             match event {
                 SessionEvent::Message(bytes) => {
+                    state.trace_message(client_id, "<<", &bytes, "ClientToComp");
                     match pane_proto::deserialize::<ClientToComp>(&bytes) {
                         Ok(msg) => {
                             state.server.handle_message(client_id, msg, geometry);
