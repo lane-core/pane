@@ -9,3 +9,4 @@
 - [Project: clipboard and undo design](project_clipboard_undo_design.md) — MIME negotiation, TTL, cross-machine policy, undo ctl pattern (2026-03-31)
 - [Project: C1 looper evolution](project_c1_looper_evolution.md) — calloop multi-source select: wire stays single-stream, source priorities, coalescing risk (2026-03-31)
 - [Project: Plan 9 lineage audit](project_plan9_lineage_audit.md) — 10 new annotations needed, licensing clear (MIT), divergences tracker proposed (2026-03-31)
+- [Project: Plan 9 reference audit](project_reference_audit.md) — deep reading of vendored man pages + papers complete, insights in serena (2026-03-31)

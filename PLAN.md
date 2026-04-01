@@ -110,9 +110,23 @@ Design spec: `docs/distributed-pane.md`. Plan 9 research: `docs/superpowers/plan
 - UUIDs for globally unique PaneIds
 - Host as contingent server (no architectural privilege for local machine)
 
+### Plan 9 Patterns (discovered from reference audit)
+
+Concrete patterns extracted from vendored Plan 9 man pages and papers. See serena memory `pane/plan9_reference_insights` for full citations.
+
+**Near-term (implementable now):**
+- [ ] **Protocol tracing transport** — `ProxyTransport` wrapper that logs all protocol messages between app and compositor. The Transport trait makes this a trivial wrapper. Add `--protocol-trace <file>` flag to pane-headless. From `exportfs -d` and the `iostats` pattern in the names paper.
+- [ ] **`ReconnectingTransport`** — transparent filter that buffers messages during temporary disconnection and replays on reconnection (configurable timeout). From `aan(8)`, used via `import -p`. Critical for mobile/WiFi.
+
+**Medium-term (needs subsystem prerequisites):**
+- [ ] **Blocking-read event files** (pane-fs prerequisite) — `/pane/<id>/event` blocks on read until state changes. The Plan 9 observer pattern: no subscription, just blocking reads. Cheapest way to make pane scriptable. From `rio(4)` wctl.
+- [ ] **`consctl` lease pattern** (pane-shell prerequisite) — RAII mode handles where holding the handle holds the mode, drop reverts. From `rio(4)` consctl: "Closing the file makes the window revert to default state." Generalize the `ClipboardWriteLock` pattern.
+- [ ] **Plumber `click` context refinement** (routing prerequisite) — cursor-position annotation in routing messages for smarter regex matching. From `plumb(6)`: "longest leftmost match that contains or abuts the textual location identified by the click."
+- [ ] **`cpu` reverse export** — local compositor exports display/input to remote headless instance. From `drawterm(8)` and the names paper. pane's `import` equivalent inverted.
+
 ### Other
 
-- [ ] **pane-shell** — VT parser, PTY bridge, screen buffer. The first real application. Consult Be engineer on Terminal app architecture.
+- [ ] **pane-shell** — VT parser, PTY bridge, screen buffer. The first real application. Consult Be engineer on Terminal app architecture. Plan 9 reference: `rio(4)` file hierarchy (cons, consctl, label, text, wdir, wsys), 8½ paper for recursive architecture.
 - [ ] **DummyRenderer headless tests** — smithay's renderer_test feature for protocol integration tests without GPU (feature flag already added).
 - [ ] **CI** — macOS job for kit crates, Ubuntu job for compositor.
 
