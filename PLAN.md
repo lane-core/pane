@@ -32,6 +32,28 @@ Incremental migration from single-channel looper to calloop-backed multi-source 
 - [x] **Phase 2: Timer migration** — replaced hand-rolled Timers struct with calloop Timer sources. TimerToken is non-Clone with cancel-on-drop (closes affine gap). CancelTimer message for eager source removal. Deleted ~100 lines of manual deadline scheduling (TimerEntry, Timers, next_timeout, fire_due). Timer callbacks push directly into LooperState.batch.
 - [ ] **Phase 3: Channel topology split** — clipboard, observer, etc. as separate calloop sources with per-channel message types.
 
+### Code review debt (2026-03-31 seven-reviewer audit)
+
+Full findings in serena memory `pane/code_review_findings_2026_03_31`.
+
+**Critical (fix before TCP deployment):**
+- [ ] **Server pane ownership check** — `handle_message` in pane-server accepts any PaneId without verifying `client_id` ownership. Add `pane_owned_by()` guard. 9P scoped fids per-connection; pane needs runtime equivalent.
+- [ ] **Store identity after handshake** — `PeerIdentity` from TCP handshake is discarded. Add `identity: Option<PeerIdentity>` to `ClientSession`.
+- [ ] **Deprecate `send_periodic`** — `Message::Clone` is a partial function (panics on 4 variants carrying linear handles). `send_periodic_fn` is the correct API. Deprecate `send_periodic`, keep `Clone` impl for internal coalescing only.
+
+**Moderate (fix soon):**
+- [ ] **Exhaustive `try_from_comp` match** — replace `_ => None` catch-all with explicit arms for all CompToClient variants. Prevents silent swallowing of future variants.
+- [ ] **Document mutual `send_and_wait` deadlock** — same bug as BeOS. Thread-local check prevents self-deadlock but not A↔B mutual. Document `send_request` as deadlock-free alternative.
+- [ ] **Document closure handler request asymmetry** — `Pane::run` drops ReplyPort silently. Add `tracing::warn!` and prominent doc note.
+- [ ] **Fix UndoManager `wrapping_sub`** — `edit_count` can wrap to usize::MAX after clear+undo. Use `saturating_sub`.
+- [ ] **Convert `try_reconnect` to iterative loop** — mutual recursion via `replay_buffer` is fragile.
+- [ ] **TLS integration in pane-headless** — transport exists, listener is plaintext-only.
+
+**Documentation debt:**
+- [ ] **`# BeOS` annotations** — Message enum, Resize/CloseRequested/Pulse variants, Clipboard struct, Pane::run/run_with (Be engineer drafted text)
+- [ ] **`# Plan 9` annotation** — Locality enum (snarf federation)
+- [ ] **UndoManager/UndoPolicy doc comments** — public methods lack docs
+
 ### Session-type debt (discovered by EAct audit)
 
 Small concrete items identified by auditing the codebase against the session-type principles. Not blockers — cleanup for when the relevant code is next touched.
