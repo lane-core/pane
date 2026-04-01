@@ -43,16 +43,16 @@ Full findings in serena memory `pane/code_review_findings_2026_03_31`.
 
 **Moderate (fix soon):**
 - [x] **Exhaustive `try_from_comp` match** — all 13 CompToClient variants explicit, no catch-all.
-- [ ] **Document mutual `send_and_wait` deadlock** — same bug as BeOS. Document `send_request` as deadlock-free alternative.
-- [ ] **Document closure handler request asymmetry** — `Pane::run` drops ReplyPort silently.
+- [x] **Document mutual `send_and_wait` deadlock** — same bug as BeOS. Documented on `send_and_wait`.
+- [x] **Document closure handler request asymmetry** — documented on `Pane::run`.
 - [x] **Fix UndoManager `wrapping_sub`** — `saturating_sub`.
 - [x] **Convert `try_reconnect` to iterative loop** — no recursion, bounded by timeout.
 - [ ] **TLS integration in pane-headless** — transport exists, listener is plaintext-only.
 
 **Documentation debt:**
 - [x] **`# BeOS` annotations** — Message enum, Resize/CloseRequested/Pulse, Clipboard, Pane::run/run_with.
-- [ ] **`# Plan 9` annotation** — Locality enum (snarf federation)
-- [ ] **UndoManager/UndoPolicy doc comments** — public methods lack docs
+- [x] **`# Plan 9` annotation** — Locality enum (snarf federation).
+- [x] **UndoManager/UndoPolicy doc comments** — all public methods documented.
 
 ### Session-type debt (discovered by EAct audit)
 
