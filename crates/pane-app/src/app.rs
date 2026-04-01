@@ -350,7 +350,7 @@ impl App {
         let (lock, cvar) = &*self.done_signal;
         let guard = lock.lock().unwrap_or_else(|e| e.into_inner());
         let _guard = cvar.wait_while(guard, |_| {
-            self.pane_count.load(Ordering::Relaxed) > 0
+            self.pane_count.load(Ordering::Acquire) > 0
         }).unwrap();
     }
 }

@@ -14,6 +14,7 @@ use pane_proto::protocol::PeerIdentity;
 pub(crate) fn local_identity() -> PeerIdentity {
     PeerIdentity {
         username: username(),
+        // SAFETY: getuid has no preconditions and always succeeds.
         uid: unsafe { libc::getuid() },
         hostname: hostname(),
     }
@@ -27,6 +28,7 @@ fn username() -> String {
 
 fn hostname() -> String {
     let mut buf = [0u8; 256];
+    // SAFETY: buf is a valid [u8; 256] on the stack; len matches its size.
     let rc = unsafe { libc::gethostname(buf.as_mut_ptr() as *mut libc::c_char, buf.len()) };
     if rc != 0 {
         return "localhost".into();

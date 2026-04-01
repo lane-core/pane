@@ -324,7 +324,7 @@ impl<P: UndoPolicy> UndoPolicy for CoalescingPolicy<P> {
         if let Some(ref mut pending) = self.pending {
             let same_property = pending.property == edit.property;
             let within_timeout = edit.timestamp
-                .duration_since(pending.timestamp) < self.timeout;
+                .saturating_duration_since(pending.timestamp) < self.timeout;
 
             if same_property && within_timeout {
                 pending.new_value = edit.new_value;

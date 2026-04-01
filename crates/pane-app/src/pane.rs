@@ -140,8 +140,8 @@ impl Pane {
         let keep_going = handler(&handle, Message::Ready(geometry))?;
         if !keep_going {
             handle.broadcaster.broadcast(id, ExitReason::HandlerExit);
-            pane_count.fetch_sub(1, Ordering::Relaxed);
-            if pane_count.load(Ordering::Relaxed) == 0 {
+            if pane_count.fetch_sub(1, Ordering::Release) == 1 {
+                let _lock = done_signal.0.lock().unwrap_or_else(|e| e.into_inner());
                 done_signal.1.notify_all();
             }
             return Ok(());
@@ -154,7 +154,8 @@ impl Pane {
         if exit.should_request_close() {
             let _ = comp_tx.send(ClientToComp::RequestClose { pane: id });
         }
-        if pane_count.fetch_sub(1, Ordering::Relaxed) == 1 {
+        if pane_count.fetch_sub(1, Ordering::Release) == 1 {
+            let _lock = done_signal.0.lock().unwrap_or_else(|e| e.into_inner());
             done_signal.1.notify_all();
         }
 
@@ -178,8 +179,8 @@ impl Pane {
         let keep_going = handler.ready(&handle, geometry)?;
         if !keep_going {
             handle.broadcaster.broadcast(id, ExitReason::HandlerExit);
-            pane_count.fetch_sub(1, Ordering::Relaxed);
-            if pane_count.load(Ordering::Relaxed) == 0 {
+            if pane_count.fetch_sub(1, Ordering::Release) == 1 {
+                let _lock = done_signal.0.lock().unwrap_or_else(|e| e.into_inner());
                 done_signal.1.notify_all();
             }
             return Ok(());
@@ -192,7 +193,8 @@ impl Pane {
         if exit.should_request_close() {
             let _ = comp_tx.send(ClientToComp::RequestClose { pane: id });
         }
-        if pane_count.fetch_sub(1, Ordering::Relaxed) == 1 {
+        if pane_count.fetch_sub(1, Ordering::Release) == 1 {
+            let _lock = done_signal.0.lock().unwrap_or_else(|e| e.into_inner());
             done_signal.1.notify_all();
         }
 
