@@ -10,3 +10,5 @@
 - [Project: C1 looper evolution](project_c1_looper_evolution.md) — calloop multi-source select: wire stays single-stream, source priorities, coalescing risk (2026-03-31)
 - [Project: Plan 9 lineage audit](project_plan9_lineage_audit.md) — 10 new annotations needed, licensing clear (MIT), divergences tracker proposed (2026-03-31)
 - [Project: Plan 9 reference audit](project_reference_audit.md) — deep reading of vendored man pages + papers complete, insights in serena (2026-03-31)
+- [Project: Phase 3 channel topology](project_phase3_channel_topology.md) — mount metaphor, priority deferral, async clipboard channel, no fd table, concrete-not-generic
+- [Project: service disconnect model](project_service_disconnect_model.md) — fail at use site (Plan 9 Ehangup), no proactive notification, commit() returns Result

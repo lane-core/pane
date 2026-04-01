@@ -7,3 +7,5 @@
 - [Clipboard + undo analysis](project_clipboard_undo_analysis.md) -- two-interface problem, TTL/security, undo sensitivity, six invariants for implementation
 - [C1 looper evolution](project_c1_looper_evolution.md) -- calloop multi-source select: conditionally sound, six invariants, three-phase migration
 - [Protocol audit 2026-03-31](project_protocol_audit_2026_03_31.md) -- full audit: ownership gap, reconnect unsound, Chan no Drop, Message::Clone partial, duality correct
+- [Phase 3 channel topology](project_phase3_channel_topology.md) -- register_channel<E> generic, ClipboardEvent extraction, commit() should return Result
+- [Service disconnect analysis](project_service_disconnect_analysis.md) -- proactive required, generic variant, commit()->Result, not opt-in
