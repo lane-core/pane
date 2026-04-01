@@ -482,16 +482,16 @@ fn multiple_concurrent_timers() {
     });
 
     // Start three periodic timers with different intervals
-    let _t1 = outer_proxy.send_periodic(
-        Message::CommandExecuted { command: "t20".into(), args: String::new() },
+    let _t1 = outer_proxy.send_periodic_fn(
+        || Message::CommandExecuted { command: "t20".into(), args: String::new() },
         Duration::from_millis(20),
     ).unwrap();
-    let _t2 = outer_proxy.send_periodic(
-        Message::CommandExecuted { command: "t40".into(), args: String::new() },
+    let _t2 = outer_proxy.send_periodic_fn(
+        || Message::CommandExecuted { command: "t40".into(), args: String::new() },
         Duration::from_millis(40),
     ).unwrap();
-    let _t3 = outer_proxy.send_periodic(
-        Message::CommandExecuted { command: "t80".into(), args: String::new() },
+    let _t3 = outer_proxy.send_periodic_fn(
+        || Message::CommandExecuted { command: "t80".into(), args: String::new() },
         Duration::from_millis(80),
     ).unwrap();
 
@@ -588,9 +588,9 @@ fn cancelled_timer_never_fires_again() {
         })
     });
 
-    // Start a 20ms periodic timer (Activated is clonable)
-    let token = outer_proxy.send_periodic(
-        Message::Activated,
+    // Start a 20ms periodic timer
+    let token = outer_proxy.send_periodic_fn(
+        || Message::Activated,
         Duration::from_millis(20),
     ).unwrap();
 

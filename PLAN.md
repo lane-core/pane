@@ -39,7 +39,7 @@ Full findings in serena memory `pane/code_review_findings_2026_03_31`.
 **Critical (fix before TCP deployment):**
 - [ ] **Server pane ownership check** — `handle_message` in pane-server accepts any PaneId without verifying `client_id` ownership. Add `pane_owned_by()` guard. 9P scoped fids per-connection; pane needs runtime equivalent.
 - [ ] **Store identity after handshake** — `PeerIdentity` from TCP handshake is discarded. Add `identity: Option<PeerIdentity>` to `ClientSession`.
-- [ ] **Deprecate `send_periodic`** — `Message::Clone` is a partial function (panics on 4 variants carrying linear handles). `send_periodic_fn` is the correct API. Deprecate `send_periodic`, keep `Clone` impl for internal coalescing only.
+- [x] **Remove `send_periodic`** — `Message::Clone` is a partial function (panics on 4 variants carrying linear handles). Removed `send_periodic` and `try_send_message`; `send_periodic_fn` is the only periodic API. `Clone` impl kept for internal use only (ExitBroadcaster).
 
 **Moderate (fix soon):**
 - [ ] **Exhaustive `try_from_comp` match** — replace `_ => None` catch-all with explicit arms for all CompToClient variants. Prevents silent swallowing of future variants.

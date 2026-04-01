@@ -468,8 +468,9 @@ fn stress_high_timer_count() {
     // Register 50 periodic timers, all at 20ms
     let mut tokens = Vec::new();
     for i in 0..num_timers {
-        let token = outer_proxy.send_periodic(
-            Message::CommandExecuted { command: format!("t{i}"), args: String::new() },
+        let cmd = format!("t{i}");
+        let token = outer_proxy.send_periodic_fn(
+            move || Message::CommandExecuted { command: cmd.clone(), args: String::new() },
             Duration::from_millis(20),
         ).unwrap();
         tokens.push(token);
@@ -621,8 +622,8 @@ fn stress_timer_registration_storm() {
 
     // Register and immediately cancel 100 timers
     for _ in 0..100 {
-        let token = outer_proxy.send_periodic(
-            Message::Activated,
+        let token = outer_proxy.send_periodic_fn(
+            || Message::Activated,
             Duration::from_millis(5),
         ).unwrap();
         token.cancel();
@@ -633,8 +634,8 @@ fn stress_timer_registration_storm() {
     let stale = fire_count.load(Ordering::Relaxed);
 
     // Now register one survivor to prove timers still work
-    let _survivor = outer_proxy.send_periodic(
-        Message::Activated,
+    let _survivor = outer_proxy.send_periodic_fn(
+        || Message::Activated,
         Duration::from_millis(10),
     ).unwrap();
     thread::sleep(Duration::from_millis(80));

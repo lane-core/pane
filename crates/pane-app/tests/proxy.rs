@@ -190,9 +190,9 @@ fn send_delayed_without_looper_returns_error() {
 }
 
 #[test]
-fn send_periodic_without_looper_returns_error() {
+fn send_periodic_fn_without_looper_returns_error() {
     let (tx, _rx) = mpsc::channel::<ClientToComp>();
     let handle = Messenger::new(pane_id(1), tx);
-    let result = handle.send_periodic(pane_app::Message::Activated, std::time::Duration::from_millis(10));
-    assert!(result.is_err(), "send_periodic without looper should return Disconnected");
+    let result = handle.send_periodic_fn(|| pane_app::Message::Activated, std::time::Duration::from_millis(10));
+    assert!(result.is_err(), "send_periodic_fn without looper should return Disconnected");
 }

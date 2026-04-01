@@ -121,16 +121,6 @@ impl Messenger {
         Ok(())
     }
 
-    /// Post an event to this pane's own looper, without blocking.
-    ///
-    /// Equivalent to [`send_message`](Messenger::send_message) — the
-    /// looper channel is unbounded, so both methods have identical
-    /// semantics. Retained for compatibility; prefer `send_message`.
-    #[deprecated(since = "0.1.0", note = "use send_message; the looper channel is unbounded")]
-    pub fn try_send_message(&self, event: Message) -> Result<()> {
-        self.send_message(event)
-    }
-
     /// Send a message to another pane's looper and block for a reply.
     ///
     /// The target's handler receives the message via
@@ -330,22 +320,6 @@ impl Messenger {
             fire_at: std::time::Instant::now() + delay,
         }).map_err(|_| PaneError::Disconnected)?;
         Ok(())
-    }
-
-    /// Post an event to this pane's looper repeatedly at the given interval.
-    ///
-    /// Clones the event each fire. Only works with clonable variants
-    /// (Pulse, Activated, CommandExecuted, etc.). Panics at fire time
-    /// on variants carrying linear handles (AppMessage, Reply,
-    /// CompletionRequest, ClipboardLockGranted).
-    ///
-    /// Prefer [`send_periodic_fn`](Messenger::send_periodic_fn) which
-    /// produces fresh events via a factory closure — no Clone needed,
-    /// no panic risk.
-    #[deprecated(since = "0.1.0", note = "use send_periodic_fn; Message::Clone is a partial function")]
-    pub fn send_periodic(&self, event: Message, interval: std::time::Duration) -> Result<TimerToken>
-    {
-        self.send_periodic_fn(move || event.clone(), interval)
     }
 
     /// Post events to this pane's looper repeatedly using a factory closure.
