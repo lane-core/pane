@@ -29,7 +29,7 @@ Design each feature against the EAct-derived session-type principles (serena: `p
 Incremental migration from single-channel looper to calloop-backed multi-source event loop. Full plan at `.claude/plans/jolly-riding-russell.md`.
 
 - [x] **Phase 1: calloop looper backend** — replaced mpsc::recv_timeout with calloop::EventLoop. LooperMessage channel is calloop::channel. All senders use calloop::channel::Sender. Unbounded channel (bounded backpressure removed). drain_channel handles calloop's 1024-msg-per-dispatch limit.
-- [ ] **Phase 2: Timer migration** — replace hand-rolled Timers struct with calloop Timer sources. TimerToken becomes non-Clone with cancel-on-drop (closes affine gap). CancelTimer message for eager source removal. Delete ~100 lines of manual deadline scheduling. Three-agent consensus spec complete.
+- [x] **Phase 2: Timer migration** — replaced hand-rolled Timers struct with calloop Timer sources. TimerToken is non-Clone with cancel-on-drop (closes affine gap). CancelTimer message for eager source removal. Deleted ~100 lines of manual deadline scheduling (TimerEntry, Timers, next_timeout, fire_due). Timer callbacks push directly into LooperState.batch.
 - [ ] **Phase 3: Channel topology split** — clipboard, observer, etc. as separate calloop sources with per-channel message types.
 
 ### Session-type debt (discovered by EAct audit)

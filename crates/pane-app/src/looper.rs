@@ -21,11 +21,13 @@
 //! remote host with the same dispatch semantics as a local one.
 
 use std::cell::Cell;
-use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::collections::HashMap;
+use std::sync::atomic::Ordering;
 use std::sync::mpsc;
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
+use calloop::LoopHandle;
+use calloop::timer::{Timer, TimeoutAction};
 use pane_proto::event::MouseEventKind;
 use pane_proto::message::PaneId;
 
@@ -56,130 +58,67 @@ impl Drop for LooperGuard {
     }
 }
 
-/// A pending periodic or one-shot timer, local to the looper thread.
-struct TimerEntry {
-    next_fire: Instant,
-    /// None = one-shot, Some = periodic.
-    interval: Option<Duration>,
-    /// How to produce the event. Periodic timers use a factory closure
-    /// (called each fire, no Clone needed). One-shots store the event
-    /// directly in `one_shot_event` and this is None.
-    make_event: Option<Box<dyn Fn() -> Message + Send>>,
-    /// The event for one-shot timers (consumed on fire).
-    one_shot_event: Option<Message>,
-    /// For periodic timers: the cancellation flag shared with TimerToken.
-    /// One-shot timers have no cancellation (they fire once and are removed).
-    cancelled: Option<Arc<AtomicBool>>,
-}
-
-/// Timer state for the looper. Simple sorted vec — panes rarely have
-/// more than a handful of timers.
-struct Timers {
-    entries: Vec<TimerEntry>,
-}
-
-impl Timers {
-    fn new() -> Self {
-        Self { entries: Vec::new() }
-    }
-
-    /// Add a periodic timer with a factory closure.
-    fn add_periodic(
-        &mut self,
-        make_event: Box<dyn Fn() -> Message + Send>,
-        interval: Duration,
-        cancelled: Arc<AtomicBool>,
-    ) {
-        self.entries.push(TimerEntry {
-            next_fire: Instant::now() + interval,
-            interval: Some(interval),
-            make_event: Some(make_event),
-            one_shot_event: None,
-            cancelled: Some(cancelled),
-        });
-    }
-
-    /// Add a one-shot delayed event (consumed on fire, no Clone needed).
-    fn add_one_shot(&mut self, event: Message, fire_at: Instant) {
-        self.entries.push(TimerEntry {
-            next_fire: fire_at,
-            interval: None,
-            make_event: None,
-            one_shot_event: Some(event),
-            cancelled: None,
-        });
-    }
-
-    /// Time until the next timer fires. None if no timers.
-    fn next_timeout(&self) -> Option<Duration> {
-        self.entries
-            .iter()
-            .map(|e| e.next_fire)
-            .min()
-            .map(|t| t.saturating_duration_since(Instant::now()))
-    }
-
-    /// Fire all due timers, returning their events. Removes one-shots
-    /// and cancelled entries. Reschedules periodics.
-    fn fire_due(&mut self) -> Vec<Message> {
-        let now = Instant::now();
-        let mut fired = Vec::new();
-
-        self.entries.retain_mut(|entry| {
-            // Remove cancelled periodic timers
-            if let Some(ref flag) = entry.cancelled {
-                if flag.load(Ordering::Acquire) {
-                    return false;
-                }
-            }
-
-            if entry.next_fire <= now {
-                // Produce the event: factory for periodic, take for one-shot
-                if let Some(ref make) = entry.make_event {
-                    fired.push(make());
-                } else if let Some(event) = entry.one_shot_event.take() {
-                    fired.push(event);
-                }
-
-                match entry.interval {
-                    Some(interval) => {
-                        entry.next_fire = now + interval;
-                        true
-                    }
-                    None => false, // One-shot: remove
-                }
-            } else {
-                true
-            }
-        });
-
-        fired
-    }
-}
-
 /// State shared with the calloop event loop callbacks.
 struct LooperState {
     /// Messages accumulated during the current dispatch cycle.
     batch: Vec<LooperMessage>,
     /// Set when all channel senders are dropped.
     disconnected: bool,
+    /// Timer ID → calloop RegistrationToken, for eager source removal
+    /// via `CancelTimer`.
+    timer_tokens: HashMap<u64, calloop::RegistrationToken>,
 }
 
-/// Process control messages (timer and filter registration).
+/// Process control messages (timer, filter, cancel registration).
 /// Consumes the message if it's a control message; returns Some
 /// for messages that need normal dispatch.
+///
+/// Timer registration uses `handle.insert_source` to add calloop
+/// Timer sources. The callbacks push events directly into
+/// `state.batch` — no channel round-trip.
 fn try_handle_control(
     msg: LooperMessage,
-    timers: &mut Timers,
+    handle: &LoopHandle<'_, LooperState>,
+    state: &mut LooperState,
     filters: &mut crate::filter::FilterChain,
 ) -> Option<LooperMessage> {
     match msg {
-        LooperMessage::AddTimer { make_event, interval, cancelled, .. } => {
-            timers.add_periodic(make_event, interval, cancelled);
+        LooperMessage::AddTimer { id, make_event, interval, cancelled } => {
+            let timer = Timer::from_duration(interval);
+            let cancelled_clone = cancelled.clone();
+            match handle.insert_source(timer, move |_, _, state: &mut LooperState| {
+                if cancelled_clone.load(Ordering::Acquire) {
+                    state.timer_tokens.remove(&id);
+                    return TimeoutAction::Drop;
+                }
+                state.batch.push(LooperMessage::Posted(make_event()));
+                TimeoutAction::ToDuration(interval)
+            }) {
+                Ok(reg_token) => { state.timer_tokens.insert(id, reg_token); }
+                Err(_) => {} // looper shutting down
+            }
             None
         }
         LooperMessage::AddOneShot { event, fire_at } => {
-            timers.add_one_shot(event, fire_at);
+            let delay = fire_at.saturating_duration_since(std::time::Instant::now());
+            let mut event_slot = Some(event);
+            // insert_source result ignored — if the loop is gone, the
+            // one-shot simply never fires
+            let _ = handle.insert_source(
+                Timer::from_duration(delay),
+                move |_, _, state: &mut LooperState| {
+                    if let Some(e) = event_slot.take() {
+                        state.batch.push(LooperMessage::Posted(e));
+                    }
+                    TimeoutAction::Drop
+                },
+            );
+            None
+        }
+        LooperMessage::CancelTimer { id } => {
+            if let Some(reg_token) = state.timer_tokens.remove(&id) {
+                handle.remove(reg_token);
+            }
             None
         }
         LooperMessage::AddFilter { id, filter } => {
@@ -226,7 +165,8 @@ fn unwrap_message(
         LooperMessage::Posted(event) => Unwrapped::Event(event),
         LooperMessage::Request(msg, reply) => Unwrapped::Request(msg, reply),
         LooperMessage::AddTimer { .. } | LooperMessage::AddOneShot { .. }
-        | LooperMessage::AddFilter { .. } | LooperMessage::RemoveFilter { .. } => Unwrapped::Skip,
+        | LooperMessage::AddFilter { .. } | LooperMessage::RemoveFilter { .. }
+        | LooperMessage::CancelTimer { .. } => Unwrapped::Skip,
         LooperMessage::QuitRequested { response_tx } => Unwrapped::QuitRequested(response_tx),
         LooperMessage::Quit => Unwrapped::Quit,
     }
@@ -234,9 +174,9 @@ fn unwrap_message(
 
 /// Coalesce a batch of LooperMessages.
 ///
-/// Timer control messages (AddTimer, AddOneShot, AddFilter, RemoveFilter)
-/// are extracted and registered with the timer/filter state. Everything
-/// else is coalesced.
+/// Control messages (AddTimer, AddOneShot, CancelTimer, AddFilter,
+/// RemoveFilter) are extracted and registered with calloop/filter
+/// state. Everything else is coalesced.
 ///
 /// Coalescing rules (from Be's BWindow::DispatchMessage):
 /// - Resize: keep only the last geometry
@@ -246,7 +186,8 @@ fn coalesce_batch(
     batch: Vec<LooperMessage>,
     pane_id: PaneId,
     comp_sender: &std::sync::mpsc::Sender<pane_proto::protocol::ClientToComp>,
-    timers: &mut Timers,
+    handle: &LoopHandle<'_, LooperState>,
+    state: &mut LooperState,
     filters: &mut crate::filter::FilterChain,
 ) -> Vec<Unwrapped> {
     let mut events: Vec<Unwrapped> = Vec::with_capacity(batch.len());
@@ -255,7 +196,7 @@ fn coalesce_batch(
 
     for msg in batch {
         // Control messages (timer/filter registration) are consumed here
-        let msg = match try_handle_control(msg, timers, filters) {
+        let msg = match try_handle_control(msg, handle, state, filters) {
             Some(msg) => msg, // not a control message, continue processing
             None => continue, // control message consumed
         };
@@ -357,7 +298,6 @@ pub fn run_closure(
 ) -> std::result::Result<ExitReason, crate::error::Error> {
     IS_LOOPER.with(|flag| flag.set(true));
     let _guard = LooperGuard;
-    let mut timers = Timers::new();
 
     let mut event_loop: calloop::EventLoop<'_, LooperState> =
         calloop::EventLoop::try_new().map_err(calloop_err)?;
@@ -370,11 +310,16 @@ pub fn run_closure(
         }
     }).map_err(calloop_err)?;
 
-    let mut state = LooperState { batch: Vec::new(), disconnected: false };
+    let mut state = LooperState {
+        batch: Vec::new(),
+        disconnected: false,
+        timer_tokens: HashMap::new(),
+    };
 
     loop {
-        let timeout = timers.next_timeout();
-        event_loop.dispatch(timeout, &mut state).map_err(calloop_err)?;
+        // calloop handles timer deadlines internally via its TimerWheel —
+        // no manual next_timeout() needed.
+        event_loop.dispatch(None, &mut state).map_err(calloop_err)?;
 
         // calloop's channel delivers at most 1024 messages per dispatch.
         // Drain remaining without blocking to match the old try_recv loop.
@@ -383,23 +328,7 @@ pub fn run_closure(
         let batch = std::mem::take(&mut state.batch);
         let disconnected = state.disconnected;
 
-        // Don't fire timers after disconnect (matches pre-calloop behavior:
-        // disconnect exits without processing pending timers)
-        let timer_events = if !disconnected {
-            timers.fire_due()
-        } else {
-            Vec::new()
-        };
-
-        let mut events = coalesce_batch(batch, pane_id, &proxy.sender, &mut timers, &mut filters);
-
-        if !timer_events.is_empty() {
-            let mut all: Vec<Unwrapped> = timer_events.into_iter()
-                .map(Unwrapped::Event)
-                .collect();
-            all.append(&mut events);
-            events = all;
-        }
+        let events = coalesce_batch(batch, pane_id, &proxy.sender, &handle, &mut state, &mut filters);
 
         for item in events {
             match item {
@@ -458,7 +387,6 @@ pub fn run_handler(
 ) -> std::result::Result<ExitReason, crate::error::Error> {
     IS_LOOPER.with(|flag| flag.set(true));
     let _guard = LooperGuard;
-    let mut timers = Timers::new();
 
     let mut event_loop: calloop::EventLoop<'_, LooperState> =
         calloop::EventLoop::try_new().map_err(calloop_err)?;
@@ -471,31 +399,20 @@ pub fn run_handler(
         }
     }).map_err(calloop_err)?;
 
-    let mut state = LooperState { batch: Vec::new(), disconnected: false };
+    let mut state = LooperState {
+        batch: Vec::new(),
+        disconnected: false,
+        timer_tokens: HashMap::new(),
+    };
 
     loop {
-        let timeout = timers.next_timeout();
-        event_loop.dispatch(timeout, &mut state).map_err(calloop_err)?;
+        event_loop.dispatch(None, &mut state).map_err(calloop_err)?;
         drain_channel(&mut event_loop, &mut state)?;
 
         let batch = std::mem::take(&mut state.batch);
         let disconnected = state.disconnected;
 
-        let timer_events = if !disconnected {
-            timers.fire_due()
-        } else {
-            Vec::new()
-        };
-
-        let mut events = coalesce_batch(batch, pane_id, &proxy.sender, &mut timers, &mut filters);
-
-        if !timer_events.is_empty() {
-            let mut all: Vec<Unwrapped> = timer_events.into_iter()
-                .map(Unwrapped::Event)
-                .collect();
-            all.append(&mut events);
-            events = all;
-        }
+        let events = coalesce_batch(batch, pane_id, &proxy.sender, &handle, &mut state, &mut filters);
 
         for item in events {
             match item {

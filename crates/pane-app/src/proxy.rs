@@ -365,7 +365,7 @@ impl Messenger {
         let tx = self.looper_tx.as_ref().ok_or(PaneError::Disconnected)?;
         let id = next_timer_id();
         let cancelled = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
-        let token = TimerToken { id, cancelled: cancelled.clone() };
+        let token = TimerToken { id, cancelled: cancelled.clone(), sender: Some(tx.clone()) };
 
         tx.send(LooperMessage::AddTimer {
             id,
@@ -435,20 +435,44 @@ fn next_filter_id() -> crate::filter::FilterId {
 
 /// Token for cancelling a periodic timer.
 ///
-/// Created by `Messenger::send_periodic`. Drop does not cancel —
-/// call `cancel()` explicitly.
-#[derive(Debug, Clone)]
+/// Created by `Messenger::send_periodic`. Dropping the token cancels
+/// the timer (affine: every timer lifecycle terminates). Call
+/// `cancel()` explicitly if you need cancellation before drop.
+///
+/// # Cancel mechanism
+///
+/// Dual-path: the `AtomicBool` is checked by the timer callback on
+/// next fire (immediate, no channel latency) AND `CancelTimer` eagerly
+/// removes the calloop source (no ghost source in the TimerWheel).
+/// Both are idempotent.
+///
+/// # BeOS
+///
+/// `BMessageRunner` was non-copyable and cancel-on-destruct. This
+/// matches that model.
+#[derive(Debug)]
 pub struct TimerToken {
     /// Unique timer ID (matches the `id` in `LooperMessage::AddTimer`).
     pub(crate) id: u64,
     cancelled: std::sync::Arc<std::sync::atomic::AtomicBool>,
+    /// Channel for sending `CancelTimer` to eagerly remove the source.
+    sender: Option<LooperSender>,
 }
 
 impl TimerToken {
-    /// Cancel the periodic timer. The looper will remove it on the
-    /// next iteration.
+    /// Cancel the periodic timer. The looper removes the source on
+    /// the next iteration.
     pub fn cancel(&self) {
         self.cancelled.store(true, std::sync::atomic::Ordering::Release);
+        if let Some(ref tx) = self.sender {
+            let _ = tx.send(LooperMessage::CancelTimer { id: self.id });
+        }
+    }
+}
+
+impl Drop for TimerToken {
+    fn drop(&mut self) {
+        self.cancel();
     }
 }
 

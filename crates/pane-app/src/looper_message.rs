@@ -61,6 +61,11 @@ pub enum LooperMessage {
     QuitRequested {
         response_tx: std::sync::mpsc::Sender<bool>,
     },
+    /// Cancel a periodic timer by ID. Sent by `TimerToken::cancel()`
+    /// for eager calloop source removal.
+    CancelTimer {
+        id: u64,
+    },
     /// Imperative close — handler is not consulted.
     /// Sent after all panes have agreed to quit.
     Quit,
@@ -81,6 +86,8 @@ impl std::fmt::Debug for LooperMessage {
                 f.debug_struct("AddFilter").field("id", id).finish(),
             Self::RemoveFilter { id } =>
                 f.debug_struct("RemoveFilter").field("id", id).finish(),
+            Self::CancelTimer { id } =>
+                f.debug_struct("CancelTimer").field("id", id).finish(),
             Self::QuitRequested { .. } => f.write_str("QuitRequested"),
             Self::Quit => f.write_str("Quit"),
         }
