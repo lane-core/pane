@@ -53,7 +53,7 @@ Audited all 7 implemented types against their Haiku Book `.dox` entries. Full au
 - [x] **pane-notify `Modify`/`Attrib` split** — replaced with `StatChanged { fields }` + `AttrChanged { attr, cause }`. Follows Haiku's model.
 - [x] **pane-notify move model** — `MovedFrom`/`MovedTo` with inotify cookie for correlation.
 - [x] **Synchronous send-reply** — `send_and_wait` (blocking) + `send_request` (async) + `ReplyPort` (session-type handle, exactly-one-reply via ownership). Generalizes `pending_creates`.
-- [x] **Document `send_message()` blocking** — documented. Added `try_send_message()` (non-blocking, returns `ChannelFull`) and `is_valid()`.
+- [x] **Document `send_message()` blocking** — documented. Added `try_send_message()` (deprecated after unbounded channel migration) and `is_valid()`.
 
 **Should address (Tier 2 prerequisites):**
 - [ ] **`ScreenChanged` event** — DPI/scale awareness. Real Wayland capability (`wl_output` changes).
@@ -139,7 +139,7 @@ Concrete patterns extracted from vendored Plan 9 man pages and papers. See seren
 - [x] Phase 4 Stage 2: compositor protocol server (pane-hello ran against real compositor in VM)
 - [x] Pulse, ShortcutFilter, geometry control (resize_to, set_size_limits, set_hidden)
 - [x] Crash monitoring (Messenger::monitor + Message::PaneExited)
-- [x] Bounded channel backpressure (sync_channel 256)
+- [x] Bounded channel backpressure (sync_channel 256 — later replaced by unbounded calloop channel in C1 Phase 1)
 - [x] BeAPI naming audit (all identifiers reviewed case-by-case)
 - [x] Rust idiom audit (30 findings, all resolved)
 - [x] Documentation consolidation (openspec retired, flat docs/)

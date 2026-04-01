@@ -336,8 +336,8 @@ are explicitly placeholders and will be replaced by
 
 **pane:** Two-level enum: `Error` (top-level: Connect, Pane, Session,
 Io) with `ConnectError` and `PaneError` as domain-specific enums.
-`PaneError` has 5 variants including `WouldDeadlock` and `ChannelFull`
--- pane-specific conditions that have no Be equivalent.
+`PaneError` has 4 variants including `WouldDeadlock` — pane-specific
+conditions that have no Be equivalent.
 
 **Translation soundness:** Both correctly adopt `Result<T, E>` over
 `status_t`. pane's domain-specific enums are more structured than

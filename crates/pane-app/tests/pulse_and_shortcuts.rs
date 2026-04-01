@@ -425,7 +425,7 @@ fn send_delayed_fires_through_looper() {
     });
 
     // Schedule a delayed event for 50ms from now.
-    // Timer events must be Clone (fire_due clones one-shots too), so
+    // send_delayed takes ownership. We use CommandExecuted as a distinguishable marker —
     // we use CommandExecuted rather than App.
     outer_proxy.send_delayed(
         Message::CommandExecuted { command: "delayed".into(), args: String::new() },

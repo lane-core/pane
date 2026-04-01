@@ -322,7 +322,7 @@ pub fn run_closure(
         event_loop.dispatch(None, &mut state).map_err(calloop_err)?;
 
         // calloop's channel delivers at most 1024 messages per dispatch.
-        // Drain remaining without blocking to match the old try_recv loop.
+        // Drain remaining without blocking so the batch is complete.
         drain_channel(&mut event_loop, &mut state)?;
 
         let batch = std::mem::take(&mut state.batch);

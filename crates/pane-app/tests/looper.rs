@@ -556,7 +556,7 @@ fn mouse_move_msg(col: u16, row: u16) -> CompToClient {
 #[test]
 fn coalesce_resize_keeps_last() {
     // Pre-load 3 resizes + close before starting the looper.
-    // All messages are buffered, so drain_and_coalesce sees them all.
+    // All messages are buffered, so coalesce_batch sees them all.
     let (tx, rx) = channel::channel::<LooperMessage>();
     let filters = pane_app::filter::FilterChain::new();
     let proxy = make_proxy(pane_id(1));

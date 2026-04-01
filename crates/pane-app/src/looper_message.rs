@@ -4,9 +4,9 @@
 //! 1. The dispatcher thread (compositor messages)
 //! 2. Self-delivery (Messenger::send_message from worker threads)
 //!
-//! Both funnel into a single mpsc channel as LooperMessage variants.
-//! Timer registration and one-shot scheduling also use this channel,
-//! keeping timer state local to the looper thread.
+//! Both funnel into a single calloop channel as LooperMessage variants.
+//! Timer registration, one-shot scheduling, and timer cancellation
+//! also use this channel, keeping timer state local to the looper thread.
 //!
 //! When Tier 2 features add new protocol relationships (clipboard,
 //! inter-pane, services), each should be a separate typed channel
