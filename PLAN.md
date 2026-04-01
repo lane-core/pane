@@ -47,7 +47,7 @@ Full findings in serena memory `pane/code_review_findings_2026_03_31`.
 - [x] **Document closure handler request asymmetry** — documented on `Pane::run`.
 - [x] **Fix UndoManager `wrapping_sub`** — `saturating_sub`.
 - [x] **Convert `try_reconnect` to iterative loop** — no recursion, bounded by timeout.
-- [ ] **TLS integration in pane-headless** — transport exists, listener is plaintext-only.
+- [x] **TLS integration in pane-headless** — `--tls-cert`/`--tls-key` flags, rustls, ProxyTransport wraps TLS for tracing.
 
 **Documentation debt:**
 - [x] **`# BeOS` annotations** — Message enum, Resize/CloseRequested/Pulse, Clipboard, Pane::run/run_with.
