@@ -1096,9 +1096,10 @@ CreateFuture, TimerToken.
   linearly tracked.
 - **Batch processing**: the batch `Vec` is taken (`mem::take`) and
   drained. Events are consumed by dispatch — no re-buffering.
-- **Filter chain**: `filter()` takes `Message` by move, returns
-  `FilterAction` by move. Each filter consumes and produces.
-  Linear transformation chain.
+- **Filter chain**: `filter()` takes `&Message` (immutable borrow).
+  Returns `FilterAction`: `Pass` (no-op), `Transform(Message)`
+  (replacement), or `Consume` (drop). The chain retains ownership
+  on Pass; only Transform produces a new value.
 - **Connection**: `ConnectionSource` is move-only. Inserting it
   into calloop consumes it. No aliased access to the fd.
 
@@ -1483,15 +1484,27 @@ variants.
     the guarantee. The macro generates the match; missing handler
     methods produce non-exhaustive pattern errors at compile time.
 
+24. **Network discovery deferred**: Tier 1 (explicit config) is
+    sufficient for all phases. Future discovery mechanisms (mDNS,
+    rendezvous) are service map producers — they populate the same
+    map, at lowest precedence (explicit config wins). No discovery
+    metadata in map entries reaching the App. The service map is
+    the abstraction boundary.
+
+25. **No `remote_insecure` escape hatch**: Ship `pane dev-certs`
+    tooling. Local CA + server cert + client cert, one command,
+    stored in `~/.config/pane/tls/`. Local dev uses unix sockets
+    (no TLS). Remote dev uses dev certs (same code path as prod).
+    Transport enum is `{Unix, Tls}`, no third option. Server
+    refuses plaintext TCP on remote listener. `PeerAuth` enum
+    replaces advisory PeerIdentity for authorization:
+    `Kernel { uid, pid }` (unix, SO_PEERCRED) or
+    `Certificate { subject, issuer }` (TLS). `pane_owned_by()`
+    checks `PeerAuth`, not self-reported strings.
+
 ## Open Questions
 
-1. **Network discovery**: Tier 1 (explicit configuration) is
-   specified. Tier 2 (local rendezvous) and Tier 3 (mDNS/DNS-SD)
-   are potential future work.
-
-2. **`remote_insecure` escape hatch**: Development workflow for TLS
-   requirement. Options: self-signed certs with local CA (no escape
-   hatch), or `remote_insecure` with loud warnings.
+None. The spec is implementation-ready for Phase 1.
 
 ---
 
