@@ -229,12 +229,15 @@ pub trait Handler: Send + 'static {
     fn close_requested(&mut self, proxy: &Messenger) -> Result<Flow> { Ok(Flow::Stop) }
     fn disconnected(&mut self, proxy: &Messenger) -> Result<Flow> { Ok(Flow::Stop) }
     fn pulse(&mut self, proxy: &Messenger) -> Result<Flow> { Ok(Flow::Continue) }
-    fn reply_received(&mut self, proxy: &Messenger, token: u64, payload: Box<dyn Any + Send>) -> Result<Flow> { Ok(Flow::Continue) }
-    fn reply_failed(&mut self, proxy: &Messenger, token: u64) -> Result<Flow> { Ok(Flow::Continue) }
+    /// Incoming request from another pane. The payload is type-erased
+    /// (the requester and receiver may have different types). The reply
+    /// is an obligation — default drops it (sends ReplyFailed).
     fn request_received(&mut self, proxy: &Messenger, msg: Box<dyn Any + Send>, reply: ReplyPort) -> Result<Flow> {
         drop(reply);
         Ok(Flow::Continue)
     }
+    // reply_received and reply_failed are NOT on Handler.
+    // Replies route to per-request sigma entries (see Request/Reply).
     fn pane_exited(&mut self, proxy: &Messenger, pane: Id, reason: ExitReason) -> Result<Flow> { Ok(Flow::Continue) }
     fn supported_properties(&self) -> &[PropertyInfo] { &[] }
     /// &self for deadlock freedom. Side effects must happen
@@ -400,7 +403,6 @@ pub enum Message {
     Disconnected,
     PaneExited { pane: Id, reason: ExitReason },
     Pulse,
-    ReplyFailed { token: u64 },
 
     // Display (only arrives if DisplayHandler declared)
     DisplayReady(Geometry),
@@ -428,17 +430,18 @@ independently filterable. If filters could see it, consuming the
 payload would orphan the ReplyPort, violating the linear discipline.
 
 - `CompletionRequest { input, reply: CompletionReplyPort }`
-- `AppMessage(Box<dyn Any + Send>)`
-- `Reply { token, payload: Box<dyn Any + Send> }`
 - `Request(Box<dyn Any + Send>, ReplyPort)`
 - `ClipboardLockGranted(ClipboardWriteLock)`
+- `Reply { token, payload }` — internal, routes to sigma entries
+- `ReplyFailed { token }` — internal, routes to sigma entries
 
-Three categories:
+Reply and ReplyFailed never surface to the handler. They route
+to per-request sigma entries (see Request/Reply below).
+
+Two categories visible to the handler:
 
 1. **Clone-safe** (Message): freely duplicable, filter-visible.
-2. **Move-only** (AppMessage, Reply): non-Clone due to value
-   semantics. Dropping is safe — no peer waiting.
-3. **Obligation-carrying** (ReplyPort, CompletionReplyPort,
+2. **Obligation-carrying** (ReplyPort, CompletionReplyPort,
    ClipboardWriteLock): non-Clone due to session obligation.
    Dropping triggers failure compensation via Drop impl.
 
@@ -791,31 +794,37 @@ of the physical system, not the protocol.
 
 For cross-Connection patterns (paste: receive key event from
 compositor, then fetch clipboard from clipboard service), the
-handler is the state machine. The canonical pattern uses
-`send_request` + `reply_received`:
+handler uses `send_request` with typed callbacks:
 
 ```rust
-// In command_executed (key event arrives from compositor):
-self.clipboard_request = Some(proxy.send_request(
-    &clipboard_messenger, ClipboardRead("text/plain"),
-)?);
-
-// In reply_received (clipboard data arrives from clipboard server):
-if Some(token) == self.clipboard_request.as_ref().map(|t| t.raw()) {
-    self.clipboard_request.take();
-    let data: Vec<u8> = payload.downcast()?;
-    proxy.set_content(&data)?;
+fn command_executed(&mut self, proxy: &Messenger, cmd: &str, _: &str) -> Result<Flow> {
+    if cmd == "paste" {
+        proxy.send_request::<Self, ClipboardData>(
+            &self.clipboard_messenger,
+            ClipboardRead("text/plain"),
+            |editor, proxy, data| {
+                editor.insert_text(&data.content);
+                proxy.set_content(editor.buffer.as_bytes())?;
+                Ok(Flow::Continue)
+            },
+            |editor, proxy| {
+                editor.show_status("Paste failed");
+                Ok(Flow::Continue)
+            },
+        )?;
+    }
+    Ok(Flow::Continue)
 }
 ```
 
-No closure-based sequencing utility. The handler tracks
-intermediate state explicitly — this is more debuggable, composes
-naturally with Rust's ownership model, and makes the causal
-ordering visible in the handler's state machine.
+No ghost state. No manual token correlation. The callback receives
+the typed reply directly. The causal ordering (key event → clipboard
+fetch → insert) is expressed in the callback chain, not in handler
+state fields.
 
 The batch provides a *processing* order, not a *causal* order.
-Handlers that need cross-Connection causality must use request/reply,
-not event observation.
+Handlers that need cross-Connection causality use `send_request`
+callbacks, not event observation.
 
 ### Failure isolation
 
@@ -850,42 +859,65 @@ construct raw tokens.
 The server MAY enforce per-pane limits on concurrent outstanding
 requests to bound obligation growth from Messenger clones.
 
-### RequestToken\<T\>
+### Request/Reply via Sigma Entries
+
+Request/reply is modeled as per-request sigma entries, not ghost
+state in the handler. Each `send_request` creates a one-shot typed
+dispatch slot in the looper's dynamic sigma store.
 
 ```rust
-/// Typed correlation token for outstanding requests.
-/// Wraps u64 for wire compatibility. PhantomData<T> carries the
-/// expected reply type — downcast is encapsulated in extract().
-#[must_use = "represents an in-flight obligation"]
-pub struct RequestToken<T> {
-    raw: u64,
-    _type: PhantomData<T>,
-}
-
-impl<T: Send + 'static> RequestToken<T> {
-    pub fn raw(&self) -> u64 { self.raw }
-    pub fn extract(&self, payload: Box<dyn Any + Send>) -> Option<T> {
-        payload.downcast::<T>().ok().map(|b| *b)
-    }
+impl Messenger {
+    /// Send a request and register a typed reply callback.
+    ///
+    /// EAct: E-Suspend installs a one-shot handler in σ for
+    /// session type Recv<RequestReplyMessage<R>, End>.
+    /// The entry is consumed on reply (E-React) or failure.
+    pub fn send_request<H, R>(
+        &self,
+        target: &Messenger,
+        msg: impl Send + 'static,
+        on_reply: impl FnOnce(&mut H, &Messenger, R) -> Result<Flow> + Send + 'static,
+        on_failed: impl FnOnce(&mut H, &Messenger) -> Result<Flow> + Send + 'static,
+    ) -> Result<()>
+    where H: Handler + 'static, R: Send + 'static;
 }
 ```
 
-`send_request<T>` returns `RequestToken<T>`. The handler stores
-it and uses `extract()` in `reply_received` for typed correlation:
+No token returned. No ghost state in the handler. The correlation
+between request and reply is structural — guaranteed by the sigma
+entry, not by manual matching.
 
-```rust
-fn reply_received(&mut self, proxy: &Messenger, token: u64, payload: Box<dyn Any + Send>) -> Result<Flow> {
-    if token == self.pending.raw() {
-        if let Some(results) = self.pending.extract(payload) {
-            // results: SearchResults — typed, no manual downcast
-        }
-    }
-    Ok(Flow::Continue)
-}
-```
+The callback receives `&mut H` (handler state) and the typed
+reply `R` directly. No `Box<dyn Any>` at the handler surface.
+The single downcast (`Box<dyn Any + Send>` → `R`) happens inside
+the framework, guaranteed to succeed because send_request and
+the reply share `R`.
+
+**On disconnect**: `sigma.fail_all()` fires `on_failed` for every
+pending entry before `handler.disconnected()` is called. The
+handler gets per-request failure notification.
+
+**On cancellation**: `cancel_request(token)` removes the sigma
+entry without firing callbacks. Late-arriving replies are silently
+dropped. Same as 9P's Tflush.
+
+**Lifecycle** (EAct terms):
+- **E-Suspend**: `send_request` installs entry in σ
+- **Active**: entry waits; looper services other sessions
+- **E-React**: reply arrives, entry consumed, callback fires
+- **Failed**: target drops ReplyPort → `on_failed` fires
+- **Cancelled**: handler-initiated removal, no callbacks
+- **Abandoned**: handler drops (Flow::Stop, panic) → entry dropped
+  without callbacks. Safe: pending entry is a receive-endpoint;
+  dropping it doesn't block any peer (DLfActRiS §3.2).
+
+**What this removes from Handler**: `reply_received(token, payload)`
+and `reply_failed(token)` are gone. Reply dispatch is structural,
+not a handler method. `request_received` stays (the server side
+of request/reply, receiving from other panes).
 
 Tokens are per-Connection (three servers = three namespaces).
-Messenger manages token allocation internally.
+Token allocation is internal to the framework.
 
 ---
 
@@ -992,6 +1024,18 @@ failure terminals. The invariants:
   A handler processing a clipboard event must not call `send_and_wait`
   on the compositor Connection (or vice versa). Preserves DLfActRiS
   strong acyclicity across the multi-server connectivity graph.
+
+Sigma entry invariants (request/reply):
+
+- **S1**: Token uniqueness (AtomicU64, per-Connection namespace)
+- **S2**: Sequential dispatch — sigma callbacks share `&mut H`
+  with handler methods, never concurrent (follows from I6/I7)
+- **S3**: Control-before-events — RegisterRequest processed before
+  any Reply in the same batch
+- **S4**: `sigma.fail_all()` fires before `handler.disconnected()`
+- **S5**: Cancel removes entry without firing callbacks
+- **S6**: `panic = unwind` (follows from I1) — sigma HashMap dropped
+  during unwind
 
 ### Chan Drop sends ProtocolAbort
 
@@ -1230,6 +1274,7 @@ variants.
 | LooperMessage | 10 variants, growing | Per-protocol typed calloop channels |
 | Headless | Added after compositor | The base case |
 | Service disconnect | Not handled | Dual: `commit() -> Result` + per-service `*_service_lost()` on service traits |
+| Request/reply | Ghost state (token in self, Box<dyn Any> downcast) | Sigma entries — typed callbacks, no ghost state, no reply_received |
 | Request cancellation | Not supported | `Cancel { token }` (Tflush equivalent) |
 | Remote auth | Self-reported identity | TLS required, PeerIdentity validated against certificate |
 
@@ -1293,9 +1338,12 @@ variants.
 12. **Chan Drop sends ProtocolAbort** (`[0xFF][0xFF]`). Peer frees
     session thread immediately on handshake abort.
 
-13. **RequestToken\<T\>**: Typed correlation for send_request. Wraps
-    u64 with PhantomData\<T\>. Eliminates downcast boilerplate.
-    Tokens per-Connection.
+13. **Request/reply via sigma entries**: `send_request<H, R>` creates
+    a one-shot typed dispatch entry in the looper's sigma store.
+    Replies route to the entry's callback with typed `R`. No ghost
+    state, no `RequestToken`, no `reply_received` on Handler. Tokens
+    per-Connection. `sigma.fail_all()` before `disconnected()`.
+    Six invariants (S1-S6) for sigma soundness.
 
 14. **ScriptingHandler: Handler**: Headless command surface via
     DeclareInterest. `command_executed` on DisplayHandler (input)
