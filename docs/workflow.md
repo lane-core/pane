@@ -83,6 +83,25 @@ Also consult the EAct-derived session-type design principles in serena memory `p
 
 See also `pane/eact_analysis_gaps` for structural gaps to address and `pane/eact_what_not_to_adopt` for anti-patterns to avoid.
 
+**The functoriality principle — type shapes constrain the design space:**
+`Prog(Phase1 + Phase2) ≠ Prog(Phase1) + Prog(Phase2)`. The programs
+buildable on the full architecture are not decomposable into programs
+buildable on each phase independently. Phase 1 type signatures shape
+what developers (including us) build. A Phase 1 type that omits
+structure needed later produces patterns that assume that structure
+doesn't exist — an ecosystem that can't cleanly accommodate the full
+design. Every type in Phase 1 must be the full architecture's type,
+populated minimally. ServiceRouter with one entry, not a bare sender.
+ServiceId { uuid, name }, not a bare string. HashMap<(ConnectionId,
+token)>, not HashMap<token>. The cost is near-zero. The alternative is
+a guaranteed breaking change across every downstream consumer.
+
+Demonstrated by: BeOS's string-based application signatures shaped an
+ecosystem built on `strcmp()`. When structured identity was needed
+(launch daemon, package management), everything was string-comparison
+all the way down. The type simplification in Phase 1 prevented clean
+evolution in Phase 2.
+
 **After any substantial refactor** (mass rename, API restructure):
 1. Code review — correctness, idiom, consistency
 2. Stale documentation review (parallel) — all comments, specs, docs, memories

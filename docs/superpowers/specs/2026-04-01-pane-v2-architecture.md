@@ -2,7 +2,7 @@
 
 A pane is organized state with an interface that allows views of
 that state. Display is one view. Filesystem projection is another.
-Scripting queries, protocol endpoints, remote agent access — all
+Routed queries, protocol endpoints, remote agent access — all
 views of the same state, kept consistent by optic laws.
 
 Designed from first principles after two weeks of proof-of-concept
@@ -97,12 +97,12 @@ A pane is:
    attributes, configuration. Structured through optics.
 
 2. **An interface for views of that state** — visual display,
-   filesystem projection at `/pane/`, scripting queries, protocol
+   filesystem projection at `/pane/`, routed queries, protocol
    endpoints, remote access. All projections of the same state, kept
    consistent by optic laws.
 
 A pane exists whether or not a compositor is running. A headless
-pane has state, has views (filesystem, scripting, protocol), appears
+pane has state, has views (display, filesystem, routing, protocol), appears
 in the namespace — it just doesn't have the display view open.
 Display is one view among peers, not the privileged default.
 
@@ -117,7 +117,7 @@ onto the screen. It is not the center of the architecture.
 ### The Protocol trait
 
 Every service relationship in pane — lifecycle, display, clipboard,
-scripting, application-defined — is a Protocol. The trait links
+routing, application-defined — is a Protocol. The trait links
 three things that are otherwise maintained by convention:
 
 ```rust
@@ -289,7 +289,7 @@ ServiceTeardown, session lifecycle, and display events. It is
 never negotiated — it exists by virtue of having a connection.
 
 Services with their own negotiated wire discriminants (clipboard,
-scripting) get their session-local u8 from the server during
+routing) get their session-local u8 from the server during
 DeclareInterest.
 
 The `Handler` trait is sugar over `Handles<Lifecycle>` +
@@ -310,7 +310,7 @@ pub trait Handler: Send + 'static {
     /// Incoming request from another pane. The payload is intentionally
     /// type-erased: the requester and receiver may have different types
     /// (different processes, different T). The receiver downcasts based
-    /// on convention (shared crate defining the protocol, or scripting
+    /// on convention (shared crate defining the protocol, or routing
     /// dispatch via optics). Protocol-defined requests route through
     /// Handles<P> with typed messages instead. The reply is an
     /// obligation — default drops it (sends ReplyFailed).
@@ -349,7 +349,7 @@ every pane and benefit from named-method discoverability.
 
 ### Service protocols
 
-Clipboard, scripting, observer, DnD — each defines a Protocol
+Clipboard, routing, observer, DnD — each defines a Protocol
 and the developer implements Handles\<P\> via the derive macro.
 The protocol's Message enum defines the variants; the macro
 generates the dispatch; the developer provides named handlers.
@@ -368,10 +368,10 @@ pub enum ClipboardMessage {
     ServiceLost,
 }
 
-struct Scripting;
-impl Protocol for Scripting {
-    const SERVICE_ID: ServiceId = ServiceId::new("com.pane.scripting");
-    type Message = ScriptingMessage;
+struct Routing;
+impl Protocol for Routing {
+    const SERVICE_ID: ServiceId = ServiceId::new("com.pane.routing");
+    type Message = RoutingMessage;
 }
 ```
 
@@ -736,7 +736,7 @@ corruption, auth failure) tear down the connection.
 Cancel { token: u64 }
 ```
 
-Advisory cancellation of in-flight requests (completions, scripting
+Advisory cancellation of in-flight requests (completions, routing
 queries). The server responds with either the original reply (if
 already computed) or `ReplyFailed { token }`. Same semantics as
 9P's Tflush: the client must handle a reply arriving after
@@ -1586,9 +1586,10 @@ variants.
     state, no `reply_received` on Handler. `sigma.fail_all()` before
     `disconnected()`. Six invariants (S1-S6).
 
-14. **ScriptingHandler: Handler**: Headless command surface via
+14. **RoutingHandler: Handler**: Headless command surface via
     DeclareInterest. `command_executed` on DisplayHandler (input)
-    and ScriptingHandler (scripting) for their respective sources.
+    and RoutingHandler (routed data access) for their respective
+    sources.
 
 15. **Geometry**: Logical pixels + scale_factor. `physical_size()`
     helper. Resolves HiDPI ambiguity.
@@ -1709,7 +1710,7 @@ entries, per-Connection failure isolation, cross-Connection
 ordering, multi-server sigma (connection_id, token) routing.
 
 **Phase 3 — Lifecycle.** Session suspension/resumption, streaming
-(Queue pattern), ScriptingHandler. These interact — streams must
+(Queue pattern), RoutingHandler. These interact — streams must
 close before suspend — so they're designed together.
 
 **Phase 4 — Performance.** Batch coalescing optimizations, write
