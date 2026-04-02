@@ -184,10 +184,13 @@ impl Handles<Clipboard> for Editor {
 ```
 
 The macro must be transparent: `cargo expand` produces a match
-a human could write in 30 seconds. No runtime indirection. Every
-variant of `P::Message` must map to a handler method — missing
-variants are compile errors. Variant-to-method mapping uses
-`#[handles(VariantName)]` attributes or snake_case convention.
+a human could write in 30 seconds. No runtime indirection. The
+macro generates the match arms; Rust's exhaustive match check IS
+the exhaustiveness guarantee. If a handler method is missing for
+a variant, `rustc` emits a non-exhaustive pattern error. The macro
+does not discover variants — it generates code that fails to
+compile if the handler is incomplete. Variant-to-method mapping
+uses `#[handles(VariantName)]` attributes or snake_case convention.
 
 ### Framework protocols
 
@@ -212,6 +215,13 @@ impl Protocol for Display {
     type Message = DisplayMessage;
     const SERVICE_ID: u8 = 0; // same connection as lifecycle
 }
+
+// Lifecycle and Display share SERVICE_ID 0 because they share a
+// connection and lifecycle — the same design as 9P's single-
+// connection multiplexing. The wire framing discriminates by
+// payload variant tag within service 0, not by SERVICE_ID alone.
+// Service IDs > 0 are for independently-connectable services
+// (clipboard, scripting) that may live on different servers.
 ```
 
 The `Handler` trait is sugar over `Handles<Lifecycle>` +
@@ -229,9 +239,13 @@ pub trait Handler: Send + 'static {
     fn close_requested(&mut self, proxy: &Messenger) -> Result<Flow> { Ok(Flow::Stop) }
     fn disconnected(&mut self, proxy: &Messenger) -> Result<Flow> { Ok(Flow::Stop) }
     fn pulse(&mut self, proxy: &Messenger) -> Result<Flow> { Ok(Flow::Continue) }
-    /// Incoming request from another pane. The payload is type-erased
-    /// (the requester and receiver may have different types). The reply
-    /// is an obligation — default drops it (sends ReplyFailed).
+    /// Incoming request from another pane. The payload is intentionally
+    /// type-erased: the requester and receiver may have different types
+    /// (different processes, different T). The receiver downcasts based
+    /// on convention (shared crate defining the protocol, or scripting
+    /// dispatch via optics). Protocol-defined requests route through
+    /// Handles<P> with typed messages instead. The reply is an
+    /// obligation — default drops it (sends ReplyFailed).
     fn request_received(&mut self, proxy: &Messenger, msg: Box<dyn Any + Send>, reply: ReplyPort) -> Result<Flow> {
         drop(reply);
         Ok(Flow::Continue)
@@ -297,6 +311,31 @@ impl Protocol for Scripting {
 
 DnD requires display: `open_drag_drop()` requires
 `H: Handles<Display> + Handles<DragDrop>`.
+
+### Pointer policy (mouse coalescing opt-out)
+
+```rust
+/// Mouse event delivery policy for the display view.
+/// BeOS: B_NO_POINTER_HISTORY / B_FULL_POINTER_HISTORY per-view.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum PointerPolicy {
+    /// Deliver only the most recent MouseMove per batch.
+    #[default]
+    Coalesce,
+    /// Deliver every MouseMove event. Required for drawing
+    /// applications, gesture recognition, ink input.
+    FullHistory,
+}
+
+impl Messenger {
+    pub fn set_pointer_policy(&self, policy: PointerPolicy) -> Result<()>;
+}
+```
+
+Per-pane, set in `display_ready` or dynamically. Server-side
+filtering — FullHistory tells the server to send all events;
+Coalesce tells it to batch. Don't send events over the wire
+just to drop them client-side.
 
 ### Application-defined protocols
 
@@ -415,9 +454,20 @@ pub enum Message {
     CommandDismissed,
     CommandExecuted { command: String, args: String },
 
-    // Service notifications (Clone-safe, filter-visible)
-    ClipboardLockDenied { clipboard: String, reason: String },
-    ClipboardChanged { clipboard: String, source: Id },
+    // Service notifications — nested per-service enum.
+    // Top-level grows O(services), not O(services × events).
+    // Lifecycle and display variants stay flat (base protocol).
+    Clipboard(ClipboardNotification),
+    // Future: Observer(ObserverNotification), DragDrop(DragDropNotification)
+}
+
+/// Clone-safe clipboard notifications (filter-visible).
+/// Obligation-carrying clipboard messages (LockGranted) are
+/// internal, not in this enum.
+#[derive(Debug, Clone)]
+pub enum ClipboardNotification {
+    LockDenied { clipboard: String, reason: String },
+    Changed { clipboard: String, source: Id },
 }
 ```
 
@@ -872,20 +922,66 @@ impl Messenger {
     /// EAct: E-Suspend installs a one-shot handler in σ for
     /// session type Recv<RequestReplyMessage<R>, End>.
     /// The entry is consumed on reply (E-React) or failure.
+    ///
+    /// Returns a CancelHandle for optional cancellation.
     pub fn send_request<H, R>(
         &self,
         target: &Messenger,
         msg: impl Send + 'static,
         on_reply: impl FnOnce(&mut H, &Messenger, R) -> Result<Flow> + Send + 'static,
         on_failed: impl FnOnce(&mut H, &Messenger) -> Result<Flow> + Send + 'static,
-    ) -> Result<()>
+    ) -> Result<CancelHandle>
     where H: Handler + 'static, R: Send + 'static;
 }
+
+/// Handle for cancelling an outstanding request.
+/// Drop does nothing — the request completes normally.
+/// .cancel(self) removes the sigma entry without firing callbacks.
+/// Inverted from ReplyPort: drop = happy path, cancel = voluntary abort.
+pub struct CancelHandle { /* token + looper_tx */ }
+
+impl CancelHandle {
+    /// Cancel the request. Consumes self. Late replies silently dropped.
+    pub fn cancel(self) { ... }
+}
+// Drop: intentionally no-op. Uncancelled request completes normally.
 ```
 
-No token returned. No ghost state in the handler. The correlation
-between request and reply is structural — guaranteed by the sigma
-entry, not by manual matching.
+No ghost state in the handler. The correlation between request and
+reply is structural — guaranteed by the sigma entry, not by manual
+matching. Multiple requests may be outstanding simultaneously,
+including to the same target — each gets an independent sigma
+entry with a unique token (S1).
+
+**Callback capture.** Callbacks are `FnOnce + Send + 'static` —
+they cannot capture borrows from the calling scope. This is
+correct: the callback outlives the handler invocation (EAct
+E-Suspend: sigma entries persist across idle). The `&mut H` first
+parameter provides handler state at reply time:
+
+```rust
+// Pattern 1: Handler state via &mut H (covers ~90% of cases)
+proxy.send_request::<Self, SearchResults>(
+    &target, query,
+    |editor, proxy, results| {
+        // editor IS &mut Self — full handler access
+        editor.display_results(&results);
+        Ok(Flow::Continue)
+    },
+    |editor, _| { editor.show_status("failed"); Ok(Flow::Continue) },
+)?;
+
+// Pattern 2: Capture owned context from the call site
+let term = query.to_owned();
+proxy.send_request::<Self, SearchResults>(
+    &target, SearchQuery(term.clone()),
+    move |handler, proxy, results| {
+        handler.display_results(&term, results);
+        Ok(Flow::Continue)
+    },
+    |handler, _| { handler.show_status("failed"); Ok(Flow::Continue) },
+)?;
+```
 
 The callback receives `&mut H` (handler state) and the typed
 reply `R` directly. No `Box<dyn Any>` at the handler surface.
@@ -897,9 +993,10 @@ the reply share `R`.
 pending entry before `handler.disconnected()` is called. The
 handler gets per-request failure notification.
 
-**On cancellation**: `cancel_request(token)` removes the sigma
+**On cancellation**: `cancel_handle.cancel()` removes the sigma
 entry without firing callbacks. Late-arriving replies are silently
-dropped. Same as 9P's Tflush.
+dropped. Same as 9P's Tflush. Dropping the CancelHandle without
+calling cancel is a no-op — the request completes normally.
 
 **Lifecycle** (EAct terms):
 - **E-Suspend**: `send_request` installs entry in σ
@@ -1074,13 +1171,14 @@ grant and commit), `LockRevoked` (server revoked due to timeout
 or admin action), `ValidationFailed` (malformed data rejected).
 Drop-based Revert fires only if `commit` was never called.
 
-**I8 is enforced at runtime.** The looper maintains a thread-local
-`CURRENT_CONNECTION` id during handler dispatch. If `send_and_wait`
-is called targeting a Connection other than `CURRENT_CONNECTION`,
-the runtime panics in debug builds and logs a warning in release
-builds. This turns the advisory invariant into a testable one.
-The check cost (one thread-local read) is negligible relative to
-the IPC round-trip that `send_and_wait` performs.
+**I8 is enforced at runtime (panic in all builds).** The looper
+maintains a thread-local `CURRENT_CONNECTION` id during handler
+dispatch. If `send_and_wait` is called targeting a Connection
+other than `CURRENT_CONNECTION`, the runtime panics. A production
+deadlock (silent, unrecoverable, requires process kill) is worse
+than a panic (backtrace, crash report, Drop compensation fires
+via I1). The check cost (one thread-local read) is negligible
+relative to the IPC round-trip that `send_and_wait` performs.
 
 **Tokens are per-Connection.** A pane connected to three servers
 has three independent token namespaces. `Cancel { token }` is
@@ -1339,11 +1437,12 @@ variants.
     session thread immediately on handshake abort.
 
 13. **Request/reply via sigma entries**: `send_request<H, R>` creates
-    a one-shot typed dispatch entry in the looper's sigma store.
-    Replies route to the entry's callback with typed `R`. No ghost
-    state, no `RequestToken`, no `reply_received` on Handler. Tokens
-    per-Connection. `sigma.fail_all()` before `disconnected()`.
-    Six invariants (S1-S6) for sigma soundness.
+    a one-shot typed dispatch entry in sigma. Returns `CancelHandle`
+    (Drop = no-op, `.cancel()` = voluntary abort). Replies route to
+    callback with typed `R`. Multiple outstanding requests per target
+    supported (independent sigma entries, unique tokens). No ghost
+    state, no `reply_received` on Handler. `sigma.fail_all()` before
+    `disconnected()`. Six invariants (S1-S6).
 
 14. **ScriptingHandler: Handler**: Headless command surface via
     DeclareInterest. `command_executed` on DisplayHandler (input)
@@ -1353,14 +1452,36 @@ variants.
     helper. Resolves HiDPI ambiguity.
 
 16. **I8 runtime enforcement**: Thread-local CURRENT_CONNECTION in
-    looper. `send_and_wait` on different Connection: panic (debug),
-    log warning (release).
+    looper. `send_and_wait` on different Connection: panic in all
+    builds (production deadlock is worse than a crash with backtrace).
 
 17. **Service map precedence**: `$PANE_SERVICE_OVERRIDES` > manifest
     > `$PANE_SERVICES` > `/etc/pane/services.toml`.
 
 18. **DeclareInterest version**: Single `expected_version` for
     Phase 1. Range negotiation (min/max) deferred to Phase 2.
+
+19. **SERVICE_ID: 0 shared by Lifecycle and Display**: Intentional.
+    Same connection, same lifecycle, like 9P single-connection
+    multiplexing. Wire discriminates by payload variant tag.
+    Service IDs > 0 for independently-connectable services.
+
+20. **request_received stays untyped**: `Box<dyn Any + Send>` is
+    intentional — the server side is fundamentally open (unknown
+    senders). Protocol-defined requests route through Handles<P>.
+    Ad-hoc inter-pane requests use request_received.
+
+21. **Message enum uses nested service notifications**:
+    `Message::Clipboard(ClipboardNotification)`. Top-level grows
+    O(services). Lifecycle and display stay flat (base protocol).
+
+22. **PointerPolicy**: Per-pane `Coalesce` (default) or
+    `FullHistory` for drawing apps. Server-side filtering.
+    Set via `Messenger::set_pointer_policy()`.
+
+23. **Derive macro exhaustiveness**: `rustc`'s exhaustive match IS
+    the guarantee. The macro generates the match; missing handler
+    methods produce non-exhaustive pattern errors at compile time.
 
 ## Open Questions
 
