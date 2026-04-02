@@ -1,1029 +1,1765 @@
-# Pane Architecture Specification
+# pane v2 Architecture
 
-This document describes what pane IS, technically — the engineering decisions that implement the principles in the foundations spec. It is written from the perspective of how the Be engineers would proceed if they were building BeOS's successor on Linux in 2026, knowing what we know now about what worked, what didn't, and what the theoretical work of the last two decades makes possible.
+A pane is organized state with an interface that allows views of
+that state. Display is one view. The namespace (filesystem
+projection at `/pane/`, routed queries via optics, remote access)
+is another. Both are projections of the same state, structured
+by the protocol and kept consistent by optic laws.
 
-The foundations spec carries the philosophy. This document carries the engineering.
+Designed from first principles after two weeks of proof-of-concept
+development. The proof of concept validated the API vocabulary,
+mapped the subsystem landscape, and revealed that pane-headless
+(a server with no display running the same protocol) is the
+clarifying constraint: pane is a protocol framework that happens
+to have a display mode, not a display framework that also works
+headless.
 
----
-
-## 1. Vision
-
-Pane is a desktop environment, Wayland compositor, and Linux distribution — and a distributed operating environment that runs on any unix-like. One thing, not five. The degree of integration is NeXTSTEP-level: the user does not perceive a compositor running on a distro. They perceive pane. And a headless pane instance in the cloud is the same system without a display — not a stripped-down version, but the foundation that the full desktop extends.
-
-The architecture recovers what made BeOS work — message-passing discipline, per-component threading, infrastructure-first design, the kit as programming model — and what Plan 9 proved — protocol uniformity, location independence, the network as a transparent extension of the local namespace — on a platform where we don't control the kernel. Linux provides the primitives (processes, scheduling, filesystems, devices, networking) and stays out of the way. Pane provides the personality: the protocol, the compositor, the kits, the aesthetic, the extension model.
-
-The local machine has no architectural privilege. Its display, keyboard, and low-latency I/O are performance characteristics, not structural distinctions. The local compositor is a server the user's eyes happen to be connected to. A headless instance is the same server without a display. A remote pane is the same as a local pane with higher latency. This principle — the host as contingent server — is the synthesis of BeOS's messaging discipline (everything communicates the same way) and Plan 9's location independence (nothing is special because it's local). See `docs/distributed-pane.md` for the full treatment.
-
-What session types add to the Be model: compile-time enforcement of the protocol discipline that BeOS achieved by engineering convention. The BMessage `what` code becomes a branch in a session type enum. The convention "send B_REPLY after B_REQUEST_COMPLETED" becomes a type: after `Recv<Request>`, the type is `Send<Reply>`. The guarantee is the same — protocol adherence, no stuck states, local reasoning per component — but the enforcement moves from developer skill to compiler verification.
-
-What Linux adds to the Be model: the entire hardware ecosystem, a battle-tested network stack, compositing for free via Wayland, and 120,000+ packages via Nix. Haiku spent 25 years rebuilding what Be had, plus what Be never got to (package management, networking, POSIX compliance, layout management). Pane sidesteps all of that and focuses entirely on the desktop experience layer.
-
-**Dependency philosophy.** Pane is a radically opinionated distribution that determines its own dependencies with complete freedom. Convention and legacy do not constrain our choices. We target the latest kernel interfaces, the newest viable subsystems, and the most forward-looking infrastructure when there are significant payoffs for our design model — provided we have reasonable confidence in their future support, or at minimum can maintain them ourselves if needed. FUSE-over-io_uring (Linux 6.14+), bcachefs when it matures, PipeWire over PulseAudio, s6 over systemd — these are not risky bets on bleeding edge. They are the choices of a distribution that is building for the next decade, not accommodating the last one. We are futureproofing, not backward-compatible.
+Designed with input from be-systems-engineer, plan9-systems-engineer,
+and session-type-consultant.
 
 ---
 
-## 2. The Pane Primitive
+## Theoretical Foundation
 
-A pane is the universal object of the system. Every interface — to the user, to the system, to other components, to scripts — is a pane.
+**EAct** (Fowler et al., "Safe Actor Programming with Multiparty
+Session Types") is the governing formalism. It reconciles pane's
+two design lineages:
 
-### What a pane is
+- **BeOS**: EAct formalizes what Be's API achieved implicitly.
+  BLooper = EAct actor with sequential handler invocation. BHandler
+  = handler store σ. BMessenger = session endpoint. BMessageFilter
+  = channel transformer. The formalism proves why Be worked and
+  reveals where it was unsound (handler chain re-entrancy, untyped
+  dispatch, no coverage checking).
 
-A pane is one object with multiple views:
+- **Plan 9**: Optic discipline (Clarke et al.) formalizes what
+  Plan 9 achieved through filesystem convention. /dev/snarf, rio's
+  per-window synthetic files, per-process namespaces — all are
+  optic projections. The optic laws (GetPut, PutGet, PutPut)
+  guarantee consistency between views. Session types govern protocol
+  relationships between components; optics govern state-access
+  relationships within and across components.
 
-- **Visual**: tag line + body + chrome, rendered on screen
-- **Protocol**: a session-typed endpoint for communication with the compositor and other components
-- **Filesystem**: a node under `/pane/` exposing state for scripts and tools
-- **Semantic**: roles, values, and actions for accessibility infrastructure
+**The channel discipline**: pane-session's types are CLL-derived
+(classical linear logic, in the lineage of Wadler's "Propositions
+as Sessions," JFP 2014). CLL governs what a single binary protocol
+can express — Send/Recv, duality, branching, streaming. EAct
+operates at the layer above — how one actor interleaves work across
+multiple sessions. The two compose: EAct's Progress theorem
+requires individual protocols to be compliant; pane-session's
+typestate encoding mirrors CLL's structure, providing protocol
+fidelity (in the sense of Ferrite, Chen/Balzer/Toninho, ECOOP
+2022, Theorem 4.3) — if the developer's code type-checks against
+`Chan<S, T>`, the resulting protocol follows the structure of S.
 
-These views are projections of the same internal state. When state changes through one view, others reflect it. The relationship between internal state and each view is governed by optics — composable, bidirectional access paths that satisfy GetPut and PutGet laws up to semantic equality. Violations under failure (a crashed component, a lagging view) are temporary; recovery semantics restore the invariant.
+pane-session adopts three patterns from **par** (Michal Strba,
+https://github.com/faiface/par), a CLL session type library for
+Rust: enum-based branching, the Queue streaming combinator, and
+the Server connect/suspend/resume lifecycle. The Server pattern
+additionally draws from Balzer & Pfenning, "Client-server sessions
+in linear logic" (LICS 2021). par is in-process only (values by
+move, panics on disconnect); pane-session adapts these patterns
+for IPC with serialization, crash safety (Result, not panic), and
+transport abstraction.
 
-### The three parts of every pane
+**The linear discipline**: pane's core subsystems use the subset of
+Rust that most closely approximates linear types. Move-only types,
+`#[must_use]`, ownership transfer, Drop-based failure compensation.
+The developer-facing API is ergonomic; the infrastructure beneath
+it is linearly disciplined.
 
-**Tag line.** A modal command surface that serves as identity, command bar, and discovery mechanism for a pane. The tag line is always compositor-rendered (the compositor owns the chrome). Tag line content travels through the pane protocol: the client declares a title and a command vocabulary; the compositor renders the chrome and manages the activation lifecycle.
+**The functoriality principle**: `Prog(Phase1 + Phase2) ≠
+Prog(Phase1) + Prog(Phase2)`. The programs buildable on the full
+architecture are not decomposable into programs buildable on each
+phase independently. Phase 1 type signatures shape the design
+space — developers (including us) build patterns against the
+types they see. A Phase 1 type that omits structure needed in
+Phase 2 produces patterns that assume that structure doesn't
+exist, creating an ecosystem that can't cleanly accommodate the
+full design. BeOS demonstrated this: string-based app signatures
+(`strcmp()` everywhere) prevented clean evolution to structured
+identity when the launch daemon and package management arrived.
 
-The tag line has two states:
-
-**At rest.** The tag line shows the pane's identity — its title. Floating panes display a BeOS-style tab: compact, colored, asymmetric, sitting on the pane border — identity at a glance, a grab handle for movement, minimal cognitive load. The tab carries a small command indicator glyph that signals the command surface exists. Tiled panes display a thin name strip at the top edge — enough for identity, not a command bar. Without this strip, tiled panes lose identity and warmth.
-
-**Activated.** The user triggers the command surface (activation key, click on the indicator, or compositor binding). A cursor appears in the tab (floating) or the strip expands into a command input field (tiled). The user types commands. A completion dropdown appears, populated by the pane's command vocabulary. Enter executes. Escape dismisses instantly, unconditionally. Empty-query mode (activation with no input) shows a browsable, categorized list of all available commands — the which-key discovery pattern and the menu-bar safety net.
-
-**Opt-in.** A pane without a tag line is a component — meant to be interacted with through its parent's tag or its own content area. The developer decides which panes have tags. A container pane (whose body is other panes) may have a tag for layout commands while its children have tags for content commands. Scope is indicated visually when activated; the default targets the leaf, with an explicit gesture to reach the container level.
-
-**Body.** The content area. For pane-native clients: text, widgets, or a hybrid. For legacy Wayland clients: an opaque wl_surface. The body is always client-rendered — the Wayland model — with visual consistency coming from the shared kits, not from the compositor rendering on behalf of clients.
-
-**Chrome.** Tag lines, borders, focus indicators, split handles. Always compositor-rendered via smithay's GLES renderer (the compositor's own rendering engine — distinct from Vello, which is the client-side widget rendering engine). The chrome is pane's visual identity — one opinionated look, consistent across all panes regardless of whether their content is native or legacy.
-
-### Pane composition
-
-Panes compose spatially. Two panes viewed together form a compound structure whose concrete presentation depends on context: on screen, spatial arrangement in the layout tree; on the filesystem, sibling entries under `/pane/`. The layout tree is the compositor's model of this composition — a tree of containers where branches define splits and leaves hold panes.
-
-Panes compose temporally through the protocol. A conversation between a client and the compositor is a session. Multiple panes per connection are sub-sessions. The session type tracks where each conversation is in its lifecycle.
-
-**Compositional equivalence.** The layout tree, pane-fs, and the pane protocol must encode composition relationships consistently. A split in the layout tree has a corresponding directory in pane-fs and emits structural events through the protocol. No composition primitive exists in one view without a representation in the others. Concretely: introducing a new composition mode (tabbed stacking, linked groups, transient overlays) requires filesystem and protocol representations before it ships. The test is automation-complete: for any composition relationship, a script must be able to discover that it exists, query its properties, and dissolve it through the standard protocol without special-case APIs.
-
-### The pane as filesystem node
-
-Each pane is exposed under `/pane/<id>/` via pane-fs (FUSE). The filesystem representation presents the abstraction level relevant to the consumer:
-
-- `tag` — the tag line content (read/write)
-- `body` — the body content at the semantic level (for a shell: command output; for an editor: file content)
-- `attrs/` — typed attributes (pane type, title, dirty state, working directory)
-- `ctl` — control interface (write commands to manipulate the pane)
-
-The specific tree structure evolves with implementation, but the principle is fixed: pane state is files, and any tool that can read files can inspect pane state.
-
-**Composition in the filesystem.** When panes are composed, pane-fs reflects the composition structure as directory nesting. A split containing panes A and B appears as a directory under `/pane/` with its own `attrs/` (encoding orientation, ratio, and split type) and child entries `A/` and `B/`. Independent panes are top-level entries; composed panes are nested under their container. The filesystem tree mirrors the layout tree's nesting — not as a consequence of the compositional equivalence invariant, but as the filesystem's native expression of it. Reparenting a pane (moving it into or out of a split) changes its position in the filesystem hierarchy. Tools that walk `/pane/` see composition structure directly; they do not need to reconstruct it from per-pane geometry attributes.
+Consequence: every type in Phase 1 must be the full architecture's
+type, populated minimally. `ServiceId { uuid, name }` from day
+one, not `&'static str` that gets promoted later. `ServiceRouter`
+with one entry, not a bare sender. The cost is near-zero
+(deterministic UUID derivation, HashMap with one entry). The
+alternative is a guaranteed future breaking change across every
+Protocol impl, Handler, and downstream application.
 
 ---
 
-## 3. Server Decomposition
+## What Is a Pane
 
-Each server is a separate process. Servers communicate via session-typed protocols over unix sockets (locally) or TCP/TLS (across the network). Each server runs its own threaded looper — a thread with a message queue, processing messages sequentially. This is the BLooper model: each looper is an actor with a mailbox, processing one message at a time. Concurrency arises from many loopers running simultaneously, not from concurrency within a looper.
+A pane is:
 
-The compositor is the exception: its Wayland core uses calloop for fd polling because smithay requires it. calloop is scoped to the compositor — it does not define the system-wide concurrency model. Other servers use std::thread + channels.
+1. **Organized state** — body content, tag (title + commands),
+   attributes, configuration. Structured through optics.
 
-**The core/full decomposition.** Every server has two versions: a portable *core* that runs on any unix-like (Darwin, NixOS, any Linux with nix), and a platform-optimized *full* version that leverages Pane Linux's specific infrastructure. Both expose the same protocol interface — clients do not know which version they are talking to. This decomposition is what makes the adoption funnel work: users get core versions on their existing system, then gain full versions when they move to Pane Linux. See `docs/distributed-pane.md` §5 for the complete core/full table.
+2. **An interface for views of that state** — the display view
+   (visual projection via the compositor) and the namespace view
+   (filesystem projection at `/pane/`, routed queries via optics,
+   remote access). Both are projections of the same state,
+   structured by the protocol and kept consistent by optic laws.
+   The protocol is not itself a view — it governs how views are
+   accessed, negotiated, and coordinated.
 
-### Why no router server
+A pane exists whether or not a compositor is running. A headless
+pane has state and appears in the namespace — it simply doesn't
+have the display view open. Display is not the default; it is one
+view among peers, opted into via capability declaration.
 
-The original architecture included a central router server (pane-route). This has been eliminated. Here is why.
-
-In BeOS, BMessenger carried messages directly between applications via kernel ports. There was no central message broker. Application A obtained a BMessenger for application B (via BRoster or direct handoff) and sent messages directly. This worked because the messaging infrastructure was in the kernel (ports) and the client-side library (libbe.so). No intermediary could fail.
-
-A central router is a single point of failure for all communication. If it dies, messages stop flowing. The complexity of making it resilient — circuit breakers, priority queues, pre-allocated memory, heartbeat protocols, external watchdog — is real and necessary complexity, but it exists only because we created the single point of failure in the first place. Gassée warned against this: "people developing the system now have to contend with two programming models."
-
-Routing is now a kit-level concern. The pane-app kit loads routing rules from the filesystem, evaluates them locally, queries pane-roster's service registry for multi-match scenarios, and dispatches directly to the handler. Sender to receiver, no intermediary. The kit is a library linked into every pane-native process — it cannot "crash" independently of the process that uses it. One communication model, not two.
-
-What the router was supposed to provide:
-
-| Router responsibility | Where it lives now |
-|---|---|
-| Rule matching and dispatch | pane-app kit (local evaluation) |
-| Content transformation | pane-app kit (local transformation) |
-| Multi-match resolution | pane-app kit queries pane-roster's service registry |
-| Handler health monitoring | Each component monitors its own connections via session liveness |
-| Dead letter handling | Kit logs unroutable messages; agents can monitor the log |
-| System health monitoring | pane-watchdog (minimal external process) |
-| Escalation procedures | pane-watchdog + init system |
-
-The resilience research (circuit breakers, priority queues, Erlang heart patterns) remains valuable — it informs pane-watchdog's design and the kit's error handling. But the resilience is distributed into the right places rather than concentrated in a single server.
-
-### pane-headless — The Headless Server
-
-A pane server without a compositor. Speaks the full pane protocol — session-typed handshake, active-phase messaging, identity forwarding, capability negotiation — without rendering. Manages panes, routes messages, accepts both local (unix socket) and remote (TCP/TLS) connections. Builds on any unix-like. This is the foundational deployment model that the full desktop extends.
-
-**Responsibilities:**
-- Pane protocol server: accepts connections over unix sockets and TCP/TLS
-- Client management: handshake, pane creation, message routing (via pane-server)
-- Identity forwarding: `PeerIdentity` in handshake, TLS client certificate validation
-- Default geometry for headless panes (80x24, configurable)
-
-**Does not contain:** rendering, Wayland protocol, input handling, layout tree, or any graphical concern. The event loop is pure protocol: calloop with listener sources and per-client SessionSources.
-
-**Relationship to pane-comp:** pane-headless and pane-comp are parallel consumers of pane-server. pane-server provides the protocol logic; pane-headless provides a headless event loop; pane-comp provides a graphical event loop with smithay. An application connected to pane-headless cannot tell the difference from the protocol's perspective — the same `ClientToComp` / `CompToClient` messages flow in both cases.
-
-### pane-comp — The Compositor
-
-Composites client surfaces, manages layout, renders chrome. This is the app_server equivalent — the rendering service that every client talks to. On a full Pane Linux desktop, pane-comp is the server the user's eyes are connected to. On a headless deployment, pane-headless takes its place.
-
-**Responsibilities:**
-- Wayland protocol handling via smithay — core: wl_shm, wl_seat, xdg-shell, linux-dmabuf, viewporter, fractional-scale, presentation-time; ext- protocols (cross-compositor, preferred over wlr-): ext-session-lock, ext-idle-notify, ext-image-copy-capture, ext-data-control, ext-color-management (HDR); compositor-specific: layer-shell, xdg-decoration, input method protocols
-- Layout tree: recursive tiling with tag-based visibility (dwm-style bitmask)
-- Surface compositing: composites all client buffers into the output framebuffer
-- Pane protocol server: accepts pane-native client connections over a unix socket, multiple panes per connection
-- Chrome rendering: tag lines, beveled borders, split handles, focus indicators
-- Input handling: libinput integration, xkbcommon keyboard layout, key binding resolution (in-process — latency-critical)
-- Input dispatch: routes input events to the focused pane via the appropriate protocol (pane protocol for native clients, wl_seat events for legacy clients)
-- Frame timing: coordinates frame callbacks across all clients, submits composited output to DRM/KMS
-
-**Does not contain:** routing logic, application launch logic, file type recognition, attribute indexing, or any server functionality beyond compositing and input. For native panes, a route action sends a TagRoute event to the pane client; the pane-app kit evaluates routing rules and dispatches. For legacy panes, the compositor handles route dispatch through its own kit integration.
-
-**Threading model — three tiers, faithful to BeOS:** BeOS's app_server had three levels: Desktop (shared state coordinator), ServerApp (one thread per application), ServerWindow (one thread per window). Pane preserves this:
-
-| BeOS | Pane | Role |
-|---|---|---|
-| Desktop | Compositor main thread (calloop) | Shared state, compositing, Wayland protocol, input dispatch |
-| ServerApp | Dispatcher thread (1 per connection) | Demuxes incoming socket messages to per-pane threads |
-| ServerWindow | Pane thread (1 per pane) | Handles session protocol for a single pane |
-
-Each pane gets its own server-side thread — not one thread per connection. A slow pane cannot block its siblings. This is the BeOS guarantee: one ServerWindow thread per window, verified in the Haiku source (`ServerWindow` inherits `MessageLooper`, spawns a dedicated thread on `Run()`).
-
-**Shared state and locking:** The compositor's layout tree is shared state accessed by per-pane threads (to read their position/size) and the main thread (to composite). This mirrors Haiku's `Desktop::fWindowLock` — a reader-writer lock where drawing commands take the read lock (concurrent across panes) and structural changes (move, resize, create/destroy) take the write lock. Per-pane threads process protocol messages and communicate with the main thread via channels; they never touch smithay objects directly (smithay is `!Send` by design, which correctly confines Wayland protocol handling to the main thread).
-
-**Cost:** At 50 panes: 50 pane threads + dispatchers = ~1MB physical memory, ~1.5μs context switch overhead, negligible on 2026 hardware. Pierre Raynaud-Richard's measurements from Be Newsletter #4-46 (~20KB per thread) hold — modern Linux threads are comparable.
-
-**The two-thread pattern:** Each pane has two threads — one client-side (the looper in pane-app) and one server-side (the pane thread in pane-comp). Messages flow from client to server asynchronously and are batched and flushed. Synchronous calls force a flush and round-trip. The default is async; sync only when a response is needed.
-
-### pane-watchdog — System Health Monitor
-
-A minimal external process, inspired by Erlang's `heart`. Deliberately simple — the less it does, the harder it is to kill. Part of the headless tier — not Linux-only. A headless deployment in the cloud needs health monitoring *more* than a local desktop where the user can see when things break.
-
-**Responsibilities:**
-- Heartbeat monitoring of critical infrastructure (compositor or headless server, roster) via direct pipes — not through the pane protocol
-- Detecting unresponsive components via missed heartbeats (3 missed beats at 2-second intervals = 6-second worst-case detection)
-- Triggering escalation on failure: flush journal to disk (pre-opened fd, direct write(2) — no buffered I/O, no path resolution, no allocation), broadcast persist-state alert
-- Notifying the init system to restart failed components
-
-**The external watchdog principle:** The thing being monitored cannot reliably monitor itself. Erlang solves this with heart — a separate C program with its own process, communicating through a pipe with a trivial protocol (length + opcode, 5 messages total). Pane-watchdog follows this pattern. It runs outside the pane server ecosystem. If every pane server dies, pane-watchdog is still running and can trigger recovery.
-
-**Platform-abstracted restart.** The watchdog's core (pipes, heartbeats, process monitoring) is universal unix. Process liveness: `kill(pid, 0)` everywhere, `pidfd` on Linux for race-free detection, `kqueue` `EVFILT_PROC` on Darwin. Restart notification: s6 on Pane Linux, launchd on Darwin, systemd on other Linux.
-
-**What pane-watchdog does NOT do:** routing, message dispatch, application-level functionality, circuit breaker management. It checks pulses and pulls the emergency brake. Nothing else.
-
-### pane-roster — The Application Directory
-
-The component that makes the application ecology work. BeOS's BRoster + registrar, unified.
-
-**Service directory** (for infrastructure servers):
-- Infrastructure servers register on startup: identity, capabilities, communication endpoint
-- Answers queries: "where is the store?", "is the compositor running?"
-- Does NOT restart servers — the init system handles that. When a server crashes and restarts, it re-registers.
-
-**Application lifecycle** (for desktop applications):
-- Facilitates launching applications (launch semantics: single-launch apps deliver the launch message to the existing instance, matching BRoster's B_SINGLE_LAUNCH / B_EXCLUSIVE_LAUNCH / B_MULTIPLE_LAUNCH)
-- Monitors running applications, distinguishes crash from clean exit
-- Session save/restore: serializes running app state, restores on login
-
-**Service registry** (for discoverable operations):
-- Applications register `(content_type_pattern, operation_name, description, quality_rating)` tuples
-- The pane-app kit queries the registry during routing for multi-match scenarios
-- Quality-based selection when multiple handlers match: the Translation Kit pattern. Self-declared quality ratings enable automatic selection without central authority.
-
-**Implementation:** pane-roster is a BServer-pattern looper: its own thread, its own message queue, session-typed conversations with every registered component. Process tracking uses pidfd for race-free liveness detection.
-
-### pane-store — Attribute Store
-
-BFS's attribute indexing and query engine, reimplemented in userspace over Linux xattrs.
-
-**Responsibilities:**
-- Reads and writes extended attributes on files (`user.pane.*` xattr namespace)
-- Maintains an in-memory index over attribute values (rebuilt from xattr scan on startup)
-- Uses fanotify with `FAN_MARK_FILESYSTEM` for mount-wide xattr change detection — one mark covers the entire filesystem, no recursive directory walking
-- Emits change notifications when watched attributes change
-- Provides a query interface over the index (predicate language modeled after BQuery)
-- Vector similarity search over embedding attributes (`user.pane.embedding`) via an HNSW index maintained alongside the attribute index — enables semantic search across agent memories, mail, documents, and any content with embeddings
-- Supports live queries: a client that subscribes to change notifications and maintains a query result set gets automatic updates when files enter or leave the result set. This is client-side composition, not a server feature — same as BeOS.
-
-**Query composition.** The query interface provides two composable paths: predicate matching (BQuery-derived, boolean, exact) and vector similarity (HNSW, ranked, approximate). These compose via a builder API: `.predicate("type == 'memory' AND tags contains 'debugging'").similar_to(embedding, threshold: 0.6)`. Three fusion modes: `predicate_first` (filter then rank — the default), `vector_first` (rank then filter), and `rrf` (reciprocal rank fusion for hybrid retrieval). Shell-scriptable: `pane-store query --predicate '...' --similar-to <file>`.
-
-**Live queries and vector similarity: threshold, not top-k.** BFS's live query mechanism is O(1) per attribute change because predicate evaluation is local — it depends only on the changed file, not on the rest of the index. Top-k vector queries are global — a new file could displace an existing result, requiring re-evaluation of the entire result set. This breaks the notification model. pane-store's vector live queries use threshold-based similarity: "notify me when a file with similarity above 0.6 enters or leaves the result set." Threshold evaluation is local — each new or changed embedding is compared to the query vector independently. Top-k remains available for one-shot queries where the full ranked list is needed.
-
-**Embedding lifecycle.** Applications (agents, indexers) compute embeddings and write them as `user.pane.embedding` xattrs. pane-store indexes them. The embedding xattr carries a header with dimensionality and model hash. Stale embeddings (computed by a superseded model) are excluded from the HNSW index but remain visible to predicate queries. Model migration is gradual — re-embedding happens on the next consolidation cycle, not atomically across all files. Standard dimensionality: 1024.
-
-**The BFS gap:** Linux xattrs are opaque byte blobs. BFS attributes were typed and the filesystem understood the types. pane-store bridges this gap by encoding type information in attribute naming conventions (`user.pane.type` declares the type of the primary value attribute) and by providing userspace indexing that BFS provided at the filesystem level. Queries are slower than BFS (no kernel-level B+ tree) but more flexible (pane-store can index any attribute dynamically).
-
-**Free attributes:** Certain attributes are always available and always indexed: pane type, creation time, modification time, MIME type. This mirrors BFS's three always-indexed attributes (name, size, last_modified) that ensured basic queries always worked without explicit index creation.
-
-**Target filesystem:** btrfs. No alternatives, no hedging. btrfs supports ~16KB per xattr value with no per-inode total limit — sufficient for pane's metadata. Beyond xattrs, btrfs provides snapshots (system-level rollback beyond Nix generations), CoW (atomic file modifications), transparent compression (zstd), and send/receive (efficient system image transfer) — all of which align with pane's distribution philosophy. ext4's xattr limit (~4KB total) is insufficient. btrfs is already the default on Fedora and openSUSE.
-
-### pane-fs — Filesystem Interface
-
-Plan 9's gift: if state is a file, any tool can access it. pane-fs is a FUSE filesystem at `/pane/` that exposes pane state for scripts, remote access, and tools in any language.
-
-**Two filesystem namespaces.** `/pane/` is the user-facing interface — the public projection of system state that scripts, tools, and agents interact with. `/srv/pane/` is the internal system directory where the Nix flake governing the pane installation lives — system infrastructure, not user interface. The distinction mirrors the principle: `/pane/` is a view (a projection of running state, maintained by pane-fs), `/srv/pane/` is the source of truth for the system's own configuration and identity (managed by Nix, immutable except through `pane-rebuild`).
-
-pane-fs is a translation layer — it converts FUSE operations into pane protocol messages. It is just another client of the pane servers. It has no special privilege and no server logic.
-
-The filesystem provides universality that typed protocols cannot (any language, any tool). The typed protocol provides safety that the filesystem cannot (compile-time verification, session guarantees). Both are needed.
-
-**Three-tier access model.** The system offers three access tiers, each appropriate for different consumers and latencies:
-
-| Tier | Mechanism | Latency | Use case |
-|---|---|---|---|
-| **Filesystem** | FUSE at `/pane/` | ~15-30μs per op | Shell scripts, inspection, configuration, event monitoring. Human-speed operations where 30μs is invisible. |
-| **Protocol** | Session-typed unix sockets | ~1.5-3μs per op | Kit-to-server communication, rendering, input dispatch, bulk state queries. Machine-speed operations. |
-| **In-process** | Kit API (direct function calls) | Sub-microsecond | Application logic within a pane-native client. No IPC, no serialization. |
-
-The principle: if you'd be comfortable with 30μs latency and per-file granularity, use the filesystem. If you need machine-speed access with typed guarantees, use the protocol. If you're inside a pane-native client, the kit handles everything — the developer doesn't choose a tier, the kit chooses for them.
-
-pane-fs targets FUSE-over-io_uring (Linux 6.14+), which halves the overhead and eliminates concurrency bottlenecks via per-CPU queues. As a distribution that controls its kernel version, pane requires io_uring-backed FUSE — this is not an optional optimization but a baseline expectation.
-
-**The pane boundary principle.** The scriptable surface of a pane is its declared attributes, not its internal widget hierarchy. BeOS's `hey` could traverse into any application's view tree — powerful but fragile (scripts broke when apps rearranged their UI). Pane deliberately stops at the pane boundary: a pane exposes what it chooses to expose through `PropertyInfo` declarations. The composer of the script and the author of the pane agree on a stable interface. Internal rendering state (view trees, widget layouts, buffer positions) is opaque. If a pane wants internal structure scriptable, it declares those properties explicitly.
-
-**Control file as command interface.** Each pane's `ctl` file accepts line-oriented commands — the `hey AppName do ...` equivalent. Simple commands are `COMMAND [ARGS...]`. Structured payloads use JSON after the command name for multi-property atomic operations (the one case where the filesystem model requires design attention compared to BMessage's dynamic fields).
-
-**Per-signature index.** `/pane/by-sig/<signature>/` contains symlinks to panes owned by each application signature, recovering the "count my application's windows" use case without a full pane-store query.
-
-### Notifications
-
-Notifications are panes — not a separate subsystem. A notification is created as a floating pane with attributes (source, timestamp, content, priority). It participates in routing, has a filesystem projection, and can be queried via pane-store. Retention policies, routing to logs, and dismissal are all standard pane operations — no dedicated notification server is needed.
-
-System events that produce notifications (D-Bus signals via pane-dbus, agent mail, build results) create notification panes through the pane protocol. The compositor manages their display (floating, anchored, transient). The pane-store indexes their attributes. The user's routing rules determine what happens to them. This is infrastructure-first design: the notification "feature" emerges from composing existing infrastructure.
+The **compositor** is infrastructure that provides the display view.
+It discovers panes that support display handling and projects them
+onto the screen. It is not the center of the architecture.
 
 ---
 
-## 4. Kit Decomposition
-
-Kits are the programming model. Not wrappers over a protocol — they ARE the developer experience. When a developer uses the Interface Kit (pane-ui), they are using a complete UI programming model that happens to communicate with the compositor internally, the same way BeOS's libbe.so presented a coherent world of BWindows and BViews while communicating with app_server through kernel ports.
-
-Developers loved the BeAPI because it was thoughtful — small, composable primitives designed by people who wrote real applications. Schillings: "common things are easy to implement and the programming model is CLEAR." That is the standard. The API is the user interface for developers.
-
-The kit hierarchy is layered, not flat:
-
-```
-pane-ai (agent infrastructure)
-pane-media (PipeWire abstraction)
-pane-input (generalized keybinding grammar)
-    |
-pane-text (text buffers, structural regexps)
-pane-ui (text, widgets, styling)
-    |
-pane-app (application lifecycle, looper, routing)
-pane-store-client (attribute access, queries)
-    |
-pane-optic (composable state accessors)
-pane-proto (wire types, session definitions)
-pane-notify (fanotify/inotify abstraction)
-```
-
-Each kit builds on the ones below it. pane-proto is the foundation — pure types and serialization, analogous to the Support Kit. pane-app is the messaging and lifecycle layer — analogous to the Application Kit. pane-ui is the rendering layer — analogous to the Interface Kit. The hierarchy ensures clean dependency ordering and prevents circular dependencies.
-
-**Detailed kit documentation lives in the crate source** — run `cargo doc` to generate it. Each crate's `//!` doc contains its purpose, BeOS/Haiku heritage, threading model, and type roadmap. The style follows `docs/kit-documentation-style.md`.
-
-The subsections below cover kits that are not yet implemented as crates. Implemented kits (pane-proto, pane-session, pane-app, pane-notify) have been absorbed into their crate documentation and archived from this file.
-
-### pane-ui — Interface
-
-Text rendering, styling primitives, layout, widget rendering. The rendering infrastructure that all native pane clients share. Tag line content is set through the pane-app kit (which provides the API for declaring tag text and actions) and rendered by the compositor (which owns the chrome). pane-ui does not render tag lines — it renders body content.
-
-**Text rendering.** GPU-accelerated text rendering with glyph atlas and instanced drawing. Text-oriented panes (shells, editors, logs) are first-class — not trapped inside a terminal emulator but rendered directly by the kit with the same quality as any other content. Client-side rendering means each process manages its own glyph rasterization — this is the standard Wayland cost that every GTK/Qt application already pays. The kit mitigates it through memoization: rasterized glyphs are cached and shared across pane-native processes via shared memory, so the per-process cost is a lookup rather than re-rasterization.
-
-**Widget rendering.** Vello (GPU-compute 2D rendering via wgpu) for vector graphics, taffy for flexbox/grid layout. Widgets have semantic structure (buttons, labels, lists, text inputs) with roles, values, and actions — the accessibility tree is a byproduct of the widget model.
-
-**The pane visual language.** Beveled borders, subtle gradients, warm saturated palette — the Frutiger Aero aesthetic, built into the kit. A developer using pane-ui produces output that looks like a pane application without effort, because the kit encodes the visual language. This is how BeOS achieved its integrated feel and how NeXTSTEP achieved its — not by centralizing rendering, but by providing a kit good enough that everyone used it.
-
-**Layout management from day one.** Haiku's biggest GUI mistake was deferring layout management. Every application written before the Layout API existed had to be manually migrated. pane-ui has layout management (taffy — flexbox/grid) from the beginning. Applications specify relationships ("this goes next to that, this fills remaining space"), not coordinates.
-
-**Frame pacing and buffer management.** The kit manages the double-buffer lifecycle: allocate buffers from shared memory (memfd) or GPU memory (DMA-BUF), render into the back buffer, submit via wl_surface.attach + damage + commit, wait for wl_buffer.release before reusing. All of this is hidden from the developer — they draw; the kit handles the rest.
-
-### pane-text — Text Manipulation
-
-Text buffer data structures and structural regular expressions (sam-style `x/pattern/command`). This kit provides the editing primitives that pane-shell and editor panes compose with.
-
-Sam's structural regular expressions are the key conceptual contribution here. Pike: "the use of regular expressions to describe the structure of a piece of text rather than its contents." The `x` command extracts all matches of a pattern within a selection; `y` operates on the intervals between matches. These compose: `x/\n/ { ... }` iterates over lines; `x/[^ ]+/` iterates over words. The structure is whatever the pattern says it is — no built-in line bias.
-
-### pane-input — Generalized Keybinding
-
-The Input Kit: a composable interaction grammar that works uniformly across all pane types. Vim's compositional structure generalized beyond text editing.
-
-**The grammar engine.** N operators times M objects = N*M interactions. New operators compose with existing objects; new objects compose with existing operators. The grammar has four components:
-
-1. **Operators** (verbs): delete, yank, change, open, route — actions meaningful in context
-2. **Objects** (nouns): word, line, file, widget, pane — addressable units in content
-3. **Motions**: next word, previous file, parent directory — navigation across objects
-4. **Counts**: multipliers on motions
-
-The dot command repeats the last operator + object combination. This is the specific property that makes the grammar qualitatively different from CUA: learning compounds multiplicatively, not additively.
-
-**The keymap hierarchy.** Layered resolution:
-1. System-wide (compositor scope — Super modifier prefix, never conflicts with pane bindings)
-2. Kit-level (common to all panes: navigation, standard operators)
-3. Content-type (text objects for text panes, file objects for file managers)
-4. Pane-local (specific to a pane instance)
-
-This mirrors Emacs's global -> major-mode -> minor-mode -> local chain, translated to pane's content-type system.
-
-**Modes are first-class.** Named modes at every level — compositor modes (resize, layout), pane modes (Normal, Insert), content-type modes. Ephemeral modes (Hydra-style) for rapid command sequences. Mode transitions are visible in the tag line.
-
-**Discoverability.** which-key-style display of available bindings after a prefix or mode switch. The tag line participates: it shows available commands as clickable text. New users click; experienced users type. Progressive disclosure: CUA floor -> which-key discovery -> modal efficiency -> custom grammar extensions.
-
-**Default mode.** Insert-as-default for new panes (matches user expectations from every other application), with explicit Normal mode entry via a configurable key. The grammar is available and discoverable, not hidden.
-
-### pane-store-client — Store Access
-
-Client library for pane-store. Attribute read/write, query building, change notification subscription. Reactive signal composition for live queries — the client subscribes to change notifications and maintains a query result set locally. This is how BeOS's live queries worked: the infrastructure is general-purpose, the composition is client-side.
-
-### pane-media — Media Abstraction
-
-PipeWire already implements the Media Kit's graph-based model at the system level. Pane's media kit is a thin Rust wrapper — not a reimplementation.
-
-The kit wraps PipeWire's client API with pane's session-typed conventions. It exposes the media node graph as pane-visible state (nodes and connections inspectable via pane-fs, parameters as filesystem-based configuration). It delegates all policy to WirePlumber (PipeWire's session manager).
-
-What pane provides that PipeWire alone doesn't: visibility and control through pane's interaction model. Media nodes as panes with tag lines. Routing as visible graph connections. Parameters as files that pane-notify watches. The media graph becomes a first-class part of the desktop experience, not a hidden subsystem.
-
-### pane-ai — Agent Infrastructure
-
-Agents are system users, not applications. They participate through the same protocols, filesystem interfaces, and routing infrastructure as human users, in sandboxed environments with permissions governed by declarative specification.
-
-**Agents as Unix users.** Each agent runs as an actual system user — its own account, its own home directory, its own filesystem view (scoped via Linux user namespaces), its own Nix profile. `who` shows which agents are active. `finger agent.reviewer` shows its specification and current task. Everything an agent does is visible through the same tools you inspect anything else with.
-
-**The `.plan` file.** An agent's behavior — what tools it can use, what panes it can observe, what files it can access — is declared in `.plan`: a human-readable, editable, version-controllable artifact in its home directory. The `.plan` IS the agent's identity. The governance question (who authors and audits it) is resolved by the same mechanisms as any other configuration: filesystem permissions, version control, audit trails.
-
-**Communication through Unix primitives.** The multi-user Unix communication tools — `write`, `talk`, `mail`, `mesg`, `wall` — are paradigmatic examples of the patterns we recover:
-
-- `write`: agent sends a one-liner to your pane (brief, one-directional)
-- `talk`: focused interactive session (split-screen, bidirectional)
-- `mail`: asynchronous, persistent, queryable. Files with typed attributes — agent communication becomes queryable by pane-store, filterable by routing rules
-- `mesg y/n`: one-bit availability protocol. Agent respects `mesg n` by queuing as mail
-- `wall`: broadcast to all inhabitants
-
-These were designed for multi-inhabitant systems. The inhabitants have arrived.
-
-**Local models are first class.** A user running entirely on local models gets the same agent infrastructure, the same `.plan` governance, the same communication patterns, the same scripting protocol integration as a user with API access to frontier models. The system is designed local-first; remote APIs are an enhancement, not a requirement.
-
-Models are managed as a kit concern — discovery, loading, inference, resource scheduling. Models are files on the filesystem, managed through the same infrastructure as everything else. Model format support (GGUF, safetensors, etc.) is extensible via the Translation Kit pattern: drop a model translator, the system gains a format. Resource-aware scheduling ensures inference doesn't starve the compositor or latency-sensitive operations.
-
-**Routing rules as data governance.** The same routing infrastructure that dispatches content to handlers dispatches inference requests to models. Routing rules determine what data is processed locally vs sent to remote APIs — the routing rule IS the privacy policy, expressed declaratively, enforceable by the system, inspectable by the user.
-
-A rule might say: queries touching files under `~/work/` go to the local model. General knowledge questions go to the remote API. Anything containing credentials never leaves the machine. The rules are files in directories — the same extension surface as everything else. The user sees and controls exactly what goes where. When a `.plan` specifies `model: local-only`, Landlock enforcement guarantees no data leaves the system.
-
-**Local/remote as a routing decision, not an application decision.** The agent kit provides a uniform interface regardless of where inference happens. Switching between models is a routing configuration change, not an application change. Users can optimize across model strengths — fast local model for low-latency work, strong remote model for complex reasoning, private local model for sensitive data — with the routing rules governing dispatch and the session protocol governing the conversation. The experience is one continuous interaction with the system.
-
-**Agent memory is the filesystem.** An agent's persistent memory is not a separate database — it is files in its home directory with typed attributes, indexed by pane-store. Each memory is a file in `~agent/memories/`: content as file content, metadata as typed xattrs (`user.pane.type`, `user.pane.tags`, `user.pane.importance`, `user.pane.memory_kind`). Pane-store indexes these attributes and answers queries over them. Live queries let an agent subscribe to "memories matching these criteria" and get updates when new memories arrive. This is the BFS email pattern applied to agent cognition: the infrastructure composes into a memory system without any component implementing "memory" as a feature.
-
-**Memory consolidation protocol.** Raw interaction (conversations, observations, task results) is captured in `~agent/journal/` as timestamped files. The agent extracts atomic facts and writes them as individual memory files with typed attributes. Fact-level granularity doubles retrieval quality over session-level storage (validated empirically by MemX, Sun 2026). Relationships between memories (supersedes, contradicts, extends) are expressed as xattrs or symlinks, queryable by pane-store. Embeddings are stored as `user.pane.embedding` xattrs, indexed by pane-store for vector similarity search. Deduplication happens at write time: query for near-duplicates before inserting.
-
-**Memory retrieval composes existing infrastructure.** The retrieval pipeline: pane-store attribute queries (keyword/predicate matching) + vector similarity search, fused via reciprocal rank fusion, re-ranked by semantic similarity, recency (filesystem timestamps + `user.pane.last_retrieved`), importance (xattr), and retrieval frequency (xattr). A rejection rule — return empty rather than return wrong — is the default. Access counts and retrieval counts are tracked separately in xattrs, preventing administrative reads from inflating ranking signals.
-
-**The one capability gap:** pane-store needs vector similarity search over embedding xattrs. This is a pane-store enhancement, not an AI Kit concern — it benefits every component that could use semantic search (mail, documents, code, not just agent memory). The vector index (HNSW or equivalent) lives alongside pane-store's existing attribute index.
-
-**Multi-agent memory with graded access.** Each agent's memories are owned by its Unix user and live in its home directory. Filesystem permissions control which agents can read which memories. The graded equivalence principle applies: each agent sees a coherent quotient of the total memory space. Shared knowledge goes in shared directories with appropriate group ownership. Routing rules govern memory lifecycle — retention, archival, sharing — as declarative policies in the agent's `.plan`.
-
----
-
-## 5. The Scripting Protocol
-
-Session types + optics = the recovery of BeOS's most important feature.
-
-### What BeOS had
-
-Every BHandler implemented `ResolveSpecifier()` and `GetSupportedSuites()`. Any running application's state was queryable and modifiable at runtime through a structured protocol. The `hey` command-line tool could script any application:
-
-```
-hey Tracker get Frame of Window 0
-hey StyledEdit set Value of View "textview" of Window 0 to "hello"
-```
-
-This was compositional and dynamic. Each handler peeled off one specifier and forwarded to the next. "Get Frame of Window 1 of Application Tracker" was resolved by Tracker peeling off "Application Tracker" (that's me), forwarding "Window 1" to the window, which peeled it off and forwarded "Frame" to the frame handler.
-
-This was one of BeOS's most important features. Every application was automatable through the same messaging system it used internally.
-
-### How pane recovers it
-
-Session types are the horizontal structure — conversation over time. Optics are the vertical structure — state access at each moment. Together they provide the scripting protocol.
-
-A scripting interaction is a session: send a query (an optic-addressed access into the handler's state), receive a result, optionally loop. "Get property X of object Y" is a lens access. "Set property X to Z" is a lens set. "What properties do you expose?" returns the available optics — discoverability as part of the protocol.
-
-The session type governs conversation safety (you can't send a set before receiving the capabilities). The optics govern state access safety (GetPut, PutGet). Monadic error handling covers the case where a query doesn't resolve.
-
-### The hard problem: dynamic specifier chains
-
-BeOS's scripting protocol resolved specifier chains at runtime. The chain "get Frame of Window 1 of Application Tracker" was resolved by each handler peeling off one specifier and forwarding. This was compositional and dynamic — the structure was only known at runtime.
-
-Optics are typically static. This is the hardest design problem in translating BeOS's scripting to pane's typed world.
-
-The approach: dynamic optic composition at the protocol level. Each handler advertises its available optics (via GetSupportedSuites equivalent). A specifier chain is a sequence of optic accesses. The client constructs the chain; each handler resolves one step and forwards. The session type for each step is known statically (it's always "send specifier, receive result or forward"), but the chain length and specific optics are dynamic.
-
-This is a controlled runtime dynamism within a statically-typed protocol. The session type ensures each step is well-formed. The optic laws ensure each access is consistent. The dynamic composition ensures the full chain works. It's the same pattern as BeOS's ResolveSpecifier — peel, resolve, forward — but with each step type-checked.
-
-The filesystem interface provides the fallback. If the typed scripting protocol is too rigid for a particular use case, the filesystem at `/pane/` provides the same access in a weakly-typed but universally accessible form. Shell scripts use the filesystem; compiled programs use the typed protocol. Both access the same underlying state.
-
----
-
-## 6. Threading and Concurrency
-
-### The model
-
-Per-component threads with message queues. This is BeOS's BLooper model, realized in Rust.
-
-Each component — each application, each window-equivalent, each server — runs its own thread with its own message queue. Messages are processed sequentially within each component. Concurrency arises from many components running simultaneously, not from concurrency within a component.
-
-This model produced stability in BeOS not despite the complexity of pervasive multithreading but because of it. Message passing eliminated shared mutable state. Per-handler operational semantics eliminated global state entanglement. The protocol replaced the global coordinator. The scheduler had enough thread granularity to maintain responsiveness.
-
-### How it maps to Rust
-
-Rust's ownership system provides compile-time guarantees that BeOS enforced by convention. Send + Sync traits guarantee that data crossing thread boundaries is safe. The `#[must_use]` attribute on session endpoints catches forgotten responses. The borrow checker prevents shared mutable state — the thing BeOS's "Commandment #1" tried to prevent, now enforced by the compiler.
-
-**The looper in Rust:**
-
-```
-// Conceptual — the actual API is the pane-app kit
-let (tx, rx) = std::sync::mpsc::channel();
-std::thread::spawn(move || {
-    while let Ok(msg) = rx.recv() {
-        // Sequential message processing — one at a time
-        handler.message_received(msg);
+## Protocol and Dispatch
+
+### The Protocol trait
+
+Every service relationship in pane — lifecycle, display, clipboard,
+routing, application-defined — is a Protocol. The trait links
+three things that are otherwise maintained by convention:
+
+```rust
+/// Identity of a service in the pane protocol.
+///
+/// The UUID is the machine identity — a protocol constant,
+/// deterministically derived from the name via UUIDv5.
+/// Survives renames and travels across federation boundaries
+/// where naming conventions may diverge.
+/// The name is the human identity — for pane-fs paths, service
+/// maps, and logs.
+///
+/// # Plan 9
+///
+/// Analogous to qid.path (stable across renames, machine-comparable)
+/// alongside the directory entry name (human-chosen, may vary per
+/// client's mount point). See qid(5).
+pub struct ServiceId {
+    pub uuid: Uuid,
+    pub name: &'static str,
+}
+
+impl ServiceId {
+    /// Derive a ServiceId from a reverse-DNS name.
+    /// The UUID is deterministically computed via UUIDv5 using
+    /// a fixed PANE_NAMESPACE. Zero ceremony — no manual UUID.
+    /// Not const fn (UUIDv5 requires SHA-1, not const-evaluable
+    /// in the uuid crate). Framework ServiceId constants are
+    /// computed at initialization time or via a build-time macro.
+    pub fn new(name: &'static str) -> Self {
+        ServiceId {
+            uuid: Uuid::new_v5(PANE_NAMESPACE, name.as_bytes()),
+            name,
+        }
     }
-});
+
+    /// Explicit UUID for services that have been renamed but must
+    /// keep their wire identity.
+    pub fn with_uuid(uuid: Uuid, name: &'static str) -> Self {
+        ServiceId { uuid, name }
+    }
+}
+
+/// A protocol relationship between a pane and a service.
+/// Links identity, typed messages into a single type-level definition.
+///
+/// EAct: formalizes what a session endpoint IS.
+/// CLL: the protocol type determines the channel's session type.
+/// Plan 9: the typed version of "I have this file in my namespace."
+pub trait Protocol {
+    /// Service identity (UUID + human-readable name).
+    /// The UUID goes on the wire (DeclareInterest).
+    /// The name goes in service maps and pane-fs paths.
+    const SERVICE_ID: ServiceId;
+    /// The typed events this protocol produces.
+    type Message: Send + 'static;
+}
 ```
 
-No async runtime. No system-wide executor. Just threads and channels. This is simpler than async/await, more predictable, and matches the actor model that BeOS proved works for desktop systems. Async/await would be appropriate for a high-throughput network server; it's wrong for a desktop environment where the concurrency grain is one-thread-per-window and the message rate is modest. When Tier 2 features add multiple protocol channels per looper (clipboard, inter-pane, services), the channel topology within each thread changes but the threading model does not — each pane still has one thread, now selecting across multiple typed channels rather than reading from one.
+Keep Protocol minimal: SERVICE_ID + Message. Do not accumulate
+associated types for caching, reconnection, priority — those
+belong on the service implementation.
 
-The one exception is the compositor. calloop (an epoll-based event loop) drives the compositor's main thread because smithay requires it for Wayland fd polling. session type channel operations are integrated with calloop via fd-based event sources. This is an implementation detail of the compositor, not a system-wide pattern.
+**Naming convention** (codify now, per Be's lesson with
+inconsistent `application/x-vnd.*` signatures): service names
+use reverse-DNS notation. Framework services: `com.pane.*`.
+Third-party: `com.vendor.*` or `org.project.*`. Application-
+local protocols: `com.vendor.app.*`. The convention is part of
+the ServiceId contract, not an afterthought.
 
-### The benaphore lesson
+### Handles\<P\>: the uniform dispatch trait
 
-Schillings' benaphore (atomic variable + semaphore, fast-path the uncontested case) teaches the right principle: optimize for the common case. In pane's threading model, most lock acquisitions are uncontested (a component accessing its own data from its own thread). Rust's standard library already provides this optimization — `Mutex` uses futex on Linux, which is essentially a benaphore: atomic check first, kernel involvement only on contention.
+```rust
+/// A handler that can receive messages from protocol P.
+/// Each impl is one entry in EAct's handler store σ.
+///
+/// The looper dispatches P::Message to this method via a
+/// monomorphized fn pointer captured at service registration.
+pub trait Handles<P: Protocol> {
+    fn receive(&mut self, proxy: &Messenger, msg: P::Message) -> Result<Flow>;
+}
+```
 
-### What runs on what thread
+The type system enforces: if a pane declares interest in a
+protocol, its handler must implement `Handles<P>` for that
+protocol. Registration (`open_clipboard()`) requires the bound
+`H: Handles<Clipboard>` at compile time.
 
-| Component | Thread model |
-|---|---|
-| Compositor main loop | calloop (single thread, epoll-driven) — smithay, Wayland protocol, compositing, input |
-| Dispatcher (1 per connection) | Dedicated thread — demuxes socket I/O to per-pane threads |
-| Pane thread (1 per pane, server-side) | Dedicated thread — session protocol for one pane |
-| Client looper (1 per pane, client-side) | Dedicated thread — the BLooper equivalent in pane-app |
-| pane-roster | Dedicated looper thread |
-| pane-store | Dedicated looper thread + worker threads for initial scan |
-| pane-watchdog | Single thread (deliberately minimal) |
-| pane-fs (FUSE) | Thread pool (FUSE operations may block) |
+### Named methods via derive macro
 
-The threading granularity is per-pane, not per-widget. 50 panes = ~100 threads (client + server side) = ~2MB memory. The cost is the tax for concurrency — spend it at the right granularity.
+The developer writes named functions. A `#[derive(ProtocolHandler)]`
+macro generates the `Handles<P>::receive` match that delegates
+to them. This is BWindow::DispatchMessage translated to Rust —
+framework-generated dispatch calling developer-provided hooks.
+
+```rust
+#[derive(ProtocolHandler)]
+#[protocol(Clipboard)]
+impl Editor {
+    fn lock_granted(&mut self, proxy: &Messenger, lock: ClipboardWriteLock) -> Result<Flow> {
+        lock.commit(self.buffer.as_bytes().to_vec(), metadata)?;
+        Ok(Flow::Continue)
+    }
+    fn lock_denied(&mut self, proxy: &Messenger, clipboard: &str, reason: &str) -> Result<Flow> {
+        Ok(Flow::Continue)
+    }
+    fn changed(&mut self, proxy: &Messenger, clipboard: &str, source: Id) -> Result<Flow> {
+        Ok(Flow::Continue)
+    }
+    fn service_lost(&mut self, proxy: &Messenger) -> Result<Flow> {
+        Ok(Flow::Continue)
+    }
+}
+
+// The derive generates:
+impl Handles<Clipboard> for Editor {
+    fn receive(&mut self, proxy: &Messenger, msg: ClipboardMessage) -> Result<Flow> {
+        match msg {
+            ClipboardMessage::LockGranted(lock) => self.lock_granted(proxy, lock),
+            ClipboardMessage::LockDenied { clipboard, reason } =>
+                self.lock_denied(proxy, &clipboard, &reason),
+            ClipboardMessage::Changed { clipboard, source } =>
+                self.changed(proxy, &clipboard, source),
+            ClipboardMessage::ServiceLost =>
+                self.service_lost(proxy),
+        }
+    }
+}
+```
+
+The macro must be transparent: `cargo expand` produces a match
+a human could write in 30 seconds. No runtime indirection. The
+macro generates the match arms; Rust's exhaustive match check IS
+the exhaustiveness guarantee. If a handler method is missing for
+a variant, `rustc` emits a non-exhaustive pattern error. The macro
+does not discover variants — it generates code that fails to
+compile if the handler is incomplete. Variant-to-method mapping
+uses `#[handles(VariantName)]` attributes or snake_case convention.
+
+### Framework protocols
+
+Lifecycle, display, and messaging are protocols with the same
+structure. The base `Handler` trait provides named methods for
+lifecycle + messaging (the protocols every pane speaks). Display
+is a separate protocol that panes opt into.
+
+```rust
+/// Lifecycle protocol — every pane. Part of the base protocol
+/// Part of the Control protocol (wire service 0, implicit,
+/// never DeclareInterest'd).
+struct Lifecycle;
+impl Protocol for Lifecycle {
+    const SERVICE_ID: ServiceId = ServiceId::new("com.pane.lifecycle");
+    type Message = LifecycleMessage;
+}
+
+/// Display protocol — panes with a visual surface. Also part of
+/// the base protocol (declared in handshake, not via DeclareInterest).
+struct Display;
+impl Protocol for Display {
+    const SERVICE_ID: ServiceId = ServiceId::new("com.pane.display");
+    type Message = DisplayMessage;
+}
+```
+
+Lifecycle and Display share the **Control** protocol (wire
+service 0, implicit). They are bundled in `ControlMessage` — a
+single enum containing lifecycle, display, and connection-
+management variants (DeclareInterest, ServiceTeardown). This is
+9P's single-connection multiplexing.
+
+The Control protocol is never negotiated — it exists by virtue
+of having a connection. It is the control plane for the session.
+
+Services with their own negotiated wire discriminants (clipboard,
+routing) get their session-local u8 from the server during
+DeclareInterest.
+
+The `Handler` trait provides named methods for lifecycle and
+messaging. These are not separate Protocols — they are universal
+capabilities every pane has by virtue of existing. Messaging
+methods (request_received, pane_exited, pulse) are on Handler
+directly because there is no DeclareInterest for messaging:
+
+```rust
+/// Every pane implements this. Lifecycle + messaging.
+/// The headless-complete interface.
+///
+/// Named methods are the developer-facing API. The looper
+/// dispatches lifecycle events through Handles<Lifecycle>;
+/// messaging methods are on Handler directly (universal,
+/// no DeclareInterest).
+pub trait Handler: Send + 'static {
+    fn ready(&mut self, proxy: &Messenger) -> Result<Flow> { Ok(Flow::Continue) }
+    fn close_requested(&mut self, proxy: &Messenger) -> Result<Flow> { Ok(Flow::Stop) }
+    fn disconnected(&mut self, proxy: &Messenger) -> Result<Flow> { Ok(Flow::Stop) }
+    fn pulse(&mut self, proxy: &Messenger) -> Result<Flow> { Ok(Flow::Continue) }
+    /// Incoming request from another pane. The payload is intentionally
+    /// type-erased: the requester and receiver may have different types
+    /// (different processes, different T). The receiver downcasts based
+    /// on convention (shared crate defining the protocol, or routing
+    /// dispatch via optics). Protocol-defined requests route through
+    /// Handles<P> with typed messages instead. The reply is an
+    /// obligation — default drops it (sends ReplyFailed).
+    fn request_received(&mut self, proxy: &Messenger, msg: Box<dyn Any + Send>, reply: ReplyPort) -> Result<Flow> {
+        drop(reply);
+        Ok(Flow::Continue)
+    }
+    // reply_received and reply_failed are NOT on Handler.
+    // Replies route to per-request Dispatch entries (see Request/Reply).
+    fn pane_exited(&mut self, proxy: &Messenger, pane: Id, reason: ExitReason) -> Result<Flow> { Ok(Flow::Continue) }
+    fn supported_properties(&self) -> &[PropertyInfo] { &[] }
+    /// &self for deadlock freedom. Side effects must happen
+    /// before returning true (save in close_requested, not here).
+    fn quit_requested(&self) -> bool { true }
+}
+
+/// Display protocol — panes with a visual surface.
+pub trait DisplayHandler: Handler {
+    fn display_ready(&mut self, proxy: &Messenger, geom: Geometry) -> Result<Flow> { Ok(Flow::Continue) }
+    fn resized(&mut self, proxy: &Messenger, geom: Geometry) -> Result<Flow> { Ok(Flow::Continue) }
+    fn activated(&mut self, proxy: &Messenger) -> Result<Flow> { Ok(Flow::Continue) }
+    fn deactivated(&mut self, proxy: &Messenger) -> Result<Flow> { Ok(Flow::Continue) }
+    fn key(&mut self, proxy: &Messenger, event: KeyEvent) -> Result<Flow> { Ok(Flow::Continue) }
+    fn mouse(&mut self, proxy: &Messenger, event: MouseEvent) -> Result<Flow> { Ok(Flow::Continue) }
+    fn command_activated(&mut self, proxy: &Messenger) -> Result<Flow> { Ok(Flow::Continue) }
+    fn command_dismissed(&mut self, proxy: &Messenger) -> Result<Flow> { Ok(Flow::Continue) }
+    fn command_executed(&mut self, proxy: &Messenger, cmd: &str, args: &str) -> Result<Flow> { Ok(Flow::Continue) }
+    fn completion_request(&mut self, proxy: &Messenger, input: &str, reply: CompletionReplyPort) -> Result<Flow> { Ok(Flow::Continue) }
+}
+```
+
+Handler and DisplayHandler are special cases of Protocol +
+Handles\<P\> with pre-defined named methods. They exist for
+ergonomics — the lifecycle and display protocols are used by
+every pane and benefit from named-method discoverability.
+
+### Service protocols
+
+Clipboard, routing, observer, DnD — each defines a Protocol
+and the developer implements Handles\<P\> via the derive macro.
+The protocol's Message enum defines the variants; the macro
+generates the dispatch; the developer provides named handlers.
+
+```rust
+struct Clipboard;
+impl Protocol for Clipboard {
+    const SERVICE_ID: ServiceId = ServiceId::new("com.pane.clipboard");
+    type Message = ClipboardMessage;
+}
+
+pub enum ClipboardMessage {
+    LockGranted(ClipboardWriteLock),
+    LockDenied { clipboard: String, reason: String },
+    Changed { clipboard: String, source: Id },
+    ServiceLost,
+}
+
+struct Routing;
+impl Protocol for Routing {
+    const SERVICE_ID: ServiceId = ServiceId::new("com.pane.routing");
+    type Message = RoutingMessage;
+}
+```
+
+DnD requires display: `open_drag_drop()` requires
+`H: Handles<Display> + Handles<DragDrop>`.
+
+### Pointer policy (mouse coalescing opt-out)
+
+```rust
+/// Mouse event delivery policy for the display view.
+/// BeOS: B_NO_POINTER_HISTORY / B_FULL_POINTER_HISTORY per-view.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum PointerPolicy {
+    /// Deliver only the most recent MouseMove per batch.
+    #[default]
+    Coalesce,
+    /// Deliver every MouseMove event. Required for drawing
+    /// applications, gesture recognition, ink input.
+    FullHistory,
+}
+
+impl Messenger {
+    pub fn set_pointer_policy(&self, policy: PointerPolicy) -> Result<()>;
+}
+```
+
+Per-pane, set in `display_ready` or dynamically. Server-side
+filtering — FullHistory tells the server to send all events;
+Coalesce tells it to batch. Don't send events over the wire
+just to drop them client-side.
+
+### Application-defined protocols
+
+Applications define their own Protocol for custom messages.
+`Message<T>` with `What(T)` is the application protocol:
+
+```rust
+struct EditorProtocol;
+impl Protocol for EditorProtocol {
+    const SERVICE_ID: ServiceId = ServiceId::new("com.example.editor");
+    type Message = EditorMessage;
+    // Local only — never DeclareInterest'd, never on the wire.
+    // The UUID exists for identification; routing is looper-local.
+}
+
+enum EditorMessage {
+    SearchResult(Vec<Match>),
+    SpellCheckComplete { corrections: Vec<Correction> },
+    AutoSaveFinished,
+}
+
+#[derive(ProtocolHandler)]
+#[protocol(EditorProtocol)]
+impl Editor {
+    fn search_result(&mut self, proxy: &Messenger, matches: Vec<Match>) -> Result<Flow> { ... }
+    fn spell_check_complete(&mut self, proxy: &Messenger, corrections: Vec<Correction>) -> Result<Flow> { ... }
+    fn auto_save_finished(&mut self, proxy: &Messenger) -> Result<Flow> { ... }
+}
+```
+
+Application messages are `What(T)` in `Message<T>` — local to the
+looper, never cross the wire, typed at compile time. This replaces
+`app_message(Box<dyn Any + Send>)` with exhaustive typed dispatch.
+
+### Geometry
+
+```rust
+pub struct Geometry {
+    /// Logical position (scale-independent).
+    pub x: f64,
+    pub y: f64,
+    /// Logical size (scale-independent).
+    pub width: f64,
+    pub height: f64,
+    /// Physical = Logical × scale_factor.
+    pub scale_factor: f32,
+}
+
+impl Geometry {
+    pub fn physical_size(&self) -> (u32, u32) {
+        ((self.width * self.scale_factor as f64) as u32,
+         (self.height * self.scale_factor as f64) as u32)
+    }
+}
+```
+
+Logical pixels are the canonical unit. The scale_factor is
+provided by the display server for renderers that need physical
+coordinates. Headless panes may have virtual geometry (logical
+dimensions for layout purposes) or no geometry at all (Handler
+has no geometry parameter).
+
+### Flow
+
+```rust
+/// Handler control flow. Replaces Result<bool>.
+/// Errors are orthogonal — methods return Result<Flow>.
+/// EAct §5: actor failure (Err) is separate from session
+/// communication (Flow).
+///
+/// When a handler returns Flow::Stop, the looper exits, drops the
+/// handler (triggering Drop compensation on all held obligation
+/// handles), then notifies the server.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Flow {
+    Continue,
+    Stop,
+}
+```
 
 ---
 
-## 7. Protocol Design
+## Message Types
 
-### Session types
+### The split: values vs obligations
 
-Every interaction between components is a typed protocol. Structured phases (handshake, negotiation, teardown) use session types — typed descriptions of entire conversations where the compiler enforces that both parties follow complementary protocols (duality). The active phase uses typed message enums with event-driven dispatch — both sides send when ready, with exhaustive `match` guaranteeing every variant is handled. See "Protocol phasing" below for the three-phase model.
+v1's `Message` enum conflates clonable value events with affine
+obligation-carrying handles. Four variants panic on Clone. This
+violates EAct KP2 (no channel endpoints in message values).
 
-Pane uses a custom session type implementation — a typestate `Chan<S, Transport>` designed for pane's exact needs. The theoretical basis is the Caires-Pfenning/Wadler correspondence between linear logic and concurrent processes. Key properties:
+v2 separates them. The public type retains the Be name `Message`
+(tier 1 faithful — this is what BMessage was, minus the obligations
+that never belonged there).
 
-- **Duality is automatic.** `Dual<Recv<A, Recv<B>>>` = `Send<A, Send<B>>`. The compositor's protocol view is derived mechanically from the client's.
-- **Branching uses standard Rust enums.** Enum variants contain session continuations. Pattern matching is exhaustive.
-- **Transport-aware from the ground up.** Unlike par (which uses in-memory oneshot channels that can't cross process boundaries), pane's session types are parameterized over transport — unix sockets with postcard serialization for production, in-memory channels for testing.
-- **Crash-safe.** `recv()` returns `Err(SessionError::Disconnected)`, not a panic. A crashed client produces a typed event, not a compositor crash. This is the property par cannot provide (it panics on drop).
-- **calloop-compatible.** The compositor side registers socket fds with calloop as event sources — callback-driven, no async executor needed. Client side uses plain threads.
+```rust
+/// Value messages — Clone, filter-visible. Pure notifications:
+/// something happened, here are the details. No obligations.
+///
+/// BMessage, corrected: obligations extracted to internal types.
+#[derive(Debug, Clone)]
+pub enum Message {
+    // Lifecycle (no geometry — headless-first)
+    Ready,
+    CloseRequested,
+    Disconnected,
+    PaneExited { pane: Id, reason: ExitReason },
+    Pulse,
 
-The formal session type primitives are verified in Lean/Agda. Par and dialectic are design references, not dependencies.
+    // Display (only arrives if DisplayHandler declared)
+    DisplayReady(Geometry),
+    Resize(Geometry),
+    Activated,
+    Deactivated,
+    Key(KeyEvent),
+    Mouse(MouseEvent),
+    CommandActivated,
+    CommandDismissed,
+    CommandExecuted { command: String, args: String },
 
-### The transport bridge *(Phase 2 — complete)*
+    // Service notifications — nested per-service enum.
+    // Top-level grows O(services), not O(services × events).
+    // Lifecycle and display variants stay flat (base protocol).
+    Clipboard(ClipboardNotification),
+    // Future: Observer(ObserverNotification), DragDrop(DragDropNotification)
+}
 
-The custom `Chan<S, T>` implementation bridges session types to unix sockets directly. Each `send()` serializes with postcard and writes to the socket; each `recv()` reads, deserializes, and advances the typestate. The session type enforces both message shapes (via Rust enums) and conversation ordering (via typestate advancement) on the wire — not just in tests.
-
-The transport is parameterized: `UnixTransport` for production (length-prefixed postcard over unix domain sockets), `MemoryTransport` for testing (mpsc channels). Both implement the same `Transport` trait. Crash safety is proven: a dropped peer produces `Err(SessionError::Disconnected)`, not a panic.
-
-The compositor side integrates with calloop via `SessionSource` — a calloop `EventSource` with a non-blocking accumulation buffer. The socket fd is registered for readiness notification; messages are read without blocking mode toggling. `MAX_MESSAGE_SIZE` (16MB) guards against malicious length prefixes.
-
-**Event actor validation.** Fowler et al.'s EAct (EventActors, OOPSLA) proves that event-driven actors participating in multiple sessions through a single event loop are deadlock-free across sessions, provided handlers terminate. Pane's compositor — a calloop event loop with per-client `SessionSource` registrations — is this model. Each connected client is a session. The calloop callback is EAct's handler. The compositor never blocks on a single client; it processes whichever session has a pending message. This is the same architecture BeOS's app_server proved empirically (one Desktop thread multiplexing N ServerWindows), now proven formally. EAct's KP3 (multiple sessions) further identifies that individual actors — not just the compositor — may need to participate in multiple heterogeneous protocol relationships (compositor, clipboard, peer panes, system services). The client-side looper's evolution to multi-source select follows from this principle. See serena memory `pane/session_type_design_principles` for the full analysis.
-
-**Why binary session types suffice despite multiparty interactions.** The compositor mediates N client sessions, but N is dynamic and there is no meaningful global type spanning all client interactions. EAct handles the same pattern — the paper's ID server and chat server both service N clients — not through N-party type constructors but through repeated binary session registration, with the actor's internal state mediating cross-session coordination. Pane follows this exactly: each compositor-client relationship is a binary session; the compositor's shared state (layout tree, focus tracking) coordinates between them. Multiparty session types remain valuable as a *design tool* — write a global type, project to local types, verify consistency — but the wire implementation uses binary channels. Within each binary active phase, structured sub-protocols (clipboard lock/commit, DnD enter/over/drop, completion request/response) should expose typestate handles at the API surface rather than session-typing the transport (see principle C2 in serena memory `pane/session_type_design_principles`).
-
-**Active phase decomposition.** The pane protocol has a nondeterminism problem: during the active phase, either side can send at any time. The resolution follows EAct's chat server pattern: session types for structured phases (handshake, negotiation, teardown), typed message enums for the bidirectional repeating phase. Session types govern where ordering matters; typed enums with exhaustive matching govern where bidirectional freedom matters. Sub-protocols within the active phase (e.g., clipboard transactions, drag-and-drop sessions) that have sequential structure should expose that structure as typestate handles at the kit API layer — the transport remains typed enums, but the developer's API enforces the conversation shape.
-
-### Protocol phasing
-
-The pane protocol decomposes into three phases, each with a typing strategy matched to its structure.
-
-**Handshake (session-typed).** Client sends `ClientHello`; compositor responds with `ServerHello`; client sends capabilities; compositor selects accept or reject via `Select`/`Branch`. The session type captures the sequence and branching exhaustively. After the handshake reaches `End`, the caller recovers the transport via `finish()` for the next phase.
-
-The handshake protocol is defined as type aliases in pane-proto:
-
+/// Clone-safe clipboard notifications (filter-visible).
+/// Obligation-carrying clipboard messages (LockGranted) are
+/// internal, not in this enum.
+#[derive(Debug, Clone)]
+pub enum ClipboardNotification {
+    LockDenied { clipboard: String, reason: String },
+    Changed { clipboard: String, source: Id },
+}
 ```
-ClientHandshake = Send<ClientHello, Recv<ServerHello, Send<ClientCaps,
-    Branch<Recv<Accepted, End>, Recv<Rejected, End>>>>>
 
-ServerHandshake = Dual<ClientHandshake>
-    // = Recv<ClientHello, Send<ServerHello, Recv<ClientCaps,
-    //     Select<Send<Accepted, End>, Send<Rejected, End>>>>>
+Obligation-carrying messages bypass the filter chain and dispatch
+directly to their handler method. They do not form a public enum —
+they are internal to the looper.
+
+`Request` bypasses filters as a unit — the inner payload is not
+independently filterable. If filters could see it, consuming the
+payload would orphan the ReplyPort, violating the linear discipline.
+
+- `CompletionRequest { input, reply: CompletionReplyPort }`
+- `Request(Box<dyn Any + Send>, ReplyPort)`
+- `ClipboardLockGranted(ClipboardWriteLock)`
+- `Reply { token, payload }` — internal, routes to Dispatch entries
+- `ReplyFailed { token }` — internal, routes to Dispatch entries
+
+Reply and ReplyFailed never surface to the handler. They route
+to per-request Dispatch entries (see Request/Reply below).
+
+Two categories visible to the handler:
+
+1. **Clone-safe** (Message): freely duplicable, filter-visible.
+2. **Obligation-carrying** (ReplyPort, CompletionReplyPort,
+   ClipboardWriteLock): non-Clone due to session obligation.
+   Dropping triggers failure compensation via Drop impl.
+
+`AppMessage` is the type-erased escape hatch for worker-to-handler
+communication. Obligation handles (ReplyPort, ClipboardWriteLock)
+are excluded at compile time via the `AppPayload` marker trait:
+
+```rust
+pub trait AppPayload: Clone + Send + 'static {}
+
+pub fn post_app_message<T: AppPayload>(&self, msg: T) -> Result<()>;
 ```
 
-These are the single source of truth for handshake ordering. `ServerHandshake` is computed automatically via the `HasDual` trait — Send↔Recv, Select↔Branch. If someone restructures the handshake, every participant that doesn't update fails to compile.
+`AppPayload` requires `Clone + Send + 'static`. All obligation
+types (ReplyPort, ClipboardWriteLock, CompletionReplyPort) are
+intentionally `!Clone` — they cannot implement `AppPayload` and
+cannot be smuggled through AppMessage, even via wrapper structs
+(a `struct Smuggle(ReplyPort)` cannot derive Clone). Orphan rules
+provide a second layer: external crates cannot impl `AppPayload`
+for obligation types. User payloads (strings, structs, enums)
+derive Clone trivially. Non-Clone payloads wrap in `Arc`.
 
-**Active (typed enums, event-driven).** Both sides communicate via typed message enums on the same socket. Each direction has its own enum (`ClientToComp`, `CompToClient`). Both sides send when ready. The compositor dispatches via calloop handler; the client dispatches via its looper thread. Rust's exhaustive `match` guarantees every variant is handled. No session-type ordering constraint — the guarantee is type safety of each individual message, not sequencing.
+A `debug_assert` in the looper dispatch provides defense-in-depth.
 
-Input events (`Key`, `Mouse`) carry `timestamp: Option<u64>` in microseconds since epoch — the single source of truth for event ordering and latency measurement. `None` for synthesized events (self-delivery, test injection).
-
-**Teardown (session-typed or crash boundary).** Graceful: active phase enums include `RequestClose` / `CloseAck`. Crash: socket drops, `SessionEvent::Disconnected` fires. Cleanup proceeds identically minus the acknowledgment. This is Maty's affine session model: a session can be abandoned at any point, and the surviving party handles cancellation through its error path.
-
-### Async by default
-
-The default interaction is asynchronous. A fire-and-forget operation (send content, continue without waiting) is a `Send` followed by continuation. A request-response is a `Send` followed by a `Recv`. The distinction is in the type.
-
-Fire-and-forget operations can be batched. The kit accumulates async messages and flushes in chunks — the same optimization BeOS's Interface Kit used for drawing commands. George Hoffman (Be Newsletter #2-36): "The Interface Kit caches asynchronous calls and sends them in large chunks at a time. A synchronous call requires that this cache be flushed." Synchronous calls are much slower because they force a flush and a round-trip. The guideline is the same now as it was then: async by default, sync only when you need the response.
-
-### Crash handling
-
-Rust has affine types (values can be dropped), not linear types (values must be used). A crashed client drops its session endpoints. The counterpart's next send/recv panics.
-
-This is not acceptable for a compositor. The strategy:
-
-- Each client session is wrapped with a crash boundary (catch_unwind or equivalent)
-- A dropped session endpoint produces a "session terminated" event, not a panic
-- The compositor cleans up the dead client's panes and continues serving others
-- This is analogous to how BeOS's app_server handled unresponsive windows: discard messages, continue
-
-The session type doesn't model crash because crash is a failure of the protocol's preconditions, not a protocol event. The crash boundary operates outside the session type system — it catches the failure and translates it into a typed cleanup event.
-
-### Error composition
-
-The foundations spec (§6) commits to monadic error composition — failures as values that compose through the same typed channels as the happy path. The architecture realizes this at three levels:
-
-**Application-level errors** are branches in the session type. A request that can fail returns `Result<Success, Error>` as a choice — the sender handles both branches. This is typed, exhaustive, and composable: a pipeline of operations that each return Result composes via and_then/map, with errors propagating through the pipeline until handled.
-
-**Component-level crashes** are caught at session boundaries (the crash handling above). The crash becomes a typed event in the supervisor's protocol — not an exception, not a panic, but a value that the roster and watchdog process through their own typed error paths.
-
-**Recovery strategies** — retry with backoff, fallback to alternative handler, graceful degradation — are themselves composable operations. The pane-app kit provides combinators for common patterns: retry a routing dispatch N times, fall back to a secondary handler, degrade to filesystem-only access if pane-store is unavailable. These compose the same way application-level Results compose — via monadic chaining, not ad-hoc try/catch.
-
-The principle: every error path in the system is typed and composable. An operation either succeeds (producing a value and a continuation) or fails (producing a typed error that propagates through the composition until something handles it). This is the foundations spec's "failures are values, not exceptions" realized at every level of the architecture.
-
-### Message content
-
-Pane messages are typed Rust enums serialized with postcard (serde-based, varint-encoded, compact). The specific message types are defined in pane-proto and evolve with the implementation.
-
-The spirit of BMessage: rich, composable, introspectable data that can flow through the system without tight coupling. BMessage carried typed fields (B_STRING_TYPE, B_INT32_TYPE, etc.) addressable by name. Pane's messages carry typed fields addressable by Rust struct fields — stronger typing (compile-time field access) with the same loose coupling (a handler processes messages it understands and ignores others).
-
-### Heartbeat
-
-Infrastructure servers heartbeat each other on their direct session-typed channels. The heartbeat is a typed message in the session protocol:
-
-- Compositor heartbeats pane-watchdog (interval: 2s, threshold: 3 misses = 6s detection)
-- pane-roster heartbeats pane-watchdog
-- Heartbeat is in-band but distinguishable — a `Heartbeat(sequence_n)` / `HeartbeatAck(sequence_n)` pair
-- pane-watchdog monitors critical infrastructure; ordinary clients are monitored by session liveness (socket errors)
+**When to use `post_app_message` vs application-defined protocols:**
+Application protocols (via `Handles<P>` + derive macro) are for
+structured, exhaustively-checked dispatch from worker threads. Use
+them when the message vocabulary is known at compile time.
+`post_app_message` (via `AppPayload`) is for simple fire-and-forget
+notifications that don't warrant a full Protocol definition. When
+in doubt, use a Protocol — exhaustive matching catches more bugs
+than downcast.
 
 ---
 
-## 8. The Composition Model
+## Filter Chain
 
-The design bet: if the infrastructure is right, integrated experiences emerge without being designed top-down.
+Operates on `Message` only. Never sees obligations.
 
-### The canonical proof: BeOS email
+```rust
+pub trait MessageFilter: Send + 'static {
+    fn filter(&mut self, msg: &Message) -> FilterAction;
+    fn matches(&self, msg: &Message) -> bool { true }
+}
 
-No component in BeOS implemented email. Five general-purpose systems composed:
+pub enum FilterAction {
+    /// Pass the message through unchanged. The filter chain
+    /// retains ownership and dispatches the original.
+    Pass,
+    /// Replace the message with a transformed version.
+    /// Use case: shortcut filter transforms Key → CommandExecuted.
+    Transform(Message),
+    /// Consume the message — handler never sees it.
+    Consume,
+}
+```
 
-1. **mail_daemon**: POP/SMTP transport. Wrote message files with typed BFS attributes (MAIL:from, MAIL:subject, MAIL:status, etc.)
-2. **BFS**: stored the attributes, indexed them, evaluated queries against them
-3. **Tracker**: displayed files with attribute columns (it knew nothing about email — it just displayed files)
-4. **BQuery + live queries**: "MAIL:status == New" as a live inbox that updated in real time
-5. **BeMail**: viewed and composed messages (just opened files)
+No panic branches. `Message` derives `Clone` naturally.
+`MessageFilter` keeps its Be name (BMessageFilter).
 
-Each was general-purpose. mail_daemon didn't know about Tracker. Tracker didn't know about email. The email UX emerged from the infrastructure. The same infrastructure immediately supported IM, contacts, music libraries — different attributes, same mechanism.
+`filter()` takes `&Message` (immutable borrow). On `Pass`, the
+chain dispatches the original — no ownership transfer needed. On
+`Transform`, the filter provides the replacement. On `Consume`,
+the message is dropped. This eliminates the ambiguity of the
+previous `Pass(Message)` design where a filter could return a
+modified message via Pass.
 
-### How pane composes
+Filters that transform should preserve variant semantics —
+Key→CommandExecuted is valid (same domain: user intent);
+Key→CloseRequested is pathological (different domain). The type
+system does not enforce this — it is a convention. Debugging tools
+log pre-filter and post-filter identity for `Transform` actions.
 
-**Routing composes content with handlers.** Text is activated. The pane-app kit evaluates routing rules locally. Content is transformed (extract filename, line number, URL). The target is resolved via pane-roster's service registry. Dispatch is direct — sender to receiver. Whether the content came from a user action, a D-Bus signal (via pane-dbus bridge), or a filesystem event, the routing is the same.
+Filters run before handler dispatch. If a filter returns `Consume`,
+the handler method does not fire for that message. If a filter
+returns `Transform(msg)`, the handler receives the transformed
+message. The filter chain is the first stage; handler dispatch is
+the second.
 
-**Attribute indexing composes metadata with queries.** pane-store indexes file attributes and emits change notifications. A client that subscribes to change notifications and maintains a query result set has a live query — without pane-store implementing "live queries" as a feature. The composition is client-side, exactly as it was in BeOS.
-
-**Filesystem exposure composes system state with tools.** Anything exposed at `/pane/` is scriptable. A shell script that reads `/pane/index` lists all panes. Writing to a pane's control file manipulates it. The filesystem is the universal FFI.
-
-**Session persistence composes lifecycle with state.** The compositor serializes layout. The roster serializes the running app list. Each app serializes its own state. On restart, each component restores its part. No single component owns "the session" — it's emergent from each component following its protocol.
-
-**The translation pattern composes format knowledge with applications.** Following the Translation Kit: translators handle format conversion as a system service. Applications work with interchange formats; translators handle the rest. The number of translators is linear (one per format), not quadratic (one per format pair). Drop a translator binary into `~/.config/pane/translators/`, the whole system gains a format.
-
-### What makes composition work
-
-Five properties, all present in BeOS, all recoverable in pane:
-
-1. **Typed attributes on files, indexed by the filesystem.** Without this, there's no queryable data. Pane: xattrs + pane-store indexing.
-2. **Live queries delivered as messages.** Without this, views are static snapshots. Pane: pane-store change notifications + client-side composition.
-3. **A file manager that displays attributes as columns.** Without this, metadata is invisible. Pane: the file manager pane reads attributes via pane-store-client and displays them.
-4. **A type system connecting files to handlers.** Without this, double-click doesn't know what to open. Pane: routing rules + pane-roster service registry.
-5. **Data producers writing attributes, not managing databases.** Without this, data is locked in proprietary stores. Pane: agents and services write files with attributes; the infrastructure composes the rest.
+Filters are applied in registration order. `add_filter` appends
+to the chain. Filters can be removed by dropping the returned
+`FilterHandle` (which sends `RemoveFilter` to the looper).
 
 ---
 
-## 9. The Distribution Layer
+## Protocol
 
-Pane is a distribution, not a DE on a distro — and a distributed operating environment that runs on any unix-like, not just Pane Linux. The integration is NeXTSTEP-level for the full desktop, and the headless deployment is the foundation that makes it reachable without reinstalling your OS.
+### Headless-first naming
 
-### The three-layer model
+The server may or may not have a display. The protocol is named
+for what it always is, not for one of its modes:
 
-```
-Layer 0: nixpkgs                    120,000 packages
-Layer 1: sixos                      s6 system builder, infuse combinator, libudev-zero overlay
-Layer 2: pane flake
-         ├── pane-core              cross-platform: packages + service modules
-         └── pane-linux             sixos consumer: pane-core + compositor + desktop
-```
+```rust
+/// Messages from a pane to the server.
+pub enum ClientToServer { ... }
 
-**nixpkgs** provides packages. **sixos** (codeberg.org/amjoseph/sixos) provides the s6-based system builder — a production-grade NixOS alternative that replaces systemd with s6 and the NixOS module system with the `infuse` combinator. Deployed across workstations, servers, and a 768-core buildfarm. **Pane** provides the personality: the protocol, the compositor, the kits, the desktop experience. Each layer depends on the one below it. None forks the other.
-
-### Nix as build substrate
-
-Nix builds the entire Pane Linux system — kernel through desktop — as a single, transitively-closed derivation via sixos. The system closure is one artifact: a Nix derivation whose output contains kernel, initrd, s6 boot scripts, s6-rc compiled service database, `/etc/pane/` defaults, pane server binaries, kit libraries, and a system profile linking to all installed packages.
-
-Nix is not the identity. It is the backstage infrastructure. The user does not interact with Nix to use pane — they interact with pane's interfaces. Nix builds the system and manages its evolution. This is the NeXTSTEP/Mach relationship: Mach provided the right primitives and was otherwise invisible. The identity was in the personality layer.
-
-**The overlay approach.** Pane does not fork nixpkgs or sixos. It depends on both as flake inputs. sixos provides:
-1. The libudev-zero overlay (breaks the transitive systemd dependency chain)
-2. The s6-based system builder (the `infuse` combinator replaces the NixOS module system)
-3. The s6-linux-init boot chain, s6-rc service compilation
-
-Pane provides:
-1. Service definitions for pane's infrastructure servers (target-agnostic, compiled to s6-rc/systemd/launchd by platform backend)
-2. The pane packages themselves (servers, kits, headless binary)
-3. NixOS and Darwin modules for the adoption path
-
-The ~120,000 application packages in nixpkgs are used as-is. Zero merge conflicts with upstream. Package updates come for free by bumping the nixpkgs input.
-
-### The adoption funnel
-
-Users adopt pane without reinstalling their operating system:
-
-```
-nix flake on any unix-like
-  → headless pane: server, kits, protocol, filesystem interface
-  → configuration accumulates in nix expressions (pane.services.*)
-  → add compositor, then desktop, as readiness grows
-  → the flake IS the seed of a full Pane Linux configuration
+/// Messages from the server to a pane.
+pub enum ServerToClient { ... }
 ```
 
-On Darwin, the user gets headless pane via a nix-darwin module — pane-headless supervised by launchd. On NixOS, the same via a NixOS module with systemd. On Pane Linux, the same services run natively under s6-rc. The user's `pane.services.*` configuration is the same in all cases — only the init backend changes.
+### Capability declaration
 
-**The seed property.** Settings transfer because they were always nix expressions. The pane flake exports target-agnostic service definitions consumed by platform-specific backends. The user writes `pane.services.headless.enable = true` — this means the same thing whether the backend generates a systemd unit, a launchd plist, or an s6-rc service directory. When they graduate from headless-on-Darwin to full Pane Linux, their configuration carries over without migration. See `docs/distributed-pane.md` §6 for the full flake architecture.
+Services are identified by globally unique names (reverse-DNS).
+Display is declared in the handshake. Other services are declared
+via `DeclareInterest` in the active phase. The server assigns a
+compact session-local wire discriminant (u8) for each accepted
+service.
 
-### s6 as init
+**Initial binding (handshake).** Hello lists requested services.
+Welcome returns bindings:
 
-s6 is the init system. s6-linux-init provides PID 1. s6-svscan supervises service supervisors. s6-rc manages service dependencies via a compiled database.
+```rust
+pub struct ServiceBinding {
+    pub service: ServiceId,     // UUID + name
+    pub session_id: u8,         // wire discriminant for this connection
+    pub version: u32,           // negotiated version
+}
 
-**The boot sequence:**
-1. Kernel execs `/sbin/init` (s6-linux-init-maker output)
-2. s6-linux-init mounts tmpfs at `/run`, sets up the environment, execs s6-svscan on `/run/service`. s6-svscan becomes PID 1 for the lifetime of the machine.
-3. Early services start (catch-all logger, s6-svscan-log)
-4. rc.init runs as stage 2: mounts filesystems, starts networking, brings up s6-rc
-5. s6-rc activates the service set from the compiled dependency database
-
-**Pre-registered endpoints.** Following Haiku's launch_daemon pattern and systemd's socket activation: communication endpoints (unix sockets) for pane servers are created before the servers start. Messages queue until the server is ready. This eliminates startup ordering as a concern.
-
-With s6, this is achieved via s6-fdholder: a program that holds open file descriptors across process restarts. s6-fdholder creates the sockets at boot; each server retrieves its socket on startup. If a server crashes and restarts, it retrieves the same socket — zero-downtime from the clients' perspective, because their connection endpoint never went away.
-
-**Readiness notification.** Each pane server signals readiness by writing a newline to a designated fd (specified in `notification-fd` in the service directory). s6-supervise catches this, updates status, and broadcasts to subscribers. Dependent services wait for readiness — not just process start. This is correct dependency ordering: "pane-store is ready to serve" not "pane-store's process exists."
-
-**Service definitions.** Each pane server is a longrun with a `run` script, a `notification-fd` file, and s6-rc dependency declarations:
-
-```
-# /etc/s6-rc/source/pane-comp/run
-#!/bin/execlineb -P
-fdmove -c 2 1
-s6-fdholder-retrieve /run/s6-fdholder/s <wayland socket fd>
-exec pane-comp --socket-fd 3
+// In Welcome:
+pub services: Vec<ServiceBinding>,
 ```
 
+**Late binding (active phase).** Services opened mid-session:
+
+```rust
+// In ClientToServer:
+DeclareInterest {
+    service: ServiceId,         // UUID + name
+    expected_version: u32,
+}
+
+// In ServerToClient:
+InterestAccepted {
+    service_uuid: Uuid,         // echo UUID (client knows the name)
+    session_id: u8,             // wire discriminant assigned by server
+    version: u32,
+}
+InterestDeclined {
+    service_uuid: Uuid,
+    reason: DeclineReason,      // VersionMismatch, ServiceUnknown
+}
 ```
-# /etc/s6-rc/source/pane-comp/notification-fd
-3
-```
+
+One round-trip per late-binding service. Initial services are
+batched in the handshake (zero additional round-trips). The server
+accepts or declines; `InterestDeclined::ServiceUnknown` for
+services the server doesn't provide.
+
+The session-local u8 is a per-connection fid (Plan 9 lineage).
+Different connections may assign different u8 values to the same
+service. The 256-slot ceiling is per-connection (no connection
+needs 256 simultaneous services).
+
+DeclareInterest is revoked when the service handle is dropped
+(sends `RevokeInterest`). In-flight messages for the revoked
+service are discarded by the looper. RevokeInterest is best-effort
+(`let _ = ...`) — if the Connection is dead, the server already
+knows.
+
+The SDK provides a short form: `"clipboard"` expands to
+`"com.pane.clipboard"` for framework services.
+
+### Per-service wire messages
+
+Each service gets its own message types, multiplexed over the
+connection with a session-local discriminant:
 
 ```
-# /etc/s6-rc/source/pane-comp/dependencies.d/
-pane-roster
-elogind
+[length: u32][service: u8][payload: ...]
 ```
 
-The s6-rc source directories are Nix derivation outputs. `s6-rc-compile` processes them into a binary database. The entire service graph is a Nix expression.
+Wire service 0 = the Control protocol (implicit, not negotiated).
+The `ControlMessage` enum contains lifecycle, display, and
+connection-management variants (DeclareInterest, ServiceTeardown).
+The deserializer knows the type because the Control enum is fixed.
 
-### Mutable configuration on an immutable base
+Other service discriminants are assigned by the server during
+DeclareInterest (initial binding in handshake, or late binding in
+active phase). The mapping `"com.pane.clipboard" → u8:3` is per-
+connection. The `ServiceRouter` maintains this mapping.
 
-Pane wants two things: an immutable, reproducible system base (Nix's strength) and writable, live configuration (`/etc/pane/` — filesystem-as-interface commitment).
+Per-service error semantics: a malformed message on service N tears
+down service N's channel, not the connection. The server signals
+teardown via `ServiceTeardown { service: u8, reason }` on the base
+Control protocol (wire service 0). This triggers the service-specific
+`*_service_lost()` callback. Connection-level errors (framing
+corruption, auth failure) tear down the connection.
 
-**The reconciliation:**
+### Request cancellation
 
-1. At build time, Nix produces `/nix/store/<hash>-pane-config/` with all default configs
-2. On first boot (or after `pane-rebuild switch`), an activation script diffs new defaults against `/etc/pane/`:
-   - New keys: added with default values
-   - Changed defaults: updated if user hasn't modified; preserved if user has
-   - Removed keys: flagged for cleanup
-3. `/etc/pane/` is a regular writable directory on a persistent volume
-4. User modifications are tracked via xattr (`user.pane.modified = true`) or a manifest file
+```rust
+// In ClientToServer:
+Cancel { token: u64 }
+```
 
-Nix owns the defaults. The user owns the overrides. The activation script mediates. This is the Haiku packagefs shine-through pattern: the package layer provides defaults, the writable layer provides overrides.
+Advisory cancellation of in-flight requests (completions, routing
+queries). The server responds with either the original reply (if
+already computed) or `ReplyFailed { token }`. Same semantics as
+9P's Tflush: the client must handle a reply arriving after
+cancellation.
 
-### Atomic upgrades and rollback
+Cancel cancels the *wire request*. With Dispatch entries, handler-side
+cleanup is automatic — the Dispatch entry is removed by CancelHandle.
+No ghost state to clear.
 
-Each `pane-rebuild switch` creates a new Nix generation. The previous generation is preserved. Rollback is one command or one boot menu selection away. Generations are cheap — Nix's content-addressed store deduplicates shared packages.
+### Enum-based branching (adapted from par)
 
-The s6-rc service transition is: compile new database from new service definitions, run `s6-rc-update` to live-switch. Services restart against the new definitions. No reboot required for most changes.
+pane-session replaces binary `Select<L, R>` / `Branch<L, R>`
+nesting with N-ary enum branching via a `SessionEnum` derive macro:
 
-### Per-user profiles
+```rust
+#[derive(SessionEnum)]
+#[repr(u8)]
+enum Operation {
+    #[session_tag = 0]
+    CheckBalance,  // continuation: Send<Amount, End>
+    #[session_tag = 1]
+    Withdraw,      // continuation: Recv<Amount, Send<Result<Money, Error>, End>>
+}
+```
 
-Each system user (human or agent) has an independent Nix profile. Users install, remove, and rollback packages independently. Packages shared between users are deduplicated in the store.
+The derive generates `choose_*()` methods (sends 1-byte
+discriminant, returns typed continuation) and `offer()` (receives
+tag, returns enum of dual continuations with exhaustive match).
 
-An agent's environment is declaratively specified: `.plan` describes behavior, Nix profile describes tools. Both are versionable, shareable, reproducible. `nix profile diff-closures` shows exactly what changed — full auditability.
+Wire cost: always 1 byte (vs up to N-1 for binary nesting).
+Discriminants are `#[session_tag]`-annotated for wire stability
+across versions. Rust's exhaustive match on the offer side
+guarantees all branches are handled.
+
+### Streaming (Queue pattern, adapted from par)
+
+Session-typed streaming for observer notifications, clipboard
+change streams, filesystem event streams:
+
+```rust
+type StreamSend<T, S>;  // push items, then close → S
+type StreamRecv<T, S>;  // pop items until Closed → Dual<S>
+
+// Wire: 0x00 + postcard(value) = Item, continue streaming
+//       0x01                   = Closed, transition to continuation S
+```
+
+The continuation `S` after `Closed` enables clean shutdown
+protocols (e.g., send UnsubscribeAck after the last item).
+
+Backpressure: stream items are buffered into the ConnectionSource's
+write buffer. If the write buffer hits the high-water mark,
+`push()` returns `Err(Backpressure)` — it does NOT block (that
+would violate I2). The handler decides: drop the item, stop
+producing, or return `Flow::Stop`. OS-level flow control (TCP,
+unix socket buffers) provides additional backpressure beneath.
+
+Streams must be closed (send `Closed` on the wire) before session
+suspension. A resumed session with a desynchronized stream is a
+protocol error.
+
+### Session suspension and resumption (adapted from par)
+
+Server lifecycle for distributed pane:
+
+```
+Connect → Active → Suspend → (token held by client) → Resume → Active → Disconnect
+```
+
+The server issues a serializable session token on suspend. The
+client holds the token across disconnection. On reconnect, the
+client presents the token and the server locates the suspended
+state. Stateful obligations (locks, pending requests) do NOT
+survive suspension — they fail via Drop compensation. The resumed
+session re-declares interests, re-negotiates per-service protocol
+versions (the server may have upgraded), and re-acquires resources.
+
+Session tokens expire server-side (configurable timeout). If the
+server evicts a suspended session (expiry, memory pressure, admin
+action), the client discovers at resume time — the server rejects
+the token. There is no proactive notification (the client may be
+disconnected).
+
+Multi-server suspension is per-Connection, independent. A pane
+connected to three servers may have its compositor Connection
+suspended while clipboard and registry remain active. "Half-
+suspended" is a valid state. Each Connection's suspension is
+independent of the others.
+
+Adapted from par's Server/Proxy/Connection module (Michal Strba,
+https://github.com/faiface/par). In par, scope isolation (no two
+components in the same closure scope) prevents deadlocks. In pane,
+process isolation provides the same guarantee. The Server pattern
+additionally draws from Balzer & Pfenning, "Client-server sessions
+in linear logic" (LICS 2021).
 
 ---
 
-## 10. The Aesthetic and Rendering Model
+## Connection Model
 
-### Client-side rendering, kit-mediated consistency
+### Multi-server by design
 
-Pane embraces the Wayland rendering model: each pane renders its own content into buffers. The compositor composites those buffers with its own chrome. Visual consistency comes from the kits, not from centralized rendering.
+A pane connects to multiple servers. Each server provides different
+capabilities. No server is a mandatory intermediary — "host as
+contingent server."
 
-This is how BeOS worked. App_server composited, but visual consistency came from every application using the Interface Kit. The kit encoded the visual language — fonts, colors, control styles, layout conventions. When every application uses the same kit, they produce the same look without a central authority forcing it.
+A typical topology:
+- Compositor on machine B (Display, Input, Layout)
+- Clipboard service on machine C (Clipboard)
+- Registry on machine D (Roster, AppRegistry)
 
-Pane achieves this identically: the Interface Kit (pane-ui) provides shared rendering infrastructure. Glyph atlas, color palette, control styles, layout primitives. A developer using pane-ui produces output that looks like pane because the kit makes it the path of least resistance. The compositor composites the result and adds chrome — the same division of labor as BeOS's app_server/Interface Kit split.
+Each is an independent Connection with its own calloop source.
 
-### The compositor's rendering responsibilities
+### App as service router
 
-- Compositing all client buffers into the output framebuffer (via smithay's GLES renderer)
-- Rendering chrome: tag lines (with editable text, cursor, selection), beveled borders, split handles, focus indicators
-- Layout: positioning pane buffers according to the layout tree
-- Presenting the final framebuffer to DRM/KMS via page flip
+App holds multiple Connections and routes operations by capability.
+The developer sees object APIs (Clipboard, Messenger) that hide
+which server backs them. The complexity lives in App, not in
+Pane/Looper/Handler.
 
-The compositor gets compositing for free via Wayland/smithay. This is the single largest advantage over Haiku, which has wanted compositing for 15 years and still doesn't have it. Pane starts composited.
+```rust
+impl App {
+    /// Connect to the primary server (compositor or headless).
+    pub fn connect(signature: &str) -> Result<Self>;
 
-### The aesthetic
+    /// Connect to an additional service server.
+    /// The server's capabilities are discovered during handshake.
+    pub fn connect_service(&self, addr: impl ToSocketAddrs) -> Result<()>;
+}
+```
 
-Frutiger Aero — what if Be survived into the 2000s and refined alongside early Aqua.
+### Service discovery
 
-- **Depth through lighting.** Subtle vertical gradients on controls. 1px highlight/shadow edges. Matte and solid — not glossy Aqua gel, not flat Metro.
-- **Beveled borders and visible chrome.** Panes have real borders. Controls look like controls. Structure is always visible. Rounded corners (3-4px radius).
-- **Selective translucency.** Floating elements (scratchpads, popups) are translucent to show context. Translucency where it aids comprehension, not universally.
-- **Warm saturated palette.** Warm grey base, saturated accent colors for focus/dirty/active states.
-- **Typography split.** Proportional sans-serif for widget chrome. Monospace for text content and tag lines. Tag line stays monospace — it's executable text where column alignment matters.
-- **One opinionated look.** No theme engine. The aesthetic IS pane's identity. Individual properties configurable (accent color, font size) but not wholesale theme replacement.
+The App receives a **service map** from the environment — not from
+any single server. This is the Plan 9 namespace(1) approach:
+declarative configuration, lazy connection.
 
-### HiDPI and multi-monitor
+```
+# $PANE_SERVICES or /etc/pane/services.toml
+[compositor]
+uri = "unix:///run/pane/compositor.sock"
 
-Pane inherits proper HiDPI from Wayland. Fractional-scale (wp_fractional_scale_v1) provides per-output scale as a fraction with denominator 120. pane-ui renders at the scaled resolution and uses viewporter to set the surface destination to the unscaled size. No blurriness, no upscaling artifacts.
+[clipboard]
+uri = "tcp://clipboard.internal:9090"
+tls = true
+```
 
-Multi-monitor is handled by smithay's DRM backend. Per-output configuration (resolution, position, scale, orientation) via wlr-output-management protocol.
+For headless instances without a compositor, the service map omits
+the compositor entry. The App works — it just can't create visual
+panes.
 
-Both of these are things Haiku still struggles with. Pane gets them from the platform.
+### Per-Connection handshake
+
+Every Connection starts with the same Phase 1 (uniform, like 9P's
+Tversion):
+
+```
+Client → Server: Hello { version, max_message_size: u32, interests: Vec<ServiceInterest> }
+Server → Client: Welcome { version, instance_id, max_message_size: u32, bindings: Vec<ServiceBinding> }
+```
+
+Hello declares requested services. Welcome returns bindings (name
+→ session-local wire ID + negotiated version). PeerAuth is derived
+from the transport (SO_PEERCRED for unix, TLS certificate for
+remote) — not carried in Hello.
+
+```rust
+pub struct ServiceInterest {
+    pub service: ServiceId,     // UUID + name
+    pub expected_version: u32,
+}
+
+pub struct ServiceBinding {
+    pub service: ServiceId,     // UUID + name
+    pub session_id: u8,         // wire discriminant for this connection
+    pub version: u32,           // negotiated version
+}
+```
+
+The compositor's Welcome says `bindings: [{com.pane.display, 0, 1}]`.
+The clipboard server says `bindings: [{com.pane.clipboard, 1, 1}]`.
+A combined local server might bind both on one connection.
+
+### ConnectionSource
+
+```rust
+/// calloop event source for a single Connection.
+/// Handles both read (fd-readiness) and write (buffered, flushed
+/// on write-readiness). High-water mark backpressure on writes.
+pub struct ConnectionSource { ... }
+```
+
+Each Connection produces a ConnectionSource. App's dispatcher
+routes incoming events from all Connections to the right pane's
+looper channel. The looper sees `LooperMessage` variants regardless
+of which server they came from.
+
+### Remote connections require TLS
+
+`Connection::remote` requires TLS. `PeerAuth` is derived from the
+transport: `PeerAuth::Kernel { uid, pid }` for unix sockets (via
+SO_PEERCRED), `PeerAuth::Certificate { subject, issuer }` for TLS.
+The Hello message carries no identity — authentication is transport-
+level. `pane_owned_by()` checks `PeerAuth`, not self-reported
+strings. Plaintext TCP is not supported. No `remote_insecure`
+escape hatch — ship `pane dev-certs` tooling for development
+(see resolved question 25).
+
+### Maximum message size
+
+The Hello/Welcome exchange negotiates `max_message_size`. Both
+sides send their maximum; the effective limit is the minimum.
+Default: 16MB. The server rejects frames exceeding this. The
+`length` field in `[length: u32][service: u8][payload]` counts
+the service byte plus payload (total frame = 4-byte length field +
+service byte + payload bytes). The length field does NOT include
+itself.
+
+### Serialization format
+
+All payloads use **postcard** encoding (the same format used by
+pane-session for the handshake). This is the canonical wire format
+for all active-phase messages.
+
+### Cross-Connection ordering
+
+Events within a single Connection are FIFO (TCP guarantees this).
+Events across Connections are **not causally ordered**. The handler
+imposes causal order through its control flow when needed (e.g.,
+request clipboard contents *after* receiving paste key event).
+
+The unified batch linearizes events from all sources into a total
+order within each dispatch cycle. This gives sequential consistency
+per-pane but not causal consistency across servers. The session-type
+formalism is silent on cross-session ordering — it's a property
+of the physical system, not the protocol.
+
+For cross-Connection patterns (paste: receive key event from
+compositor, then fetch clipboard from clipboard service), the
+handler uses `send_request` with typed callbacks:
+
+```rust
+fn command_executed(&mut self, proxy: &Messenger, cmd: &str, _: &str) -> Result<Flow> {
+    if cmd == "paste" {
+        proxy.send_request::<Self, ClipboardData>(
+            &self.clipboard_messenger,
+            ClipboardRead("text/plain"),
+            |editor, proxy, data| {
+                editor.insert_text(&data.content);
+                proxy.set_content(editor.buffer.as_bytes())?;
+                Ok(Flow::Continue)
+            },
+            |editor, proxy| {
+                editor.show_status("Paste failed");
+                Ok(Flow::Continue)
+            },
+        )?;
+    }
+    Ok(Flow::Continue)
+}
+```
+
+No ghost state. No manual token correlation. The callback receives
+the typed reply directly. The causal ordering (key event → clipboard
+fetch → insert) is expressed in the callback chain, not in handler
+state fields.
+
+The batch provides a *processing* order, not a *causal* order.
+Handlers that need cross-Connection causality use `send_request`
+callbacks, not event observation.
+
+### Failure isolation
+
+A Connection going down affects only the capabilities it provides.
+Other Connections are unaffected. The pane continues running.
+
+- Compositor Connection lost → pane can't display (likely exits)
+- Clipboard Connection lost → paste/copy operations return `Err`
+- Registry Connection lost → app discovery fails, pane unaffected
+
+This is Plan 9's `Ehangup` applied per-Connection. Failure surfaces
+at the use site — when the handler tries to use the lost capability.
+Service-specific `*_service_lost()` methods on service traits
+provide async notification for handlers holding stale state.
+
+### Scoped pane handles
+
+Each pane gets a handle that can only send messages about itself.
+No Id in the public API.
+
+```rust
+/// Can only send messages for this pane. The pane ID is baked in.
+/// Plan 9 fid principle: the handle IS the name.
+pub struct Handle { ... }
+```
+
+`Messenger` wraps `Handle` + a `ServiceRouter` that knows which
+Connection to use for which operation. Cloneable, Send. Token
+allocation for `send_request` managed internally — developers don't
+construct raw tokens.
+
+The server MAY enforce per-pane limits on concurrent outstanding
+requests to bound obligation growth from Messenger clones.
+
+### Request/Reply via the Dispatch
+
+Request/reply is modeled as per-request Dispatch entries, not ghost
+state in the handler. Each `send_request` creates a one-shot typed
+dispatch slot in the looper's `Dispatch`.
+
+```rust
+impl Messenger {
+    /// Send a request and register a typed reply callback.
+    ///
+    /// EAct: E-Suspend installs a one-shot handler in σ for
+    /// session type Recv<RequestReplyMessage<R>, End>.
+    /// The entry is consumed on reply (E-React) or failure.
+    ///
+    /// Returns a CancelHandle for optional cancellation.
+    pub fn send_request<H, R>(
+        &self,
+        target: &Messenger,
+        msg: impl Send + 'static,
+        on_reply: impl FnOnce(&mut H, &Messenger, R) -> Result<Flow> + Send + 'static,
+        on_failed: impl FnOnce(&mut H, &Messenger) -> Result<Flow> + Send + 'static,
+    ) -> Result<CancelHandle>
+    where H: Handler + 'static, R: Send + 'static;
+}
+
+/// Handle for cancelling an outstanding request.
+/// Drop does nothing — the request completes normally.
+/// .cancel(self) removes the Dispatch entry without firing callbacks.
+/// Inverted from ReplyPort: drop = happy path, cancel = voluntary abort.
+pub struct CancelHandle { /* token + looper_tx */ }
+
+impl CancelHandle {
+    /// Cancel the request. Consumes self. Late replies silently dropped.
+    pub fn cancel(self) { ... }
+}
+// Drop: intentionally no-op. Uncancelled request completes normally.
+```
+
+No ghost state in the handler. The correlation between request and
+reply is structural — guaranteed by the Dispatch entry, not by manual
+matching. Multiple requests may be outstanding simultaneously,
+including to the same target — each gets an independent Dispatch
+entry with a unique token (S1).
+
+**Callback capture.** Callbacks are `FnOnce + Send + 'static` —
+they cannot capture borrows from the calling scope. This is
+correct: the callback outlives the handler invocation (EAct
+E-Suspend: Dispatch entries persist across idle). The `&mut H` first
+parameter provides handler state at reply time:
+
+```rust
+// Pattern 1: Handler state via &mut H (covers ~90% of cases)
+proxy.send_request::<Self, SearchResults>(
+    &target, query,
+    |editor, proxy, results| {
+        // editor IS &mut Self — full handler access
+        editor.display_results(&results);
+        Ok(Flow::Continue)
+    },
+    |editor, _| { editor.show_status("failed"); Ok(Flow::Continue) },
+)?;
+
+// Pattern 2: Capture owned context from the call site
+let term = query.to_owned();
+proxy.send_request::<Self, SearchResults>(
+    &target, SearchQuery(term.clone()),
+    move |handler, proxy, results| {
+        handler.display_results(&term, results);
+        Ok(Flow::Continue)
+    },
+    |handler, _| { handler.show_status("failed"); Ok(Flow::Continue) },
+)?;
+```
+
+The callback receives `&mut H` (handler state) and the typed
+reply `R` directly. No `Box<dyn Any>` at the handler surface.
+The single downcast (`Box<dyn Any + Send>` → `R`) happens inside
+the framework, guaranteed to succeed because send_request and
+the reply share `R`.
+
+**On disconnect**: `dispatch.fail_connection()` fires `on_failed` for every
+pending entry before `handler.disconnected()` is called. The
+handler gets per-request failure notification.
+
+**On cancellation**: `cancel_handle.cancel()` removes the Dispatch
+entry without firing callbacks. Late-arriving replies are silently
+dropped. Same as 9P's Tflush. Dropping the CancelHandle without
+calling cancel is a no-op — the request completes normally.
+
+**Lifecycle** (EAct terms):
+- **E-Suspend**: `send_request` installs entry in σ
+- **Active**: entry waits; looper services other sessions
+- **E-React**: reply arrives, entry consumed, callback fires
+- **Failed**: target drops ReplyPort → `on_failed` fires
+- **Cancelled**: handler-initiated removal, no callbacks
+- **Abandoned**: handler drops (Flow::Stop, panic) → entry dropped
+  without callbacks. Safe: pending entry is a receive-endpoint;
+  dropping it doesn't block any peer (DLfActRiS §3.2).
+
+**What this removes from Handler**: `reply_received(token, payload)`
+and `reply_failed(token)` are gone. Reply dispatch is structural,
+not a handler method. `request_received` stays (the server side
+of request/reply, receiving from other panes).
+
+Tokens are per-Connection (three servers = three namespaces).
+Token allocation is internal to the framework.
 
 ---
 
-## 11. Technology Choices
+## Service Registration
 
-| Concern | Choice | Rationale |
+Services are opened at pane setup time. Opening a service:
+1. Resolves the capability to a Connection (via service map)
+2. Sends `DeclareInterest` on that Connection
+3. Registers a typed calloop source in the looper
+4. Returns a handle the developer uses to interact with the service
+
+```rust
+// Clipboard registration — the framework finds the right Connection
+let clipboard = pane.open_clipboard("system")?;
+
+// In the handler — same as single-server:
+fn command_executed(&mut self, proxy: &Messenger, cmd: &str, _: &str) -> Result<Flow> {
+    if cmd == "copy" {
+        self.clipboard.request_lock()?;
+    }
+    Ok(Flow::Continue)
+}
+```
+
+The developer writes zero additional code for multi-server vs
+single-server. The difference is App configuration (which servers
+to connect to), not handler code.
+
+Service calloop sources registered during handler methods take
+effect on the next dispatch cycle, not the current batch. Events
+from a newly registered source cannot arrive in the same batch
+as the registration.
+
+### Typed ingress, unified batch
+
+Each service's calloop channel carries its own typed event enum.
+At the calloop callback boundary, events convert to the looper's
+internal representation and enter the unified batch. Total ordering
+within the batch is preserved. Coalescing operates within the batch.
+Filters see Message (Clone-safe) variants only. Service obligations
+bypass filters but remain ordered within the batch.
+
+---
+
+## Dispatch
+
+Match-based dispatch in the looper. The monomorphized match IS
+the handler store σ. No explicit struct — the compiler
+provides what it would add.
+
+The looper is generic over `H`:
+- `run_with<H: Handler>` for headless panes
+- `run_with_display<H: DisplayHandler>` for display panes
+
+Service dispatch uses fn pointers captured at registration time
+(the Dispatch pattern). When `open_clipboard()` is called on a pane
+whose handler implements `Handles<Clipboard>`, the registration
+captures the monomorphized `Handles<Clipboard>::receive` as a fn
+pointer. The derive macro's generated match delegates to the
+developer's named methods. These are called during batch
+processing, sharing `&mut H` with the main dispatch — sequentially,
+never concurrently (I7).
+
+The closure form (`pane.run(source, |proxy, msg| ...)`) receives
+`Message` (Clone-safe events) only. It cannot handle obligation-
+carrying protocols (clipboard locks, completion requests, incoming
+requests with ReplyPort). These require the struct + trait form
+(`pane.run_with(source, handler)`).
+
+---
+
+## The Linear Discipline
+
+### Typestate handles (preserved from v1)
+
+Every obligation-carrying type follows the pattern:
+
+- `#[must_use]` — compiler warns on unused
+- Move-only — no Clone
+- Single success method consumes — `.commit()`, `.reply()`, `.wait()`
+- Drop sends failure terminal — revert, ReplyFailed, RequestClose
+
+Proven on: ReplyPort, CompletionReplyPort, ClipboardWriteLock,
+CreateFuture, TimerToken, ClipboardHandle (Drop sends
+RevokeInterest).
+
+Destruction sequence on handler exit: dispatch.fail_connection() (per S4)
+→ handler dropped → service handles (ClipboardHandle, etc.)
+dropped during handler field destruction → Drop sends
+RevokeInterest (best-effort, `let _ = ...`).
+
+### Deeper linearity in v2
+
+- **Service handles**: `open_clipboard()` returns a `ClipboardHandle`
+  whose Drop sends `RevokeInterest`. The service lifecycle is
+  linearly tracked.
+- **Batch processing**: the batch `Vec` is taken (`mem::take`) and
+  drained. Events are consumed by dispatch — no re-buffering.
+- **Filter chain**: `filter()` takes `&Message` (immutable borrow).
+  Returns `FilterAction`: `Pass` (no-op), `Transform(Message)`
+  (replacement), or `Consume` (drop). The chain retains ownership
+  on Pass; only Transform produces a new value.
+- **Connection**: `ConnectionSource` is move-only. Inserting it
+  into calloop consumes it. No aliased access to the fd.
+
+### Where affine falls short
+
+Rust is affine (values can be dropped), not linear (values must
+be consumed). The gap is compensated by Drop impls that send
+failure terminals. The invariants:
+
+- **I1**: `panic = unwind` in all pane binaries (Drop must fire)
+- **I2**: No blocking calls in handler methods (EAct Progress)
+- **I3**: Handler callbacks terminate (return Flow)
+- **I4**: Typestate handles: `#[must_use]` + Drop compensation
+- **I5**: Filters see only Message (Clone-safe, type-enforced)
+- **I6**: Sequential single-thread dispatch per pane (BLooper model)
+- **I7**: Service dispatch fn pointers called sequentially within
+  the batch loop, never concurrently, preserving Rust's exclusive-
+  reference invariant on `&mut H`
+- **I8**: No blocking calls (`send_and_wait`) in handler methods.
+  Prevents cross-Connection blocking within handlers. Same-
+  Connection cycles (pane A → pane B → pane A through one server)
+  remain a runtime hazard, mitigated by timeout on `send_and_wait`
+  and documented as a mutual-deadlock risk.
+
+- **I9**: Dispatch is cleared (`dispatch.fail_connection()` or `dispatch.clear()`)
+  before the handler is dropped. CancelHandle's inverted Drop
+  (no-op) depends on this ordering — without it, dropped Dispatch
+  entries could reference a destroyed handler during callbacks.
+
+Dispatch entry invariants (request/reply):
+
+- **S1**: Token uniqueness (AtomicU64, per-Connection namespace)
+- **S2**: Sequential dispatch — Dispatch callbacks share `&mut H`
+  with handler methods, never concurrent (follows from I6/I7)
+- **S3**: Control-before-events — RegisterRequest processed before
+  any Reply in the same batch
+- **S4**: On individual Connection loss, `dispatch.fail_connection()` fires
+  for entries keyed to that Connection only, before
+  `handler.disconnected()`. On handler destruction, `dispatch.clear()`
+  drops all entries across all Connections without firing callbacks.
+- **S5**: Cancel removes entry without firing callbacks
+- **S6**: `panic = unwind` (follows from I1) — Dispatch HashMap dropped
+  during unwind
+
+### Chan Drop sends ProtocolAbort
+
+`Chan<S, T>` implements `Drop`. If dropped mid-handshake (crash,
+early return, panic unwind), Drop sends a `ProtocolAbort` frame
+(`[0xFF][0xFF]`) on the transport, then closes it. The peer
+receives the abort and frees its session thread immediately —
+no TCP timeout wait. Best-effort: if the transport is already
+dead (broken pipe), Drop silently succeeds (`let _ = ...`).
+
+### Obligation handle lifetime
+
+Obligation handles (ReplyPort, CompletionReplyPort,
+ClipboardWriteLock) are **short-lived**: they should be consumed
+within the handler method invocation that receives them. Storing
+an obligation handle in `self` defers its resolution until handler
+destruction, blocking the requesting pane indefinitely.
+
+This is a convention, not a type-level enforcement. `ReplyPort`
+remains `Send` (worker threads may need to reply). A lint that
+warns on `self.field = reply` assignments is a future enhancement.
+If a handler stores and forgets, the Drop compensation (ReplyFailed)
+fires at handler destruction — the linear discipline works, but
+the requester waits longer than necessary.
+
+### ClipboardWriteLock::commit
+
+```rust
+pub fn commit(self, data: Vec<u8>, metadata: ClipboardMetadata)
+    -> Result<(), CommitError>;
+```
+
+`commit` takes `self` by value — the lock is consumed. No retry.
+`CommitError` variants: `Disconnected` (service gone between lock
+grant and commit), `LockRevoked` (server revoked due to timeout
+or admin action), `ValidationFailed` (malformed data rejected).
+Drop-based Revert fires only if `commit` was never called.
+
+**`send_and_wait`** is the synchronous blocking variant of
+`send_request` — it blocks the calling thread until the reply
+arrives or a timeout expires. It must NOT be called from a handler
+method. Enforcement: `is_looper_thread()` panics on self-deadlock;
+`CURRENT_CONNECTION` panics on cross-Connection deadlock.
+
+**I8 is enforced at runtime (panic in all builds).** The looper
+maintains a thread-local `CURRENT_CONNECTION` id during handler
+dispatch. If `send_and_wait` is called from a handler method, the
+runtime panics. The check cost (one thread-local read) is
+negligible relative to the IPC round-trip.
+
+**Tokens are per-Connection.** A pane connected to three servers
+has three independent token namespaces. `Cancel { token }` is
+routed to the Connection that issued the original request. The
+Messenger embeds the routing context. Token values may collide
+across Connections — this is correct because the namespaces are
+disjoint.
+
+### Termination semantics
+
+**`Flow::Stop` (graceful exit):**
+
+1. The looper stops dispatching further events from the batch
+2. The handler is dropped — Drop impls fire on all held obligation
+   handles (ReplyPort → ReplyFailed, ClipboardWriteLock → Revert)
+3. The server is notified via `PaneExited { reason: Graceful }`
+
+**`Err(e)` (crash):**
+
+1. The looper logs the error
+2. No further events are dispatched
+3. The handler is dropped — same Drop compensation as Flow::Stop
+4. The server is notified via `PaneExited { reason: Error(e) }`
+
+Both paths trigger identical Drop compensation. The distinction
+is in the exit reason reported to the server and to monitoring
+panes (via `pane_exited`). `Flow::Stop` is "I chose to exit."
+`Err` is "something went wrong." EAct §5 separates actor failure
+(zap/supervision) from session termination (clean end).
+
+Obligation compensation completes before the server is notified.
+
+---
+
+## Developer Experience
+
+### Minimal headless agent
+
+```rust
+use pane_app::{Connection, Tag, Handler, Messenger, Flow, Result};
+
+struct StatusAgent;
+
+impl Handler for StatusAgent {
+    fn ready(&mut self, proxy: &Messenger) -> Result<Flow> {
+        proxy.set_content(b"online")?;
+        proxy.set_pulse_rate(Duration::from_secs(60))?;
+        Ok(Flow::Continue)
+    }
+
+    fn pulse(&mut self, proxy: &Messenger) -> Result<Flow> {
+        let status = check_health();
+        proxy.set_content(status.as_bytes())?;
+        Ok(Flow::Continue)
+    }
+}
+
+fn main() -> pane_app::Result<()> {
+    let (conn, source) = Connection::remote(
+        "com.ops.status", "headless.internal:9090",
+    )?;
+    let pane = conn.create_pane(Tag::new("Server Status"))?.wait()?;
+    pane.run_with(source, StatusAgent)
+}
+```
+
+### Display editor with clipboard
+
+```rust
+use pane_app::*;
+
+struct Editor {
+    buffer: String,
+    clipboard: ClipboardHandle,
+}
+
+impl Handler for Editor {
+    fn ready(&mut self, proxy: &Messenger) -> Result<Flow> {
+        proxy.set_content(self.buffer.as_bytes())?;
+        Ok(Flow::Continue)
+    }
+
+    fn close_requested(&mut self, _proxy: &Messenger) -> Result<Flow> {
+        Ok(Flow::Stop)
+    }
+}
+
+impl DisplayHandler for Editor {
+    fn key(&mut self, proxy: &Messenger, event: KeyEvent) -> Result<Flow> {
+        self.buffer.push(event.char);
+        proxy.set_content(self.buffer.as_bytes())?;
+        Ok(Flow::Continue)
+    }
+
+    fn command_executed(&mut self, proxy: &Messenger, cmd: &str, _: &str) -> Result<Flow> {
+        if cmd == "copy" {
+            self.clipboard.request_lock()?;
+        }
+        Ok(Flow::Continue)
+    }
+}
+
+#[derive(ProtocolHandler)]
+#[protocol(Clipboard)]
+impl Editor {
+    fn lock_granted(&mut self, _proxy: &Messenger, lock: ClipboardWriteLock) -> Result<Flow> {
+        lock.commit(self.buffer.as_bytes().to_vec(), ClipboardMetadata {
+            content_type: "text/plain".into(),
+            sensitivity: Sensitivity::Normal,
+            locality: Locality::Any,
+        })?;
+        Ok(Flow::Continue)
+    }
+    fn lock_denied(&mut self, _: &Messenger, _: &str, _: &str) -> Result<Flow> { Ok(Flow::Continue) }
+    fn changed(&mut self, _: &Messenger, _: &str, _: Id) -> Result<Flow> { Ok(Flow::Continue) }
+    fn service_lost(&mut self, _: &Messenger) -> Result<Flow> { Ok(Flow::Continue) }
+}
+
+fn main() -> pane_app::Result<()> {
+    let (conn, source) = Connection::local("com.pane.editor")?;
+    let mut pane = conn.create_pane(
+        Tag::new("Editor")
+            .command(cmd("copy", "Copy").shortcut("Ctrl+C")),
+    )?.wait()?;
+
+    let clipboard = pane.open_clipboard("system")?;
+    pane.run_with_display(source, Editor {
+        buffer: String::new(),
+        clipboard,
+    })
+}
+```
+
+### Closure form (simple case)
+
+```rust
+fn main() -> pane_app::Result<()> {
+    let (conn, source) = Connection::local("com.example.hello")?;
+    let pane = conn.create_pane(Tag::new("Hello"))?.wait()?;
+    pane.run(source, |_proxy, msg| match msg {
+        Message::CloseRequested => Ok(Flow::Stop),
+        _ => Ok(Flow::Continue),
+    })
+}
+```
+
+The handler API is identical for local and remote connections.
+Latency differences are observable through timeout behavior and
+Result errors, never through different handler methods or Message
+variants.
+
+---
+
+## What Is Preserved from v1
+
+- **Session-typed handshake** (pane-session): Chan, Send, Recv,
+  Branch, Select, End, Transport trait, finish().
+- **Typestate handles**: ReplyPort, CompletionReplyPort,
+  ClipboardWriteLock, CreateFuture, TimerToken.
+- **calloop event loop**: per-pane, single-threaded, Timer sources.
+- **Filter chain**: MessageFilter trait, FilterAction, FilterChain.
+  Now operates on obligation-free Message (Clone-safe).
+- **Transport layer**: Unix, TCP, TLS, Memory, Proxy, Reconnecting.
+- **Optic crate**: Getter/Setter/PartialGetter/PartialSetter,
+  FieldLens/FieldAffine/FieldTraversal, composition, laws.
+- **Scripting foundation**: PropertyInfo, ScriptableHandler,
+  DynOptic, Specifier, AttrValue.
+- **Id as UUID**: client-proposed, server-confirmed.
+- **Coalescing**: last Resize, last MouseMove within a batch.
+- **TimerToken**: cancel-on-drop, dual-path cancellation.
+
+## What Changes from v1
+
+| Component | v1 | v2 |
 |---|---|---|
-| **Language** | Rust | Ownership gives compile-time threading guarantees that BeOS enforced by convention. Send/Sync are the type-level encoding of "Commandment #1." |
-| **Compositor framework** | smithay | Composable building blocks for Wayland compositors in Rust. Protocol handling, DRM, input, rendering. |
-| **Compositor event loop** | calloop | Epoll-based, callback-oriented. Required by smithay. Scoped to the compositor only. |
-| **Session types** | `pane-session` crate: custom typestate `Chan<S, Transport>` | Transport-aware, crash-safe (Err not panic), calloop-compatible. Primitives verified in Lean/Agda. Par and dialectic as design references. |
-| **Wire format** | postcard | Serde-based, varint-encoded, compact binary. |
-| **Init system** | s6 + s6-rc (via sixos) | Small, composable, readiness-aware. Service directories are derivations. Compiled dependency database. sixos provides the system builder. |
-| **System builder** | sixos | Production-grade s6-based NixOS alternative. Provides libudev-zero overlay, infuse combinator, boot chain. Pane Linux is a sixos flake. |
-| **Network transport** | TCP/TLS (rustls) | Network-transparent sessions via Transport trait. TLS for remote identity binding. Same protocol over unix sockets (local) and TCP (remote). |
-| **Build system** | Nix | Declarative, reproducible, atomic upgrades, rollback. ~120k packages via nixpkgs. |
-| **Filesystem notification** | fanotify + inotify | fanotify for mount-wide (pane-store). inotify for targeted (config, plugins). |
-| **FUSE** | Custom FUSE-over-io_uring module (on `io-uring` crate) | No existing Rust FUSE library supports io_uring. The kernel interface is small (two io_uring subcommands + standard FUSE opcodes); pane-fs needs only a bounded subset. Built directly on `/dev/fuse` + io_uring for maximum performance. |
-| **Audio/media** | PipeWire | Graph-based media framework. Replaces PulseAudio + JACK. BeOS Media Kit model. |
-| **Widget layout** | taffy | Flexbox/grid layout engine. Pure computation. |
-| **Widget rendering** | Vello | GPU-compute 2D rendering via wgpu. The forward-looking choice over femtovg (OpenGL). Currently in active development by the Linebender project; will be stable by pane's widget rendering phase. |
-| **Text rendering** | GPU glyph atlas | Instanced rendering. Shared across all pane-native clients via pane-ui. |
-| **Input processing** | libinput + xkbcommon | Industry standard. Hardware abstraction and keyboard layout processing. |
-| **D-Bus bridge** | zbus crate | Rust D-Bus implementation. pane-dbus translates at the boundary. |
-| **Process tracking** | pidfd | Race-free process identity. Integrates into epoll for lifecycle monitoring. |
-| **Sandboxing** | Landlock (primary) + seccomp (defense-in-depth) | Landlock: unprivileged, filesystem/network/signal scoping, maps 1:1 to `.plan` permissions. seccomp: syscall filtering as second layer. |
-| **Testing** | proptest + pane-session MemoryTransport | Property-based tests for protocol correctness. Session types verified in-memory without sockets. |
+| Handler | 22 methods, monolithic | `Handler` (~11) + `DisplayHandler` (~10) + service traits |
+| Message | 19 variants, 4 panic Clone | `Message` (Clone, obligations extracted) + internal obligation types |
+| App | One connection, dispatcher thread, pump threads | Multiple Connections + ServiceRouter. calloop read+write per Connection. |
+| Messenger | Shared comp_tx, any pane | Scoped handle + ServiceRouter. Routes by capability, not server. |
+| Topology | Single server | Multi-server. Per-Connection failure isolation. Service map from environment. |
+| Type naming | `PaneId`, `PaneGeometry`, `PaneTitle` | `Id`, `Geometry`, `Title` — crate path is the namespace |
+| Protocol names | ClientToComp / CompToClient | ClientToServer / ServerToClient |
+| Wire framing | [length][payload] | [length][service][payload]; service IDs negotiated per-connection via reverse-DNS names |
+| Services | Types exist, no wire protocol | DeclareInterest + per-service wire messages + per-service error isolation |
+| Display | Implicit default | Explicit capability (handshake) |
+| Service identity | Not declared | Reverse-DNS names, handshake for Display, DeclareInterest for services |
+| LooperMessage | 10 variants, growing | Per-protocol typed calloop channels |
+| Headless | Added after compositor | The base case |
+| Service disconnect | Not handled | Dual: `commit() -> Result` + per-service `*_service_lost()` on service traits |
+| Request/reply | Ghost state (token in self, Box<dyn Any> downcast) | Dispatch entries — typed callbacks, no ghost state, no reply_received |
+| Request cancellation | Not supported | `Cancel { token }` (Tflush equivalent) |
+| Remote auth | Self-reported PeerIdentity | TLS required, PeerAuth derived from transport (Kernel/Certificate) |
 
 ---
 
-## 12. Build Sequence
+## Resolved Questions
 
-Each phase produces a testable, usable artifact. The ordering follows dependency: foundations first, then the things that build on them.
+1. **Service trait dispatch**: fn pointers (Dispatch pattern). Zero-cost,
+   handler type known at registration time. Unanimous.
 
-### Phase 1: Protocol Foundation
-1. **pane-proto** — message types, session type definitions, property tests. The types that everything else depends on. *Status: built, session type migration in progress.*
+2. **DeclareInterest placement**: Display in handshake (server
+   allocates surface resources). Services in active phase (opened
+   mid-session via DeclareInterest message).
 
-### Phase 2: Transport Bridge (highest priority prototype)
-2. **Session types over unix sockets** — the single most important prototype in the project. Prove that pane's custom session types (`Chan<S, UnixSocketTransport>`) can be driven over unix sockets with postcard serialization: a server-side calloop-driven endpoint talking to a client-side threaded looper, with the session type verified end-to-end. If this works, every protocol built afterward inherits the guarantee. If it doesn't, we discover the constraint before building a mountain of protocol code on a shaky foundation.
-3. **calloop + session type integration proof** — drive pane's session type channel operations from within a calloop event loop via fd-based event sources. Verify that the typestate transitions, crash handling, and calloop's callback model coexist cleanly. This determines whether the compositor's session handling works as designed.
+3. **ClipboardWriteLock::commit()**: Returns `Result<(), CommitError>`
+   where `CommitError` includes `Disconnected` and `LockRevoked`.
+   Non-negotiable. Unanimous.
 
-In Phase 1, session types define the protocol and verify message shapes at compile time. Phase 2 closes the gap: conversation ordering — what is sent when, by whom — is verified on the wire, not just in-memory tests. The systems work comes before the graphics work because the protocol is the foundation everything else stands on.
+4. **Session resumption**: Deferred implementation. The handshake
+   type will need a `Resume` path. On resume, the client receives
+   `ready()` as if new and must re-send all `DeclareInterest`
+   messages. The server MAY optimize by recognizing previously-held
+   interests, but the protocol requires re-declaration. Stateful
+   obligations (locks, pending requests, open streams) do not
+   survive — they fail via Drop compensation. Streams must be
+   closed before suspension. The resume path re-negotiates per-
+   service protocol versions (the server may have upgraded).
+   Obligation-carrying messages must not be buffered across
+   reconnection. Tokens expire server-side; client discovers
+   expiry at resume time (rejection). Multi-server suspension is
+   per-Connection, independent. Reference: Plan 9 aan(8), par
+   Server/Proxy/Connection (Michal Strba).
 
-### Phase 3: Core Infrastructure + Minimal Agent Prototype
-4. **pane-notify** — fanotify/inotify abstraction. Looper integration (calloop for compositor, channels for others).
-5. **pane-app kit** — looper abstraction, handler chain, routing, connection management. The kit that application developers program against. Built on the verified transport from Phase 2. The `Tag::new().commands()` builder API, the `Handler` trait, the `cmd()` convenience constructors.
-6. **Minimal agent prototype** — proving that agents can participate as system users, not building agent-specific infrastructure.
+5. **Naming**: `Message` (tier 1 faithful). The type is what BMessage
+   was, corrected: obligations extracted to internal types. No
+   divergence entry needed.
 
-**Phase 3 agent scope and acceptance criteria.** The agent prototype is approximately zero pane-specific code. It validates the architecture's core claim — that agents are Unix users who participate through existing infrastructure — without building any agent-specific kit or service.
+6. **Service disconnect**: Dual mechanism. `commit() -> Result` for
+   synchronous at-call-site detection. `clipboard_service_lost()`
+   (and per-service equivalents) on service traits for async
+   notification. Scoped to service traits, not base Handler — no
+   Handler growth per service.
 
-What's in:
-- Agent user accounts (`useradd agent.builder`, home directory, Nix profile)
-- A `.plan` file in each agent's home directory (human-readable, the convention, no enforcement)
-- Build results mailed as files with `user.pane.*` xattrs in a spool directory (standard mail, queryable by pane-store when it exists in Phase 6)
-- Scheduled tasks via cron (nightly build, source monitoring)
-- `who` shows agents, `finger agent.builder` shows its `.plan`
+7. **TLS for remote**: `Connection::remote` requires TLS.
+   `PeerAuth::Certificate` derived from TLS certificate. Plaintext
+   TCP not supported. No `remote_insecure` escape hatch.
 
-What's deferred:
-- pane-ai kit (Phase 8)
-- Memory consolidation protocol, vector search, embedding lifecycle (Phase 6+ when pane-store exists)
-- Landlock sandboxing enforcement (Phase 8)
-- `.plan` governance model (Phase 8)
-- Agent-to-agent communication over pane protocol (Phase 8 — for now, agents use `mail`)
-- Local model inference, routing-rules-as-data-governance (Phase 8)
+8. **Cancel { token }**: Added to ClientToServer. Advisory
+   cancellation. Server responds with original reply or ReplyFailed.
 
-**Done looks like:** `agent.builder` exists as a Unix user. It runs a nightly build via cron. It mails results to the developer. `who` and `finger` work. The system has multiple inhabitants before it has a single external user. Nothing about this requires pane to be running — the agent infrastructure is Unix infrastructure.
+9. **Filter modification**: Intentional. `FilterAction` distinguishes
+   `Pass` (unchanged) from `Transform` (rewritten) for debuggability.
+   Variant-changing transforms are pathological and should be logged.
 
-### Phase 4: Minimal Compositor
-6. **pane-comp skeleton** — smithay compositor, single hardcoded pane, tag line + text rendering. First pixels on screen. Now built on session-verified protocols, not hand-written state machines.
-7. **pane-shell** — PTY bridge client, first usable terminal. The milestone that makes pane a daily driver.
+10. **AppPayload: Clone + Send + 'static**: Obligation handles are
+    !Clone, preventing smuggling even via wrapper structs. Orphan
+    rules + Clone bound = compile-time enforcement.
 
-### Phase 5: Tiling Desktop
-8. **Layout tree** — tiling with splits, multiple panes, tag-based visibility. Multiple shells on screen.
-9. **Input binding** — compositor-level key bindings, focus management, tag switching.
+11. **Termination**: `Flow::Stop` = graceful. `Err` = crash. Both
+    trigger identical Drop compensation. Distinction is in the exit
+    reason reported to server and monitors.
 
-### Phase 6: Infrastructure
-10. **Routing** — routing rules in the pane-app kit, filesystem-based rule loading, live rule updates.
-11. **pane-roster** — service directory, app lifecycle, service registry.
-12. **pane-store** — attribute indexing, change notifications, queries.
-13. **pane-watchdog** — heartbeat monitoring, escalation.
+12. **Chan Drop sends ProtocolAbort** (`[0xFF][0xFF]`). Peer frees
+    session thread immediately on handshake abort.
 
-### Phase 7: Richness
-14. **Widget rendering** — Vello + taffy, Frutiger Aero controls.
-15. **pane-fs** — FUSE at `/pane/`.
-16. **pane-dbus** — D-Bus bridge (notifications, PipeWire portals, NetworkManager).
-17. **pane-media** — PipeWire kit wrapper.
+13. **Request/reply via Dispatch entries**: `send_request<H, R>` creates
+    a one-shot typed dispatch entry in Dispatch. Returns `CancelHandle`
+    (Drop = no-op, `.cancel()` = voluntary abort). Replies route to
+    callback with typed `R`. Multiple outstanding requests per target
+    supported (independent Dispatch entries, unique tokens). No ghost
+    state, no `reply_received` on Handler. `dispatch.fail_connection()` before
+    `disconnected()`. Six invariants (S1-S6).
 
-### Phase 8: Ecosystem
-18. **Legacy Wayland/XWayland** — xdg-shell, xdg-decoration, XWayland integration.
-19. **pane-input kit** — generalized grammar engine, keymap hierarchy, discoverability.
-20. **pane-ai** — agent infrastructure, `.plan` specification, Unix communication patterns.
+14. **RoutingHandler: Handler**: Headless command surface via
+    DeclareInterest. `command_executed` on DisplayHandler (input)
+    and RoutingHandler (routed data access) for their respective
+    sources.
 
-### Phase 9: Distribution
-21. **Nix system builder** — s6-linux-init, s6-rc service database, kernel, initrd, system closure.
-22. **Binary cache** — Cachix for the libudev-zero overlay and pane packages.
-23. **Installer** — from ISO to running pane system.
+15. **Geometry**: Logical pixels + scale_factor. `physical_size()`
+    helper. Resolves HiDPI ambiguity.
 
-The critical path is phases 1-5. Phase 2 is the make-or-break: if the transport bridge works, every protocol built afterward is verified end-to-end. If it reveals constraints, we redesign before investing in compositor code. Once pane-shell works inside pane-comp with tiling (end of Phase 5), pane is a usable daily driver with session-verified protocols. Everything after that is enrichment on a sound foundation.
+16. **I8 runtime enforcement**: Thread-local CURRENT_CONNECTION in
+    looper. `send_and_wait` on different Connection: panic in all
+    builds (production deadlock is worse than a crash with backtrace).
 
----
+17. **Service map precedence**: `$PANE_SERVICE_OVERRIDES` > manifest
+    > `$PANE_SERVICES` > `/etc/pane/services.toml`.
 
-## 13. Open Questions
+18. **DeclareInterest version**: Single `expected_version` for
+    Phase 1. Range negotiation (min/max) deferred to Phase 2.
 
-Things the Be engineers would flag as "we need to prototype this before committing."
+    **Service identity**: Globally unique reverse-DNS names
+    (`com.pane.clipboard`) replace hardcoded `SERVICE_ID: u8`.
+    Wire discriminants are session-local, assigned by the server
+    in `InterestAccepted { session_id: u8 }`. Initial services
+    bound in handshake (Hello → Welcome with bindings).
+    Late-binding services via active-phase DeclareInterest.
 
-### Session type transport bridge *(promoted to Phase 2 — first milestone)*
-Moved from open question to the build sequence's highest-priority prototype. The transport bridge determines the guarantee level of every protocol built afterward. See §7 (The transport bridge) and §12 (Phase 2).
+19. **Control protocol shared by Lifecycle and Display**: Intentional.
+    Same connection, `ControlMessage` enum (wire service 0).
+    Other services get negotiated session-local wire IDs via
+    DeclareInterest.
 
-### calloop + session type integration *(Phase 2 — complete)*
-Pane's custom session types are fd-based, not async/futures-based. The compositor registers session socket fds with calloop as event sources — callback-driven, no executor needed. `SessionSource` provides non-blocking accumulation with `SessionEvent::Message` / `SessionEvent::Disconnected` dispatch. Validated by Phase 2 prototype: 10 tests passing including crash recovery.
+20. **request_received stays untyped**: `Box<dyn Any + Send>` is
+    intentional — the server side is fundamentally open (unknown
+    senders). Protocol-defined requests route through Handles<P>.
+    Ad-hoc inter-pane requests use request_received.
 
-### Dynamic optic composition for scripting
-How do optic-addressed property accesses compose across handler boundaries at runtime? BeOS solved this with ResolveSpecifier, which was compositional and dynamic. Optics are typically static. The runtime chain resolution pattern (peel, resolve, forward) needs a concrete prototype with at least three levels of nesting to prove it works ergonomically.
+21. **Message enum uses nested service notifications**:
+    `Message::Clipboard(ClipboardNotification)`. Top-level grows
+    O(services). Lifecycle and display stay flat (base protocol).
 
-### The affine/linear gap
-Rust's `#[must_use]` generates warnings for dropped session endpoints, not hard errors. A crashed process drops endpoints silently. The crash boundary (catch_unwind + cleanup) is the mitigation, but it operates outside the type system. Is there a principled way to handle this that doesn't require every session boundary to be wrapped in catch_unwind? Needs investigation once the first real multi-client compositor is running.
+22. **PointerPolicy**: Per-pane `Coalesce` (default) or
+    `FullHistory` for drawing apps. Server-side filtering.
+    Set via `Messenger::set_pointer_policy()`.
 
-### Filesystem notification at scale
-fanotify with FAN_MARK_FILESYSTEM watches the entire filesystem for xattr changes. On a system with millions of files, how much event traffic does this generate? Is the filtering (only `FAN_ATTRIB` events, only `user.pane.*` xattrs) sufficient to keep the event rate manageable? Needs measurement on a real system with realistic file counts.
+23. **Derive macro exhaustiveness**: `rustc`'s exhaustive match IS
+    the guarantee. The macro generates the match; missing handler
+    methods produce non-exhaustive pattern errors at compile time.
 
-### xattr size limits *(resolved)*
-Pane targets btrfs exclusively. ext4's 4KB xattr limit is too restrictive; btrfs's ~16KB per value with no total limit is sufficient. The opinionated distribution philosophy means we pick one filesystem and commit.
+24. **Network discovery deferred**: Tier 1 (explicit config) is
+    sufficient for all phases. Future discovery mechanisms (mDNS,
+    rendezvous) are service map producers — they populate the same
+    map, at lowest precedence (explicit config wins). No discovery
+    metadata in map entries reaching the App. The service map is
+    the abstraction boundary.
 
-### Widget rendering performance
-Vello for widget rendering — GPU-compute via wgpu. Currently in active development (Linebender project). Needs validation: can Vello's rendering model integrate cleanly with smithay's GLES compositor? The wgpu→GLES backend exists but may have constraints. Needs prototyping once widget rendering phase begins.
+25. **No `remote_insecure` escape hatch**: Ship `pane dev-certs`
+    tooling. Local CA + server cert + client cert, one command,
+    stored in `~/.config/pane/tls/`. Local dev uses unix sockets
+    (no TLS). Remote dev uses dev certs (same code path as prod).
+    Transport enum is `{Unix, Tls}`, no third option. Server
+    refuses plaintext TCP on remote listener. `PeerAuth` enum
+    replaces advisory PeerIdentity for authorization:
+    `Kernel { uid, pid }` (unix, SO_PEERCRED) or
+    `Certificate { subject, issuer }` (TLS). `pane_owned_by()`
+    checks `PeerAuth`, not self-reported strings.
 
-### Selection-first vs. verb-first in the Input Kit
-Kakoune's argument for selection-first (visual feedback before commitment) is strong. Vim's verb-first is more efficient for experts. The Input Kit could support both — verb-first in Normal mode with visual selection as alternative. Or it could commit to one model. Needs user testing with both approaches on non-text panes (file manager, process monitor) to determine which generalizes better.
+## Open Questions
 
-### Agent governance
-The `.plan` file declares an agent's permissions, but who audits the declaration? A malicious or poorly-written `.plan` could grant excessive access. The trust model needs to be concrete: who can create agents, who can modify `.plan` files, what are the defaults for new agents, how does the human discover what an agent has done?
-
-### The two-world problem
-Pane-native clients and legacy Wayland apps are two worlds. The mitigation strategy is progressive integration, not an all-or-nothing switch.
-
-A pane application is a `.app` directory — inspired by macOS's application bundles, built on Nix flakes. The directory contains the binary (or wrapper script), integration metadata, pane-specific hooks, and any auxiliary helpers. Installation: paste a flake URL into a system tag line, an installation pane walks you through the process (automated, but rendering progress to the user so they can intervene if needed). The flake is evaluated, the app is installed with its pane integration.
-
-Progressive integration means an application starts as a bare Wayland wrapper and can gain pane-native interfaces incrementally. Each improvement — a tag line configuration, routing rules for its content types, filesystem endpoints for its state, a `.plan`-governed agent companion — is an addition to the `.app` directory, not a rewrite of the application. The framework models user actions as an internal representation with metadata, so that existing applications can be encapsulated in pane's interaction model without requiring their source code to change.
-
-The kits must still be so good that building a pane-native app is the easiest way to build a Linux desktop application. But the architecture accounts for gradual adoption: the ecosystem grows by wrapping first, then deepening integration over time.
-
-### PipeWire screen capture integration
-pane-comp needs to implement the xdg-desktop-portal ScreenCast D-Bus interface for screen sharing (WebRTC, OBS, etc.). This requires feeding compositor frame data into a PipeWire video source node. The integration between smithay's rendering pipeline and PipeWire's buffer model needs prototyping.
-
----
-
-## Sources
-
-### BeOS / Haiku
-- Be Newsletter archive (231 issues, 1995-1999) — design rationale from the engineers who built it
-- Haiku source code (~/src/haiku) — the reference implementation
-- Giampaolo, "Practical File System Design with the Be File System" (1998)
-
-### Session Types
-- Honda, "Types for Dyadic Interaction" (CONCUR 1993)
-- Caires, Pfenning, "Session Types as Intuitionistic Linear Propositions" (CONCUR 2010)
-- Wadler, "Propositions as Sessions" (ICFP 2012)
-- faiface/par crate — session types for Rust (design reference, not a dependency)
-- boltlabs-inc/dialectic — transport-polymorphic session types (design reference)
-- Fowler & Hu, "Speak Now: Safe Actor Programming with Multiparty Session Types" (OOPSLA) — event actor model validating calloop architecture
-
-### Systems
-- skarnet.org/software/s6 — process supervision
-- skarnet.org/software/s6-rc — dependency management
-- docs.pipewire.org — media framework
-- wayland-book.com — display protocol
-- github.com/Smithay/smithay — compositor framework
-- nixos.org — build infrastructure
-
-### Design
-- Pike, "Structural Regular Expressions" (1987)
-- Pike, "Acme: A User Interface for Programmers" (1994)
-- Fowler et al., "Exceptional Asynchronous Session Types" (POPL 2019)
-- Erlang/OTP heart module — external watchdog pattern
+None. The spec is implementation-ready for Phase 1.
 
 ---
 
-## Appendix: Filesystem Notification (pane-notify)
+## Phase 1 Structural Invariants
 
-pane-notify is implemented. See `cargo doc -p pane-notify` for the current API documentation, including BeOS/Haiku heritage notes and watch semantics.
+Phase 1 implements Phase 2's data structures populated at N=1.
+No shortcuts that create type signatures or invariants Phase 2
+must break. If Phase 1's simplifications create invariants that
+Phase 2 breaks, Phase 1 was wrong.
+
+| Component | Shortcut to avoid | Correct Phase 1 implementation |
+|---|---|---|
+| Messenger | Bare `mpsc::Sender` | `ServiceRouter` (HashMap, 1 entry) |
+| App | Bare `Connection` field | `HashMap<ServiceName, Connection>` (1 entry) |
+| Dispatch | `HashMap<u64, Entry>` | `HashMap<(ConnectionId, u64), Entry>` |
+| Wire framing | v1's `[length][payload]` | `[length][service][payload]` (service=0); service IDs negotiated per-connection |
+| Message enum | Flat with panic-Clone | Nested services + `#[derive(Clone)]` |
+| PeerAuth | Self-reported `PeerIdentity` | `PeerAuth::Kernel { uid, pid }` via SO_PEERCRED |
+| DeclareInterest | Implicit (connect=display) | Explicit capability declaration |
+| ConnectionSource | Pump threads + mpsc | calloop EventSource (read + buffered write) |
+| Protocol trait | None | `Lifecycle`, `Display` types exist |
+| Handles\<P\> | None | Trait exists, Handler desugars to it |
+| Dispatch\<H\> + send_request | `reply_received` on Handler | Dispatch HashMap + CancelHandle |
+| AppPayload | `T: Send + 'static` | `T: AppPayload` (Clone + Send + 'static) |
+| I9 | Not implemented | Dispatch cleared before handler drop |
+| max_message_size | Hardcoded | In Hello/Welcome, enforced |
+| Cancel { token } | Deferred | Wire message + CancelHandle work |
+
+**Governing principle:** Phase 2 adds entries to Phase 1's data
+structures. It does not restructure them. Multi-server is single-
+server with N>1 Connections. The compound-key Dispatch, the
+ServiceRouter with one entry, the calloop EventSource — these
+exist from day one so Phase 2 is additive.
 
 ---
 
-## Appendix: Plugin Discovery
+## Implementation Phases
 
-*(Merged from plugin-discovery spec)*
+**Phase 1 — Core.** Single server (N=1), headless, no suspension,
+no streaming. All multi-server data structures present with one
+entry (see Phase 1 Structural Invariants). Validate: Protocol +
+Handles<P> + derive macro, Handler/DisplayHandler split,
+Message/obligation split, Flow, Dispatch<H> for request/reply,
+calloop ConnectionSource (read+write), filter chain, Messenger +
+ServiceRouter, PeerAuth::Kernel, DeclareInterest, wire framing
+[length][service][payload], AppPayload marker, CancelHandle,
+max_message_size, I1-I9 + S1-S6. This is the proof that the
+linear discipline works end-to-end.
 
-## ADDED Requirements
+**Phase 2 — Distribution.** Add Connections (N>1). TLS +
+PeerAuth::Certificate. Service map full precedence chain.
+Version range negotiation. Validate: ServiceRouter with multiple
+entries, per-Connection failure isolation, cross-Connection
+ordering, multi-server Dispatch (connection_id, token) routing.
 
-### Requirement: Filesystem-based plugin registration
-Components that support extensibility SHALL discover plugins by scanning well-known directories. Adding a file or directory to the well-known location SHALL register the plugin. Removing it SHALL unregister it. The pane-app kit uses pane-notify (fanotify/inotify abstraction) to watch these directories for live discovery — this is a kit-level concern, not a server-level one. Each process that needs plugin awareness loads and watches its own relevant directories. Installed plugins and their metadata are visible through pane-fs at `/pane/` alongside pane state.
+**Phase 3 — Lifecycle.** Session suspension/resumption, streaming
+(Queue pattern), RoutingHandler. These interact — streams must
+close before suspend — so they're designed together.
 
-#### Scenario: Add translator
-- **WHEN** a translator binary is placed in `~/.config/pane/translators/`
-- **THEN** any process using the pane-app kit SHALL detect it via pane-notify and make the new content type available without restart
-
-#### Scenario: Remove translator
-- **WHEN** a translator binary is removed from `~/.config/pane/translators/`
-- **THEN** any process using the pane-app kit SHALL stop offering that content type capability
-
-### Requirement: Well-known plugin directories
-The system SHALL define well-known directories for each plugin category:
-- `~/.config/pane/translators/` — content translators following the Translation Kit pattern (type sniffing, format conversion, quality-rated multi-handler selection)
-- `~/.config/pane/route/rules/` — routing rules (one file per rule, loaded by the pane-app kit for local evaluation)
-- `~/.config/pane/input/` — input method add-ons
-- `~/.config/pane/apps/` — `.app` directories (application bundles containing binary/wrapper, integration metadata, pane-specific hooks, routing rules, `.plan`-governed agent companions)
-
-Agent `.plan` files are not plugins — they live in each agent's home directory (`~agent/.plan`) as the agent's identity and behavior specification. Discovery of active agents is a pane-roster concern, not a plugin directory concern.
-
-System-wide equivalents SHALL exist under `/etc/pane/` with user directories taking precedence.
-
-#### Scenario: User overrides system translator
-- **WHEN** a translator exists in both `/etc/pane/translators/` and `~/.config/pane/translators/` with the same name
-- **THEN** the user's version SHALL take precedence
-
-#### Scenario: User adds routing rule
-- **WHEN** a rule file is dropped into `~/.config/pane/route/rules/`
-- **THEN** the pane-app kit SHALL detect it via pane-notify and begin evaluating it on subsequent route actions — no restart required
-
-#### Scenario: Install a .app directory
-- **WHEN** a `.app` directory is placed in `~/.config/pane/apps/`
-- **THEN** pane-roster SHALL detect it via pane-notify, register the application's metadata (launch semantics, content types, quality ratings), and make it launchable. Roster owns `.app` discovery because app lifecycle and launch semantics are roster concerns.
-
-### Requirement: Translation Kit pattern for translators
-Translators SHALL follow the Translation Kit pattern from the architecture spec (§4 pane-app, §8 Composition Model). Each translator declares:
-- The content types it can read (input formats)
-- The content types it can produce (output formats)
-- A self-declared quality rating per conversion path
-
-When multiple translators match a content type, the pane-app kit selects by quality rating. This enables automatic best-handler selection without central authority. The number of translators scales linearly (one per format), not quadratically (one per format pair).
-
-#### Scenario: Multiple translators for same type
-- **WHEN** two translators both handle `image/webp` with quality ratings 0.8 and 0.95
-- **THEN** the pane-app kit SHALL select the 0.95-rated translator by default
-
-#### Scenario: Drop-in format support
-- **WHEN** a translator for a new format (e.g., AVIF) is dropped into the translators directory
-- **THEN** the entire system gains that format capability — file managers display thumbnails, routing rules can dispatch to it, agents can process it
-
-### Requirement: Plugin metadata via xattrs
-Plugins SHALL carry metadata in xattrs on the btrfs filesystem (the architecture spec commits to btrfs exclusively — ext4's ~4KB xattr limit is insufficient; btrfs provides ~16KB per value with no per-inode total limit). Metadata attributes:
-- `user.pane.plugin.type` — plugin category (translator, input-method, rule, app)
-- `user.pane.plugin.handles` — content types or patterns the plugin handles
-- `user.pane.plugin.quality` — self-declared quality rating (translators)
-- `user.pane.plugin.description` — human-readable description
-
-These attributes are indexed by pane-store, making plugins queryable: "which translators handle image/*?" is a pane-store query, not a directory scan.
-
-#### Scenario: Plugin introspection
-- **WHEN** `getfattr -d ~/.config/pane/translators/webp` is executed
-- **THEN** xattrs SHALL indicate what content types the translator handles, its quality rating, and its description
-
-#### Scenario: Query available translators
-- **WHEN** a component queries pane-store for `user.pane.plugin.type == "translator" && user.pane.plugin.handles == "image/*"`
-- **THEN** pane-store SHALL return all matching translator files from both system and user directories
+**Phase 4 — Performance.** Batch coalescing optimizations, write
+buffer tuning, connection pooling. Correctness before performance.
