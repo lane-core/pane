@@ -2,9 +2,8 @@
 
 A pane is organized state with an interface that allows views of
 that state. Display is one view. Filesystem projection is another.
-Routed queries, remote agent access — all views of the same
-state, structured by the protocol and kept consistent by optic
-laws.
+Remote agent access — all views of the same state, structured
+by the protocol and kept consistent by optic laws.
 
 Designed from first principles after two weeks of proof-of-concept
 development. The proof of concept validated the API vocabulary,
@@ -98,13 +97,14 @@ A pane is:
    attributes, configuration. Structured through optics.
 
 2. **An interface for views of that state** — visual display,
-   filesystem projection at `/pane/`, routed queries, remote access.
-   All projections of the same state, structured by the protocol
-   and kept consistent by optic laws. The protocol is not a view —
-   it governs how views are accessed, negotiated, and coordinated.
+   namespace projection at `/pane/` (filesystem + routed queries),
+   remote access. All projections of the same state, structured by
+   the protocol and kept consistent by optic laws. The protocol is
+   not a view — it governs how views are accessed, negotiated, and
+   coordinated.
 
 A pane exists whether or not a compositor is running. A headless
-pane has state, has views (display, filesystem, routing), appears
+pane has state, has views (display, namespace), appears
 in the namespace — it just doesn't have the display view open.
 Display is one view among peers, not the privileged default.
 
