@@ -330,7 +330,7 @@ pub trait Handler: Send + 'static {
         Ok(Flow::Continue)
     }
     // reply_received and reply_failed are NOT on Handler.
-    // Replies route to per-request sigma entries (see Request/Reply).
+    // Replies route to per-request Dispatch entries (see Request/Reply).
     fn pane_exited(&mut self, proxy: &Messenger, pane: Id, reason: ExitReason) -> Result<Flow> { Ok(Flow::Continue) }
     fn supported_properties(&self) -> &[PropertyInfo] { &[] }
     /// &self for deadlock freedom. Side effects must happen
@@ -560,11 +560,11 @@ payload would orphan the ReplyPort, violating the linear discipline.
 - `CompletionRequest { input, reply: CompletionReplyPort }`
 - `Request(Box<dyn Any + Send>, ReplyPort)`
 - `ClipboardLockGranted(ClipboardWriteLock)`
-- `Reply { token, payload }` — internal, routes to sigma entries
-- `ReplyFailed { token }` — internal, routes to sigma entries
+- `Reply { token, payload }` — internal, routes to Dispatch entries
+- `ReplyFailed { token }` — internal, routes to Dispatch entries
 
 Reply and ReplyFailed never surface to the handler. They route
-to per-request sigma entries (see Request/Reply below).
+to per-request Dispatch entries (see Request/Reply below).
 
 Two categories visible to the handler:
 
@@ -771,8 +771,8 @@ already computed) or `ReplyFailed { token }`. Same semantics as
 9P's Tflush: the client must handle a reply arriving after
 cancellation.
 
-Cancel cancels the *wire request*. With sigma entries, handler-side
-cleanup is automatic — the sigma entry is removed by CancelHandle.
+Cancel cancels the *wire request*. With Dispatch entries, handler-side
+cleanup is automatic — the Dispatch entry is removed by CancelHandle.
 No ghost state to clear.
 
 ### Enum-based branching (adapted from par)
@@ -1070,11 +1070,11 @@ construct raw tokens.
 The server MAY enforce per-pane limits on concurrent outstanding
 requests to bound obligation growth from Messenger clones.
 
-### Request/Reply via Sigma Entries
+### Request/Reply via the Dispatch
 
-Request/reply is modeled as per-request sigma entries, not ghost
+Request/reply is modeled as per-request Dispatch entries, not ghost
 state in the handler. Each `send_request` creates a one-shot typed
-dispatch slot in the looper's dynamic sigma store.
+dispatch slot in the looper's `Dispatch`.
 
 ```rust
 impl Messenger {
@@ -1097,7 +1097,7 @@ impl Messenger {
 
 /// Handle for cancelling an outstanding request.
 /// Drop does nothing — the request completes normally.
-/// .cancel(self) removes the sigma entry without firing callbacks.
+/// .cancel(self) removes the Dispatch entry without firing callbacks.
 /// Inverted from ReplyPort: drop = happy path, cancel = voluntary abort.
 pub struct CancelHandle { /* token + looper_tx */ }
 
@@ -1109,15 +1109,15 @@ impl CancelHandle {
 ```
 
 No ghost state in the handler. The correlation between request and
-reply is structural — guaranteed by the sigma entry, not by manual
+reply is structural — guaranteed by the Dispatch entry, not by manual
 matching. Multiple requests may be outstanding simultaneously,
-including to the same target — each gets an independent sigma
+including to the same target — each gets an independent Dispatch
 entry with a unique token (S1).
 
 **Callback capture.** Callbacks are `FnOnce + Send + 'static` —
 they cannot capture borrows from the calling scope. This is
 correct: the callback outlives the handler invocation (EAct
-E-Suspend: sigma entries persist across idle). The `&mut H` first
+E-Suspend: Dispatch entries persist across idle). The `&mut H` first
 parameter provides handler state at reply time:
 
 ```rust
@@ -1150,11 +1150,11 @@ The single downcast (`Box<dyn Any + Send>` → `R`) happens inside
 the framework, guaranteed to succeed because send_request and
 the reply share `R`.
 
-**On disconnect**: `sigma.fail_all()` fires `on_failed` for every
+**On disconnect**: `dispatch.fail_connection()` fires `on_failed` for every
 pending entry before `handler.disconnected()` is called. The
 handler gets per-request failure notification.
 
-**On cancellation**: `cancel_handle.cancel()` removes the sigma
+**On cancellation**: `cancel_handle.cancel()` removes the Dispatch
 entry without firing callbacks. Late-arriving replies are silently
 dropped. Same as 9P's Tflush. Dropping the CancelHandle without
 calling cancel is a no-op — the request completes normally.
@@ -1223,7 +1223,7 @@ bypass filters but remain ordered within the batch.
 ## Dispatch
 
 Match-based dispatch in the looper. The monomorphized match IS
-the handler store σ. No explicit Sigma struct — the compiler
+the handler store σ. No explicit struct — the compiler
 provides what it would add.
 
 The looper is generic over `H`:
@@ -1231,7 +1231,7 @@ The looper is generic over `H`:
 - `run_with_display<H: DisplayHandler>` for display panes
 
 Service dispatch uses fn pointers captured at registration time
-(the Sigma pattern). When `open_clipboard()` is called on a pane
+(the Dispatch pattern). When `open_clipboard()` is called on a pane
 whose handler implements `Handles<Clipboard>`, the registration
 captures the monomorphized `Handles<Clipboard>::receive` as a fn
 pointer. The derive macro's generated match delegates to the
@@ -1262,7 +1262,7 @@ Proven on: ReplyPort, CompletionReplyPort, ClipboardWriteLock,
 CreateFuture, TimerToken, ClipboardHandle (Drop sends
 RevokeInterest).
 
-Destruction sequence on handler exit: sigma.fail_all() (per S4)
+Destruction sequence on handler exit: dispatch.fail_connection() (per S4)
 → handler dropped → service handles (ClipboardHandle, etc.)
 dropped during handler field destruction → Drop sends
 RevokeInterest (best-effort, `let _ = ...`).
@@ -1302,24 +1302,24 @@ failure terminals. The invariants:
   remain a runtime hazard, mitigated by timeout on `send_and_wait`
   and documented as a mutual-deadlock risk.
 
-- **I9**: Sigma is cleared (`sigma.fail_all()` or `sigma.clear()`)
+- **I9**: Dispatch is cleared (`dispatch.fail_connection()` or `dispatch.clear()`)
   before the handler is dropped. CancelHandle's inverted Drop
-  (no-op) depends on this ordering — without it, dropped sigma
+  (no-op) depends on this ordering — without it, dropped Dispatch
   entries could reference a destroyed handler during callbacks.
 
-Sigma entry invariants (request/reply):
+Dispatch entry invariants (request/reply):
 
 - **S1**: Token uniqueness (AtomicU64, per-Connection namespace)
-- **S2**: Sequential dispatch — sigma callbacks share `&mut H`
+- **S2**: Sequential dispatch — Dispatch callbacks share `&mut H`
   with handler methods, never concurrent (follows from I6/I7)
 - **S3**: Control-before-events — RegisterRequest processed before
   any Reply in the same batch
-- **S4**: On individual Connection loss, `sigma.fail_all()` fires
+- **S4**: On individual Connection loss, `dispatch.fail_connection()` fires
   for entries keyed to that Connection only, before
-  `handler.disconnected()`. On handler destruction, `sigma.clear()`
+  `handler.disconnected()`. On handler destruction, `dispatch.clear()`
   drops all entries across all Connections without firing callbacks.
 - **S5**: Cancel removes entry without firing callbacks
-- **S6**: `panic = unwind` (follows from I1) — sigma HashMap dropped
+- **S6**: `panic = unwind` (follows from I1) — Dispatch HashMap dropped
   during unwind
 
 ### Chan Drop sends ProtocolAbort
@@ -1559,7 +1559,7 @@ variants.
 | LooperMessage | 10 variants, growing | Per-protocol typed calloop channels |
 | Headless | Added after compositor | The base case |
 | Service disconnect | Not handled | Dual: `commit() -> Result` + per-service `*_service_lost()` on service traits |
-| Request/reply | Ghost state (token in self, Box<dyn Any> downcast) | Sigma entries — typed callbacks, no ghost state, no reply_received |
+| Request/reply | Ghost state (token in self, Box<dyn Any> downcast) | Dispatch entries — typed callbacks, no ghost state, no reply_received |
 | Request cancellation | Not supported | `Cancel { token }` (Tflush equivalent) |
 | Remote auth | Self-reported PeerIdentity | TLS required, PeerAuth derived from transport (Kernel/Certificate) |
 
@@ -1567,7 +1567,7 @@ variants.
 
 ## Resolved Questions
 
-1. **Service trait dispatch**: fn pointers (Sigma pattern). Zero-cost,
+1. **Service trait dispatch**: fn pointers (Dispatch pattern). Zero-cost,
    handler type known at registration time. Unanimous.
 
 2. **DeclareInterest placement**: Display in handshake (server
@@ -1625,12 +1625,12 @@ variants.
 12. **Chan Drop sends ProtocolAbort** (`[0xFF][0xFF]`). Peer frees
     session thread immediately on handshake abort.
 
-13. **Request/reply via sigma entries**: `send_request<H, R>` creates
-    a one-shot typed dispatch entry in sigma. Returns `CancelHandle`
+13. **Request/reply via Dispatch entries**: `send_request<H, R>` creates
+    a one-shot typed dispatch entry in Dispatch. Returns `CancelHandle`
     (Drop = no-op, `.cancel()` = voluntary abort). Replies route to
     callback with typed `R`. Multiple outstanding requests per target
-    supported (independent sigma entries, unique tokens). No ghost
-    state, no `reply_received` on Handler. `sigma.fail_all()` before
+    supported (independent Dispatch entries, unique tokens). No ghost
+    state, no `reply_received` on Handler. `dispatch.fail_connection()` before
     `disconnected()`. Six invariants (S1-S6).
 
 14. **RoutingHandler: Handler**: Headless command surface via
@@ -1715,7 +1715,7 @@ Phase 2 breaks, Phase 1 was wrong.
 |---|---|---|
 | Messenger | Bare `mpsc::Sender` | `ServiceRouter` (HashMap, 1 entry) |
 | App | Bare `Connection` field | `HashMap<ServiceName, Connection>` (1 entry) |
-| Sigma store | `HashMap<u64, Entry>` | `HashMap<(ConnectionId, u64), Entry>` |
+| Dispatch | `HashMap<u64, Entry>` | `HashMap<(ConnectionId, u64), Entry>` |
 | Wire framing | v1's `[length][payload]` | `[length][service][payload]` (service=0); service IDs negotiated per-connection |
 | Message enum | Flat with panic-Clone | Nested services + `#[derive(Clone)]` |
 | PeerAuth | Self-reported `PeerIdentity` | `PeerAuth::Kernel { uid, pid }` via SO_PEERCRED |
@@ -1723,15 +1723,15 @@ Phase 2 breaks, Phase 1 was wrong.
 | ConnectionSource | Pump threads + mpsc | calloop EventSource (read + buffered write) |
 | Protocol trait | None | `Lifecycle`, `Display` types exist |
 | Handles\<P\> | None | Trait exists, Handler desugars to it |
-| Sigma\<H\> + send_request | `reply_received` on Handler | Sigma HashMap + CancelHandle |
+| Dispatch\<H\> + send_request | `reply_received` on Handler | Dispatch HashMap + CancelHandle |
 | AppPayload | `T: Send + 'static` | `T: AppPayload` (Clone + Send + 'static) |
-| I9 | Not implemented | sigma cleared before handler drop |
+| I9 | Not implemented | Dispatch cleared before handler drop |
 | max_message_size | Hardcoded | In Hello/Welcome, enforced |
 | Cancel { token } | Deferred | Wire message + CancelHandle work |
 
 **Governing principle:** Phase 2 adds entries to Phase 1's data
 structures. It does not restructure them. Multi-server is single-
-server with N>1 Connections. The compound-key sigma, the
+server with N>1 Connections. The compound-key Dispatch, the
 ServiceRouter with one entry, the calloop EventSource — these
 exist from day one so Phase 2 is additive.
 
@@ -1743,7 +1743,7 @@ exist from day one so Phase 2 is additive.
 no streaming. All multi-server data structures present with one
 entry (see Phase 1 Structural Invariants). Validate: Protocol +
 Handles<P> + derive macro, Handler/DisplayHandler split,
-Message/obligation split, Flow, Sigma<H> for request/reply,
+Message/obligation split, Flow, Dispatch<H> for request/reply,
 calloop ConnectionSource (read+write), filter chain, Messenger +
 ServiceRouter, PeerAuth::Kernel, DeclareInterest, wire framing
 [length][service][payload], AppPayload marker, CancelHandle,
@@ -1754,7 +1754,7 @@ linear discipline works end-to-end.
 PeerAuth::Certificate. Service map full precedence chain.
 Version range negotiation. Validate: ServiceRouter with multiple
 entries, per-Connection failure isolation, cross-Connection
-ordering, multi-server sigma (connection_id, token) routing.
+ordering, multi-server Dispatch (connection_id, token) routing.
 
 **Phase 3 — Lifecycle.** Session suspension/resumption, streaming
 (Queue pattern), RoutingHandler. These interact — streams must
