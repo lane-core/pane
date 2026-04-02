@@ -270,7 +270,8 @@ is a separate protocol that panes opt into.
 
 ```rust
 /// Lifecycle protocol — every pane. Part of the base protocol
-/// (service 0, implicit, never DeclareInterest'd).
+/// Part of the Control protocol (wire service 0, implicit,
+/// never DeclareInterest'd).
 struct Lifecycle;
 impl Protocol for Lifecycle {
     const SERVICE_ID: ServiceId = ServiceId::new("com.pane.lifecycle");
@@ -286,14 +287,14 @@ impl Protocol for Display {
 }
 ```
 
-Lifecycle and Display share the base protocol connection (service
-0, implicit). They are bundled in `Service0Message` — a single
-enum containing both lifecycle and display variants, discriminated
-by payload variant tag. This is 9P's single-connection multiplexing.
+Lifecycle and Display share the **Control** protocol (wire
+service 0, implicit). They are bundled in `ControlMessage` — a
+single enum containing lifecycle, display, and connection-
+management variants (DeclareInterest, ServiceTeardown). This is
+9P's single-connection multiplexing.
 
-Service 0 is the **control plane**: it carries DeclareInterest,
-ServiceTeardown, session lifecycle, and display events. It is
-never negotiated — it exists by virtue of having a connection.
+The Control protocol is never negotiated — it exists by virtue
+of having a connection. It is the control plane for the session.
 
 Services with their own negotiated wire discriminants (clipboard,
 routing) get their session-local u8 from the server during
@@ -741,10 +742,10 @@ connection with a session-local discriminant:
 [length: u32][service: u8][payload: ...]
 ```
 
-Service 0 = base protocol (implicit, not negotiated). Within
-service 0, a single `Service0Message` enum contains lifecycle,
-display, and control messages (DeclareInterest, ServiceTeardown).
-The deserializer knows the type because service 0's enum is fixed.
+Wire service 0 = the Control protocol (implicit, not negotiated).
+The `ControlMessage` enum contains lifecycle, display, and
+connection-management variants (DeclareInterest, ServiceTeardown).
+The deserializer knows the type because the Control enum is fixed.
 
 Other service discriminants are assigned by the server during
 DeclareInterest (initial binding in handshake, or late binding in
@@ -754,7 +755,7 @@ connection. The `ServiceRouter` maintains this mapping.
 Per-service error semantics: a malformed message on service N tears
 down service N's channel, not the connection. The server signals
 teardown via `ServiceTeardown { service: u8, reason }` on the base
-protocol (service 0). This triggers the service-specific
+Control protocol (wire service 0). This triggers the service-specific
 `*_service_lost()` callback. Connection-level errors (framing
 corruption, auth failure) tear down the connection.
 
@@ -1658,8 +1659,8 @@ variants.
     bound in handshake (Hello → Welcome with bindings).
     Late-binding services via active-phase DeclareInterest.
 
-19. **Service 0 shared by Lifecycle and Display**: Intentional.
-    Same connection (control plane), `Service0Message` enum.
+19. **Control protocol shared by Lifecycle and Display**: Intentional.
+    Same connection, `ControlMessage` enum (wire service 0).
     Other services get negotiated session-local wire IDs via
     DeclareInterest.
 
