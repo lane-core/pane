@@ -102,26 +102,28 @@ three things that are otherwise maintained by convention:
 
 ```rust
 /// A protocol relationship between a pane and a service.
-/// Links wire identity, typed messages, and capability declaration
-/// into a single type-level definition.
+/// Links globally unique identity, typed messages, and capability
+/// declaration into a single type-level definition.
 ///
 /// EAct: formalizes what a session endpoint IS.
 /// CLL: the protocol type determines the channel's session type.
 /// Plan 9: the typed version of "I have this file in my namespace."
 pub trait Protocol {
-    /// The capability declared on the wire via DeclareInterest.
-    const CAPABILITY: Capability;
+    /// Globally unique service identifier (reverse-DNS).
+    /// Used in DeclareInterest and service map resolution.
+    /// The wire discriminant is negotiated per-connection, not
+    /// hardcoded — the server assigns a compact session-local u8
+    /// in InterestAccepted.
+    const SERVICE_NAME: &'static str;
     /// The typed events this protocol produces.
     type Message: Send + 'static;
-    /// The service discriminant byte on the wire.
-    const SERVICE_ID: u8;
 }
 ```
 
-Keep Protocol minimal: Capability + Message + ServiceId. This
-triple is what "being a service" means in pane's architecture.
-Do not accumulate associated types for caching, reconnection,
-priority — those belong on the service implementation.
+Keep Protocol minimal: SERVICE_NAME + Message. The name is the
+identity; the wire discriminant is negotiated. Do not accumulate
+associated types for caching, reconnection, priority — those
+belong on the service implementation.
 
 ### Handles\<P\>: the uniform dispatch trait
 
@@ -200,29 +202,35 @@ lifecycle + messaging (the protocols every pane speaks). Display
 is a separate protocol that panes opt into.
 
 ```rust
-/// Lifecycle protocol — every pane.
+/// Lifecycle protocol — every pane. Part of the base protocol
+/// (service 0, implicit, never DeclareInterest'd).
 struct Lifecycle;
 impl Protocol for Lifecycle {
-    const CAPABILITY: Capability = Capability::Lifecycle;
+    const SERVICE_NAME: &'static str = "com.pane.lifecycle";
     type Message = LifecycleMessage;
-    const SERVICE_ID: u8 = 0;
 }
 
-/// Display protocol — panes with a visual surface.
+/// Display protocol — panes with a visual surface. Also part of
+/// the base protocol (declared in handshake, not via DeclareInterest).
 struct Display;
 impl Protocol for Display {
-    const CAPABILITY: Capability = Capability::Display;
+    const SERVICE_NAME: &'static str = "com.pane.display";
     type Message = DisplayMessage;
-    const SERVICE_ID: u8 = 0; // same connection as lifecycle
 }
-
-// Lifecycle and Display share SERVICE_ID 0 because they share a
-// connection and lifecycle — the same design as 9P's single-
-// connection multiplexing. The wire framing discriminates by
-// payload variant tag within service 0, not by SERVICE_ID alone.
-// Service IDs > 0 are for independently-connectable services
-// (clipboard, scripting) that may live on different servers.
 ```
+
+Lifecycle and Display share the base protocol connection (service
+0, implicit). They are bundled in `Service0Message` — a single
+enum containing both lifecycle and display variants, discriminated
+by payload variant tag. This is 9P's single-connection multiplexing.
+
+Service 0 is the **control plane**: it carries DeclareInterest,
+ServiceTeardown, session lifecycle, and display events. It is
+never negotiated — it exists by virtue of having a connection.
+
+Services with their own negotiated wire discriminants (clipboard,
+scripting) get their session-local u8 from the server during
+DeclareInterest.
 
 The `Handler` trait is sugar over `Handles<Lifecycle>` +
 `Handles<Messaging>` with named methods:
@@ -289,9 +297,8 @@ generates the dispatch; the developer provides named handlers.
 ```rust
 struct Clipboard;
 impl Protocol for Clipboard {
-    const CAPABILITY: Capability = Capability::Clipboard;
+    const SERVICE_NAME: &'static str = "com.pane.clipboard";
     type Message = ClipboardMessage;
-    const SERVICE_ID: u8 = 1;
 }
 
 pub enum ClipboardMessage {
@@ -303,9 +310,8 @@ pub enum ClipboardMessage {
 
 struct Scripting;
 impl Protocol for Scripting {
-    const CAPABILITY: Capability = Capability::Scripting;
+    const SERVICE_NAME: &'static str = "com.pane.scripting";
     type Message = ScriptingMessage;
-    const SERVICE_ID: u8 = 2;
 }
 ```
 
@@ -345,9 +351,10 @@ Applications define their own Protocol for custom messages.
 ```rust
 struct EditorProtocol;
 impl Protocol for EditorProtocol {
-    const CAPABILITY: Capability = Capability::Application;
+    const SERVICE_NAME: &'static str = "com.example.editor";
     type Message = EditorMessage;
-    const SERVICE_ID: u8 = 0; // local only, no wire
+    // Local only — never DeclareInterest'd, never on the wire.
+    // SERVICE_NAME is for identification, not routing.
 }
 
 enum EditorMessage {
@@ -579,51 +586,81 @@ pub enum ServerToClient { ... }
 
 ### Capability declaration
 
-Display capability is declared in the handshake — the server
-allocates surface resources based on it. Service capabilities
-are declared in the active phase via `DeclareInterest` messages —
-services can be opened mid-session.
+Services are identified by globally unique names (reverse-DNS).
+Display is declared in the handshake. Other services are declared
+via `DeclareInterest` in the active phase. The server assigns a
+compact session-local wire discriminant (u8) for each accepted
+service.
+
+**Initial binding (handshake).** ClientCaps lists requested
+services. Accepted returns bindings:
 
 ```rust
-pub enum Capability {
-    /// Display view — pane can be rendered, accepts input.
-    /// Declared in handshake.
-    Display,
-    /// Clipboard service. Declared via DeclareInterest.
-    Clipboard,
-    /// Observer (property watching). Declared via DeclareInterest.
-    Observer,
-    /// Drag and drop (requires Display). Declared via DeclareInterest.
-    DragDrop,
-    /// Scripting protocol. Declared via DeclareInterest.
-    Scripting,
+pub struct ServiceBinding {
+    pub service: String,        // "com.pane.clipboard"
+    pub session_id: u8,         // wire discriminant for this connection
+    pub version: u32,           // negotiated version
+}
+
+// In Accepted:
+pub services: Vec<ServiceBinding>,
+```
+
+**Late binding (active phase).** Services opened mid-session:
+
+```rust
+// In ClientToServer:
+DeclareInterest {
+    service: String,            // "com.pane.clipboard"
+    expected_version: u32,
+}
+
+// In ServerToClient:
+InterestAccepted {
+    service: String,
+    session_id: u8,             // wire discriminant assigned by server
+    version: u32,
+}
+InterestDeclined {
+    service: String,
+    reason: DeclineReason,      // VersionMismatch, ServiceUnknown
 }
 ```
 
-`DeclareInterest` includes `expected_version: u32` (the version
-the client SDK was compiled for). The server accepts if compatible,
-or declines with `InterestDeclined { reason: VersionMismatch }`.
-This allows services to evolve independently of the base protocol.
-Version range negotiation (min/max) deferred to Phase 2 when
-server-side version divergence becomes real.
+One round-trip per late-binding service. Initial services are
+batched in the handshake (zero additional round-trips). The server
+accepts or declines; `InterestDeclined::ServiceUnknown` for
+services the server doesn't provide.
+
+The session-local u8 is a per-connection fid (Plan 9 lineage).
+Different connections may assign different u8 values to the same
+service. The 256-slot ceiling is per-connection (no connection
+needs 256 simultaneous services).
 
 DeclareInterest is irrevocable by default; revocation, if needed,
 is an explicit protocol operation with in-flight message cleanup.
 
+The SDK provides a short form: `"clipboard"` expands to
+`"com.pane.clipboard"` for framework services.
+
 ### Per-service wire messages
 
 Each service gets its own message types, multiplexed over the
-connection with a service discriminant:
+connection with a session-local discriminant:
 
 ```
 [length: u32][service: u8][payload: ...]
 ```
 
-Service 0 = base protocol. Within service 0, a single
-`Service0Message` enum contains both lifecycle and display
-variants — the deserializer knows the type because the service
-byte selects the enum. Other service IDs are assigned at
-DeclareInterest time.
+Service 0 = base protocol (implicit, not negotiated). Within
+service 0, a single `Service0Message` enum contains lifecycle,
+display, and control messages (DeclareInterest, ServiceTeardown).
+The deserializer knows the type because service 0's enum is fixed.
+
+Other service discriminants are assigned by the server during
+DeclareInterest (initial binding in handshake, or late binding in
+active phase). The mapping `"com.pane.clipboard" → u8:3` is per-
+connection. The `ServiceRouter` maintains this mapping.
 
 Per-service error semantics: a malformed message on service N tears
 down service N's channel, not the connection. The server signals
@@ -797,23 +834,31 @@ Every Connection starts with the same Phase 1 (uniform, like 9P's
 Tversion):
 
 ```
-Client → Server: Hello { version, max_message_size: u32 }
-Server → Client: Welcome { version, instance_id, max_message_size: u32, services: Vec<ServiceDecl> }
+Client → Server: Hello { version, max_message_size: u32, interests: Vec<ServiceInterest> }
+Server → Client: Welcome { version, instance_id, max_message_size: u32, bindings: Vec<ServiceBinding> }
 ```
 
-Phase 2 is per-service setup on the same Connection (a server that
-provides multiple capabilities handles them on one Connection):
+Hello declares requested services. Welcome returns bindings (name
+→ session-local wire ID + negotiated version). PeerAuth is derived
+from the transport (SO_PEERCRED for unix, TLS certificate for
+remote) — not carried in Hello.
 
 ```rust
-pub struct ServiceDecl {
-    pub kind: Capability,
-    pub version: u32,
+pub struct ServiceInterest {
+    pub service: String,        // "com.pane.clipboard"
+    pub expected_version: u32,
+}
+
+pub struct ServiceBinding {
+    pub service: String,        // "com.pane.clipboard"
+    pub session_id: u8,         // wire discriminant for this connection
+    pub version: u32,           // negotiated version
 }
 ```
 
-The compositor's Welcome says `services: [Display, Input, Layout]`.
-The clipboard server says `services: [Clipboard]`. A combined
-local server might say `services: [Display, Input, Clipboard]`.
+The compositor's Welcome says `bindings: [{com.pane.display, 0, 1}]`.
+The clipboard server says `bindings: [{com.pane.clipboard, 1, 1}]`.
+A combined local server might bind both on one connection.
 
 ### ConnectionSource
 
@@ -1402,10 +1447,10 @@ variants.
 | Topology | Single server | Multi-server. Per-Connection failure isolation. Service map from environment. |
 | Type naming | `PaneId`, `PaneGeometry`, `PaneTitle` | `Id`, `Geometry`, `Title` — crate path is the namespace |
 | Protocol names | ClientToComp / CompToClient | ClientToServer / ServerToClient |
-| Wire framing | [length][payload] | [length][service][payload] + per-service version negotiation |
+| Wire framing | [length][payload] | [length][service][payload]; service IDs negotiated per-connection via reverse-DNS names |
 | Services | Types exist, no wire protocol | DeclareInterest + per-service wire messages + per-service error isolation |
 | Display | Implicit default | Explicit capability (handshake) |
-| Capability | Not declared | Handshake for Display, active-phase DeclareInterest for services |
+| Service identity | Not declared | Reverse-DNS names, handshake for Display, DeclareInterest for services |
 | LooperMessage | 10 variants, growing | Per-protocol typed calloop channels |
 | Headless | Added after compositor | The base case |
 | Service disconnect | Not handled | Dual: `commit() -> Result` + per-service `*_service_lost()` on service traits |
@@ -1498,10 +1543,17 @@ variants.
 18. **DeclareInterest version**: Single `expected_version` for
     Phase 1. Range negotiation (min/max) deferred to Phase 2.
 
-19. **SERVICE_ID: 0 shared by Lifecycle and Display**: Intentional.
-    Same connection, same lifecycle, like 9P single-connection
-    multiplexing. Wire discriminates by payload variant tag.
-    Service IDs > 0 for independently-connectable services.
+    **Service identity**: Globally unique reverse-DNS names
+    (`com.pane.clipboard`) replace hardcoded `SERVICE_ID: u8`.
+    Wire discriminants are session-local, assigned by the server
+    in `InterestAccepted { session_id: u8 }`. Initial services
+    bound in handshake (ClientCaps → Accepted with bindings).
+    Late-binding services via active-phase DeclareInterest.
+
+19. **Service 0 shared by Lifecycle and Display**: Intentional.
+    Same connection (control plane), `Service0Message` enum.
+    Other services get negotiated session-local wire IDs via
+    DeclareInterest.
 
 20. **request_received stays untyped**: `Box<dyn Any + Send>` is
     intentional — the server side is fundamentally open (unknown
@@ -1554,9 +1606,9 @@ Phase 2 breaks, Phase 1 was wrong.
 | Component | Shortcut to avoid | Correct Phase 1 implementation |
 |---|---|---|
 | Messenger | Bare `mpsc::Sender` | `ServiceRouter` (HashMap, 1 entry) |
-| App | Bare `Connection` field | `HashMap<Capability, Connection>` (1 entry) |
+| App | Bare `Connection` field | `HashMap<ServiceName, Connection>` (1 entry) |
 | Sigma store | `HashMap<u64, Entry>` | `HashMap<(ConnectionId, u64), Entry>` |
-| Wire framing | v1's `[length][payload]` | `[length][service][payload]` (service=0) |
+| Wire framing | v1's `[length][payload]` | `[length][service][payload]` (service=0); service IDs negotiated per-connection |
 | Message enum | Flat with panic-Clone | Nested services + `#[derive(Clone)]` |
 | PeerAuth | Self-reported `PeerIdentity` | `PeerAuth::Kernel { uid, pid }` via SO_PEERCRED |
 | DeclareInterest | Implicit (connect=display) | Explicit capability declaration |
