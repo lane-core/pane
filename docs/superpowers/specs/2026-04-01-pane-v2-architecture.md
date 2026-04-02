@@ -92,171 +92,240 @@ onto the screen. It is not the center of the architecture.
 
 ---
 
-## Handler Traits
+## Protocol and Dispatch
 
-Two base traits, reflecting that display is a view a pane opts into.
-Service traits extend Handler for per-service protocol events.
+### The Protocol trait
+
+Every service relationship in pane — lifecycle, display, clipboard,
+scripting, application-defined — is a Protocol. The trait links
+three things that are otherwise maintained by convention:
 
 ```rust
-/// Every pane implements this. Lifecycle, messaging.
+/// A protocol relationship between a pane and a service.
+/// Links wire identity, typed messages, and capability declaration
+/// into a single type-level definition.
+///
+/// EAct: formalizes what a session endpoint IS.
+/// CLL: the protocol type determines the channel's session type.
+/// Plan 9: the typed version of "I have this file in my namespace."
+pub trait Protocol {
+    /// The capability declared on the wire via DeclareInterest.
+    const CAPABILITY: Capability;
+    /// The typed events this protocol produces.
+    type Message: Send + 'static;
+    /// The service discriminant byte on the wire.
+    const SERVICE_ID: u8;
+}
+```
+
+Keep Protocol minimal: Capability + Message + ServiceId. This
+triple is what "being a service" means in pane's architecture.
+Do not accumulate associated types for caching, reconnection,
+priority — those belong on the service implementation.
+
+### Handles\<P\>: the uniform dispatch trait
+
+```rust
+/// A handler that can receive messages from protocol P.
+/// Each impl is one entry in EAct's handler store σ.
+///
+/// The looper dispatches P::Message to this method via a
+/// monomorphized fn pointer captured at service registration.
+pub trait Handles<P: Protocol> {
+    fn receive(&mut self, proxy: &Messenger, msg: P::Message) -> Result<Flow>;
+}
+```
+
+The type system enforces: if a pane declares interest in a
+protocol, its handler must implement `Handles<P>` for that
+protocol. Registration (`open_clipboard()`) requires the bound
+`H: Handles<Clipboard>` at compile time.
+
+### Named methods via derive macro
+
+The developer writes named functions. A `#[derive(ProtocolHandler)]`
+macro generates the `Handles<P>::receive` match that delegates
+to them. This is BWindow::DispatchMessage translated to Rust —
+framework-generated dispatch calling developer-provided hooks.
+
+```rust
+#[derive(ProtocolHandler)]
+#[protocol(Clipboard)]
+impl Editor {
+    fn lock_granted(&mut self, proxy: &Messenger, lock: ClipboardWriteLock) -> Result<Flow> {
+        lock.commit(self.buffer.as_bytes().to_vec(), metadata)?;
+        Ok(Flow::Continue)
+    }
+    fn lock_denied(&mut self, proxy: &Messenger, clipboard: &str, reason: &str) -> Result<Flow> {
+        Ok(Flow::Continue)
+    }
+    fn changed(&mut self, proxy: &Messenger, clipboard: &str, source: Id) -> Result<Flow> {
+        Ok(Flow::Continue)
+    }
+    fn service_lost(&mut self, proxy: &Messenger) -> Result<Flow> {
+        Ok(Flow::Continue)
+    }
+}
+
+// The derive generates:
+impl Handles<Clipboard> for Editor {
+    fn receive(&mut self, proxy: &Messenger, msg: ClipboardMessage) -> Result<Flow> {
+        match msg {
+            ClipboardMessage::LockGranted(lock) => self.lock_granted(proxy, lock),
+            ClipboardMessage::LockDenied { clipboard, reason } =>
+                self.lock_denied(proxy, &clipboard, &reason),
+            ClipboardMessage::Changed { clipboard, source } =>
+                self.changed(proxy, &clipboard, source),
+            ClipboardMessage::ServiceLost =>
+                self.service_lost(proxy),
+        }
+    }
+}
+```
+
+The macro must be transparent: `cargo expand` produces a match
+a human could write in 30 seconds. No runtime indirection. Every
+variant of `P::Message` must map to a handler method — missing
+variants are compile errors. Variant-to-method mapping uses
+`#[handles(VariantName)]` attributes or snake_case convention.
+
+### Framework protocols
+
+Lifecycle, display, and messaging are protocols with the same
+structure. The base `Handler` trait provides named methods for
+lifecycle + messaging (the protocols every pane speaks). Display
+is a separate protocol that panes opt into.
+
+```rust
+/// Lifecycle protocol — every pane.
+struct Lifecycle;
+impl Protocol for Lifecycle {
+    const CAPABILITY: Capability = Capability::Lifecycle;
+    type Message = LifecycleMessage;
+    const SERVICE_ID: u8 = 0;
+}
+
+/// Display protocol — panes with a visual surface.
+struct Display;
+impl Protocol for Display {
+    const CAPABILITY: Capability = Capability::Display;
+    type Message = DisplayMessage;
+    const SERVICE_ID: u8 = 0; // same connection as lifecycle
+}
+```
+
+The `Handler` trait is sugar over `Handles<Lifecycle>` +
+`Handles<Messaging>` with named methods:
+
+```rust
+/// Every pane implements this. Lifecycle + messaging.
 /// The headless-complete interface.
 ///
-/// EAct: the handler store σ for the base protocol.
-/// BeOS: BHandler::MessageReceived, split into typed methods.
-///
-/// `app_message` replaces Be's MessageReceived catch-all for
-/// application-defined message types. There is no `fallback` —
-/// dispatch is exhaustive.
+/// Named methods are the developer-facing API. Under the hood,
+/// the looper dispatches through Handles<Lifecycle> and
+/// Handles<Messaging>.
 pub trait Handler: Send + 'static {
-    // --- Lifecycle (every pane) ---
-    fn ready(&mut self, proxy: &Messenger) -> Result<Flow> {
-        Ok(Flow::Continue)
-    }
-    fn close_requested(&mut self, proxy: &Messenger) -> Result<Flow> {
-        Ok(Flow::Stop)
-    }
-    fn disconnected(&mut self, proxy: &Messenger) -> Result<Flow> {
-        Ok(Flow::Stop)
-    }
-
-    // --- Messaging (every pane) ---
-    fn app_message(&mut self, proxy: &Messenger, msg: Box<dyn Any + Send>) -> Result<Flow> {
-        Ok(Flow::Continue)
-    }
-    fn reply_received(&mut self, proxy: &Messenger, token: u64, payload: Box<dyn Any + Send>) -> Result<Flow> {
-        Ok(Flow::Continue)
-    }
-    fn reply_failed(&mut self, proxy: &Messenger, token: u64) -> Result<Flow> {
-        // token: u64 on the wire; handlers use RequestToken<T>
-        // for typed correlation (see RequestToken below)
-        Ok(Flow::Continue)
-    }
-    /// Request-reply. The `msg` payload is type-erased (same as
-    /// app_message). The `reply` is an obligation — default impl
-    /// explicitly drops it, which sends ReplyFailed to the requester.
-    /// This is the correct default for panes that don't handle requests.
-    /// Overriding handlers MUST either call reply.reply(payload) or
-    /// let the ReplyPort drop — there is no third option.
+    fn ready(&mut self, proxy: &Messenger) -> Result<Flow> { Ok(Flow::Continue) }
+    fn close_requested(&mut self, proxy: &Messenger) -> Result<Flow> { Ok(Flow::Stop) }
+    fn disconnected(&mut self, proxy: &Messenger) -> Result<Flow> { Ok(Flow::Stop) }
+    fn pulse(&mut self, proxy: &Messenger) -> Result<Flow> { Ok(Flow::Continue) }
+    fn reply_received(&mut self, proxy: &Messenger, token: u64, payload: Box<dyn Any + Send>) -> Result<Flow> { Ok(Flow::Continue) }
+    fn reply_failed(&mut self, proxy: &Messenger, token: u64) -> Result<Flow> { Ok(Flow::Continue) }
     fn request_received(&mut self, proxy: &Messenger, msg: Box<dyn Any + Send>, reply: ReplyPort) -> Result<Flow> {
-        drop(reply); // explicit: sends ReplyFailed
+        drop(reply);
         Ok(Flow::Continue)
     }
-    fn pane_exited(&mut self, proxy: &Messenger, pane: Id, reason: ExitReason) -> Result<Flow> {
-        Ok(Flow::Continue)
-    }
-    fn pulse(&mut self, proxy: &Messenger) -> Result<Flow> {
-        Ok(Flow::Continue)
-    }
-
-    // --- Introspection ---
+    fn pane_exited(&mut self, proxy: &Messenger, pane: Id, reason: ExitReason) -> Result<Flow> { Ok(Flow::Continue) }
     fn supported_properties(&self) -> &[PropertyInfo] { &[] }
-
-    // --- Quit (&self for deadlock freedom) ---
-    /// &self prevents sending messages during quit negotiation
-    /// (no &Messenger parameter). This eliminates the deadlock
-    /// vector where quit_requested triggers a message that blocks.
-    /// Side effects (save, flush) must happen BEFORE returning true.
-    /// If the handler needs to save, it should maintain a dirty flag
-    /// and save in close_requested (which has &mut self + &Messenger),
-    /// returning Flow::Stop only after the save completes.
+    /// &self for deadlock freedom. Side effects must happen
+    /// before returning true (save in close_requested, not here).
     fn quit_requested(&self) -> bool { true }
 }
 
-/// Panes that support the display view implement this.
-/// The compositor routes input events only to panes whose handler
-/// declares display capability.
-///
-/// Display is a service the pane opts into — DeclareInterest
-/// applied to display itself.
-///
-/// BeOS: BWindow virtual methods (FrameResized, WindowActivated,
-/// KeyDown, MouseDown, QuitRequested).
+/// Display protocol — panes with a visual surface.
 pub trait DisplayHandler: Handler {
-    fn display_ready(&mut self, proxy: &Messenger, geom: Geometry) -> Result<Flow> {
-        Ok(Flow::Continue)
-    }
-    fn resized(&mut self, proxy: &Messenger, geom: Geometry) -> Result<Flow> {
-        Ok(Flow::Continue)
-    }
-    fn activated(&mut self, proxy: &Messenger) -> Result<Flow> {
-        Ok(Flow::Continue)
-    }
-    fn deactivated(&mut self, proxy: &Messenger) -> Result<Flow> {
-        Ok(Flow::Continue)
-    }
-    fn key(&mut self, proxy: &Messenger, event: KeyEvent) -> Result<Flow> {
-        Ok(Flow::Continue)
-    }
-    fn mouse(&mut self, proxy: &Messenger, event: MouseEvent) -> Result<Flow> {
-        Ok(Flow::Continue)
-    }
-    fn command_activated(&mut self, proxy: &Messenger) -> Result<Flow> {
-        Ok(Flow::Continue)
-    }
-    fn command_dismissed(&mut self, proxy: &Messenger) -> Result<Flow> {
-        Ok(Flow::Continue)
-    }
-    fn command_executed(&mut self, proxy: &Messenger, cmd: &str, args: &str) -> Result<Flow> {
-        Ok(Flow::Continue)
-    }
-    fn completion_request(&mut self, proxy: &Messenger, input: &str, reply: CompletionReplyPort) -> Result<Flow> {
-        Ok(Flow::Continue)
-    }
+    fn display_ready(&mut self, proxy: &Messenger, geom: Geometry) -> Result<Flow> { Ok(Flow::Continue) }
+    fn resized(&mut self, proxy: &Messenger, geom: Geometry) -> Result<Flow> { Ok(Flow::Continue) }
+    fn activated(&mut self, proxy: &Messenger) -> Result<Flow> { Ok(Flow::Continue) }
+    fn deactivated(&mut self, proxy: &Messenger) -> Result<Flow> { Ok(Flow::Continue) }
+    fn key(&mut self, proxy: &Messenger, event: KeyEvent) -> Result<Flow> { Ok(Flow::Continue) }
+    fn mouse(&mut self, proxy: &Messenger, event: MouseEvent) -> Result<Flow> { Ok(Flow::Continue) }
+    fn command_activated(&mut self, proxy: &Messenger) -> Result<Flow> { Ok(Flow::Continue) }
+    fn command_dismissed(&mut self, proxy: &Messenger) -> Result<Flow> { Ok(Flow::Continue) }
+    fn command_executed(&mut self, proxy: &Messenger, cmd: &str, args: &str) -> Result<Flow> { Ok(Flow::Continue) }
+    fn completion_request(&mut self, proxy: &Messenger, input: &str, reply: CompletionReplyPort) -> Result<Flow> { Ok(Flow::Continue) }
 }
 ```
 
-A headless agent implements `Handler`. A display editor implements
-`DisplayHandler`. The compositor discovers display-capable panes
-through protocol capability declaration.
+Handler and DisplayHandler are special cases of Protocol +
+Handles\<P\> with pre-defined named methods. They exist for
+ergonomics — the lifecycle and display protocols are used by
+every pane and benefit from named-method discoverability.
 
-### Service traits
+### Service protocols
 
-Each service protocol has its own handler trait, extending Handler
-(not DisplayHandler — services work headless unless they require
-display). Service disconnect is scoped to the service trait, not
-the base Handler — no growth on Handler per service.
+Clipboard, scripting, observer, DnD — each defines a Protocol
+and the developer implements Handles\<P\> via the derive macro.
+The protocol's Message enum defines the variants; the macro
+generates the dispatch; the developer provides named handlers.
 
 ```rust
-pub trait ClipboardHandler: Handler {
-    fn clipboard_lock_granted(&mut self, proxy: &Messenger, lock: ClipboardWriteLock) -> Result<Flow> {
-        Ok(Flow::Continue) // default: drop lock (reverts)
-    }
-    fn clipboard_lock_denied(&mut self, proxy: &Messenger, clipboard: &str, reason: &str) -> Result<Flow> {
-        Ok(Flow::Continue)
-    }
-    fn clipboard_changed(&mut self, proxy: &Messenger, clipboard: &str, source: Id) -> Result<Flow> {
-        Ok(Flow::Continue)
-    }
-    /// The clipboard service disconnected. Called when the clipboard
-    /// calloop channel fires Event::Closed. The handler should
-    /// release any assumptions about held resources — outstanding
-    /// ClipboardWriteLocks are stale (commit will return Err).
-    fn clipboard_service_lost(&mut self, proxy: &Messenger) -> Result<Flow> {
-        Ok(Flow::Continue)
-    }
+struct Clipboard;
+impl Protocol for Clipboard {
+    const CAPABILITY: Capability = Capability::Clipboard;
+    type Message = ClipboardMessage;
+    const SERVICE_ID: u8 = 1;
+}
+
+pub enum ClipboardMessage {
+    LockGranted(ClipboardWriteLock),
+    LockDenied { clipboard: String, reason: String },
+    Changed { clipboard: String, source: Id },
+    ServiceLost,
+}
+
+struct Scripting;
+impl Protocol for Scripting {
+    const CAPABILITY: Capability = Capability::Scripting;
+    type Message = ScriptingMessage;
+    const SERVICE_ID: u8 = 2;
 }
 ```
+
+DnD requires display: `open_drag_drop()` requires
+`H: Handles<Display> + Handles<DragDrop>`.
+
+### Application-defined protocols
+
+Applications define their own Protocol for custom messages.
+`Message<T>` with `What(T)` is the application protocol:
 
 ```rust
-/// Headless command surface. Registered via open_scripting() +
-/// DeclareInterest. A headless pane can execute commands and
-/// provide completions without DisplayHandler.
-///
-/// Display panes that also want scripting implement both
-/// DisplayHandler (for input-originated commands) and
-/// ScriptingHandler (for script-originated commands).
-pub trait ScriptingHandler: Handler {
-    fn script_command(&mut self, proxy: &Messenger, cmd: &str, args: &str) -> Result<Flow> {
-        Ok(Flow::Continue)
-    }
-    fn script_completion(&mut self, proxy: &Messenger, input: &str, reply: CompletionReplyPort) -> Result<Flow> {
-        Ok(Flow::Continue)
-    }
+struct EditorProtocol;
+impl Protocol for EditorProtocol {
+    const CAPABILITY: Capability = Capability::Application;
+    type Message = EditorMessage;
+    const SERVICE_ID: u8 = 0; // local only, no wire
+}
+
+enum EditorMessage {
+    SearchResult(Vec<Match>),
+    SpellCheckComplete { corrections: Vec<Correction> },
+    AutoSaveFinished,
+}
+
+#[derive(ProtocolHandler)]
+#[protocol(EditorProtocol)]
+impl Editor {
+    fn search_result(&mut self, proxy: &Messenger, matches: Vec<Match>) -> Result<Flow> { ... }
+    fn spell_check_complete(&mut self, proxy: &Messenger, corrections: Vec<Correction>) -> Result<Flow> { ... }
+    fn auto_save_finished(&mut self, proxy: &Messenger) -> Result<Flow> { ... }
 }
 ```
 
-DnD requires display: `DragHandler: DisplayHandler`.
-Other services follow the pattern: `ObserverHandler: Handler`.
+Application messages are `What(T)` in `Message<T>` — local to the
+looper, never cross the wire, typed at compile time. This replaces
+`app_message(Box<dyn Any + Send>)` with exhaustive typed dispatch.
 
 ### Geometry
 
