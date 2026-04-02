@@ -661,7 +661,7 @@ services. Accepted returns bindings:
 
 ```rust
 pub struct ServiceBinding {
-    pub service: String,        // "com.pane.clipboard"
+    pub service: ServiceId,     // UUID + name
     pub session_id: u8,         // wire discriminant for this connection
     pub version: u32,           // negotiated version
 }
@@ -675,18 +675,18 @@ pub services: Vec<ServiceBinding>,
 ```rust
 // In ClientToServer:
 DeclareInterest {
-    service: String,            // "com.pane.clipboard"
+    service: ServiceId,         // UUID + name
     expected_version: u32,
 }
 
 // In ServerToClient:
 InterestAccepted {
-    service: String,
+    service_uuid: Uuid,         // echo UUID (client knows the name)
     session_id: u8,             // wire discriminant assigned by server
     version: u32,
 }
 InterestDeclined {
-    service: String,
+    service_uuid: Uuid,
     reason: DeclineReason,      // VersionMismatch, ServiceUnknown
 }
 ```
@@ -909,12 +909,12 @@ remote) — not carried in Hello.
 
 ```rust
 pub struct ServiceInterest {
-    pub service: String,        // "com.pane.clipboard"
+    pub service: ServiceId,     // UUID + name
     pub expected_version: u32,
 }
 
 pub struct ServiceBinding {
-    pub service: String,        // "com.pane.clipboard"
+    pub service: ServiceId,     // UUID + name
     pub session_id: u8,         // wire discriminant for this connection
     pub version: u32,           // negotiated version
 }
