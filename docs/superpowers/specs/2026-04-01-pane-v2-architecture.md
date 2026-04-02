@@ -127,6 +127,8 @@ pub trait Handler: Send + 'static {
         Ok(Flow::Continue)
     }
     fn reply_failed(&mut self, proxy: &Messenger, token: u64) -> Result<Flow> {
+        // token: u64 on the wire; handlers use RequestToken<T>
+        // for typed correlation (see RequestToken below)
         Ok(Flow::Continue)
     }
     /// Request-reply. The `msg` payload is type-erased (same as
@@ -235,8 +237,54 @@ pub trait ClipboardHandler: Handler {
 }
 ```
 
+```rust
+/// Headless command surface. Registered via open_scripting() +
+/// DeclareInterest. A headless pane can execute commands and
+/// provide completions without DisplayHandler.
+///
+/// Display panes that also want scripting implement both
+/// DisplayHandler (for input-originated commands) and
+/// ScriptingHandler (for script-originated commands).
+pub trait ScriptingHandler: Handler {
+    fn script_command(&mut self, proxy: &Messenger, cmd: &str, args: &str) -> Result<Flow> {
+        Ok(Flow::Continue)
+    }
+    fn script_completion(&mut self, proxy: &Messenger, input: &str, reply: CompletionReplyPort) -> Result<Flow> {
+        Ok(Flow::Continue)
+    }
+}
+```
+
 DnD requires display: `DragHandler: DisplayHandler`.
 Other services follow the pattern: `ObserverHandler: Handler`.
+
+### Geometry
+
+```rust
+pub struct Geometry {
+    /// Logical position (scale-independent).
+    pub x: f64,
+    pub y: f64,
+    /// Logical size (scale-independent).
+    pub width: f64,
+    pub height: f64,
+    /// Physical = Logical × scale_factor.
+    pub scale_factor: f32,
+}
+
+impl Geometry {
+    pub fn physical_size(&self) -> (u32, u32) {
+        ((self.width * self.scale_factor as f64) as u32,
+         (self.height * self.scale_factor as f64) as u32)
+    }
+}
+```
+
+Logical pixels are the canonical unit. The scale_factor is
+provided by the display server for renderers that need physical
+coordinates. Headless panes may have virtual geometry (logical
+dimensions for layout purposes) or no geometry at all (Handler
+has no geometry parameter).
 
 ### Flow
 
@@ -330,26 +378,21 @@ communication. Obligation handles (ReplyPort, ClipboardWriteLock)
 are excluded at compile time via the `AppPayload` marker trait:
 
 ```rust
-pub trait AppPayload: Send + 'static {}
-// Obligation types are in pane-app. AppPayload is in pane-app.
-// Orphan rules prevent external impl AppPayload for ReplyPort.
-// pane-app itself simply doesn't impl it.
+pub trait AppPayload: Clone + Send + 'static {}
 
 pub fn post_app_message<T: AppPayload>(&self, msg: T) -> Result<()>;
 ```
 
-User types implement `AppPayload` (or derive it). Standard types
-have per-type impls (NOT a blanket `impl<T: Send> AppPayload for T`
-— that would include obligation types). A `debug_assert` in the
-looper dispatch catches internal violations as defense-in-depth.
+`AppPayload` requires `Clone + Send + 'static`. All obligation
+types (ReplyPort, ClipboardWriteLock, CompletionReplyPort) are
+intentionally `!Clone` — they cannot implement `AppPayload` and
+cannot be smuggled through AppMessage, even via wrapper structs
+(a `struct Smuggle(ReplyPort)` cannot derive Clone). Orphan rules
+provide a second layer: external crates cannot impl `AppPayload`
+for obligation types. User payloads (strings, structs, enums)
+derive Clone trivially. Non-Clone payloads wrap in `Arc`.
 
-The orphan rule prevents *accidental* smuggling. A user who
-deliberately wraps `struct Smuggle(ReplyPort)` and impls
-`AppPayload` for it can bypass the check — this is adversarial,
-not accidental, and is the user's responsibility. For stronger
-enforcement, `AppPayload` could additionally require `Clone`
-(obligation types don't implement Clone), which would prevent
-wrapper smuggling at the cost of requiring `Clone` on all payloads.
+A `debug_assert` in the looper dispatch provides defense-in-depth.
 
 ---
 
@@ -359,30 +402,15 @@ Operates on `Message` only. Never sees obligations.
 
 ```rust
 pub trait MessageFilter: Send + 'static {
-    fn filter(&mut self, msg: Message) -> FilterAction;
+    fn filter(&mut self, msg: &Message) -> FilterAction;
     fn matches(&self, msg: &Message) -> bool { true }
 }
 
 pub enum FilterAction {
-    Pass(Message),
-    Consume,
-}
-```
-
-No panic branches. `Message` derives `Clone` naturally.
-`MessageFilter` keeps its Be name (BMessageFilter) — the type
-it filters is still called `Message`.
-
-Filters may transform messages: `Pass(Message)` may return a
-different value than the input. This is the pane equivalent of
-BeOS's BMessageFilter, which received a mutable BMessage pointer
-and could modify any field.
-
-```rust
-pub enum FilterAction {
-    /// Pass the message through unchanged.
-    Pass(Message),
-    /// Transform the message into a different one.
+    /// Pass the message through unchanged. The filter chain
+    /// retains ownership and dispatches the original.
+    Pass,
+    /// Replace the message with a transformed version.
     /// Use case: shortcut filter transforms Key → CommandExecuted.
     Transform(Message),
     /// Consume the message — handler never sees it.
@@ -390,17 +418,25 @@ pub enum FilterAction {
 }
 ```
 
-The `Pass`/`Transform` distinction makes filter behavior visible
-to debugging tools without changing the dispatch semantics —
-dispatch treats both identically. Filters that transform should
-preserve variant semantics — Key→CommandExecuted is valid (same
-domain: user intent); Key→CloseRequested is pathological (different
-domain). The type system does not enforce this — it is a convention.
+No panic branches. `Message` derives `Clone` naturally.
+`MessageFilter` keeps its Be name (BMessageFilter).
 
-In debug builds, `Pass(msg)` asserts that the message is identical
-to the input. A filter that returns `Pass` with a modified message
-is a bug — it should have used `Transform`. Debugging tools log
-pre-filter and post-filter identity for `Transform` actions.
+`filter()` takes `&Message` (immutable borrow). On `Pass`, the
+chain dispatches the original — no ownership transfer needed. On
+`Transform`, the filter provides the replacement. On `Consume`,
+the message is dropped. This eliminates the ambiguity of the
+previous `Pass(Message)` design where a filter could return a
+modified message via Pass.
+
+Filters that transform should preserve variant semantics —
+Key→CommandExecuted is valid (same domain: user intent);
+Key→CloseRequested is pathological (different domain). The type
+system does not enforce this — it is a convention. Debugging tools
+log pre-filter and post-filter identity for `Transform` actions.
+
+Filters are applied in registration order. `add_filter` appends
+to the chain. Filters can be removed by dropping the returned
+`FilterHandle` (which sends `RemoveFilter` to the looper).
 
 ---
 
@@ -442,9 +478,12 @@ pub enum Capability {
 }
 ```
 
-`DeclareInterest` acknowledgment includes the per-service protocol
-version the server will speak. This allows services to evolve
-independently of the base protocol.
+`DeclareInterest` includes `expected_version: u32` (the version
+the client SDK was compiled for). The server accepts if compatible,
+or declines with `InterestDeclined { reason: VersionMismatch }`.
+This allows services to evolve independently of the base protocol.
+Version range negotiation (min/max) deferred to Phase 2 when
+server-side version divergence becomes real.
 
 DeclareInterest is irrevocable by default; revocation, if needed,
 is an explicit protocol operation with in-flight message cleanup.
@@ -742,6 +781,43 @@ construct raw tokens.
 The server MAY enforce per-pane limits on concurrent outstanding
 requests to bound obligation growth from Messenger clones.
 
+### RequestToken\<T\>
+
+```rust
+/// Typed correlation token for outstanding requests.
+/// Wraps u64 for wire compatibility. PhantomData<T> carries the
+/// expected reply type — downcast is encapsulated in extract().
+#[must_use = "represents an in-flight obligation"]
+pub struct RequestToken<T> {
+    raw: u64,
+    _type: PhantomData<T>,
+}
+
+impl<T: Send + 'static> RequestToken<T> {
+    pub fn raw(&self) -> u64 { self.raw }
+    pub fn extract(&self, payload: Box<dyn Any + Send>) -> Option<T> {
+        payload.downcast::<T>().ok().map(|b| *b)
+    }
+}
+```
+
+`send_request<T>` returns `RequestToken<T>`. The handler stores
+it and uses `extract()` in `reply_received` for typed correlation:
+
+```rust
+fn reply_received(&mut self, proxy: &Messenger, token: u64, payload: Box<dyn Any + Send>) -> Result<Flow> {
+    if token == self.pending.raw() {
+        if let Some(results) = self.pending.extract(payload) {
+            // results: SearchResults — typed, no manual downcast
+        }
+    }
+    Ok(Flow::Continue)
+}
+```
+
+Tokens are per-Connection (three servers = three namespaces).
+Messenger manages token allocation internally.
+
 ---
 
 ## Service Registration
@@ -848,22 +924,57 @@ failure terminals. The invariants:
   on the compositor Connection (or vice versa). Preserves DLfActRiS
   strong acyclicity across the multi-server connectivity graph.
 
-### Known gaps in the linear discipline
+### Chan Drop sends ProtocolAbort
 
-**Chan<S, T> has no Drop impl.** If a `Chan` is dropped mid-
-handshake (crash, early return), the peer blocks on `recv()` until
-transport timeout. The typestate handles (ReplyPort, etc.) all
-have Drop impls; Chan does not. The handshake timeout in pane-
-headless compensates. A `Drop` impl on `Chan` that closes the
-transport would be the correct fix. The exposure window is narrow
-(handshake only — active phase uses enum dispatch, not Chan).
+`Chan<S, T>` implements `Drop`. If dropped mid-handshake (crash,
+early return, panic unwind), Drop sends a `ProtocolAbort` frame
+(`[0xFF][0xFF]`) on the transport, then closes it. The peer
+receives the abort and frees its session thread immediately —
+no TCP timeout wait. Best-effort: if the transport is already
+dead (broken pipe), Drop silently succeeds (`let _ = ...`).
 
-**I8 is advisory, not enforced.** `send_and_wait` is available to
-any handler method. Calling it on a different Connection while
-processing an event risks deadlock (DLfActRiS acyclicity violation).
-The `is_looper_thread()` guard catches self-deadlock but not cross-
-Connection blocking. A future lint or runtime assertion could
-enforce I8.
+### Obligation handle lifetime
+
+Obligation handles (ReplyPort, CompletionReplyPort,
+ClipboardWriteLock) are **short-lived**: they should be consumed
+within the handler method invocation that receives them. Storing
+an obligation handle in `self` defers its resolution until handler
+destruction, blocking the requesting pane indefinitely.
+
+This is a convention, not a type-level enforcement. `ReplyPort`
+remains `Send` (worker threads may need to reply). A lint that
+warns on `self.field = reply` assignments is a future enhancement.
+If a handler stores and forgets, the Drop compensation (ReplyFailed)
+fires at handler destruction — the linear discipline works, but
+the requester waits longer than necessary.
+
+### ClipboardWriteLock::commit
+
+```rust
+pub fn commit(self, data: Vec<u8>, metadata: ClipboardMetadata)
+    -> Result<(), CommitError>;
+```
+
+`commit` takes `self` by value — the lock is consumed. No retry.
+`CommitError` variants: `Disconnected` (service gone between lock
+grant and commit), `LockRevoked` (server revoked due to timeout
+or admin action), `ValidationFailed` (malformed data rejected).
+Drop-based Revert fires only if `commit` was never called.
+
+**I8 is enforced at runtime.** The looper maintains a thread-local
+`CURRENT_CONNECTION` id during handler dispatch. If `send_and_wait`
+is called targeting a Connection other than `CURRENT_CONNECTION`,
+the runtime panics in debug builds and logs a warning in release
+builds. This turns the advisory invariant into a testable one.
+The check cost (one thread-local read) is negligible relative to
+the IPC round-trip that `send_and_wait` performs.
+
+**Tokens are per-Connection.** A pane connected to three servers
+has three independent token namespaces. `Cancel { token }` is
+routed to the Connection that issued the original request. The
+Messenger embeds the routing context. Token values may collide
+across Connections — this is correct because the namespaces are
+disjoint.
 
 ### Message enum growth
 
@@ -876,12 +987,25 @@ the top-level enum.
 
 ### Termination semantics
 
-When a handler method returns `Flow::Stop`:
+**`Flow::Stop` (graceful exit):**
 
 1. The looper stops dispatching further events from the batch
 2. The handler is dropped — Drop impls fire on all held obligation
    handles (ReplyPort → ReplyFailed, ClipboardWriteLock → Revert)
-3. The server is notified via PaneExited
+3. The server is notified via `PaneExited { reason: Graceful }`
+
+**`Err(e)` (crash):**
+
+1. The looper logs the error
+2. No further events are dispatched
+3. The handler is dropped — same Drop compensation as Flow::Stop
+4. The server is notified via `PaneExited { reason: Error(e) }`
+
+Both paths trigger identical Drop compensation. The distinction
+is in the exit reason reported to the server and to monitoring
+panes (via `pane_exited`). `Flow::Stop` is "I chose to exit."
+`Err` is "something went wrong." EAct §5 separates actor failure
+(zap/supervision) from session termination (clean end).
 
 Obligation compensation completes before the server is notified.
 
@@ -1089,38 +1213,66 @@ variants.
    `Pass` (unchanged) from `Transform` (rewritten) for debuggability.
    Variant-changing transforms are pathological and should be logged.
 
-10. **AppPayload marker trait**: `post_app_message<T: AppPayload>`.
-    Orphan rules prevent `impl AppPayload for ReplyPort` from external
-    crates. `debug_assert` defense-in-depth in the looper. Obligation
-    handles excluded at compile time.
+10. **AppPayload: Clone + Send + 'static**: Obligation handles are
+    !Clone, preventing smuggling even via wrapper structs. Orphan
+    rules + Clone bound = compile-time enforcement.
 
-11. **Termination**: `Flow::Stop` → stop dispatching → drop
-    handler → Drop compensation on all held obligations → notify
-    server. Compensation completes before notification.
+11. **Termination**: `Flow::Stop` = graceful. `Err` = crash. Both
+    trigger identical Drop compensation. Distinction is in the exit
+    reason reported to server and monitors.
+
+12. **Chan Drop sends ProtocolAbort** (`[0xFF][0xFF]`). Peer frees
+    session thread immediately on handshake abort.
+
+13. **RequestToken\<T\>**: Typed correlation for send_request. Wraps
+    u64 with PhantomData\<T\>. Eliminates downcast boilerplate.
+    Tokens per-Connection.
+
+14. **ScriptingHandler: Handler**: Headless command surface via
+    DeclareInterest. `command_executed` on DisplayHandler (input)
+    and ScriptingHandler (scripting) for their respective sources.
+
+15. **Geometry**: Logical pixels + scale_factor. `physical_size()`
+    helper. Resolves HiDPI ambiguity.
+
+16. **I8 runtime enforcement**: Thread-local CURRENT_CONNECTION in
+    looper. `send_and_wait` on different Connection: panic (debug),
+    log warning (release).
+
+17. **Service map precedence**: `$PANE_SERVICE_OVERRIDES` > manifest
+    > `$PANE_SERVICES` > `/etc/pane/services.toml`.
+
+18. **DeclareInterest version**: Single `expected_version` for
+    Phase 1. Range negotiation (min/max) deferred to Phase 2.
 
 ## Open Questions
 
-1. **Command surface on headless panes**: `command_executed` and
-   `completion_request` are on DisplayHandler. A headless pane
-   with a scripting-accessible command surface might want these.
-   Potential future move to Handler, or to a ScriptingHandler
-   service trait when scripting ships.
+1. **Network discovery**: Tier 1 (explicit configuration) is
+   specified. Tier 2 (local rendezvous) and Tier 3 (mDNS/DNS-SD)
+   are potential future work.
 
-2. **`token: u64` ghost state**: reply_received, reply_failed use
-   untyped u64 tokens. A typed `RequestToken<T>` would make the
-   reply type statically known. Deferred. When introduced,
-   `send_request` returns `RequestToken<T>` wrapping u64; the
-   handler downcasts with type knowledge from the token. Messenger
-   manages token allocation internally — developers don't construct
-   raw tokens.
+2. **`remote_insecure` escape hatch**: Development workflow for TLS
+   requirement. Options: self-signed certs with local CA (no escape
+   hatch), or `remote_insecure` with loud warnings.
 
-3. **Network discovery**: Tier 1 service discovery (explicit
-   configuration) is specified. Tier 2 (local rendezvous, `/srv`
-   equivalent) and Tier 3 (mDNS/DNS-SD) are potential future work.
-   Most real deployments will use Tier 1 (nix-generated config).
+---
 
-4. **`remote_insecure` escape hatch**: The TLS requirement for
-   remote connections needs a development workflow. Options:
-   self-signed certs with a local CA (no escape hatch needed),
-   or `remote_insecure` with loud warnings. Risk: escape hatch
-   reaching production.
+## Implementation Phases
+
+**Phase 1 — Core.** Single-server, headless, no suspension, no
+streaming. Validate: Handler/DisplayHandler split, Message/obligation
+split, Flow, calloop dispatch, typestate handles, filter chain,
+Messenger, Connection, basic protocol (handshake + active phase).
+This is the proof that the linear discipline works end-to-end.
+
+**Phase 2 — Distribution.** Multi-server, TLS, service map,
+per-Connection tokens, I8 enforcement, DeclareInterest with version
+negotiation. Validate: ServiceRouter, per-Connection failure
+isolation, cross-Connection ordering, capability declaration.
+
+**Phase 3 — Lifecycle.** Session suspension/resumption, streaming
+(Queue pattern), ScriptingHandler. These interact — streams must
+close before suspend — so they're designed together.
+
+**Phase 4 — Performance.** Batch coalescing optimizations, write
+buffer tuning, connection pooling. Correctness before performance.
