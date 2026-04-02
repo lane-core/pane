@@ -79,14 +79,27 @@ new identifier.
 | Be | pane | Tier | Rationale |
 |----|------|------|-----------|
 | `BMessage` | `Message` | 1 | Faithful |
-| `BHandler` | `Handler` | 1 | Faithful (trait, not class) |
-| `BMessenger` | `Messenger` | 1 | Faithful |
+| `BHandler` | `Handler` | 1 | Faithful (trait, not class). Lifecycle + messaging only. |
+| `BMessenger` | `Messenger` | 1 | Faithful. Wraps scoped Handle + ServiceRouter. |
 | `BLooper` | (absorbed into `Pane`) | 3 | Rust ownership makes the looper an implementation detail |
 | `BApplication` | `App` | 2 | Contemporary convention (gtk, winit) |
 | `BWindow` | `Pane` | 2 | Architecturally different — universal surface, not window |
 | `BMessageRunner` | `TimerToken` | 2 | Configure-and-attach → method on host (translation rule 2) |
 | `filter_result` | `FilterAction` | 2 | More descriptive enum name |
-| `property_info` | `PropertyInfo` | 1 | Faithful adaptation. Carries operations, specifier forms, value type (see optics-design-brief.md). |
+| `property_info` | `PropertyInfo` | 1 | Faithful adaptation. Carries operations, specifier forms, value type. |
+| `BWindow` (display methods) | `DisplayHandler` | 2 | Separate trait — display is an opt-in capability, not the base case |
+| (none) | `Protocol` | — | Novel: typed service relationship (SERVICE_ID + Message). |
+| (none) | `Handles<P>` | — | Novel: per-protocol dispatch trait. |
+| (none) | `Flow` | — | Novel: `Continue`/`Stop`. Replaces `bool` (true=continue was ambiguous). |
+| (none) | `ServiceId` | — | Novel: UUID + reverse-DNS name for service identity. |
+| `BRect`/geometry params | `Geometry` | 2 | Crate-qualified: `pane_proto::Geometry`, not `PaneGeometry`. |
+| (various IDs) | `Id` | 2 | Crate-qualified: `pane_proto::Id`, not `PaneId`. |
+
+**Crate-qualified naming rule**: types that would be ambiguous
+in isolation use the crate path as their namespace. `Id` not
+`PaneId`, `Geometry` not `PaneGeometry`, `Title` not `PaneTitle`.
+The `pane_proto::` prefix provides the disambiguation that a
+name prefix would.
 
 ---
 
@@ -104,9 +117,9 @@ often than you write it. Rust agrees.
 
 ```rust
 fn name(&self) -> &str;
-fn id(&self) -> PaneId;
-fn handler_count(&self) -> usize;
+fn id(&self) -> Id;
 fn is_hidden(&self) -> bool;
+fn is_valid(&self) -> bool;
 ```
 
 Reserve `get_` for methods that perform complex extraction or fill
@@ -148,15 +161,30 @@ Be's `AddHandler()` / `RemoveHandler()` maps directly.
 ### Notification hooks — past participle
 
 Called when something *already happened*. Name reflects the
-completed event.
+completed event. All return `Result<Flow>` — `Flow::Continue` to
+keep processing, `Flow::Stop` to exit cleanly.
 
+Handler (lifecycle — every pane):
 ```rust
-fn activated(&mut self, proxy: &Messenger) -> Result<bool>;
-fn deactivated(&mut self, proxy: &Messenger) -> Result<bool>;
-fn resized(&mut self, proxy: &Messenger, geometry: PaneGeometry) -> Result<bool>;
-fn close_requested(&mut self, proxy: &Messenger) -> Result<bool>;
-fn key(&mut self, proxy: &Messenger, event: KeyEvent) -> Result<bool>;
+fn ready(&mut self, proxy: &Messenger) -> Result<Flow>;
+fn close_requested(&mut self, proxy: &Messenger) -> Result<Flow>;
+fn disconnected(&mut self, proxy: &Messenger) -> Result<Flow>;
+fn pulse(&mut self, proxy: &Messenger) -> Result<Flow>;
+fn pane_exited(&mut self, proxy: &Messenger, pane: Id, reason: ExitReason) -> Result<Flow>;
 ```
+
+DisplayHandler (display — panes with a visual surface):
+```rust
+fn display_ready(&mut self, proxy: &Messenger, geom: Geometry) -> Result<Flow>;
+fn resized(&mut self, proxy: &Messenger, geom: Geometry) -> Result<Flow>;
+fn activated(&mut self, proxy: &Messenger) -> Result<Flow>;
+fn deactivated(&mut self, proxy: &Messenger) -> Result<Flow>;
+fn key(&mut self, proxy: &Messenger, event: KeyEvent) -> Result<Flow>;
+fn mouse(&mut self, proxy: &Messenger, event: MouseEvent) -> Result<Flow>;
+```
+
+Headless-first: `ready()` has no geometry (headless panes may have
+no geometry at all). Display geometry arrives in `display_ready()`.
 
 Be used `WindowActivated()`, `FrameResized()`, `QuitRequested()`.
 Pane keeps the past-participle convention, adapted:
@@ -203,19 +231,30 @@ one path.
 
 ### Message variant ↔ handler method correspondence
 
-Every `Message` variant has a corresponding `Handler` method.
-The variant is CamelCase; the method is the snake_case equivalent:
+Every `Message` variant has a corresponding handler method on either
+`Handler` (lifecycle/messaging) or `DisplayHandler` (display). The
+variant is CamelCase; the method is the snake_case equivalent:
 
-| Variant | Handler method |
-|---------|---------------|
-| `Message::CloseRequested` | `close_requested()` |
-| `Message::Activated` | `activated()` |
-| `Message::Key(event)` | `key()` |
-| `Message::Pulse` | `pulse()` |
-| `Message::PaneExited { .. }` | `pane_exited()` |
+| Variant | Trait | Method |
+|---------|-------|--------|
+| `Message::Ready` | `Handler` | `ready()` |
+| `Message::CloseRequested` | `Handler` | `close_requested()` |
+| `Message::Disconnected` | `Handler` | `disconnected()` |
+| `Message::Pulse` | `Handler` | `pulse()` |
+| `Message::PaneExited { .. }` | `Handler` | `pane_exited()` |
+| `Message::DisplayReady(geom)` | `DisplayHandler` | `display_ready()` |
+| `Message::Resize(geom)` | `DisplayHandler` | `resized()` |
+| `Message::Activated` | `DisplayHandler` | `activated()` |
+| `Message::Key(event)` | `DisplayHandler` | `key()` |
 
 This correspondence is mechanical. If you add a `Message` variant,
 the handler method name follows automatically.
+
+Service protocol messages (clipboard, routing, etc.) do not appear
+in the `Message` enum — they route through `Handles<P>::receive`
+to named methods generated by the `#[derive(ProtocolHandler)]`
+macro. The variant-to-method mapping uses `#[handles(VariantName)]`
+attributes or snake_case convention.
 
 ---
 
@@ -225,11 +264,17 @@ the handler method name follows automatically.
   method. `CloseRequested`, `Activated`, `Resize`, `Key`.
   No prefix — the enum name is the namespace.
 
+- **Flow variants**: `Continue`, `Stop`. Short, imperative.
+
 - **Error variants**: descriptive noun. `Disconnected`,
-  `InvalidGeometry`, `HandlerExit`.
+  `InvalidGeometry`, `CommitError`.
 
 - **Action/result variants**: verb or adjective. `FilterAction::Pass`,
-  `FilterAction::Consume`.
+  `FilterAction::Transform`, `FilterAction::Consume`.
+
+- **Service notification variants**: nested under the service name.
+  `Message::Clipboard(ClipboardNotification)`. Top-level grows
+  O(services), not O(services × events).
 
 Be's `B_QUIT_REQUESTED`, `B_PULSE`, etc. become typed enum variants.
 The four-char codes were clever for hex dumps, but typed variants
@@ -245,15 +290,39 @@ Crate names in code follow `pane-{kit}` convention:
 | Kit (docs/conversation) | Crate (code) | Be Kit |
 |------------------------|-------------|---------|
 | Application Kit | `pane-app` | Application Kit |
+| Protocol | `pane-proto` | (new; wire types, service definitions) |
+| Server | `pane-server` | (new; protocol server library) |
 | Notification Kit | `pane-notify` | (new; replaces `StartWatching`) |
 | Optics | `pane-optic` | (new; composable state accessors) |
-| Protocol | `pane-proto` | (new; wire format) |
-| Session Types | `pane-session` | (new; handshake protocol) |
+| Session Types | `pane-session` | (new; session-typed channels) |
 
 "Kit" is valuable vocabulary — it implies a curated, designed
 collection with intentional relationships. Use it in documentation
 and conversation: "the Application Kit (`pane-app`)", not just
 "the pane-app crate."
+
+---
+
+## Service Names
+
+Services are identified by globally unique reverse-DNS names.
+This convention is part of the `ServiceId` contract — codified
+from day one, per Be's lesson with inconsistent
+`application/x-vnd.*` signatures.
+
+| Scope | Pattern | Example |
+|-------|---------|---------|
+| Framework | `com.pane.*` | `com.pane.clipboard` |
+| Third-party | `com.vendor.*` or `org.project.*` | `com.example.editor` |
+| Application-local | `com.vendor.app.*` | `com.example.editor.spellcheck` |
+
+Short form: `"clipboard"` expands to `"com.pane.clipboard"` for
+framework services in the SDK.
+
+`ServiceId::new("com.pane.clipboard")` derives a deterministic
+UUIDv5 from the name. The UUID is the wire identity (survives
+renames, travels across federation boundaries). The name is the
+human identity (pane-fs paths, service maps, logs).
 
 ---
 
@@ -293,12 +362,15 @@ and algebraic types, they would have changed these eagerly:
 | Be pattern | Rust replacement | Why Be did it that way |
 |-----------|-----------------|----------------------|
 | `status_t` return codes | `Result<T, E>` | C++ had no standard error type |
+| `true`/`false` return (continue?) | `Flow::Continue`/`Flow::Stop` | C++ had no lightweight enums; bool was conventional |
 | `InitCheck()` two-phase init | Fail at construction | C++ constructors can't return errors |
 | `CountFoos()` + `FooAt(i)` | Iterators | C++ had no standard iteration protocol |
 | `BArchivable` | serde | No serialization framework existed |
 | `BMessage` dynamic fields | Typed enum variants | No algebraic data types |
 | `AddInt32`/`FindInt32`/... | Enum payloads | No generics, no sum types |
 | `SetNextHandler()` chain | Trait with default methods | Single-dispatch workaround |
+| `application/x-vnd.*` strings | `ServiceId` (UUID + reverse-DNS) | No identity framework; strings were all they had |
+| `DispatchMessage()` switch | `Handles<P>` derive macro | Manual switch-on-what was the only dispatch option |
 
 **What they would have kept sacred:**
 
