@@ -6,14 +6,3 @@ description = "Headless pane server — speaks the full pane protocol without re
 license = "AGPL-3.0-only"
 
 [dependencies]
-pane-proto = { path = "../pane-proto" }
-pane-session = { path = "../pane-session", features = ["tls"] }
-pane-server = { path = "../pane-server" }
-calloop = "0.14"
-tracing = "0.1"
-tracing-subscriber = { version = "0.3", features = ["env-filter"] }
-anyhow = "1"
-bpaf = { version = "0.9", features = ["derive"] }
-ctrlc = "3"
-rustls = "0.23"
-rustls-pemfile = "2"

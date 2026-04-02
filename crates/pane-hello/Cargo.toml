@@ -6,5 +6,3 @@ description = "Hello pane — the canonical first pane application"
 license = "BSD-3-Clause"
 
 [dependencies]
-pane-app = { path = "../pane-app" }
-pane-proto = { path = "../pane-proto" }

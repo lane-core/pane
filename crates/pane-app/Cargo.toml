@@ -6,13 +6,5 @@ description = "Application kit for the pane desktop environment. The developer's
 license = "BSD-3-Clause"
 
 [dependencies]
-calloop = "0.14"
-libc = "0.2"
-pane-optic = { path = "../pane-optic" }
-pane-proto = { path = "../pane-proto" }
-pane-session = { path = "../pane-session" }
-uuid = { version = "1", features = ["v4"] }
 
 [dev-dependencies]
-tempfile = "3"
-uuid = { version = "1", features = ["v4"] }

@@ -1,4 +1,4 @@
-# pane v2 Architecture
+# pane Architecture
 
 A pane is organized state with an interface that allows views of
 that state. Display is one view. The namespace (filesystem
@@ -6,13 +6,10 @@ projection at `/pane/`, routed queries via optics, remote access)
 is another. Both are projections of the same state, structured
 by the protocol and kept consistent by optic laws.
 
-Designed from first principles after two weeks of proof-of-concept
-development. The proof of concept validated the API vocabulary,
-mapped the subsystem landscape, and revealed that pane-headless
-(a server with no display running the same protocol) is the
-clarifying constraint: pane is a protocol framework that happens
-to have a display mode, not a display framework that also works
-headless.
+pane is a protocol framework that happens to have a display mode,
+not a display framework that also works headless. The headless
+server — running the same protocol with no display — is the base
+case. Display is a capability that panes opt into, not the default.
 
 Designed with input from be-systems-engineer, plan9-systems-engineer,
 and session-type-consultant.
@@ -500,13 +497,13 @@ pub enum Flow {
 
 ### The split: values vs obligations
 
-v1's `Message` enum conflates clonable value events with affine
-obligation-carrying handles. Four variants panic on Clone. This
+Clonable value events and affine obligation-carrying handles must
+not share a type. Conflating them produces Clone panics and
 violates EAct KP2 (no channel endpoints in message values).
 
-v2 separates them. The public type retains the Be name `Message`
-(tier 1 faithful — this is what BMessage was, minus the obligations
-that never belonged there).
+The public type retains the Be name `Message` (tier 1 faithful —
+this is what BMessage was, minus the obligations that never
+belonged there).
 
 ```rust
 /// Value messages — Clone, filter-visible. Pure notifications:
@@ -634,9 +631,9 @@ No panic branches. `Message` derives `Clone` naturally.
 `filter()` takes `&Message` (immutable borrow). On `Pass`, the
 chain dispatches the original — no ownership transfer needed. On
 `Transform`, the filter provides the replacement. On `Consume`,
-the message is dropped. This eliminates the ambiguity of the
-previous `Pass(Message)` design where a filter could return a
-modified message via Pass.
+the message is dropped. This eliminates the ambiguity of a design where `Pass` carries
+the message — a filter could silently return a modified message
+via Pass, conflating pass-through with transformation.
 
 Filters that transform should preserve variant semantics —
 Key→CommandExecuted is valid (same domain: user intent);
@@ -1250,7 +1247,7 @@ requests with ReplyPort). These require the struct + trait form
 
 ## The Linear Discipline
 
-### Typestate handles (preserved from v1)
+### Typestate handles
 
 Every obligation-carrying type follows the pattern:
 
@@ -1268,7 +1265,7 @@ Destruction sequence on handler exit: dispatch.fail_connection() (per S4)
 dropped during handler field destruction → Drop sends
 RevokeInterest (best-effort, `let _ = ...`).
 
-### Deeper linearity in v2
+### Extended linear discipline
 
 - **Service handles**: `open_clipboard()` returns a `ClipboardHandle`
   whose Drop sends `RevokeInterest`. The service lifecycle is
@@ -1524,48 +1521,6 @@ variants.
 
 ---
 
-## What Is Preserved from v1
-
-- **Session-typed handshake** (pane-session): Chan, Send, Recv,
-  Branch, Select, End, Transport trait, finish().
-- **Typestate handles**: ReplyPort, CompletionReplyPort,
-  ClipboardWriteLock, CreateFuture, TimerToken.
-- **calloop event loop**: per-pane, single-threaded, Timer sources.
-- **Filter chain**: MessageFilter trait, FilterAction, FilterChain.
-  Now operates on obligation-free Message (Clone-safe).
-- **Transport layer**: Unix, TCP, TLS, Memory, Proxy, Reconnecting.
-- **Optic crate**: Getter/Setter/PartialGetter/PartialSetter,
-  FieldLens/FieldAffine/FieldTraversal, composition, laws.
-- **Scripting foundation**: PropertyInfo, ScriptableHandler,
-  DynOptic, Specifier, AttrValue.
-- **Id as UUID**: client-proposed, server-confirmed.
-- **Coalescing**: last Resize, last MouseMove within a batch.
-- **TimerToken**: cancel-on-drop, dual-path cancellation.
-
-## What Changes from v1
-
-| Component | v1 | v2 |
-|---|---|---|
-| Handler | 22 methods, monolithic | `Handler` (~11) + `DisplayHandler` (~10) + service traits |
-| Message | 19 variants, 4 panic Clone | `Message` (Clone, obligations extracted) + internal obligation types |
-| App | One connection, dispatcher thread, pump threads | Multiple Connections + ServiceRouter. calloop read+write per Connection. |
-| Messenger | Shared comp_tx, any pane | Scoped handle + ServiceRouter. Routes by capability, not server. |
-| Topology | Single server | Multi-server. Per-Connection failure isolation. Service map from environment. |
-| Type naming | `PaneId`, `PaneGeometry`, `PaneTitle` | `Id`, `Geometry`, `Title` — crate path is the namespace |
-| Protocol names | ClientToComp / CompToClient | ClientToServer / ServerToClient |
-| Wire framing | [length][payload] | [length][service][payload]; service IDs negotiated per-connection via reverse-DNS names |
-| Services | Types exist, no wire protocol | DeclareInterest + per-service wire messages + per-service error isolation |
-| Display | Implicit default | Explicit capability (handshake) |
-| Service identity | Not declared | Reverse-DNS names, handshake for Display, DeclareInterest for services |
-| LooperMessage | 10 variants, growing | Per-protocol typed calloop channels |
-| Headless | Added after compositor | The base case |
-| Service disconnect | Not handled | Dual: `commit() -> Result` + per-service `*_service_lost()` on service traits |
-| Request/reply | Ghost state (token in self, Box<dyn Any> downcast) | Dispatch entries — typed callbacks, no ghost state, no reply_received |
-| Request cancellation | Not supported | `Cancel { token }` (Tflush equivalent) |
-| Remote auth | Self-reported PeerIdentity | TLS required, PeerAuth derived from transport (Kernel/Certificate) |
-
----
-
 ## Resolved Questions
 
 1. **Service trait dispatch**: fn pointers (Dispatch pattern). Zero-cost,
@@ -1717,9 +1672,9 @@ Phase 2 breaks, Phase 1 was wrong.
 | Messenger | Bare `mpsc::Sender` | `ServiceRouter` (HashMap, 1 entry) |
 | App | Bare `Connection` field | `HashMap<ServiceName, Connection>` (1 entry) |
 | Dispatch | `HashMap<u64, Entry>` | `HashMap<(ConnectionId, u64), Entry>` |
-| Wire framing | v1's `[length][payload]` | `[length][service][payload]` (service=0); service IDs negotiated per-connection |
+| Wire framing | Flat `[length][payload]` | `[length][service][payload]` (service=0); service IDs negotiated per-connection |
 | Message enum | Flat with panic-Clone | Nested services + `#[derive(Clone)]` |
-| PeerAuth | Self-reported `PeerIdentity` | `PeerAuth::Kernel { uid, pid }` via SO_PEERCRED |
+| PeerAuth | Self-reported identity | `PeerAuth::Kernel { uid, pid }` via SO_PEERCRED |
 | DeclareInterest | Implicit (connect=display) | Explicit capability declaration |
 | ConnectionSource | Pump threads + mpsc | calloop EventSource (read + buffered write) |
 | Protocol trait | None | `Lifecycle`, `Display` types exist |
