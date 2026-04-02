@@ -1,8 +1,9 @@
 # pane v2 Architecture
 
 A pane is organized state with an interface that allows views of
-that state. Display is one view. Filesystem projection is another.
-Remote agent access — all views of the same state, structured
+that state. Display is one view. The namespace (filesystem
+projection at `/pane/`, routed queries via optics, remote access)
+is another. Both are projections of the same state, structured
 by the protocol and kept consistent by optic laws.
 
 Designed from first principles after two weeks of proof-of-concept
@@ -96,17 +97,18 @@ A pane is:
 1. **Organized state** — body content, tag (title + commands),
    attributes, configuration. Structured through optics.
 
-2. **An interface for views of that state** — visual display,
-   namespace projection at `/pane/` (filesystem + routed queries),
-   remote access. All projections of the same state, structured by
-   the protocol and kept consistent by optic laws. The protocol is
-   not a view — it governs how views are accessed, negotiated, and
-   coordinated.
+2. **An interface for views of that state** — the display view
+   (visual projection via the compositor) and the namespace view
+   (filesystem projection at `/pane/`, routed queries via optics,
+   remote access). Both are projections of the same state,
+   structured by the protocol and kept consistent by optic laws.
+   The protocol is not itself a view — it governs how views are
+   accessed, negotiated, and coordinated.
 
 A pane exists whether or not a compositor is running. A headless
-pane has state, has views (display, namespace), appears
-in the namespace — it just doesn't have the display view open.
-Display is one view among peers, not the privileged default.
+pane has state and appears in the namespace — it simply doesn't
+have the display view open. Display is not the default; it is one
+view among peers, opted into via capability declaration.
 
 The **compositor** is infrastructure that provides the display view.
 It discovers panes that support display handling and projects them
