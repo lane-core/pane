@@ -9,3 +9,7 @@
 - [Protocol audit 2026-03-31](project_protocol_audit_2026_03_31.md) -- full audit: ownership gap, reconnect unsound, Chan no Drop, Message::Clone partial, duality correct
 - [Phase 3 channel topology](project_phase3_channel_topology.md) -- register_channel<E> generic, ClipboardEvent extraction, commit() should return Result
 - [Service disconnect analysis](project_service_disconnect_analysis.md) -- proactive required, generic variant, commit()->Result, not opt-in
+- [Handler trait debate](project_handler_trait_debate.md) -- monolithic Handler vs per-protocol: concessions, attack points, key theorems
+- [Handler debate FINAL](project_handler_debate_final.md) -- settled: commit register_channel+EventKind+commit()->Result, defer trait split, five invariants
+- [Greenfield architecture](project_greenfield_architecture.md) -- from-scratch: per-protocol traits, CompositorEvent split, Sigma<H>, builder registration
+- [Cross-proposal review](project_cross_proposal_review.md) -- Be+Plan9 review: Sigma conceded, messaging extraction argued, DeclareInterest adopted

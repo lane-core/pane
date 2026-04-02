@@ -12,3 +12,7 @@
 - [Project: Plan 9 reference audit](project_reference_audit.md) — deep reading of vendored man pages + papers complete, insights in serena (2026-03-31)
 - [Project: Phase 3 channel topology](project_phase3_channel_topology.md) — mount metaphor, priority deferral, async clipboard channel, no fd table, concrete-not-generic
 - [Project: service disconnect model](project_service_disconnect_model.md) — fail at use site (Plan 9 Ehangup), no proactive notification, commit() returns Result
+- [Project: Pane-as-trait assessment](project_pane_as_trait_assessment.md) — approved with caveats: no fd table, protocol caps needed separately, looper specialization is open risk
+- [Project: Pane-as-trait debate](project_pane_as_trait_debate.md) — Plan 9 vs Be positions: concessions, attacks, unresolved tensions (2026-03-31)
+- [Project: Handler architecture final](project_handler_architecture_final.md) — unified Handler + callback-struct, protocol caps, trait split deferred (2026-03-31)
+- [Project: Pane-is-directory architecture](project_pane_is_directory_architecture.md) — clean-slate: services as opened handles, DeclareInterest protocol, Handler shrinks to compositor
