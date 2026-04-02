@@ -619,12 +619,18 @@ connection with a service discriminant:
 [length: u32][service: u8][payload: ...]
 ```
 
-Service 0 = base protocol. Other services assigned at DeclareInterest
-time.
+Service 0 = base protocol. Within service 0, a single
+`Service0Message` enum contains both lifecycle and display
+variants — the deserializer knows the type because the service
+byte selects the enum. Other service IDs are assigned at
+DeclareInterest time.
 
 Per-service error semantics: a malformed message on service N tears
-down service N's channel, not the connection. Connection-level
-errors (framing corruption, auth failure) tear down the connection.
+down service N's channel, not the connection. The server signals
+teardown via `ServiceTeardown { service: u8, reason }` on the base
+protocol (service 0). This triggers the service-specific
+`*_service_lost()` callback. Connection-level errors (framing
+corruption, auth failure) tear down the connection.
 
 ### Request cancellation
 
@@ -639,9 +645,9 @@ already computed) or `ReplyFailed { token }`. Same semantics as
 9P's Tflush: the client must handle a reply arriving after
 cancellation.
 
-Cancel cancels the *wire request*. Cleaning up handler-side
-intermediate state (e.g., clearing `self.clipboard_request`) is
-the handler's responsibility.
+Cancel cancels the *wire request*. With sigma entries, handler-side
+cleanup is automatic — the sigma entry is removed by CancelHandle.
+No ghost state to clear.
 
 ### Enum-based branching (adapted from par)
 
@@ -791,8 +797,8 @@ Every Connection starts with the same Phase 1 (uniform, like 9P's
 Tversion):
 
 ```
-Client → Server: Hello { version, identity: PeerIdentity }
-Server → Client: Welcome { version, instance_id, services: Vec<ServiceDecl> }
+Client → Server: Hello { version, max_message_size: u32 }
+Server → Client: Welcome { version, instance_id, max_message_size: u32, services: Vec<ServiceDecl> }
 ```
 
 Phase 2 is per-service setup on the same Connection (a server that
@@ -825,9 +831,30 @@ of which server they came from.
 
 ### Remote connections require TLS
 
-`Connection::remote` requires TLS. PeerIdentity validated against
-TLS certificate. Plaintext TCP not supported in production. A
-`remote_insecure` may exist for development with explicit opt-in.
+`Connection::remote` requires TLS. `PeerAuth` is derived from the
+transport: `PeerAuth::Kernel { uid, pid }` for unix sockets (via
+SO_PEERCRED), `PeerAuth::Certificate { subject, issuer }` for TLS.
+The Hello message carries no identity — authentication is transport-
+level. `pane_owned_by()` checks `PeerAuth`, not self-reported
+strings. Plaintext TCP is not supported. No `remote_insecure`
+escape hatch — ship `pane dev-certs` tooling for development
+(see resolved question 25).
+
+### Maximum message size
+
+The Hello/Welcome exchange negotiates `max_message_size`. Both
+sides send their maximum; the effective limit is the minimum.
+Default: 16MB. The server rejects frames exceeding this. The
+`length` field in `[length: u32][service: u8][payload]` counts
+the service byte plus payload (total frame = 4-byte length field +
+service byte + payload bytes). The length field does NOT include
+itself.
+
+### Serialization format
+
+All payloads use **postcard** encoding (the same format used by
+pane-session for the handshake). This is the canonical wire format
+for all active-phase messages.
 
 ### Cross-Connection ordering
 
@@ -1066,12 +1093,18 @@ The looper is generic over `H`:
 
 Service dispatch uses fn pointers captured at registration time
 (the Sigma pattern). When `open_clipboard()` is called on a pane
-whose handler implements `ClipboardHandler`, the registration
-captures `clipboard_lock_granted`, `clipboard_lock_denied`,
-`clipboard_changed`, `clipboard_service_lost` as monomorphized
-fn pointers. These are called during batch processing, sharing
-`&mut H` with the main dispatch — sequentially, never concurrently
-(I7).
+whose handler implements `Handles<Clipboard>`, the registration
+captures the monomorphized `Handles<Clipboard>::receive` as a fn
+pointer. The derive macro's generated match delegates to the
+developer's named methods. These are called during batch
+processing, sharing `&mut H` with the main dispatch — sequentially,
+never concurrently (I7).
+
+The closure form (`pane.run(source, |proxy, msg| ...)`) receives
+`Message` (Clone-safe events) only. It cannot handle obligation-
+carrying protocols (clipboard locks, completion requests, incoming
+requests with ReplyPort). These require the struct + trait form
+(`pane.run_with(source, handler)`).
 
 ---
 
@@ -1122,6 +1155,11 @@ failure terminals. The invariants:
   A handler processing a clipboard event must not call `send_and_wait`
   on the compositor Connection (or vice versa). Preserves DLfActRiS
   strong acyclicity across the multi-server connectivity graph.
+
+- **I9**: Sigma is cleared (`sigma.fail_all()` or `sigma.clear()`)
+  before the handler is dropped. CancelHandle's inverted Drop
+  (no-op) depends on this ordering — without it, dropped sigma
+  entries could reference a destroyed handler during callbacks.
 
 Sigma entry invariants (request/reply):
 
@@ -1188,14 +1226,7 @@ Messenger embeds the routing context. Token values may collide
 across Connections — this is correct because the namespaces are
 disjoint.
 
-### Message enum growth
-
-The Message enum grows with each new Clone-safe notification
-variant. This is the same maintenance concern Be had with AppDefs.h
-message constants. For service-specific notifications that don't
-need filter visibility, consider a `ServiceNotification` wrapper
-variant to contain growth rather than flattening everything into
-the top-level enum.
+### Known gaps in the linear discipline (cont.)
 
 ### Termination semantics
 
@@ -1291,8 +1322,10 @@ impl DisplayHandler for Editor {
     }
 }
 
-impl ClipboardHandler for Editor {
-    fn clipboard_lock_granted(&mut self, _proxy: &Messenger, lock: ClipboardWriteLock) -> Result<Flow> {
+#[derive(ProtocolHandler)]
+#[protocol(Clipboard)]
+impl Editor {
+    fn lock_granted(&mut self, _proxy: &Messenger, lock: ClipboardWriteLock) -> Result<Flow> {
         lock.commit(self.buffer.as_bytes().to_vec(), ClipboardMetadata {
             content_type: "text/plain".into(),
             sensitivity: Sensitivity::Normal,
@@ -1300,6 +1333,9 @@ impl ClipboardHandler for Editor {
         })?;
         Ok(Flow::Continue)
     }
+    fn lock_denied(&mut self, _: &Messenger, _: &str, _: &str) -> Result<Flow> { Ok(Flow::Continue) }
+    fn changed(&mut self, _: &Messenger, _: &str, _: Id) -> Result<Flow> { Ok(Flow::Continue) }
+    fn service_lost(&mut self, _: &Messenger) -> Result<Flow> { Ok(Flow::Continue) }
 }
 
 fn main() -> pane_app::Result<()> {
@@ -1375,7 +1411,7 @@ variants.
 | Service disconnect | Not handled | Dual: `commit() -> Result` + per-service `*_service_lost()` on service traits |
 | Request/reply | Ghost state (token in self, Box<dyn Any> downcast) | Sigma entries — typed callbacks, no ghost state, no reply_received |
 | Request cancellation | Not supported | `Cancel { token }` (Tflush equivalent) |
-| Remote auth | Self-reported identity | TLS required, PeerIdentity validated against certificate |
+| Remote auth | Self-reported PeerIdentity | TLS required, PeerAuth derived from transport (Kernel/Certificate) |
 
 ---
 
@@ -1416,8 +1452,8 @@ variants.
    Handler growth per service.
 
 7. **TLS for remote**: `Connection::remote` requires TLS.
-   PeerIdentity validated against TLS certificate. Plaintext TCP
-   not supported in production.
+   `PeerAuth::Certificate` derived from TLS certificate. Plaintext
+   TCP not supported. No `remote_insecure` escape hatch.
 
 8. **Cancel { token }**: Added to ClientToServer. Advisory
    cancellation. Server responds with original reply or ReplyFailed.
@@ -1508,18 +1544,57 @@ None. The spec is implementation-ready for Phase 1.
 
 ---
 
+## Phase 1 Structural Invariants
+
+Phase 1 implements Phase 2's data structures populated at N=1.
+No shortcuts that create type signatures or invariants Phase 2
+must break. If Phase 1's simplifications create invariants that
+Phase 2 breaks, Phase 1 was wrong.
+
+| Component | Shortcut to avoid | Correct Phase 1 implementation |
+|---|---|---|
+| Messenger | Bare `mpsc::Sender` | `ServiceRouter` (HashMap, 1 entry) |
+| App | Bare `Connection` field | `HashMap<Capability, Connection>` (1 entry) |
+| Sigma store | `HashMap<u64, Entry>` | `HashMap<(ConnectionId, u64), Entry>` |
+| Wire framing | v1's `[length][payload]` | `[length][service][payload]` (service=0) |
+| Message enum | Flat with panic-Clone | Nested services + `#[derive(Clone)]` |
+| PeerAuth | Self-reported `PeerIdentity` | `PeerAuth::Kernel { uid, pid }` via SO_PEERCRED |
+| DeclareInterest | Implicit (connect=display) | Explicit capability declaration |
+| ConnectionSource | Pump threads + mpsc | calloop EventSource (read + buffered write) |
+| Protocol trait | None | `Lifecycle`, `Display` types exist |
+| Handles\<P\> | None | Trait exists, Handler desugars to it |
+| Sigma\<H\> + send_request | `reply_received` on Handler | Sigma HashMap + CancelHandle |
+| AppPayload | `T: Send + 'static` | `T: AppPayload` (Clone + Send + 'static) |
+| I9 | Not implemented | sigma cleared before handler drop |
+| max_message_size | Hardcoded | In Hello/Welcome, enforced |
+| Cancel { token } | Deferred | Wire message + CancelHandle work |
+
+**Governing principle:** Phase 2 adds entries to Phase 1's data
+structures. It does not restructure them. Multi-server is single-
+server with N>1 Connections. The compound-key sigma, the
+ServiceRouter with one entry, the calloop EventSource — these
+exist from day one so Phase 2 is additive.
+
+---
+
 ## Implementation Phases
 
-**Phase 1 — Core.** Single-server, headless, no suspension, no
-streaming. Validate: Handler/DisplayHandler split, Message/obligation
-split, Flow, calloop dispatch, typestate handles, filter chain,
-Messenger, Connection, basic protocol (handshake + active phase).
-This is the proof that the linear discipline works end-to-end.
+**Phase 1 — Core.** Single server (N=1), headless, no suspension,
+no streaming. All multi-server data structures present with one
+entry (see Phase 1 Structural Invariants). Validate: Protocol +
+Handles<P> + derive macro, Handler/DisplayHandler split,
+Message/obligation split, Flow, Sigma<H> for request/reply,
+calloop ConnectionSource (read+write), filter chain, Messenger +
+ServiceRouter, PeerAuth::Kernel, DeclareInterest, wire framing
+[length][service][payload], AppPayload marker, CancelHandle,
+max_message_size, I1-I9 + S1-S6. This is the proof that the
+linear discipline works end-to-end.
 
-**Phase 2 — Distribution.** Multi-server, TLS, service map,
-per-Connection tokens, I8 enforcement, DeclareInterest with version
-negotiation. Validate: ServiceRouter, per-Connection failure
-isolation, cross-Connection ordering, capability declaration.
+**Phase 2 — Distribution.** Add Connections (N>1). TLS +
+PeerAuth::Certificate. Service map full precedence chain.
+Version range negotiation. Validate: ServiceRouter with multiple
+entries, per-Connection failure isolation, cross-Connection
+ordering, multi-server sigma (connection_id, token) routing.
 
 **Phase 3 — Lifecycle.** Session suspension/resumption, streaming
 (Queue pattern), ScriptingHandler. These interact — streams must
