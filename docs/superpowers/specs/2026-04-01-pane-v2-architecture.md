@@ -148,7 +148,10 @@ impl ServiceId {
     /// Derive a ServiceId from a reverse-DNS name.
     /// The UUID is deterministically computed via UUIDv5 using
     /// a fixed PANE_NAMESPACE. Zero ceremony — no manual UUID.
-    pub const fn new(name: &'static str) -> Self {
+    /// Not const fn (UUIDv5 requires SHA-1, not const-evaluable
+    /// in the uuid crate). Framework ServiceId constants are
+    /// computed at initialization time or via a build-time macro.
+    pub fn new(name: &'static str) -> Self {
         ServiceId {
             uuid: Uuid::new_v5(PANE_NAMESPACE, name.as_bytes()),
             name,
@@ -157,7 +160,7 @@ impl ServiceId {
 
     /// Explicit UUID for services that have been renamed but must
     /// keep their wire identity.
-    pub const fn with_uuid(uuid: Uuid, name: &'static str) -> Self {
+    pub fn with_uuid(uuid: Uuid, name: &'static str) -> Self {
         ServiceId { uuid, name }
     }
 }
@@ -296,16 +299,20 @@ Services with their own negotiated wire discriminants (clipboard,
 routing) get their session-local u8 from the server during
 DeclareInterest.
 
-The `Handler` trait is sugar over `Handles<Lifecycle>` +
-`Handles<Messaging>` with named methods:
+The `Handler` trait provides named methods for lifecycle and
+messaging. These are not separate Protocols — they are universal
+capabilities every pane has by virtue of existing. Messaging
+methods (request_received, pane_exited, pulse) are on Handler
+directly because there is no DeclareInterest for messaging:
 
 ```rust
 /// Every pane implements this. Lifecycle + messaging.
 /// The headless-complete interface.
 ///
-/// Named methods are the developer-facing API. Under the hood,
-/// the looper dispatches through Handles<Lifecycle> and
-/// Handles<Messaging>.
+/// Named methods are the developer-facing API. The looper
+/// dispatches lifecycle events through Handles<Lifecycle>;
+/// messaging methods are on Handler directly (universal,
+/// no DeclareInterest).
 pub trait Handler: Send + 'static {
     fn ready(&mut self, proxy: &Messenger) -> Result<Flow> { Ok(Flow::Continue) }
     fn close_requested(&mut self, proxy: &Messenger) -> Result<Flow> { Ok(Flow::Stop) }
@@ -587,6 +594,15 @@ derive Clone trivially. Non-Clone payloads wrap in `Arc`.
 
 A `debug_assert` in the looper dispatch provides defense-in-depth.
 
+**When to use `post_app_message` vs application-defined protocols:**
+Application protocols (via `Handles<P>` + derive macro) are for
+structured, exhaustively-checked dispatch from worker threads. Use
+them when the message vocabulary is known at compile time.
+`post_app_message` (via `AppPayload`) is for simple fire-and-forget
+notifications that don't warrant a full Protocol definition. When
+in doubt, use a Protocol — exhaustive matching catches more bugs
+than downcast.
+
 ---
 
 ## Filter Chain
@@ -627,6 +643,12 @@ Key→CloseRequested is pathological (different domain). The type
 system does not enforce this — it is a convention. Debugging tools
 log pre-filter and post-filter identity for `Transform` actions.
 
+Filters run before handler dispatch. If a filter returns `Consume`,
+the handler method does not fire for that message. If a filter
+returns `Transform(msg)`, the handler receives the transformed
+message. The filter chain is the first stage; handler dispatch is
+the second.
+
 Filters are applied in registration order. `add_filter` appends
 to the chain. Filters can be removed by dropping the returned
 `FilterHandle` (which sends `RemoveFilter` to the looper).
@@ -656,8 +678,8 @@ via `DeclareInterest` in the active phase. The server assigns a
 compact session-local wire discriminant (u8) for each accepted
 service.
 
-**Initial binding (handshake).** ClientCaps lists requested
-services. Accepted returns bindings:
+**Initial binding (handshake).** Hello lists requested services.
+Welcome returns bindings:
 
 ```rust
 pub struct ServiceBinding {
@@ -666,7 +688,7 @@ pub struct ServiceBinding {
     pub version: u32,           // negotiated version
 }
 
-// In Accepted:
+// In Welcome:
 pub services: Vec<ServiceBinding>,
 ```
 
@@ -701,8 +723,11 @@ Different connections may assign different u8 values to the same
 service. The 256-slot ceiling is per-connection (no connection
 needs 256 simultaneous services).
 
-DeclareInterest is irrevocable by default; revocation, if needed,
-is an explicit protocol operation with in-flight message cleanup.
+DeclareInterest is revoked when the service handle is dropped
+(sends `RevokeInterest`). In-flight messages for the revoked
+service are discarded by the looper. RevokeInterest is best-effort
+(`let _ = ...`) — if the Connection is dead, the server already
+knows.
 
 The SDK provides a short form: `"clipboard"` expands to
 `"com.pane.clipboard"` for framework services.
@@ -1179,6 +1204,11 @@ The developer writes zero additional code for multi-server vs
 single-server. The difference is App configuration (which servers
 to connect to), not handler code.
 
+Service calloop sources registered during handler methods take
+effect on the next dispatch cycle, not the current batch. Events
+from a newly registered source cannot arrive in the same batch
+as the registration.
+
 ### Typed ingress, unified batch
 
 Each service's calloop channel carries its own typed event enum.
@@ -1229,7 +1259,13 @@ Every obligation-carrying type follows the pattern:
 - Drop sends failure terminal — revert, ReplyFailed, RequestClose
 
 Proven on: ReplyPort, CompletionReplyPort, ClipboardWriteLock,
-CreateFuture, TimerToken.
+CreateFuture, TimerToken, ClipboardHandle (Drop sends
+RevokeInterest).
+
+Destruction sequence on handler exit: sigma.fail_all() (per S4)
+→ handler dropped → service handles (ClipboardHandle, etc.)
+dropped during handler field destruction → Drop sends
+RevokeInterest (best-effort, `let _ = ...`).
 
 ### Deeper linearity in v2
 
@@ -1260,10 +1296,11 @@ failure terminals. The invariants:
 - **I7**: Service dispatch fn pointers called sequentially within
   the batch loop, never concurrently, preserving Rust's exclusive-
   reference invariant on `&mut H`
-- **I8**: No blocking cross-service calls within handler methods.
-  A handler processing a clipboard event must not call `send_and_wait`
-  on the compositor Connection (or vice versa). Preserves DLfActRiS
-  strong acyclicity across the multi-server connectivity graph.
+- **I8**: No blocking calls (`send_and_wait`) in handler methods.
+  Prevents cross-Connection blocking within handlers. Same-
+  Connection cycles (pane A → pane B → pane A through one server)
+  remain a runtime hazard, mitigated by timeout on `send_and_wait`
+  and documented as a mutual-deadlock risk.
 
 - **I9**: Sigma is cleared (`sigma.fail_all()` or `sigma.clear()`)
   before the handler is dropped. CancelHandle's inverted Drop
@@ -1277,7 +1314,10 @@ Sigma entry invariants (request/reply):
   with handler methods, never concurrent (follows from I6/I7)
 - **S3**: Control-before-events — RegisterRequest processed before
   any Reply in the same batch
-- **S4**: `sigma.fail_all()` fires before `handler.disconnected()`
+- **S4**: On individual Connection loss, `sigma.fail_all()` fires
+  for entries keyed to that Connection only, before
+  `handler.disconnected()`. On handler destruction, `sigma.clear()`
+  drops all entries across all Connections without firing callbacks.
 - **S5**: Cancel removes entry without firing callbacks
 - **S6**: `panic = unwind` (follows from I1) — sigma HashMap dropped
   during unwind
@@ -1319,14 +1359,17 @@ grant and commit), `LockRevoked` (server revoked due to timeout
 or admin action), `ValidationFailed` (malformed data rejected).
 Drop-based Revert fires only if `commit` was never called.
 
+**`send_and_wait`** is the synchronous blocking variant of
+`send_request` — it blocks the calling thread until the reply
+arrives or a timeout expires. It must NOT be called from a handler
+method. Enforcement: `is_looper_thread()` panics on self-deadlock;
+`CURRENT_CONNECTION` panics on cross-Connection deadlock.
+
 **I8 is enforced at runtime (panic in all builds).** The looper
 maintains a thread-local `CURRENT_CONNECTION` id during handler
-dispatch. If `send_and_wait` is called targeting a Connection
-other than `CURRENT_CONNECTION`, the runtime panics. A production
-deadlock (silent, unrecoverable, requires process kill) is worse
-than a panic (backtrace, crash report, Drop compensation fires
-via I1). The check cost (one thread-local read) is negligible
-relative to the IPC round-trip that `send_and_wait` performs.
+dispatch. If `send_and_wait` is called from a handler method, the
+runtime panics. The check cost (one thread-local read) is
+negligible relative to the IPC round-trip.
 
 **Tokens are per-Connection.** A pane connected to three servers
 has three independent token namespaces. `Cancel { token }` is
@@ -1334,8 +1377,6 @@ routed to the Connection that issued the original request. The
 Messenger embeds the routing context. Token values may collide
 across Connections — this is correct because the namespaces are
 disjoint.
-
-### Known gaps in the linear discipline (cont.)
 
 ### Termination semantics
 
@@ -1538,17 +1579,19 @@ variants.
    Non-negotiable. Unanimous.
 
 4. **Session resumption**: Deferred implementation. The handshake
-   type will need a `Resume` path. DeclareInterest registrations
-   survive reconnection; stateful obligations (locks, pending
-   requests, open streams) do not — they fail via Drop compensation.
-   Streams must be closed before suspension. The reconnecting client
-   receives `ready()` again and must re-acquire stateful resources.
-   The resume path re-negotiates per-service protocol versions (the
-   server may have upgraded during suspension). Obligation-carrying
-   messages must not be buffered across reconnection. Tokens expire
-   server-side; client discovers expiry at resume time (rejection).
-   Multi-server suspension is per-Connection, independent. Reference:
-   Plan 9 aan(8), par Server/Proxy/Connection (Michal Strba).
+   type will need a `Resume` path. On resume, the client receives
+   `ready()` as if new and must re-send all `DeclareInterest`
+   messages. The server MAY optimize by recognizing previously-held
+   interests, but the protocol requires re-declaration. Stateful
+   obligations (locks, pending requests, open streams) do not
+   survive — they fail via Drop compensation. Streams must be
+   closed before suspension. The resume path re-negotiates per-
+   service protocol versions (the server may have upgraded).
+   Obligation-carrying messages must not be buffered across
+   reconnection. Tokens expire server-side; client discovers
+   expiry at resume time (rejection). Multi-server suspension is
+   per-Connection, independent. Reference: Plan 9 aan(8), par
+   Server/Proxy/Connection (Michal Strba).
 
 5. **Naming**: `Message` (tier 1 faithful). The type is what BMessage
    was, corrected: obligations extracted to internal types. No
@@ -1612,7 +1655,7 @@ variants.
     (`com.pane.clipboard`) replace hardcoded `SERVICE_ID: u8`.
     Wire discriminants are session-local, assigned by the server
     in `InterestAccepted { session_id: u8 }`. Initial services
-    bound in handshake (ClientCaps → Accepted with bindings).
+    bound in handshake (Hello → Welcome with bindings).
     Late-binding services via active-phase DeclareInterest.
 
 19. **Service 0 shared by Lifecycle and Display**: Intentional.
