@@ -67,6 +67,26 @@ Rust that most closely approximates linear types. Move-only types,
 The developer-facing API is ergonomic; the infrastructure beneath
 it is linearly disciplined.
 
+**The functoriality principle**: `Prog(Phase1 + Phase2) ≠
+Prog(Phase1) + Prog(Phase2)`. The programs buildable on the full
+architecture are not decomposable into programs buildable on each
+phase independently. Phase 1 type signatures shape the design
+space — developers (including us) build patterns against the
+types they see. A Phase 1 type that omits structure needed in
+Phase 2 produces patterns that assume that structure doesn't
+exist, creating an ecosystem that can't cleanly accommodate the
+full design. BeOS demonstrated this: string-based app signatures
+(`strcmp()` everywhere) prevented clean evolution to structured
+identity when the launch daemon and package management arrived.
+
+Consequence: every type in Phase 1 must be the full architecture's
+type, populated minimally. `ServiceId { uuid, name }` from day
+one, not `&'static str` that gets promoted later. `ServiceRouter`
+with one entry, not a bare sender. The cost is near-zero
+(deterministic UUID derivation, HashMap with one entry). The
+alternative is a guaranteed future breaking change across every
+Protocol impl, Handler, and downstream application.
+
 ---
 
 ## What Is a Pane
@@ -101,29 +121,69 @@ scripting, application-defined — is a Protocol. The trait links
 three things that are otherwise maintained by convention:
 
 ```rust
+/// Identity of a service in the pane protocol.
+///
+/// The UUID is the machine identity — a protocol constant,
+/// deterministically derived from the name via UUIDv5.
+/// Survives renames and travels across federation boundaries
+/// where naming conventions may diverge.
+/// The name is the human identity — for pane-fs paths, service
+/// maps, and logs.
+///
+/// # Plan 9
+///
+/// Analogous to qid.path (stable across renames, machine-comparable)
+/// alongside the directory entry name (human-chosen, may vary per
+/// client's mount point). See qid(5).
+pub struct ServiceId {
+    pub uuid: Uuid,
+    pub name: &'static str,
+}
+
+impl ServiceId {
+    /// Derive a ServiceId from a reverse-DNS name.
+    /// The UUID is deterministically computed via UUIDv5 using
+    /// a fixed PANE_NAMESPACE. Zero ceremony — no manual UUID.
+    pub const fn new(name: &'static str) -> Self {
+        ServiceId {
+            uuid: Uuid::new_v5(PANE_NAMESPACE, name.as_bytes()),
+            name,
+        }
+    }
+
+    /// Explicit UUID for services that have been renamed but must
+    /// keep their wire identity.
+    pub const fn with_uuid(uuid: Uuid, name: &'static str) -> Self {
+        ServiceId { uuid, name }
+    }
+}
+
 /// A protocol relationship between a pane and a service.
-/// Links globally unique identity, typed messages, and capability
-/// declaration into a single type-level definition.
+/// Links identity, typed messages into a single type-level definition.
 ///
 /// EAct: formalizes what a session endpoint IS.
 /// CLL: the protocol type determines the channel's session type.
 /// Plan 9: the typed version of "I have this file in my namespace."
 pub trait Protocol {
-    /// Globally unique service identifier (reverse-DNS).
-    /// Used in DeclareInterest and service map resolution.
-    /// The wire discriminant is negotiated per-connection, not
-    /// hardcoded — the server assigns a compact session-local u8
-    /// in InterestAccepted.
-    const SERVICE_NAME: &'static str;
+    /// Service identity (UUID + human-readable name).
+    /// The UUID goes on the wire (DeclareInterest).
+    /// The name goes in service maps and pane-fs paths.
+    const SERVICE_ID: ServiceId;
     /// The typed events this protocol produces.
     type Message: Send + 'static;
 }
 ```
 
-Keep Protocol minimal: SERVICE_NAME + Message. The name is the
-identity; the wire discriminant is negotiated. Do not accumulate
+Keep Protocol minimal: SERVICE_ID + Message. Do not accumulate
 associated types for caching, reconnection, priority — those
 belong on the service implementation.
+
+**Naming convention** (codify now, per Be's lesson with
+inconsistent `application/x-vnd.*` signatures): service names
+use reverse-DNS notation. Framework services: `com.pane.*`.
+Third-party: `com.vendor.*` or `org.project.*`. Application-
+local protocols: `com.vendor.app.*`. The convention is part of
+the ServiceId contract, not an afterthought.
 
 ### Handles\<P\>: the uniform dispatch trait
 
@@ -206,7 +266,7 @@ is a separate protocol that panes opt into.
 /// (service 0, implicit, never DeclareInterest'd).
 struct Lifecycle;
 impl Protocol for Lifecycle {
-    const SERVICE_NAME: &'static str = "com.pane.lifecycle";
+    const SERVICE_ID: ServiceId = ServiceId::new("com.pane.lifecycle");
     type Message = LifecycleMessage;
 }
 
@@ -214,7 +274,7 @@ impl Protocol for Lifecycle {
 /// the base protocol (declared in handshake, not via DeclareInterest).
 struct Display;
 impl Protocol for Display {
-    const SERVICE_NAME: &'static str = "com.pane.display";
+    const SERVICE_ID: ServiceId = ServiceId::new("com.pane.display");
     type Message = DisplayMessage;
 }
 ```
@@ -297,7 +357,7 @@ generates the dispatch; the developer provides named handlers.
 ```rust
 struct Clipboard;
 impl Protocol for Clipboard {
-    const SERVICE_NAME: &'static str = "com.pane.clipboard";
+    const SERVICE_ID: ServiceId = ServiceId::new("com.pane.clipboard");
     type Message = ClipboardMessage;
 }
 
@@ -310,7 +370,7 @@ pub enum ClipboardMessage {
 
 struct Scripting;
 impl Protocol for Scripting {
-    const SERVICE_NAME: &'static str = "com.pane.scripting";
+    const SERVICE_ID: ServiceId = ServiceId::new("com.pane.scripting");
     type Message = ScriptingMessage;
 }
 ```
@@ -351,10 +411,10 @@ Applications define their own Protocol for custom messages.
 ```rust
 struct EditorProtocol;
 impl Protocol for EditorProtocol {
-    const SERVICE_NAME: &'static str = "com.example.editor";
+    const SERVICE_ID: ServiceId = ServiceId::new("com.example.editor");
     type Message = EditorMessage;
     // Local only — never DeclareInterest'd, never on the wire.
-    // SERVICE_NAME is for identification, not routing.
+    // The UUID exists for identification; routing is looper-local.
 }
 
 enum EditorMessage {
