@@ -44,7 +44,11 @@ assigned numeric path (see `docs/pane-fs.md` §Pane numbering):
 /pane/4/attrs/signature  -> "org.librewolf.Librewolf"
 /pane/4/attrs/pid        -> 48291
 /pane/4/attrs/synthetic  -> true
-/pane/4/ctl              -> accepts "close", "minimize", "maximize", "fullscreen"
+/pane/4/commands/close
+/pane/4/commands/minimize
+/pane/4/commands/maximize
+/pane/4/commands/fullscreen
+/pane/4/ctl              -> write command names to invoke
 ```
 
 The stable UUID identity is available at

@@ -75,38 +75,60 @@ pane mapping). Analogous to `/proc/self/`.
 ### Requirement: Semantic filesystem tree
 Each pane SHALL be exposed under `/pane/<n>/` with a tree structure that presents semantic interfaces, not implementation details. The filesystem exposes the abstraction level relevant to the consumer:
 
-- `tag` — the tag line content (plain text, read/write)
+- `tag` — title text (plain text, read/write). What appears in the title bar.
+- `commands/` — command vocabulary (directory, read-only). One file per command. The discovery interface for the command surface.
 - `body` — the body content at the semantic level (for a shell: command output; for an editor: file content; plain text, read/write)
-- `attrs/` — directory of typed attributes, one file per attribute (pane type, title, dirty state, working directory)
-- `ctl` — control interface (line commands, write-only)
+- `attrs/` — directory of typed attributes, one file per attribute (pane type, signature, dirty state, working directory)
+- `ctl` — control interface (line commands, write-only). Command invocation.
 - `event` — event stream (JSONL, read-only, blocking)
 
 The tree does not expose rendering internals (glyph data, buffer state, GPU resources). A script reading `body` gets the content a human would see, at the semantic level the content operates at.
 
 **Compositional equivalence** (architecture §2): when panes are composed, pane-fs reflects the composition structure as directory nesting. A split containing panes A and B appears as a directory with its own `attrs/` (orientation, ratio) and child entries `A/`, `B/`. Independent panes are top-level entries; composed panes are nested under their container. The filesystem tree mirrors the layout tree. Tools that walk `/pane/` see composition structure directly.
 
-#### Scenario: Tag as plain text
+#### Scenario: Tag as title text
 - **WHEN** `cat /pane/1/tag` is executed
-- **THEN** the plain text tag line content SHALL be returned without JSON wrapping
+- **THEN** the title text SHALL be returned as plain text (e.g., "Editor — main.rs")
+
+#### Scenario: Write tag
+- **WHEN** `echo "Editor — lib.rs" > /pane/1/tag` is executed
+- **THEN** the pane's title SHALL be updated
+
+#### Scenario: Command discovery
+- **WHEN** `ls /pane/1/commands/` is executed
+- **THEN** one file per command SHALL be listed (e.g., `save`, `close`, `undo`)
+
+#### Scenario: Command metadata
+- **WHEN** `cat /pane/1/commands/save` is executed
+- **THEN** the command's metadata SHALL be returned: description,
+  keyboard shortcut, and group. Format: one key-value pair per
+  line (`description: Save file`, `shortcut: Ctrl+S`,
+  `group: File`).
+
+#### Scenario: Command invocation via ctl
+- **WHEN** `echo "save" > /pane/1/ctl` is executed
+- **THEN** the pane SHALL receive `CommandExecuted { command: "save", args: "" }`
+- **AND** this is the same effect as selecting "save" from the
+  command surface (Alt+; prompt)
 
 #### Scenario: Body as semantic content
 - **WHEN** `cat /pane/1/body` is executed
 - **THEN** the semantic body content SHALL be returned as plain text (not rendering internals, not buffer state)
 
 #### Scenario: Attributes as individual files
-- **WHEN** `cat /pane/1/attrs/title` is executed
-- **THEN** the pane's title attribute SHALL be returned as a single value
+- **WHEN** `cat /pane/1/attrs/signature` is executed
+- **THEN** the pane's application signature SHALL be returned as a single value (e.g., "com.pane.editor")
 
 #### Scenario: Events as JSONL
 - **WHEN** `tail -f /pane/1/event` is executed
 - **THEN** events SHALL arrive as one JSON object per line
 
 ### Requirement: Format per endpoint
-Each filesystem node SHALL use the representation natural to its data. Plain text for text data (tag, body). One value per file for attributes (attrs/). Line commands for control files (ctl). JSONL for event streams (event).
+Each filesystem node SHALL use the representation natural to its data. Plain text for text data (tag, body). Key-value pairs for command metadata (commands/<name>). One value per file for attributes (attrs/). Line commands for control files (ctl). JSONL for event streams (event).
 
 #### Scenario: Attribute write
-- **WHEN** `echo "new title" > /pane/1/attrs/title` is executed
-- **THEN** the pane's title attribute SHALL be updated
+- **WHEN** `echo "true" > /pane/1/attrs/dirty` is executed
+- **THEN** the pane's dirty attribute SHALL be updated
 
 ### Requirement: Pane index
 pane-fs SHALL expose a pane index at `/pane/index`.
@@ -119,8 +141,25 @@ pane-fs SHALL expose a pane index at `/pane/index`.
 - **WHEN** `ls /pane/` is executed
 - **THEN** each pane SHALL appear as a numbered directory entry (`1/`, `2/`, `3/`, ...)
 
-### Requirement: Control file command syntax
-The `ctl` file SHALL accept line-oriented commands. Each line is a command with optional arguments. For structured payloads (multi-property creation, complex operations), a JSON payload follows the command name.
+### Requirement: Command vocabulary and control file
+
+The `commands/` directory is the **discovery** interface — it
+tells you what a pane can do. The `ctl` file is the **invocation**
+interface — it does it. The command surface (Alt+; prompt in the
+compositor, equivalent TUI in pane-headless) reads `commands/` to
+populate its fzf-style completion list, and writes the user's
+selection to `ctl`.
+
+`commands/` is read-only from the filesystem perspective. The
+command vocabulary is set by the pane's handler (via the Tag
+builder at creation time and `Messenger::set_vocabulary()` for
+dynamic updates). Bridge processes add commands through the
+enrichment protocol (see `docs/legacy-wrapping.md` §3).
+
+The `ctl` file SHALL accept line-oriented commands. Each line is
+a command with optional arguments. For structured payloads
+(multi-property creation, complex operations), a JSON payload
+follows the command name.
 
 Simple commands:
 ```
