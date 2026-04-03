@@ -53,9 +53,9 @@ mistakes.
 
 ## Design
 
-Everything is a pane. Every pane has a tag line (title, command bar, and menu
-in one), a body (text, widgets, or a legacy surface), and a session-typed
-protocol connection. Panes compose spatially and through the protocol. The
+Everything is a pane. Every pane has a tag (title), a command vocabulary
+(discoverable via the command surface or `/pane/<n>/commands/`), a body
+(text, widgets, or a legacy surface), and a session-typed protocol connection. Panes compose spatially and through the protocol. The
 system's power derives from the uniformity of this single object.
 
 Every pane is one object with many views: a visual display to the user, a
@@ -131,50 +131,43 @@ what each component does.
 
 ## Status
 
+The project is in a redesign phase. The architecture spec
+(`docs/architecture.md`) is the source of truth. A prototype
+validated the API vocabulary and subsystem landscape; the
+codebase has been struck for reimplementation against the
+tightened spec.
+
 What exists today:
 
-    pane-proto       wire types, session-typed handshake, active-phase enums
     pane-session     session type primitives (Chan, Send, Recv, Branch),
-                     transports (unix, tcp, tls), calloop integration
-    pane-server      compositor protocol server — handshake, client routing,
-                     identity validation, rejection. no rendering deps.
-    pane-headless    headless server binary. full protocol, dual listeners
-                     (unix + tcp), no gpu. runs on any unix-like.
-    pane-app         application kit: App, Pane, Messenger, Handler,
-                     MessageFilter, PaneCreateFuture, quit protocol,
-                     timers, shortcuts, crash monitoring, send-reply,
-                     undo/redo framework, clipboard types
+                     transports (unix, tcp, tls, memory, proxy, reconnecting),
+                     calloop integration. ~520 LOC, 40 tests. Orthogonal
+                     to the redesign — carries forward unchanged.
     pane-optic       optics: Getter/Setter/PartialGetter/PartialSetter,
-                     FieldLens/FieldAffine/FieldTraversal, composition, laws
-    pane-notify      filesystem change notification (inotify abstraction)
-    pane-comp        wayland compositor (smithay). renders blank windows.
-                     input routing and chrome rendering not yet wired.
-    pane-hello       canonical first application
+                     FieldLens/FieldAffine/FieldTraversal, composition,
+                     optic law tests. carries forward unchanged.
+    pane-notify      filesystem change notification (inotify/fanotify
+                     abstraction). carries forward unchanged.
+    pane-proto       struck — reimplementing per architecture spec
+    pane-app         struck — reimplementing per architecture spec
+    pane-server      struck — reimplementing per architecture spec
+    pane-headless    struck — reimplementing per architecture spec
+    pane-comp        struck — reimplementing per architecture spec
+    pane-hello       struck — reimplementing per architecture spec
 
-What's next: calloop looper evolution (C1 multi-source select), pane-store
-(attribute storage), pane-fs (computed-view namespace), pane-roster
-(federation), compositor rendering + input.
+What's next: Phase 1 (Core) — Protocol trait, ServiceId,
+Handler/DisplayHandler/Handles<P> split, Message (base-protocol-
+only), Flow, Dispatch<H>, ConnectionSource, filter chain,
+Messenger + ServiceRouter. See `PLAN.md`.
 
 ## Building
 
     direnv allow               # activate nix dev shell (first time)
-    just build                 # build all crates
-    just test                  # run all tests
-    just test-crate <name>     # test a specific crate
+    cargo check                # check workspace (surviving crates)
+    cargo test                 # test surviving crates
     just lint                  # clippy
     just fmt                   # rustfmt + nixfmt
     just doc                   # generate API docs
-
-Running headless:
-
-    cargo run -p pane-headless                     # unix socket
-    cargo run -p pane-headless -- --tcp 0.0.0.0:7070  # + tcp
-
-    # in another terminal:
-    cargo run -p pane-app --example hello          # basic lifecycle
-    cargo run -p pane-app --example handler        # stateful Handler
-    cargo run -p pane-app --example worker         # worker thread → handler
-    cargo run -p pane-app --example monitor        # crash monitoring
 
 ## On methodology
 
