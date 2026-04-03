@@ -217,8 +217,54 @@ pub trait Handles<P: Protocol> {
 
 The type system enforces: if a pane declares interest in a
 protocol, its handler must implement `Handles<P>` for that
-protocol. Registration (`open_clipboard()`) requires the bound
-`H: Handles<Clipboard>` at compile time.
+protocol. Registration (`open_service::<P>()`) requires the bound
+`H: Handles<P>` at compile time.
+
+### ServiceHandle\<P\>
+
+```rust
+/// A live connection to a service. Parameterized by protocol.
+/// Drop sends RevokeInterest. Protocol-specific methods are
+/// added via `impl ServiceHandle<Clipboard> { ... }`.
+pub struct ServiceHandle<P: Protocol> {
+    service_id: ServiceId,
+    connection_id: ConnectionId,
+    session_id: u8,
+    looper_tx: LooperSender,
+    _protocol: PhantomData<P>,
+}
+
+impl<P: Protocol> Drop for ServiceHandle<P> {
+    fn drop(&mut self) {
+        let _ = self.looper_tx.send(LooperMessage::RevokeInterest {
+            connection_id: self.connection_id,
+            session_id: self.session_id,
+        });
+    }
+}
+
+/// Protocol-specific methods live on the concrete instantiation:
+impl ServiceHandle<Clipboard> {
+    pub fn request_lock(&self) -> Result<()> { ... }
+    pub fn watch(&self, clipboard: &str) -> Result<()> { ... }
+}
+```
+
+Opening a service:
+
+```rust
+impl Pane {
+    /// Open a service connection. Resolves the capability via the
+    /// service map, sends DeclareInterest, registers a calloop
+    /// source, returns a typed handle. Requires H: Handles<P>.
+    pub fn open_service<P: Protocol>(&mut self) -> Result<ServiceHandle<P>>
+    where H: Handles<P>;
+}
+```
+
+Adding a new service requires only `struct MyService; impl Protocol
+for MyService { ... }` and `impl Handles<MyService> for MyHandler`.
+No new framework types or methods.
 
 ### Named methods via attribute macro
 
@@ -435,7 +481,7 @@ impl Protocol for Routing {
 }
 ```
 
-DnD requires display: `open_drag_drop()` requires
+DnD requires display: `open_service::<DragDrop>()` requires
 `H: Handles<Display> + Handles<DragDrop>`.
 
 ### Pointer policy (mouse coalescing opt-out)
@@ -608,7 +654,7 @@ pub enum ClipboardMessage {
 
 Filter visibility for service events: filters that need to observe
 service notifications register per-service filter hooks at service
-registration time (e.g., `open_clipboard()` installs the clipboard
+registration time (e.g., `open_service::<Clipboard>()` installs the clipboard
 filter hook). These hooks are keyed by `ServiceId` and can inspect
 the protocol's Clone-safe message variants. The base filter chain
 (operating on `Message`) never sees service events.
@@ -827,7 +873,7 @@ Per-service error semantics: a malformed message on service N tears
 down service N's channel, not the connection. The server signals
 teardown via `ServiceTeardown { service: u8, reason }` on the base
 Control protocol (wire service 0). This triggers the service-specific
-`*_service_lost()` callback. Connection-level errors (framing
+`ServiceLost` message via the protocol's `Handles<P>` dispatch. Connection-level errors (framing
 corruption, auth failure) tear down the connection.
 
 ### Request cancellation
@@ -1086,7 +1132,7 @@ handler uses `send_request` with typed callbacks:
 fn command_executed(&mut self, proxy: &Messenger, cmd: &str, _: &str) -> Result<Flow> {
     if cmd == "paste" {
         proxy.send_request::<Self, ClipboardData>(
-            &self.clipboard_messenger,
+            self.clipboard.messenger(),
             ClipboardRead("text/plain"),
             |editor, proxy, data| {
                 editor.insert_text(&data.content);
@@ -1123,7 +1169,7 @@ Other Connections are unaffected. The pane continues running.
 
 This is Plan 9's `Ehangup` applied per-Connection. Failure surfaces
 at the use site — when the handler tries to use the lost capability.
-Service-specific `*_service_lost()` methods on service traits
+Service-specific `ServiceLost` variants in each protocol's Message enum
 provide async notification for handlers holding stale state.
 
 ### Scoped pane handles
@@ -1272,7 +1318,7 @@ Services are opened at pane setup time. Opening a service:
 
 ```rust
 // Clipboard registration — the framework finds the right Connection
-let clipboard = pane.open_clipboard("system")?;
+let clipboard = pane.open_service::<Clipboard>()?;
 
 // In the handler — same as single-server:
 fn command_executed(&mut self, proxy: &Messenger, cmd: &str, _: &str) -> Result<Flow> {
@@ -1318,7 +1364,7 @@ The looper is generic over `H`:
 - `run_with_display<H: DisplayHandler>` for display panes
 
 Service dispatch uses fn pointers captured at registration time
-(the Dispatch pattern). When `open_clipboard()` is called on a pane
+(the Dispatch pattern). When `open_service::<Clipboard>()` is called on a pane
 whose handler implements `Handles<Clipboard>`, the registration
 captures the monomorphized `Handles<Clipboard>::receive` as a fn
 pointer. The derive macro's generated match delegates to the
@@ -1346,17 +1392,17 @@ Every obligation-carrying type follows the pattern:
 - Drop sends failure terminal — revert, ReplyFailed, RequestClose
 
 Proven on: ReplyPort, CompletionReplyPort, ClipboardWriteLock,
-CreateFuture, TimerToken, ClipboardHandle (Drop sends
+CreateFuture, TimerToken, ServiceHandle<Clipboard> (Drop sends
 RevokeInterest).
 
 Destruction sequence on handler exit: dispatch.fail_connection() (per S4)
-→ handler dropped → service handles (ClipboardHandle, etc.)
+→ handler dropped → service handles (ServiceHandle<Clipboard>, etc.)
 dropped during handler field destruction → Drop sends
 RevokeInterest (best-effort, `let _ = ...`).
 
 ### Extended linear discipline
 
-- **Service handles**: `open_clipboard()` returns a `ClipboardHandle`
+- **Service handles**: `open_service::<Clipboard>()` returns a `ServiceHandle<Clipboard>`
   whose Drop sends `RevokeInterest`. The service lifecycle is
   linearly tracked.
 - **Batch processing**: the batch `Vec` is taken (`mem::take`) and
@@ -1566,7 +1612,7 @@ use pane_app::*;
 
 struct Editor {
     buffer: String,
-    clipboard: ClipboardHandle,
+    clipboard: ServiceHandle<Clipboard>,
 }
 
 impl Handler for Editor {
@@ -1617,7 +1663,7 @@ fn main() -> pane_app::Result<()> {
             .command(cmd("copy", "Copy").shortcut("Ctrl+C")),
     )?.wait()?;
 
-    let clipboard = pane.open_clipboard("system")?;
+    let clipboard = pane.open_service::<Clipboard>()?;
     pane.run_with_display(source, Editor {
         buffer: String::new(),
         clipboard,
@@ -1678,9 +1724,9 @@ variants.
    divergence entry needed.
 
 6. **Service disconnect**: Dual mechanism. `commit() -> Result` for
-   synchronous at-call-site detection. `clipboard_service_lost()`
-   (and per-service equivalents) on service traits for async
-   notification. Scoped to service traits, not base Handler — no
+   synchronous at-call-site detection. `ServiceLost` variant in
+   each protocol's Message enum for async notification, dispatched
+   through `Handles<P>`. Scoped to per-protocol dispatch — no
    Handler growth per service.
 
 7. **TLS for remote**: `Connection::remote` requires TLS.
