@@ -33,7 +33,7 @@ impl Handler for Shell {
         Ok(Flow::Stop)
     }
     fn request_received(&mut self, proxy: &Messenger, service: ServiceId, msg: Box<dyn Any + Send>, reply: ReplyPort) -> Result<Flow> {
-        // A script writes to /pane/<id>/ctl — inject into PTY.
+        // A script writes to /pane/1/ctl — inject into PTY.
         // Check ServiceId before downcasting (the convention from
         // architecture.md §Protocol and Dispatch).
         if service == service_id!("com.pane.shell.input") {
@@ -86,16 +86,16 @@ impl Shell {
 - **request_received with ServiceId**: scripts inject text through
   the ad-hoc request path. The handler checks ServiceId before
   downcasting — the convention established in the architecture spec.
-- **pane-fs namespace** (see `docs/pane-fs.md`): `/pane/<id>/body`
+- **pane-fs namespace** (see `docs/pane-fs.md`): `/pane/1/body`
   is the terminal's semantic content (command output as text).
-  `/pane/<id>/ctl` accepts line commands (same as writing to a
-  Plan 9 `cons` file). `/pane/<id>/event` is a blocking-read
+  `/pane/1/ctl` accepts line commands (same as writing to a
+  Plan 9 `cons` file). `/pane/1/event` is a blocking-read
   JSONL stream of terminal events. No special IPC — the
   filesystem IS the scripting interface.
 
 **Why headless matters:** A CI system runs `pane-shell` headless on
 a build server. The shell pane exists in the namespace, runs
-commands, produces output accessible at `/pane/<id>/body`. No
+commands, produces output accessible at `/pane/1/body`. No
 display needed. The same binary, the same protocol, the same
 Handler code.
 
@@ -116,11 +116,11 @@ desktop connects to it for display.
   compositor (unix socket) — two Connections in one App, routed
   by ServiceRouter.
 - **pane-fs namespace**: each monitored service is a pane,
-  accessible by ID under `/pane/<id>/`. The per-signature index
+  accessible by number under `/pane/`. The per-signature index
   (`/pane/by-sig/com.ops.monitor/`) lists all monitoring panes.
-  `cat /pane/<id>/body` returns the current health status.
+  `cat /pane/3/body` returns the current health status.
   Alerting scripts read the event stream:
-  `while read line < /pane/<id>/event; do ...`.
+  `while read line < /pane/3/event; do ...`.
 - **Session suspension (Phase 3)**: the dashboard pane suspends
   when the user closes it. The monitoring panes keep running
   headless. When the user reopens the dashboard, it resumes the
@@ -288,8 +288,8 @@ std::thread::spawn(move || {
   keystrokes into single undo steps. These are kit-level types
   from the optics subsystem, not core protocol concepts.
 - **Scripting via pane-fs** (see `docs/pane-fs.md`):
-  `/pane/<id>/attrs/cursor` returns the cursor position.
-  `/pane/<id>/attrs/selection` returns the selected text.
+  `/pane/2/attrs/cursor` returns the cursor position.
+  `/pane/2/attrs/selection` returns the selected text.
   External tools (linters, formatters) read and write through
   the namespace. The `DynOptic` trait (see `docs/scripting-optics-design.md`)
   handles type-erased serialization at the boundary; the editor's
@@ -421,9 +421,9 @@ impl RoutingHandler for BuildDaemon {
 ```
 
 - **Namespace as API** (see `docs/pane-fs.md`):
-  `/pane/<id>/attrs/status` → "building".
-  `/pane/<id>/attrs/targets` → "kernel\nlibc\ninit".
-  `echo "build kernel" > /pane/<id>/ctl` starts a build.
+  `/pane/5/attrs/status` → "building".
+  `/pane/5/attrs/targets` → "kernel\nlibc\ninit".
+  `echo "build kernel" > /pane/5/ctl` starts a build.
   Shell scripts automate builds through the filesystem.
   The per-signature index at `/pane/by-sig/com.dev.build/`
   lists all build daemon panes.
@@ -437,7 +437,7 @@ impl RoutingHandler for BuildDaemon {
   machine. The developer's local editor connects to it via
   `App::connect_service()`. Same protocol, same routing, different
   machine. The developer writes `build kernel` to
-  `/pane/<id>/ctl`; the command routes to the remote build daemon
+  `/pane/5/ctl`; the command routes to the remote build daemon
   through pane-fs.
 
 ---
@@ -455,8 +455,8 @@ demonstrating the system. The guide is a pane.
 - **Scripting via pane-fs (Phase 3 — RoutingHandler enables
   cross-pane writes)**: the guide reads and writes other panes'
   properties to demonstrate features. It writes to
-  `/pane/<id>/attrs/theme` to show theming. It reads
-  `/pane/<id>/attrs/cursor` to point out where the user is. The
+  `/pane/2/attrs/theme` to show theming. It reads
+  `/pane/1/attrs/cursor` to point out where the user is. The
   optic discipline (GetPut, PutGet) guarantees that reading after
   writing returns the written value — the guide's demonstrations
   are reliable, not racy. (In Phase 1, the guide can read
@@ -466,8 +466,8 @@ demonstrating the system. The guide is a pane.
   user pastes them into a shell. The guide doesn't need display
   access to do this; clipboard is an independent service
   Connection.
-- **pane-fs for self-description**: `cat /pane/<id>/body` returns
-  what the guide is currently saying. `cat /pane/<id>/attrs/topic`
+- **pane-fs for self-description**: `cat /pane/7/body` returns
+  what the guide is currently saying. `cat /pane/7/attrs/topic`
   returns what it's teaching. A curious user discovers this and
   learns the namespace by using it to inspect their teacher.
 
@@ -482,8 +482,8 @@ namespace, the scripting system. Display is something they could
 opt into, not something they're missing.
 
 **The namespace is the scripting interface.** Every use case
-involves reading or writing pane-fs paths (`/pane/<id>/body`,
-`/pane/<id>/attrs/...`, `/pane/<id>/ctl`, `/pane/<id>/event`).
+involves reading or writing pane-fs paths (`/pane/<n>/body`,
+`/pane/<n>/attrs/...`, `/pane/<n>/ctl`, `/pane/<n>/event`).
 Shell scripts, external tools, and AI agents all use the same
 filesystem interface. No SDK needed for basic automation — `cat`
 and `echo` are sufficient. See `docs/pane-fs.md` for the full

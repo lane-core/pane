@@ -33,8 +33,47 @@ If you'd be comfortable with 30μs latency and per-file granularity, use the fil
 - **WHEN** a shell script reads `/pane/1/tag`
 - **THEN** the operation SHALL complete with filesystem-tier latency (~15-30μs), not require protocol setup
 
+### Requirement: Pane numbering and identity
+
+Panes are numbered sequentially as they appear in the local
+namespace. `/pane/1/`, `/pane/2/`, `/pane/3/`. The number is a
+locally-assigned index — the name in this namespace, not the
+identity. It is not stable across restarts.
+
+The UUID is the globally-unique *identity*. It lives in a view
+directory: `/pane/by-uuid/<uuid>/` contains a symlink to the
+corresponding `/pane/<n>/`. Scripts that need cross-machine
+stability use the UUID path. Humans and shell pipelines use
+the number.
+
+This follows Plan 9's /proc convention (PIDs are local indices,
+not global identity) and Linux's /dev/disk/by-uuid pattern
+(short name for use, UUID for stable reference).
+
+When remote panes are mounted into the local namespace, they
+receive local numbers alongside local panes. `/pane/7/` might
+be local or remote — you don't care. That's namespace
+transparency. `/pane/by-uuid/<uuid>/` lets you find the same
+pane regardless of what number it was assigned on this machine.
+
+`/pane/self/` is a context-dependent symlink to the calling
+pane's directory (derived from the FUSE request's PID → owning
+pane mapping). Analogous to `/proc/self/`.
+
+#### Scenario: Numeric pane path
+- **WHEN** `cat /pane/3/body` is executed
+- **THEN** the semantic body content of pane 3 SHALL be returned
+
+#### Scenario: UUID lookup
+- **WHEN** `readlink /pane/by-uuid/550e8400-e29b-41d4-a716-446655440000` is executed
+- **THEN** the result SHALL be a path to `/pane/<n>/` for the corresponding pane
+
+#### Scenario: Self reference
+- **WHEN** a process running inside pane 3 executes `cat /pane/self/attrs/title`
+- **THEN** the title of pane 3 SHALL be returned
+
 ### Requirement: Semantic filesystem tree
-Each pane SHALL be exposed under `/pane/<id>/` with a tree structure that presents semantic interfaces, not implementation details. The filesystem exposes the abstraction level relevant to the consumer:
+Each pane SHALL be exposed under `/pane/<n>/` with a tree structure that presents semantic interfaces, not implementation details. The filesystem exposes the abstraction level relevant to the consumer:
 
 - `tag` — the tag line content (plain text, read/write)
 - `body` — the body content at the semantic level (for a shell: command output; for an editor: file content; plain text, read/write)
@@ -74,11 +113,11 @@ pane-fs SHALL expose a pane index at `/pane/index`.
 
 #### Scenario: List all panes
 - **WHEN** `cat /pane/index` is executed
-- **THEN** a listing of all pane IDs SHALL be returned
+- **THEN** a listing of all panes SHALL be returned (number, UUID, signature, one per line)
 
 #### Scenario: Directory listing
 - **WHEN** `ls /pane/` is executed
-- **THEN** each pane SHALL appear as a directory entry by its ID
+- **THEN** each pane SHALL appear as a numbered directory entry (`1/`, `2/`, `3/`, ...)
 
 ### Requirement: Control file command syntax
 The `ctl` file SHALL accept line-oriented commands. Each line is a command with optional arguments. For structured payloads (multi-property creation, complex operations), a JSON payload follows the command name.
@@ -225,16 +264,22 @@ User modification is tracked via `user.pane.modified` xattr. Nix owns the defaul
 pane-fs SHALL present a unified namespace where local and remote panes are interleaved under `/pane/`. The directory hierarchy is a query system — every directory is a computed view (a filter predicate over the indexed pane state). See `docs/distributed-pane.md` §3 for the full design.
 
 Core computed views:
-- `/pane/` — all panes (local and remote)
+- `/pane/` — all panes (local and remote), numbered sequentially
+- `/pane/by-uuid/<uuid>/` — stable global identity (symlinks to `/pane/<n>/`)
 - `/pane/by-sig/<signature>/` — filter by application signature
 - `/pane/by-type/<type>/` — filter by pane type
 - `/pane/local/` — filter to local instance only
 - `/pane/remote/` — filter to remote instances only
 - `/pane/remote/<host>/` — filter to a specific remote host
+- `/pane/self/` — calling pane's own directory
 
-These are all equivalent projections over the same indexed state. None is privileged. `local` and `remote` are metadata properties, not architectural boundaries.
-
-PaneIds are UUIDs — globally unique by construction. The local compositor's internal bookkeeping may use compact IDs, but the canonical filesystem identity is the UUID.
+These are all projections over the same indexed state. The
+top-level numbered listing is the primary interface — short,
+human-usable, the Plan 9 /proc convention. Remote panes
+receive local numbers when mounted, appearing alongside local
+panes transparently. `by-uuid` provides cross-machine stability
+for programmatic reference. `local` and `remote` are discovery
+views, not architectural boundaries.
 
 #### Scenario: Unified listing
 - **WHEN** `ls /pane/` is executed
