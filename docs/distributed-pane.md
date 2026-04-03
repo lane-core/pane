@@ -57,7 +57,7 @@ What changes for remote connections:
 
 - **Latency.** Local unix sockets: ~1.5-3μs. LAN TCP: ~100-500μs. WAN TCP: ~5-50ms. The protocol's async-by-default design (fire-and-forget operations batched, sync only when a response is needed) mitigates this, but interactive operations (input dispatch, completion requests) will feel the latency.
 
-- **Identity.** Local unix sockets carry implicit identity via `SO_PEERCRED` (kernel-verified uid). TCP connections carry declared identity via `PeerIdentity` in the handshake, bound to TLS client certificates. The identity model is the same — unix users — but the verification mechanism changes.
+- **Identity.** Local unix sockets carry implicit identity via `SO_PEERCRED` (kernel-verified uid, pid). TCP connections carry transport-derived identity via TLS client certificates. In both cases, `PeerAuth` is derived from the transport — not declared in the handshake. The identity model is the same — unix users — but the verification mechanism changes.
 
 - **Failure modes.** Local connections fail cleanly (process exits, fd closes). Network connections fail ambiguously (timeout, partition, half-open). The session-typed crash boundary (`SessionError::Disconnected`) handles both, but remote connections need reconnection semantics that local connections do not.
 
@@ -88,28 +88,30 @@ Plan 9's synthetic filesystems presented computed views as file trees. `/proc/` 
 
 pane-fs is both. Every directory in the pane-fs hierarchy is a _view_ — a computed projection of the underlying state through a filter predicate:
 
-- `/pane/` — all panes (local and remote, interleaved)
+- `/pane/` — all panes (local and remote), numbered sequentially
+- `/pane/by-uuid/<uuid>/` — stable global identity (symlinks to `/pane/<n>/`)
 - `/pane/by-sig/com.pane.agent/` — panes with signature `com.pane.agent`
 - `/pane/by-type/shell/` — panes of type `shell`
+- `/pane/self/` — calling pane's own directory
 - `/pane/local/` — panes on this instance
 - `/pane/remote/` — panes on remote instances
 - `/pane/remote/<host>/` — panes on a specific remote host
 
-These are all equivalent filters over the same indexed state. None is privileged. `local` and `remote` are metadata properties, like `signature` or `type` — not architectural boundaries. The unified namespace is the default; filtered views are projections.
+These are all projections over the same indexed state. The top-level uses short numeric IDs (like Plan 9's `/proc/<pid>`). Remote panes receive local numbers when mounted — namespace transparency. `by-uuid` provides cross-machine stable reference. `local` and `remote` are discovery views, not architectural boundaries.
 
 ### Why unified, not segmented
 
 The alternative — remote panes live under `/pane/remote/<host>/` and local panes under `/pane/` with no overlap — creates a two-namespace problem. Scripts must know whether a pane is local or remote to construct the right path. Tools that list panes must query two locations. The architectural boundary leaks into every consumer.
 
-Plan 9 taught this lesson: the power of `import` was that after mounting a remote fileserver, local tools worked on remote resources _without modification_. The network boundary was in the namespace composition, not in the applications. pane-fs should provide the same property: a script that reads `/pane/<id>/body` gets the content regardless of where the pane lives.
+Plan 9 taught this lesson: the power of `import` was that after mounting a remote fileserver, local tools worked on remote resources _without modification_. The network boundary was in the namespace composition, not in the applications. pane-fs should provide the same property: a script that reads `/pane/3/body` gets the content regardless of where the pane lives.
 
 The potential concerns with unified namespaces — collision, latency, ambiguity — resolve cleanly:
 
-**Collision.** Pane Ids are globally unique (UUIDs, assigned at creation time). The local compositor's internal bookkeeping may use compact local IDs, but the canonical identity is the UUID. Two panes on different instances never collide.
+**Collision.** Pane Ids are UUIDs — globally unique by construction. The filesystem uses short numeric local IDs (`/pane/1/`, `/pane/2/`); the UUID lives in `/pane/by-uuid/<uuid>/` as a stable cross-machine reference. Two panes on different instances never collide at the UUID level; local numbers are per-namespace.
 
 **Listing latency.** pane-fs does not query remote servers on every `readdir`. It reads from pane-store's local index, which maintains a cached view of remote pane metadata updated asynchronously via change notifications over the protocol. This is the BFS live query model: the result set is maintained, not recomputed. A remote host going down means its entries go stale and get marked — not that `ls /pane/` hangs.
 
-**Write routing.** Reading remote pane state goes through the cached index. Writing (to `ctl`, `tag`, `attrs/`) routes over TcpTransport to the owning instance. The UUID tells pane-fs which instance to contact. This is transparent to the writer.
+**Write routing.** Reading remote pane state goes through the cached index. Writing (to `ctl`, `tag`, `attrs/`) routes over TLS to the owning instance. The UUID (looked up from the local number via `by-uuid`) tells pane-fs which instance to contact. This is transparent to the writer.
 
 **Ambiguity.** There is none. Each pane has a globally unique ID. Each path resolves to exactly one pane. The computed views are filters, not union mounts — there is no mount-order dependency, no MBEFORE/MAFTER ambiguity. Plan 9's union directory problems don't apply because pane-fs doesn't do unions. It does computed projections over an indexed store.
 
@@ -137,9 +139,7 @@ The trust model is unix identity, extended to the network. There is no pane-spec
 
 For local connections (unix domain sockets), identity is implicit: `SO_PEERCRED` provides the kernel-verified uid of the connecting process. No declaration needed, no spoofing possible.
 
-For remote connections (TCP/TLS), identity is declared in the handshake (`PeerIdentity`: username, uid, hostname) and bound to TLS client certificates. The server validates that the declared identity matches the certificate's subject. The certificate is the proof; the declared identity is the claim.
-
-The server maps the remote identity to a local unix user for enforcement purposes. A remote agent connecting as `agent.reviewer` gets the filesystem permissions, Landlock constraints, and `.plan` governance of the local `agent.reviewer` account. If no local account maps, the connection is rejected.
+For remote connections (TCP/TLS), identity is derived from the TLS client certificate: `PeerAuth::Certificate { subject, issuer }`. The Hello message carries no identity — authentication is transport-level (see architecture spec §Connection Model). The server maps the certificate subject to a local unix user for enforcement purposes. A remote agent whose certificate maps to `agent.reviewer` gets the filesystem permissions, Landlock constraints, and `.plan` governance of the local `agent.reviewer` account. If no local account maps, the connection is rejected.
 
 ### The `.plan` file
 
@@ -158,13 +158,13 @@ Plan 9 separated authentication from services via factotum — a per-user authen
 
 Pane's architecture resolves this differently. TLS handles transport-layer authentication (the certificate is the key). `.plan` handles authorization (what you're allowed to do). Landlock handles enforcement (kernel-level constraints). No individual service needs to implement authentication — the transport layer and the operating system handle it.
 
-The `Transport` trait provides identity uniformly:
+The `Transport` trait provides identity uniformly via `PeerAuth`:
 
-- `UnixTransport`: identity from `SO_PEERCRED`
-- `TcpTransport` (TLS): identity from client certificate
-- `MemoryTransport`: identity from test configuration
+- `UnixTransport`: `PeerAuth::Kernel { uid, pid }` from `SO_PEERCRED`
+- `TlsTransport`: `PeerAuth::Certificate { subject, issuer }` from client certificate
+- `MemoryTransport`: test-configured `PeerAuth`
 
-Each transport extracts identity its own way. The protocol layer sees a `PeerIdentity` regardless of how it was obtained. This is factotum's principle — separate auth from application logic — achieved through Rust's trait system rather than a separate daemon.
+Each transport derives identity its own way. The protocol layer sees `PeerAuth` regardless of how it was obtained. This is factotum's principle — separate auth from application logic — achieved through Rust's trait system rather than a separate daemon.
 
 ---
 
@@ -234,9 +234,9 @@ The flake that configured their headless pane deployment IS the seed of their fu
 
 Network-transparent pane enables compositions that no individual feature was designed to provide.
 
-**Distributed agent ecosystems.** An AI agent runs as a unix user on a headless pane instance in the cloud. It has its own home directory, its own `.plan`, its own memories (files with typed attributes indexed by pane-store). From the local desktop, it appears as another pane in the unified namespace — its output is readable at `/pane/<uuid>/body`, its state is queryable via pane-store, its behavior is governed by a `.plan` you can edit. The agent doesn't know or care whether you're on the same machine. The pane protocol handles the transport.
+**Distributed agent ecosystems.** An AI agent runs as a unix user on a headless pane instance in the cloud. It has its own home directory, its own `.plan`, its own memories (files with typed attributes indexed by pane-store). From the local desktop, it appears as another pane in the unified namespace — its output is readable at `/pane/8/body` (where 8 is the local number assigned when the remote pane was mounted), its state is queryable via pane-store, its behavior is governed by a `.plan` you can edit. The agent doesn't know or care whether you're on the same machine. The pane protocol handles the transport.
 
-**Remote development environments.** A developer connects their local pane desktop to a headless instance running on a build server. The build server's panes (compiler output, test results, log streams) appear in the local unified namespace alongside local panes. Routing rules direct "open file" actions to the remote editor. The filesystem at `/pane/<uuid>/attrs/cwd` shows the remote working directory. The developer's muscle memory works — same keystrokes, same commands, same routing — the computation just happens elsewhere.
+**Remote development environments.** A developer connects their local pane desktop to a headless instance running on a build server. The build server's panes (compiler output, test results, log streams) appear in the local unified namespace alongside local panes, with locally-assigned numbers. Routing rules direct "open file" actions to the remote editor. The filesystem at `/pane/12/attrs/cwd` shows the remote working directory. The developer's muscle memory works — same keystrokes, same commands, same routing — the computation just happens elsewhere.
 
 **Multi-machine workflows.** A music production setup: local machine runs the UI panes, a rack server runs DSP processing panes, a NAS hosts the project files. All three are pane instances. The unified namespace shows every pane. pane-store indexes attributes across all instances. A routing rule says "when I activate an audio file, open it in the DSP pane on the rack server." The user sees one workspace. The infrastructure sees three machines.
 
