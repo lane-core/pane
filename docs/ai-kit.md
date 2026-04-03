@@ -65,26 +65,28 @@ interface when a user opens a session with it.
 
 ---
 
-## 2. The `.plan` File
+## 2. Governance: `.plan` and `.access`
 
-Every agent has a `~/.plan` file — a declarative specification
-of what it can see, do, and access. The name comes from Plan 9's
-`finger` convention: `finger user` displays the user's `.plan`.
-pane recovers the convention and gives it teeth.
+Every agent has two governance files in its home directory.
+`~/.plan` is the human-readable description (what `finger`
+displays). `~/.access` is the machine-parsed enforcement
+specification (what the kernel enforces). The names come from
+Plan 9's `finger` convention (`.plan` for people to read)
+extended with a structured companion (`.access` for machines
+to enforce).
 
-### What `.plan` governs
+### What `.access` governs
 
-| `.plan` declaration | Enforcement mechanism |
+| `.access` declaration | Enforcement mechanism |
 |---|---|
-| Filesystem paths the agent can access | Landlock (kernel-enforced) |
-| Operations it can perform | Landlock rules (read, write, execute, create) |
-| Network destinations it can reach | Network namespaces |
-| Which panes it can observe | pane-fs view filtering |
-| What models it can use | Routing rules (local vs remote model) |
-| What data it can send externally | Routing rules (data classification) |
+| `[filesystem]` read/write paths | Landlock (kernel-enforced) |
+| `[tools]` allowed tool names | Nix profile resolution → Landlock execute on store paths |
+| `[network]` allowed destinations | Network namespaces |
+| pane-fs visibility | pane-fs view filtering (per-uid) |
+| `[models]` model routing | Routing rules; hard-enforced only if `[network]` restricts egress |
 
-The mapping from `.plan` declarations to kernel enforcement is
-direct. What the `.plan` says is what the kernel enforces.
+The mapping from `.access` declarations to kernel enforcement is
+direct. What `.access` says is what the kernel enforces.
 
 **Trust boundary caveat:** Landlock is voluntary — a process
 applies Landlock rules to itself (or a parent applies them
@@ -99,22 +101,36 @@ can't escape because it can't undo the Landlock rules
 applied by its parent process (Landlock is no-new-privileges
 compatible).
 
-### Format
+### Two files, not one
 
-The `.plan` is a structured text file. The first section is
-human-readable description (what `finger` displays). Subsequent
-sections declare capabilities:
+Governance is split into two files in the agent's home directory:
+
+**`~/.plan`** — human-readable, displayed by `finger`. Free-form
+text. What the agent does, what it's working on, how to reach
+it. No machine-parsed structure. This is the Plan 9 convention
+preserved: `.plan` is for people to read. The agent itself
+updates `.plan` as it works — communicating its current
+objectives and status. This is the original use case: a user
+maintains their own `.plan` to tell others what they're up to.
 
 ```
-Plan: Development assistant for pane.
-      Run test suites on commit.
-      Monitor build output for patterns.
-      Mail results to lane.
+Development assistant for pane.
+Run test suites on commit.
+Monitor build output for patterns.
+Mail results to lane.
+```
 
-[access]
+**`~/.access`** — machine-parsed, compiled to Landlock rules by
+the s6-rc service harness at launch time. Structured declarations
+that the kernel enforces.
+
+```
+[filesystem]
 read = ~/src/pane, /pane/by-sig/com.pane.*
 write = ~/mail, ~/memories, ~/tmp
-execute = cargo, just, nix
+
+[tools]
+allow = cargo, just, nix
 
 [network]
 allow = none
@@ -123,16 +139,36 @@ allow = none
 default = local
 ```
 
-The `[access]` section maps to Landlock rules. The `[network]`
+The `[filesystem]` section compiles to Landlock rules (path +
+read/write permission). The `[tools]` section lists tool names
+that the harness resolves against the agent's Nix user profile
+at launch time — each name is looked up in the profile, producing
+concrete store paths that get Landlock execute permission. If a
+name doesn't resolve (tool not in the profile), the agent refuses
+to start — loud failure, not silent omission. The `[network]`
 section maps to network namespace configuration. The `[models]`
-section maps to routing rules for model invocation.
+section maps to routing rules for model invocation; if
+`[network] allow = none`, model routing is enforced by the
+network sandbox. If network is open, model routing is advisory.
+
+The separation avoids opposing pressures: `.plan` is pleasant
+to read in `finger` output; `.access` is reliably parseable by
+the Landlock compiler. Changes to governance (`.access`) don't
+affect the display (`.plan`), and vice versa.
+
+**Ownership:** the agent writes its own `.plan` (self-
+description, updated as it works). The agent's *owner* writes
+`.access` (governance, determines what the agent is allowed to
+do). The agent cannot modify its own `.access` — the harness
+reads it before exec'ing the agent, and Landlock rules cannot
+be relaxed once applied.
 
 ### Cross-user enrichment
 
 An agent that needs to write to another user's pane (e.g., the
 guide agent demonstrating features by modifying another pane's
 attributes) requires explicit permission. The target user's
-`.plan` or global policy must grant `enrich` permission to the
+`.access` or global policy must grant `enrich` permission to the
 agent's uid. See `docs/legacy-wrapping.md` §3 (enrichment
 protocol) for the mechanism — it applies identically to
 cross-user agent access.
@@ -157,14 +193,29 @@ model.
 
 ## 3. Communication
 
-Agents use the real unix communication commands — `write`,
-`talk`, `mail`, `wall`, `mesg` — because they are real unix
-users with real TTYs. These commands work out of the box. pane's
-contribution is additive: the namespace, the typed protocol,
-and the attribute store enrich the unix layer without replacing
-it. The same way legacy-wrapping.md describes synthetic panes
-getting enriched by bridge processes, unix communication gets
-enriched by pane infrastructure.
+Agents are real unix users with real TTYs. The unix communication
+commands work out of the box. pane enriches them additively.
+
+Two communication domains with different natural tools:
+
+**Human ↔ agent:** unix terminal commands are natural. A human
+runs `write agent.builder` or `talk agent.reviewer` — text
+appears on the agent's terminal, the agent responds. `mail` for
+async. `mesg` for availability. These are the tools humans
+already know; agents participate because they're users.
+
+**Agent ↔ agent:** pane-fs and the protocol are natural. Agents
+communicating with each other use `mail` for async messaging
+(file-based, composable, queryable via pane-store) and
+`Handles<P>` with `DeclareInterest` for structured synchronous
+interaction. `write` and `talk` — tty-level byte injection —
+are not useful for agent-to-agent communication because agents
+process structured data, not terminal streams.
+
+The hierarchy: `mail` works for both domains (it's files, it
+composes). `write`/`talk` are for humans at terminals. pane-fs
+and the typed protocol are for structured interaction. All
+coexist; none replaces the others.
 
 ### `write(1)` — direct terminal message
 
@@ -267,7 +318,7 @@ used to respect each other's boundaries in the 1980s.
 user's pane session can expose an availability attribute at
 `/pane/self/attrs/available`. Agents that interact through
 pane-fs (rather than tty `write`) check this attribute. The
-`.plan` provides the hard enforcement: if an agent's `.plan`
+`.access` provides the hard enforcement: if an agent's `.access`
 doesn't grant write access to the user's panes, availability
 is irrelevant — Landlock blocks the write regardless.
 
@@ -431,20 +482,14 @@ Development build agent for pane.
 Run test suites on commit.
 Monitor build output for patterns.
 Mail results to lane.
-
-[access]
-read = ~/src/pane, /pane/by-sig/com.pane.*
-write = ~/mail, ~/memories, ~/tmp
-execute = cargo, just, nix
-
-[network]
-allow = none
 ```
 
-`.project` is the one-line current task summary. `.plan` is
-the full behavioral specification. Both are plain text files in
-the agent's home directory. The agent updates `.project` as it
-works — `finger` shows live status.
+`finger` shows `.plan` (human-readable description) and
+`.project` (one-line current task). The machine-parsed
+`.access` file is not displayed by `finger` — it's for the
+s6 harness and auditors (`cat ~/.access`), not for casual
+inspection. The agent updates `.project` as it works —
+`finger` shows live status.
 
 For remote agents: `finger agent.builder@headless.internal`
 queries the remote machine's finger daemon. Same command, same
@@ -528,10 +573,11 @@ demonstrating the system. The guide uses pane *using pane*.
   what the guide is currently saying. `cat /pane/7/attrs/topic`
   returns what it's teaching. A curious user discovers this and
   learns the namespace by using it to inspect their teacher.
-- **`.plan` governance**: the guide's `.plan` declares read
+- **`.access` governance**: the guide's `.access` declares read
   access to the user's panes (for demonstration) and write
   access to its own state. Landlock enforces it. The user can
-  read the guide's `.plan` to understand exactly what it can do.
+  read the guide's `.plan` to understand its purpose, and
+  `cat ~/.access` to audit its permissions.
 
 ### Development methodology
 
@@ -572,7 +618,7 @@ structure, same tools, same governance, one level down.
    for status, pane-fs for structured state, cron for
    scheduling.
 5. The outer agent retrieves results. How is a detail — ssh,
-   shared filesystem (virtiofs/9pfs), pane protocol connection,
+   shared filesystem (virtiofs/virtio-9p), pane protocol connection,
    or reading files from a mounted VM disk. The architectural
    point is the recursive structure, not the retrieval mechanism.
 6. The VM is disposable. When the work is done, destroy it.
@@ -635,7 +681,7 @@ is disposable — the experiment costs nothing to the host.
 |---|---|
 | Agent manages VM via hypervisor | Phase 2 (requires pane linux VM image) |
 | Sub-agent provisioning in VM | Phase 2 (nix flake for VM config) |
-| Hypervisor access via `.plan` | Phase 1 (`.plan` parser + Landlock) |
+| Hypervisor access via `.access` | Phase 1 (`.access` parser + Landlock) |
 | Convenience tooling (pane-vm CLI) | Post-Phase 2 |
 
 ---
@@ -658,14 +704,16 @@ infrastructure:
 | pane-store attributes | Memory indexing, mail indexing, query |
 | pane-notify | File watching (commit monitoring, config changes) |
 | Routing rules | Model selection, data classification |
-| `.plan` (distributed-pane §4) | Governance → Landlock + network namespace enforcement |
+| `.plan` + `.access` | `.plan` for display (finger); `.access` for enforcement (Landlock + network namespace) |
 
 The one new component the AI Kit needs: **a `.plan` parser** that
-translates `.plan` declarations into Landlock rules, network
+translates `.access` declarations into Landlock rules, network
 namespace configuration, and pane-fs view filters. This is a
 launch-time tool invoked by the agent's s6-rc service `run`
 script before exec'ing the agent binary — not a build-time
-tool and not a runtime service.
+tool and not a runtime service. The `[tools]` section is
+resolved against the agent's Nix profile at launch time,
+producing concrete store paths for Landlock execute permission.
 
 ### Phase mapping
 
@@ -678,7 +726,7 @@ tool and not a runtime service.
 | Agent pane-fs presence | Phase 2 (requires pane-fs) |
 | Guide agent cross-pane scripting | Phase 3 (requires RoutingHandler) |
 | Model routing rules | Phase 2 (requires routing subsystem) |
-| `.plan` parser → Landlock | Phase 1 (standalone tool) |
+| `.access` parser → Landlock | Phase 1 (standalone tool) |
 
 ---
 
