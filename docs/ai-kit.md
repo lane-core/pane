@@ -140,74 +140,71 @@ model.
 
 ## 3. Communication
 
-Each unix multi-user communication primitive maps to a concrete
-pane mechanism. No custom notification framework — the channels
-are unix channels, extended with pane's typed protocol and
-namespace.
+Agents use the real unix communication commands — `write`,
+`talk`, `mail`, `wall`, `mesg` — because they are real unix
+users with real TTYs. These commands work out of the box. pane's
+contribution is additive: the namespace, the typed protocol,
+and the attribute store enrich the unix layer without replacing
+it. The same way legacy-wrapping.md describes synthetic panes
+getting enriched by bridge processes, unix communication gets
+enriched by pane infrastructure.
 
-### `write(1)` — direct message to a terminal
+### `write(1)` — direct terminal message
 
-Unix `write` copies lines from your terminal to another user's
-terminal. The mechanism: it opens the target user's tty device
-(`/dev/pts/N`) and writes to it. `mesg n` revokes write
-permission on the tty (chmod), blocking `write` at the
-filesystem level.
+An agent runs `write lane` and types a message. The message
+appears on lane's terminal, interspersed with whatever lane is
+doing. The mechanism is the same as it was in 1971: `write`
+opens lane's tty device (`/dev/pts/N`) and writes text to it.
 
-**pane equivalent:** an agent writes to another pane's `ctl`
-file. `echo "notification: build succeeded" > /pane/3/ctl`
-delivers a line to pane 3's handler as a `CommandExecuted`
-event. The target pane's filter chain decides whether to
-display it, queue it, or consume it. If the user has set
-availability to "no interruptions" (see `mesg` below), the
-notification filter queues to mail instead.
+`mesg n` on lane's terminal revokes group-write permission on
+the tty device. The agent's `write` open() fails silently. The
+agent must decide: queue the message as mail, escalate, or wait.
+This is the unix convention — the refusal is silent, the agent
+adapts.
 
-The mechanism is the same as unix `write`: write bytes to a
-file that represents another user's interface. The permission
-model is the same: the target's filesystem permissions (and
-`.plan` Landlock rules) control who can write to its `ctl`.
+**pane enrichment:** in addition to writing to the tty, the
+agent can write to `/pane/3/ctl` to deliver a structured
+command to a specific pane. The tty path is for human-readable
+text; the pane-fs path is for structured interaction. Both
+coexist. The agent chooses based on what it's communicating.
 
-### `talk(1)` — interactive session
+### `talk(1)` — split-screen real-time session
 
-Unix `talk` splits the terminal into two halves — simultaneous
-bidirectional typing between two users. The mechanism: a
-`talkd` daemon on each machine negotiates the connection; once
-established, both terminals show both sides in real time.
+The user runs `talk agent.reviewer`. `talkd` negotiates the
+connection. The screen splits: the user types in the top half,
+the agent responds in the bottom half. Character-by-character —
+the user sees the agent "thinking" (streaming tokens), the
+same intimacy that talk provided between humans in 1983. When
+done, Ctrl-D ends the session.
 
-**pane equivalent:** the user opens an interactive session pane
-that connects to the agent's headless pane via an application-
-defined `SessionProtocol`:
-
-```rust
-struct SessionProtocol;
-impl Protocol for SessionProtocol {
-    const SERVICE_ID: ServiceId = service_id!("com.pane.session");
-    type Message = SessionMessage;
-}
-
-#[derive(Serialize, Deserialize)]
-enum SessionMessage {
-    Line(String),
-    Typing { partial: String },
-    End,
-}
-```
-
-Both sides implement `Handles<SessionProtocol>`. The session
-pane appears in the namespace — `cat /pane/9/body` shows the
-conversation transcript. When either side sends `End`, the
-session closes. The conversation is observable and scriptable
-through pane-fs, unlike unix `talk` which left no trace.
+**pane enrichment:** the talk session can be attached to a
+shared pane — both participants see the same editor buffer or
+terminal output alongside the conversation. The pane namespace
+makes the session observable: `cat /pane/9/body` shows the
+conversation transcript. talk itself doesn't do this; pane's
+namespace does. The unix layer provides the session; pane
+provides the enrichment.
 
 ### `mail(1)` — asynchronous messages
 
-Unix `mail` delivers messages to a user's mail spool
-(`/var/mail/<user>`). The message is a file. The recipient
-reads it on their schedule. `mail -s "subject" user` sends;
-`mail` reads.
+An agent runs `mail -s "Build failed" lane` and writes the
+result. The message lands in lane's mail spool. The next time
+lane logs in: "You have mail." Three words that were the
+notification system for an entire generation of unix users.
 
-**pane equivalent:** an agent writes a file to the target
-user's mail directory (`~/mail/` or a shared mail spool). The
-file carries pane-store attributes:
+`biff y` enables instant notification — when mail arrives,
+`comsat` writes a preview to lane's terminal. `biff n` defers
+to "You have mail" at the next login. The agent doesn't know or
+care which mode lane is using.
+
+cron output is mailed by default. An agent scheduled via cron
+to run nightly analysis gets this for free: when the job
+completes, stdout and stderr are mailed to the job owner (the
+agent) or to `MAILTO=lane`. The scheduling infrastructure IS
+the notification infrastructure.
+
+**pane enrichment:** mail messages stored as files carry
+pane-store attributes:
 
 ```
 ~/mail/build-result-2026-04-02
@@ -219,54 +216,53 @@ file carries pane-store attributes:
   user.pane.commit = a3f2c91
 ```
 
-pane-store indexes these attributes. "Show me all unread mail
-from agent.builder where component is pane-roster" is a standard
-pane-store query — the same query that indexes music, documents,
-and every other file with typed attributes. The agent's mail IS
-the filesystem. `cat ~/mail/build-result-2026-04-02` reads it.
-`echo read > ~/mail/build-result-2026-04-02.status` marks it
-read.
-
-This is the BeOS email proof: Tracker (the file manager) became
-the mail client because email was just files with queryable
-attributes. pane recovers this — no mail application needed.
-The file manager, pane-store queries, and `cat` compose into a
-mail system because the infrastructure is right.
+pane-store indexes these. "Show me all unread mail from
+agent.builder where component is pane-roster" is a standard
+query — the same mechanism that indexes music, documents, and
+every other file with typed attributes. This is the BeOS email
+proof: no component was designed to be a "build result tracker."
+The mail infrastructure, the attribute store, the query engine
+compose into one because the infrastructure is right.
 
 ### `wall(1)` — broadcast to all users
 
-Unix `wall` writes a message to every logged-in user's terminal.
-The mechanism: it iterates `/dev/pts/*` and writes to each.
-
-**pane equivalent:** an agent writes to a broadcast pane — a
-headless pane that all interested parties monitor via the filter-
-based exit/event notification mechanism. Or simpler: the agent
-iterates `ls /pane/by-sig/com.pane.shell/` and writes a
-notification to each shell's `ctl`. Same pattern as `wall` —
-iterate the terminals, write to each.
+A human administrator runs `wall` to broadcast a policy change.
+Every logged-in user — human and agent — sees it on their
+terminal. `wall` from root overrides `mesg n` — authoritative
+broadcast cannot be refused. This hierarchy (peer communication
+can be refused; root broadcast cannot) maps directly to agent
+governance: a human can suppress agent notifications (`mesg n`),
+but system-wide policy broadcasts reach everyone.
 
 ### `mesg(1)` — availability control
 
-Unix `mesg` controls whether `write` and `talk` can reach your
-terminal. `mesg n` revokes write permission on your tty device.
-`mesg y` restores it. The mechanism is filesystem permissions
-on `/dev/pts/N`.
+`mesg n` — don't interrupt me. `mesg y` — I'm available. The
+mechanism is a chmod on the tty device file. When mesg is `n`,
+`write` and `talk` connections fail.
 
-**pane equivalent:** a per-user attribute file at
-`~/.config/pane/mesg` (or equivalently, a pane-store-indexed
-attribute on the user's session). Value: `y` or `n`.
+An agent that wants to notify a busy human checks mesg status
+(or has its `write` fail) and falls back to mail — deferred
+notification instead of synchronous interruption. The agent
+respects attention boundaries using the same mechanism humans
+used to respect each other's boundaries in the 1980s.
 
-When `mesg` is `n`, agents check this before choosing delivery
-mode. Direct notifications (writing to `ctl`) are deferred —
-the agent writes to `~/mail/` instead. When `mesg` is `y`,
-direct notifications are permitted.
-
-The check is a convention enforced by well-behaved agents (same
-as unix — `mesg n` only blocks `write` because `write` checks
-permissions; a root process can still write to the tty). The
+**pane enrichment:** in addition to the tty-level `mesg`, the
+user's pane session can expose an availability attribute at
+`/pane/self/attrs/available`. Agents that interact through
+pane-fs (rather than tty `write`) check this attribute. The
 `.plan` provides the hard enforcement: if an agent's `.plan`
-doesn't grant write access to the user's panes, `mesg` is
-irrelevant — Landlock blocks the write regardless.
+doesn't grant write access to the user's panes, availability
+is irrelevant — Landlock blocks the write regardless.
+
+### `vacation(1)` — auto-delegation
+
+An agent that's busy can set up a `vacation`-style auto-reply:
+incoming mail gets a response explaining that the agent is
+occupied and (optionally) forwarding the request to a backup.
+`vacation` tracks who it has replied to (one reply per sender
+per interval) and respects mailing list etiquette. The same
+infrastructure, applied to agents, gives auto-delegation for
+free.
 
 ---
 
@@ -369,47 +365,49 @@ API access. The difference is one file.
 
 ## 7. Presence and Discovery
 
-Each unix presence/discovery command maps to concrete pane
-infrastructure. No agent dashboard — standard unix commands
-compose with pane-fs.
+Unix presence commands work as-is because agents are real users.
+pane enriches them with structured state through the namespace.
 
-### `who(1)` — who is logged in
+### `who(1)` / `w(1)` / `users(1)` — who is here
 
-Unix `who` reads `/var/run/utmp` (or equivalent) and lists
-logged-in users with their terminal and login time.
-
-**pane equivalent:** `who` works as-is for agents with unix
-accounts. An agent that has an active pane connection is a
-logged-in user. `who` shows:
+`who` reads utmp and shows every logged-in user, human and
+agent alike:
 
 ```
-lane     pts/0        2026-04-02 09:00
-agent.builder  pts/1  2026-04-02 09:01
-agent.reviewer pts/2  2026-04-02 09:01
+lane           pts/0   2026-04-02 09:00
+agent.builder  pts/1   2026-04-02 09:01
+agent.reviewer pts/2   2026-04-02 09:01
 ```
 
-`who | grep agent` shows all active agents. The utmp entries
-are written by the agent's session manager (s6 service) when
-the agent connects to its pane server.
+`w` adds activity information — idle time, current process,
+CPU usage. For agents, idle time is a real signal: an agent
+with 0s idle is actively working; one with 3h idle may be
+waiting for input.
 
-### `finger(1)` — user information lookup
+```
+USER           TTY     FROM     LOGIN@  IDLE  WHAT
+lane           pts/0   :0       09:00   0.00s vim architecture.md
+agent.builder  pts/1   :0       09:01   0.00s cargo test
+agent.reviewer pts/2   :0       09:01   3:22  (idle)
+```
 
-Unix `finger` displays user information: login name, real name,
-home directory, shell, login time, and the contents of `~/.plan`
-and `~/.project`. For remote users: `finger user@host` queries
-the remote machine's finger daemon.
+`who | grep agent` shows all active agents. These are standard
+commands reading standard utmp entries written by the agent's
+s6 service on login.
 
-**pane equivalent:** `finger agent.builder` works as-is and
-displays the agent's `.plan` — its purpose, current work, and
-permissions. This is the primary discovery mechanism. A user
-who wants to know "what is agent.builder doing and what can it
-access?" runs `finger agent.builder` and reads the output.
+### `finger(1)` — the user profile
+
+`finger agent.builder` displays the agent's `.plan` —
+purpose, current work, permissions, governance. This is the
+primary discovery mechanism. Same command, same output as 1971:
 
 ```
 $ finger agent.builder
 Login: agent.builder          Name: Build Agent
-Directory: /home/agent.builder Shell: /bin/pane-agent
+Directory: /home/agent.builder Shell: /bin/sh
 On since Apr  2 09:01 on pts/1
+
+Project: Running test suite (87% complete)
 
 Plan:
 Development build agent for pane.
@@ -426,15 +424,19 @@ execute = cargo, just, nix
 allow = none
 ```
 
+`.project` is the one-line current task summary. `.plan` is
+the full behavioral specification. Both are plain text files in
+the agent's home directory. The agent updates `.project` as it
+works — `finger` shows live status.
+
 For remote agents: `finger agent.builder@headless.internal`
-queries the remote machine's finger daemon, displaying the
-remote agent's `.plan`. Same command, same output format,
-network-transparent.
+queries the remote machine's finger daemon. Same command, same
+output, network-transparent (RFC 1288).
 
-### `ls(1)` + pane-fs — what is the agent doing
+### pane enrichment — structured state via pane-fs
 
-`finger` shows identity and governance. pane-fs shows live
-operational state:
+`finger` shows identity and governance. pane-fs adds live
+structured state that finger can't provide:
 
 ```
 $ ls /pane/by-sig/com.pane.agent.builder/
@@ -454,11 +456,12 @@ watching ~/src/pane for changes
 
 The agent's running panes are discoverable via the per-signature
 index. Their `body` shows current output. Their `attrs/` show
-structured state. This is live — not a cached snapshot.
+typed state. This is live — not a cached snapshot. This is what
+pane adds: structured, typed, queryable state accessible through
+the namespace. The unix layer (`who`, `finger`, `w`) provides
+presence and identity; pane provides operational detail.
 
 ### Composability
-
-No dashboard needed. Standard tools compose:
 
 ```sh
 # All active agents
@@ -479,10 +482,11 @@ done
 find ~/mail -newer ~/.last-read -exec cat {} \;
 ```
 
-The discovery interface is `ls`, `cat`, `finger`, `who`. The
-query interface is pane-store. The monitoring interface is
-pane-notify (watch for changes) or `/pane/<n>/event` (blocking
-read). All standard tools, all composable.
+The discovery interface is `who`, `finger`, `w` (unix layer)
+plus `ls`, `cat` on pane-fs (pane layer). The query interface
+is pane-store. The monitoring interface is pane-notify or
+`/pane/<n>/event`. Standard unix tools, enriched with pane-fs,
+all composable.
 
 ---
 
