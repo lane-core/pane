@@ -1,56 +1,56 @@
 # Session-Typed Actor Design Principles for Pane
 
-Derived from analysis of Fowler et al. "Safe Actor Programming with Multiparty Session Types" (EventActors/EAct) against pane's architecture. These principles guide future protocol and API design.
+Derived from analysis of Fowler et al. "Safe Actor Programming with Multiparty Session Types" (EventActors/EAct) against pane's architecture. These principles guide protocol and API design.
 
 ## C1: Heterogeneous Session Loop
 
-The looper must evolve to support multiple typed channels — one per protocol relationship (compositor, clipboard, peer panes, system services). This is the genuine advance over BeOS's BLooper (single kernel port). Each channel has its own message type and dispatches to its own set of handler methods.
+The looper supports multiple typed channels — one per protocol relationship (server connections, clipboard, peer panes, system services). Each channel has its own message type and dispatches to its own handler method set. calloop multi-source select drives the loop.
 
 **Motivation:** EAct KP3 (multiple sessions). An actor participating in only one session cannot implement server applications or multi-service clients.
 
-**How to apply:** When adding clipboard, DnD, observer, inter-pane messaging, or system services — each is a separate channel into the looper, not a new variant stuffed into CompToClient. Requires multi-source select (crossbeam-channel or calloop multi-source) replacing the current single `mpsc::Receiver<LooperMessage>`.
+**How to apply:** Each service opened via DeclareInterest is a separate typed calloop source. Handler (lifecycle), DisplayHandler (display), and Handles<P> (services) each receive their own protocol's events. Service events never enter the base Message enum.
 
 ## C2: Sub-Protocol Typestate, Not Active-Phase Session Types
 
-Don't session-type the `ClientToComp`/`CompToClient` transport. Instead, session-type sub-protocols at the API layer using Rust typestate:
+Session-type sub-protocols at the API layer using Rust typestate. The Protocol trait + Handles<P> dispatch provides the typed surface. The transport stays as per-service wire messages with correlation IDs.
 
-- Clipboard: `ClipboardLock` → write → commit (typestate handle)
+- Clipboard: `ClipboardWriteLock` → commit (typestate handle)
 - DnD: `DragSession` tracks enter→over→drop progression
-- Close negotiation: already implicit in `close_requested()` → `RequestClose` → `CloseAck`
-- Completion: token-correlated request/response
+- Request/reply: `ReplyPort` (obligation), `CancelHandle` (option)
+- Completion: `CompletionReplyPort` (obligation)
 
-**Motivation:** EAct KP2 (no explicit channels) + the paper's own implementation insight — non-blocking state types provide methods, blocking state types are traits. Pane already does this: `Messenger::create_pane()` blocks for PaneCreated internally.
+**Motivation:** EAct KP2 (no explicit channels). Non-blocking state types provide methods, blocking state types are traits.
 
-**How to apply:** When designing new sub-protocols, expose typestate handles at the API surface. The transport stays as typed enums. The developer never sees session type machinery.
+**How to apply:** When designing new sub-protocols, expose typestate handles at the API surface. The developer never sees session type machinery. `#[pane::protocol_handler(P)]` attribute macro generates dispatch.
 
 ## C3: Conversation-Level Failure Callbacks
 
-When monitoring another pane, requests in flight should have per-request failure handling, not just global death notification.
+Per-request failure handling via Dispatch<H>, not just global death notification.
 
-**Motivation:** EAct's `suspend` takes an explicit failure callback per conversation. When Shop crashes mid-checkout, Customer's checkout handler gets its specific failure callback — not just "Shop died."
+**Motivation:** EAct's `suspend` takes an explicit failure callback per conversation.
 
-**How to apply:** When implementing inter-pane request-response patterns, the API should accept a failure closure or return a future-like handle that resolves to either the response or a failure. `PaneExited` remains the actor-level signal; conversation-level failure is layered on top.
+**How to apply:** `send_request` registers (on_reply, on_failed) callback pairs as Dispatch entries. On Connection loss, `dispatch.fail_connection()` fires on_failed for every pending entry before `handler.disconnected()`. PaneExited (via ExitBroadcaster) remains the actor-level signal; Dispatch provides conversation-level failure.
 
 ## C4: Access Points for Service Discovery
 
-EAct's access point ("matchmaking service where actors register for roles, session established when all roles filled") maps to pane's future service registry.
+EAct's access point model maps to pane's DeclareInterest + ServiceRouter. Services are identified by ServiceId (UUID + reverse-DNS name). The server assigns session-local wire discriminants during DeclareInterest negotiation.
 
-**Motivation:** EAct access points. When clipboard, audio, or notification services exist, panes register interest and sessions are established when both sides are ready.
+**Motivation:** EAct access points. When services exist, panes declare interest and sessions are established when both sides are ready.
 
-**How to apply:** Don't build this yet. When designing the service architecture (app registry, system services), use the access point model: actors register for roles, runtime establishes sessions. This is the natural successor to Be's BRoster.
+**How to apply:** DeclareInterest in the active phase (or interests list in Hello for initial services). Service map from environment provides discovery. Access point model natural for future BRoster equivalent.
 
-## C5: Handler Declaration of Interest (MessageInterest)
+## C5: Handler Declaration of Interest (Handles<P>)
 
-Handlers should declare what message types they expect, enabling runtime verification of coverage and correct routing in a multi-session world.
+Handlers declare what protocol types they handle via `impl Handles<P>`. The `open_clipboard()` call requires `H: Handles<Clipboard>` at compile time — the bound IS the interest declaration.
 
-**Motivation:** EAct handlers are parameterized by their input session type. Pane's Handler trait has defaults for everything — ergonomic but loses static coverage checking.
+**Motivation:** EAct handlers are parameterized by their input session type.
 
-**How to apply:** Future direction. When the looper supports multiple channels (C1), handlers must declare which channel(s) they service. A `MessageInterest` mechanism or per-channel handler traits.
+**How to apply:** Protocol::Message + Handles<P> + attribute macro provides compile-time coverage checking. If a handler opens a service, it must implement the corresponding Handles<P>. Missing method → compile error (exhaustive match in generated dispatch).
 
 ## C6: Looper = Concurrency Boundary, Session Types = Type Boundary
 
 Keep these orthogonal. The looper's thread model (one thread per pane) is a concurrency concern. Session types are a correctness concern. An actor can participate in multiple sessions on one thread.
 
-**Motivation:** EAct's formalism separates session state (handler store σ) from thread state. The event loop interleaves sessions without requiring multiple threads.
+**Motivation:** EAct's formalism separates session state (handler store σ) from thread state.
 
-**How to apply:** Don't conflate threading decisions with protocol decisions. Adding clipboard support doesn't mean adding a clipboard thread — it means adding a clipboard channel to the existing looper.
+**How to apply:** Don't conflate threading decisions with protocol decisions. Adding clipboard support means adding a clipboard calloop source to the existing looper and implementing Handles<Clipboard> — not adding a clipboard thread.

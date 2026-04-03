@@ -275,8 +275,9 @@ std::thread::spawn(move || {
 ```
 
   `post_app_message<T: AppPayload>` is for one-off notifications
-  that don't warrant a full Protocol definition. The editor handles
-  it in `Handler::app_message()`. The rule: if the message
+  that don't warrant a full Protocol definition. The looper
+  delivers it to the handler via the app-message dispatch path
+  (downcast from `AppPayload`). The rule: if the message
   vocabulary is known at compile time and has multiple variants,
   use a Protocol. If it's a single fire-and-forget event, use
   `post_app_message`.

@@ -12,13 +12,15 @@
 
 ## Architecture Patterns
 - Per-pane threading (BeOS BLooper model)
-- Three-phase protocol: session-typed handshake → typed enum active phase → session-typed teardown
-- Message is flattened from CompToClient (PaneId stripped, nesting eliminated)
-- Messenger (BMessenger equivalent) is cloneable Send handle
-- FilterChain applies in registration order, any filter can consume
+- Three-phase protocol: session-typed handshake → per-service typed messages → session-typed teardown
+- Message is base-protocol-only (lifecycle + display). Clone-safe. Service events dispatch through Handles<P>.
+- Messenger wraps scoped Handle + ServiceRouter. Cloneable Send handle.
+- Handler (lifecycle) + DisplayHandler (display) + Handles<P> (services)
+- Protocol trait links ServiceId + Message type. Protocol::Message requires Serialize + DeserializeOwned.
+- FilterChain applies in registration order, any filter can consume or transform
 - ExitReason distinguishes HandlerExit / CompositorClose / Disconnected
+- Result<Flow> return convention. Flow::Continue / Flow::Stop. Err = actor failure.
 
 ## Testing
 - proptest for roundtrip serialization tests
-- MockCompositor for integration tests (no real compositor needed)
 - Tests run on macOS against in-memory channels

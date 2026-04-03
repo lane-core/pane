@@ -58,7 +58,7 @@ The critical design properties:
 
 Pane's protocol is structurally different from 9P and should remain so. Here is why, and what 9P still teaches.
 
-**Pane-proto is richer and that is correct.** Pane has a session-typed handshake (`ClientHello` -> `ServerHello` -> `ClientCaps` -> `Branch<Accepted, Rejected>`), then a bidirectional active phase with typed enums (`ClientToComp`, `CompToClient`). 9P has `Tversion/Rversion` then free-form requests. Pane's handshake provides compile-time enforcement that both sides agree on capabilities before entering the active phase. 9P's version negotiation is a single message pair with a version string comparison. The session-typed approach is strictly better for a protocol with a fixed, known set of participants (compositor and native client), because the type system catches protocol violations at compile time rather than at runtime.
+**Pane-proto is richer and that is correct.** Pane has a session-typed handshake (`ClientHello` -> `ServerHello` -> `ClientCaps` -> `Branch<Accepted, Rejected>`), then a bidirectional active phase with typed enums (`ClientToServer`, `ServerToClient`). 9P has `Tversion/Rversion` then free-form requests. Pane's handshake provides compile-time enforcement that both sides agree on capabilities before entering the active phase. 9P's version negotiation is a single message pair with a version string comparison. The session-typed approach is strictly better for a protocol with a fixed, known set of participants (compositor and native client), because the type system catches protocol violations at compile time rather than at runtime.
 
 **9P's request-response discipline vs pane's bidirectional active phase.** 9P never has the server send unsolicited messages. Pane's active phase has the compositor sending `Focus`, `Blur`, `Key`, `Mouse`, `Close`, `CompletionRequest` to the client at any time. This is the right choice for a windowing protocol: input events are inherently server-initiated (the compositor sees the keyboard, not the client). But it means pane cannot use 9P's simple tag-based request multiplexing. Instead, pane uses PaneId-based demultiplexing, which is the correct adaptation.
 
@@ -70,7 +70,7 @@ Pane's protocol is structurally different from 9P and should remain so. Here is 
 
 3. **Version negotiation discipline.** 9P's `Tversion` resets all state on the connection. If version negotiation fails, the connection is clean. Pane's handshake already has `Rejected` as a terminal state, which is correct. But consider: if the protocol evolves, pane needs a migration story. 9P's answer is "the version string determines the entire protocol; old and new cannot coexist on one connection." Pane's `ClientHello.version` field serves this purpose. Make the invariant explicit: a version mismatch means `Rejected`, period, no fallback negotiation within the handshake.
 
-4. **The filesystem as the universal fallback.** 9P teaches that the file interface is the one that lasts. Typed protocols are great for native clients; the filesystem is for everything else. Pane already has this with the three-tier model (filesystem / protocol / in-process). The lesson is: never let the typed protocol become the only way to do something. Every operation accessible through `ClientToComp`/`CompToClient` should eventually have a filesystem equivalent via pane-fs. The filesystem is the universal FFI.
+4. **The filesystem as the universal fallback.** 9P teaches that the file interface is the one that lasts. Typed protocols are great for native clients; the filesystem is for everything else. Pane already has this with the three-tier model (filesystem / protocol / in-process). The lesson is: never let the typed protocol become the only way to do something. Every operation accessible through `ClientToServer`/`ServerToClient` should eventually have a filesystem equivalent via pane-fs. The filesystem is the universal FFI.
 
 ### Warnings about naive translation
 
@@ -163,7 +163,7 @@ Pane needs remote state access for the headless deployment model. The question i
 
 2. **Lazy connection establishment.** Do not connect to remote hosts at pane-fs mount time. Connect on first access to `/pane/remote/<hostname>/`. Cache the connection. Reconnect on failure with exponential backoff. This avoids the hung-mount problem that plagued Plan 9: if the remote host is unreachable, the `open()` or `read()` call returns an error (ECONNREFUSED, ETIMEDOUT) rather than blocking indefinitely.
 
-3. **Event forwarding for remote panes.** 9P has no push mechanism, so remote event delivery requires blocking reads. Pane's protocol already has server-initiated events (`CompToClient::Focus`, `Resize`, etc.). For remote access, the pane-fs event file (`/pane/remote/host/42/event`) should use the same mechanism it uses locally: establish a protocol subscription and translate events into JSONL lines for the reading process. The event is not polled; it is pushed through the protocol and buffered in pane-fs for the reader.
+3. **Event forwarding for remote panes.** 9P has no push mechanism, so remote event delivery requires blocking reads. Pane's protocol already has server-initiated events (`ServerToClient::Focus`, `Resize`, etc.). For remote access, the pane-fs event file (`/pane/remote/host/42/event`) should use the same mechanism it uses locally: establish a protocol subscription and translate events into JSONL lines for the reading process. The event is not polled; it is pushed through the protocol and buffered in pane-fs for the reader.
 
 4. **Read-only by default, with explicit opt-in for control.** Remote pane state should be readable without special authorization (subject to `.plan` permissions). Writing to remote `ctl` files requires explicit authorization — this is the patternfile (`-P`) mechanism from exportfs translated to pane's trust model. The `.plan` file specifies which remote operations are permitted.
 
@@ -365,7 +365,7 @@ Plan 9's deepest lesson is not "everything is a file." It is: **the number of di
 
 Pane has three interfaces: the typed protocol, the filesystem, and the in-process kit API. This is more than Plan 9's one, but it is a principled three. Each serves a different performance/safety tradeoff. The critical discipline is: do not add a fourth. Every new feature should be expressible through all three existing tiers, not through a new mechanism.
 
-Concretely: when pane adds clipboard support, it should be a protocol extension (new `ClientToComp`/`CompToClient` variants), a filesystem projection (`/pane/<id>/clipboard`), and a kit API (`Clipboard::lock() -> ClipboardLock`). Not a separate D-Bus service. Not a custom IPC channel. Not a new socket.
+Concretely: when pane adds clipboard support, it should be a service protocol (declared via DeclareInterest, with its own per-service message type), a filesystem projection (`/pane/<id>/clipboard`), and a kit API (`Clipboard::lock() -> ClipboardWriteLock`). Not a separate D-Bus service. Not a custom IPC channel. Not a new socket.
 
 ### Transparency is a spectrum, not a binary
 

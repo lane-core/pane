@@ -164,8 +164,8 @@ Analogous to the Be Book's method documentation.
 ///
 /// `BWindow::WindowActivated` — pane splits the `bool active`
 /// parameter into separate `activated` / `deactivated` hooks.
-fn activated(&mut self, _proxy: &Messenger) -> Result<bool> {
-    Ok(true)
+fn activated(&mut self, _proxy: &Messenger) -> Result<Flow> {
+    Ok(Flow::Continue)
 }
 ```
 
@@ -194,20 +194,25 @@ For the `Message` enum (and similar dispatch enums), each variant needs:
 - `# BeOS` only when the mapping is non-obvious
 
 ```rust
-/// The pane is ready and its initial geometry is known.
+/// The pane is ready (headless — no geometry).
 ///
 /// Always the first event delivered. Dispatches to
 /// [`Handler::ready`].
-Ready(PaneGeometry),
+Ready,
+
+/// The display surface is ready with initial geometry.
+///
+/// Dispatches to [`DisplayHandler::display_ready`].
+DisplayReady(Geometry),
 
 /// The pane was resized by the compositor or layout engine.
 ///
-/// Dispatches to [`Handler::resized`].
+/// Dispatches to [`DisplayHandler::resized`].
 ///
 /// # BeOS
 ///
 /// `B_WINDOW_RESIZED` / `BWindow::FrameResized`.
-Resize(PaneGeometry),
+Resize(Geometry),
 ```
 
 ---
@@ -239,7 +244,7 @@ A type or method may have annotations from one or both traditions.
 /// [BHandler documentation](reference/haiku-book/app/BHandler.dox)).
 /// Key changes:
 /// - Trait with default methods replaces virtual class
-/// - Returns `Result<bool>` instead of `void`
+/// - Returns `Result<Flow>` instead of `void`
 /// - Per-event methods replace single `MessageReceived(BMessage*)`
 ```
 

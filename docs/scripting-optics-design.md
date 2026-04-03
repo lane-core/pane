@@ -458,7 +458,7 @@ enum ScriptResponse {
     Properties(Vec<PropertyInfo>),
     /// Forward: the query should be redirected to this target.
     /// The client opens a new session with the target.
-    Forward { target: PaneId, remaining: Vec<Specifier> },
+    Forward { target: Id, remaining: Vec<Specifier> },
     /// Error.
     Error(ScriptError),
 }

@@ -51,7 +51,7 @@ This is the same property that made 9P powerful: the protocol was independent of
 
 ### What travels over the network
 
-The pane protocol is already message-oriented and serialized (postcard, length-prefixed frames). Every `ClientToComp` and `CompToClient` message is a self-contained value — no pointers, no shared memory references, no file descriptors. This means every protocol message can cross a network boundary without transformation. The handshake, the active phase, and the teardown work identically over unix sockets and TCP.
+The pane protocol is already message-oriented and serialized (postcard, length-prefixed frames with per-service wire discriminants). Every `ClientToServer` and `ServerToClient` message is a self-contained value — no pointers, no shared memory references, no file descriptors. This means every protocol message can cross a network boundary without transformation. The handshake, the active phase, and the teardown work identically over unix sockets and TCP.
 
 What changes for remote connections:
 
@@ -105,7 +105,7 @@ Plan 9 taught this lesson: the power of `import` was that after mounting a remot
 
 The potential concerns with unified namespaces — collision, latency, ambiguity — resolve cleanly:
 
-**Collision.** PaneIds become globally unique (UUIDs, assigned at creation time). The local compositor's internal bookkeeping may use compact local IDs, but the canonical identity is the UUID. Two panes on different instances never collide.
+**Collision.** Pane Ids are globally unique (UUIDs, assigned at creation time). The local compositor's internal bookkeeping may use compact local IDs, but the canonical identity is the UUID. Two panes on different instances never collide.
 
 **Listing latency.** pane-fs does not query remote servers on every `readdir`. It reads from pane-store's local index, which maintains a cached view of remote pane metadata updated asynchronously via change notifications over the protocol. This is the BFS live query model: the result set is maintained, not recomputed. A remote host going down means its entries go stale and get marked — not that `ls /pane/` hangs.
 

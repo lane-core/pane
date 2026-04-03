@@ -1,43 +1,27 @@
 # Structural Gaps: EAct Analysis of Pane's Actor Model
 
-Four gaps identified by analyzing Fowler et al. EventActors against pane's current architecture. Each gap includes current state, what EAct reveals, and recommended resolution.
+Four gaps identified by analyzing Fowler et al. EventActors against pane's architecture. Each gap includes what EAct reveals and how the architecture spec resolves it.
 
-## Gap 1: Untyped Active Phase Has Structured Sub-Protocols
+## Gap 1: Active Phase Sub-Protocols → Protocol Trait + DeclareInterest
 
-**Current state:** Session types govern the handshake (`ClientHandshake`/`ServerHandshake`), then `finish()` drops into free-form `ClientToComp`/`CompToClient` enums. Both sides send freely.
+**What EAct reveals:** The active phase contains sub-protocols with real structure (request-response, negotiation, correlated exchanges).
 
-**What EAct reveals:** The active phase contains sub-protocols with real structure:
-- `CreatePane → PaneCreated` (request-response, currently serialized via pending_creates queue)
-- `CompletionRequest → CompletionResponse` (token-correlated)
-- `Close → CloseAck` (negotiation with handler veto)
-- Future: clipboard lock/commit, DnD enter/over/drop, observer start_watching/notify
+**Resolution (architecture spec):** The Protocol trait + DeclareInterest system gives each sub-protocol its own typed channel with per-service wire discriminants. Session types govern the handshake; per-protocol message types (Protocol::Message, requiring Serialize + DeserializeOwned) govern the active phase. Typestate handles (ReplyPort, ClipboardWriteLock, CancelHandle) enforce interaction patterns at the API surface (principle C2).
 
-**Resolution:** Don't session-type the transport. Apply typestate at the API surface (principle C2). Messenger methods that begin sub-protocols return typestate handles that enforce the interaction pattern. The wire stays as enums with correlation IDs.
+## Gap 2: Single-Session Looper → Multi-Source Dispatch
 
-## Gap 2: Single-Session Looper
+**What EAct reveals:** Actors must handle multiple heterogeneous sessions via the event loop.
 
-**Current state:** Each pane's looper reads from one `mpsc::Receiver<LooperMessage>`. All events (compositor, self-delivery, timer, monitor notifications) are multiplexed into this single channel as LooperMessage variants.
+**Resolution (architecture spec):** Each protocol relationship is a separate typed calloop source. The looper selects across all sources (ConnectionSource per Connection, plus per-service channels) and dispatches to Handler (lifecycle), DisplayHandler (display), or Handles<P> (services). Base Message is lifecycle+display only; service events never enter it.
 
-**What EAct reveals:** Actors must handle multiple heterogeneous sessions via the event loop. Pane needs this for:
-- Clipboard protocol (separate session)
-- Inter-pane messaging (peer sessions)
-- System services (audio, notifications — each its own protocol)
-- Observer pattern (watcher relationships)
+## Gap 3: Per-Conversation Failure → Dispatch<H>
 
-**Resolution:** Evolve the looper to multi-source select (principle C1). Each protocol relationship is a separate typed channel. The looper selects across all channels and dispatches to appropriate handlers. This is the biggest architectural evolution identified.
+**What EAct reveals:** EAct's `suspend` takes a failure callback per conversation. When a peer crashes mid-interaction, the specific conversation's failure handler fires.
 
-## Gap 3: Per-Conversation Failure Missing
+**Resolution (architecture spec):** Dispatch<H> provides per-request typed callbacks. `send_request` registers (on_reply, on_failed) pairs. On Connection loss, `dispatch.fail_connection()` fires on_failed for every pending entry before `handler.disconnected()`. Per-conversation failure, not just actor-level death signals.
 
-**Current state:** `monitor()` + `Message::PaneExited { pane, reason }` tells you who died. No information about which pending interaction failed.
+## Gap 4: Cascading Failure → Dispatch + ExitBroadcaster
 
-**What EAct reveals:** EAct's `suspend` takes a failure callback per conversation. When a peer crashes mid-interaction, the specific conversation's failure handler fires — not just a global death signal. This is critical for request-response patterns between panes.
+**What EAct reveals:** EAct's "zapper threads" propagate failure through sessions — draining queued messages, invoking failure callbacks.
 
-**Resolution:** Layer conversation-level failure on top of PaneExited (principle C3). When inter-pane request-response is implemented, pending requests should resolve to failure when the peer exits. PaneExited remains the actor-level signal.
-
-## Gap 4: No Cascading Failure / Queue Cleanup
-
-**Current state:** When a pane exits, `ExitBroadcaster` notifies watchers. But messages queued for the dead pane in the dispatcher's routing table are silently dropped (the channel is gone). Messages from the dead pane that are already in other panes' queues will be delivered normally.
-
-**What EAct reveals:** EAct's "zapper threads" propagate failure through sessions — E-CancelMsg drains queued messages for cancelled roles, E-CancelH invokes failure callbacks in all participants waiting on the cancelled role. This ensures no session gets stuck.
-
-**Resolution:** When a pane exits: (1) the dispatcher should drain pending messages for that pane, (2) panes waiting on responses from the dead pane should be notified per-conversation (ties to Gap 3), (3) the exit reason should propagate through any session chains. Current implementation is adequate for the compositor-only model but needs revision when inter-pane sessions exist.
+**Resolution (architecture spec):** When a pane exits: (1) Dispatch is cleared (fail_connection or clear) before handler drop, (2) ExitBroadcaster notifies watchers via pane_exited, (3) obligation handles fire Drop compensation (ReplyPort → ReplyFailed, ClipboardWriteLock → Revert). The invariant I9 ensures Dispatch is cleared before the handler is dropped. CancelHandle's inverted Drop (no-op) depends on this ordering.

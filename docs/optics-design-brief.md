@@ -344,8 +344,7 @@ pub struct PropertyInfo {
 
 ### Messenger convergence path
 
-Current: `set_title(t)` → `ClientToComp::SetTitle { pane, title }`.
-Future: `set_title(t)` → internal optic `set` → `ClientToComp::SetTitle`.
+`set_title(t)` → internal optic `set` → `ClientToServer` message via ServiceRouter.
 The optic becomes the ground truth; the Messenger method is sugar.
 
 ### CompletionRequest → CompletionReplyPort
