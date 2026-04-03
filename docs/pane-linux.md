@@ -158,8 +158,10 @@ audio, and video. Pane never interacts with ALSA directly.
 
 ### Sandbox: Landlock
 
-Agent governance via `.plan` files maps to Landlock rules.
+Agent governance via `.access` files maps to Landlock rules.
 Kernel-enforced, no daemon, no runtime overhead after setup.
+The `.plan` file (separate) is the agent's human-readable
+self-description displayed by `finger`. See `docs/ai-kit.md` §2.
 
 ### Session management: greetd
 
@@ -197,16 +199,19 @@ agent accounts and their s6-rc services are declaratively
 defined in the system configuration:
 
 - User account (uid, home directory, shell, groups)
-- `.plan` file (governance specification)
+- `.plan` file (human-readable description, agent-writable)
+- `.access` file (enforcement specification, owner-writable)
 - s6-rc service (longrun, runs the agent's pane connection)
 - Nix user profile (the agent's tools, declaratively specified)
 - cron entries (scheduled tasks)
 
-The `.plan` file is compiled into Landlock rules and network
-namespace configuration at service activation time. The
-compilation is a build-time step — the `.plan` parser produces
-the enforcement artifacts that the kernel applies when the
-agent's service starts.
+The `.access` file is compiled into Landlock rules and network
+namespace configuration at service launch time. The s6-rc
+service `run` script invokes the `.access` parser, which
+resolves `[tools]` names against the agent's Nix profile and
+produces Landlock rules that are applied before exec'ing the
+agent binary. The agent cannot modify its own `.access` —
+Landlock rules cannot be relaxed once applied.
 
 ---
 
@@ -292,26 +297,35 @@ The desktop module specifies greetd for session management.
   a graphical session — their s6-rc services start independently
   of any human login.)
 
-### O4. .plan compilation pipeline
+### O4. .access compilation pipeline
 
-The `.plan` file is the agent's governance specification. It
-must be compiled into:
+The `.access` file is the agent's enforcement specification
+(separate from `.plan`, which is the human-readable description
+— see `docs/ai-kit.md` §2). `.access` must be compiled into:
 - Landlock rules (filesystem access)
+- Landlock execute permissions (resolved from `[tools]` names
+  against Nix profile store paths)
 - Network namespace configuration (network access)
 - pane-fs view filters (pane visibility)
-- Model routing rules (AI model access)
+- Model routing rules (advisory unless network restricts egress)
 
-**Questions:**
-- When does compilation happen? At system activation time
-  (rebuild required to change .plan)? At service start time
-  (change .plan, restart agent)? At runtime (hot reload)?
-- What is the `.plan` format? (The AI Kit doc shows a
-  sketch with `[access]`, `[network]`, `[models]` sections,
-  but the format is not formally specified.)
-- How are .plan parse errors handled? (Agent refuses to start?
-  Falls back to a restrictive default?)
-- Who can edit an agent's .plan? (The agent's owner? Root only?
-  Any user in a governance group?)
+**Resolved:**
+- Compilation happens at service launch time (s6-rc `run`
+  script, before exec).
+- `.plan` is agent-writable (self-description). `.access` is
+  owner-writable (governance). The agent cannot modify its
+  own `.access`.
+- `[tools]` names that don't resolve against the Nix profile
+  cause the agent to refuse to start (loud failure).
+
+**Remaining questions:**
+- Is the `.access` format formally specified beyond the sketch
+  in ai-kit.md (`[filesystem]`, `[tools]`, `[network]`,
+  `[models]` sections)?
+- How are parse errors in other sections handled? (Refuse to
+  start? Fall back to maximally restrictive default?)
+- Can `.access` be hot-reloaded (restart agent to apply), or
+  must it be stable for the agent's lifetime?
 
 ### O5. Boot chain and verified boot
 
