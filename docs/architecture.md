@@ -174,7 +174,12 @@ pub trait Protocol {
     /// The name goes in service maps and pane-fs paths.
     const SERVICE_ID: ServiceId;
     /// The typed events this protocol produces.
-    type Message: Send + 'static;
+    /// Serialize + DeserializeOwned because all protocol messages
+    /// cross a process boundary (postcard encoding). Even local-only
+    /// protocols carry the bound — `#[derive(Serialize)]` is trivial,
+    /// and the bound prevents accidentally introducing a protocol
+    /// that works in-process but fails on the wire.
+    type Message: Serialize + DeserializeOwned + Send + 'static;
 }
 ```
 
@@ -207,16 +212,19 @@ protocol, its handler must implement `Handles<P>` for that
 protocol. Registration (`open_clipboard()`) requires the bound
 `H: Handles<Clipboard>` at compile time.
 
-### Named methods via derive macro
+### Named methods via attribute macro
 
-The developer writes named functions. A `#[derive(ProtocolHandler)]`
-macro generates the `Handles<P>::receive` match that delegates
-to them. This is BWindow::DispatchMessage translated to Rust —
-framework-generated dispatch calling developer-provided hooks.
+The developer writes named functions. A `#[pane::protocol_handler]`
+attribute macro on the `impl` block generates the
+`Handles<P>::receive` match that delegates to them. This is
+BWindow::DispatchMessage translated to Rust — framework-generated
+dispatch calling developer-provided hooks.
+
+(`#[derive(...)]` in Rust applies only to type definitions, not
+impl blocks. This is a procedural attribute macro, not a derive.)
 
 ```rust
-#[derive(ProtocolHandler)]
-#[protocol(Clipboard)]
+#[pane::protocol_handler(Clipboard)]
 impl Editor {
     fn lock_granted(&mut self, proxy: &Messenger, lock: ClipboardWriteLock) -> Result<Flow> {
         lock.commit(self.buffer.as_bytes().to_vec(), metadata)?;
@@ -233,7 +241,7 @@ impl Editor {
     }
 }
 
-// The derive generates:
+// The macro generates:
 impl Handles<Clipboard> for Editor {
     fn receive(&mut self, proxy: &Messenger, msg: ClipboardMessage) -> Result<Flow> {
         match msg {
@@ -257,6 +265,10 @@ a variant, `rustc` emits a non-exhaustive pattern error. The macro
 does not discover variants — it generates code that fails to
 compile if the handler is incomplete. Variant-to-method mapping
 uses `#[handles(VariantName)]` attributes or snake_case convention.
+
+Note: `#[derive(ProtocolHandler)]` appears in some examples as
+shorthand. The actual mechanism is the attribute macro
+`#[pane::protocol_handler(P)]` on the impl block.
 
 ### Framework protocols
 
@@ -293,6 +305,17 @@ management variants (DeclareInterest, ServiceTeardown). This is
 The Control protocol is never negotiated — it exists by virtue
 of having a connection. It is the control plane for the session.
 
+**Dispatch path for Control protocol variants:** the looper
+receives `ControlMessage` from wire service 0, pattern-matches
+on the variant, and routes: lifecycle variants dispatch to
+`Handler` methods, display variants dispatch to `DisplayHandler`
+methods, connection-management variants (`DeclareInterest`,
+`ServiceTeardown`) are handled internally by the framework.
+Display capability is declared in the handshake (Hello's
+interests list), not via DeclareInterest — the server allocates
+surface resources at connection time. The developer never sees
+`ControlMessage` directly.
+
 Services with their own negotiated wire discriminants (clipboard,
 routing) get their session-local u8 from the server during
 DeclareInterest.
@@ -318,12 +341,13 @@ pub trait Handler: Send + 'static {
     fn pulse(&mut self, proxy: &Messenger) -> Result<Flow> { Ok(Flow::Continue) }
     /// Incoming request from another pane. The payload is intentionally
     /// type-erased: the requester and receiver may have different types
-    /// (different processes, different T). The receiver downcasts based
-    /// on convention (shared crate defining the protocol, or routing
-    /// dispatch via optics). Protocol-defined requests route through
-    /// Handles<P> with typed messages instead. The reply is an
-    /// obligation — default drops it (sends ReplyFailed).
-    fn request_received(&mut self, proxy: &Messenger, msg: Box<dyn Any + Send>, reply: ReplyPort) -> Result<Flow> {
+    /// (different processes, different T). The service_id identifies the
+    /// protocol the sender used — the receiver checks it before
+    /// downcasting (analogous to BMessage's `what` field). Protocol-
+    /// defined requests route through Handles<P> with typed messages
+    /// instead. The reply is an obligation — default drops it (sends
+    /// ReplyFailed).
+    fn request_received(&mut self, proxy: &Messenger, service: ServiceId, msg: Box<dyn Any + Send>, reply: ReplyPort) -> Result<Flow> {
         drop(reply);
         Ok(Flow::Continue)
     }
@@ -351,10 +375,29 @@ pub trait DisplayHandler: Handler {
 }
 ```
 
-Handler and DisplayHandler are special cases of Protocol +
-Handles\<P\> with pre-defined named methods. They exist for
-ergonomics — the lifecycle and display protocols are used by
-every pane and benefit from named-method discoverability.
+```rust
+/// Routing protocol — panes with a namespace projection.
+/// The headless equivalent of DisplayHandler: Display projects
+/// state visually, Routing projects state as structured data
+/// accessible through pane-fs queries and remote commands.
+///
+/// Declared via DeclareInterest (not handshake — unlike Display,
+/// routing capability is opened mid-session when the handler is
+/// ready to serve queries).
+///
+/// Phase 3 implementation. Trait defined here for completeness.
+pub trait RoutingHandler: Handler {
+    fn route_query(&mut self, proxy: &Messenger, query: RouteQuery, reply: ReplyPort) -> Result<Flow>;
+    fn route_command(&mut self, proxy: &Messenger, cmd: &str, args: &str) -> Result<Flow> { Ok(Flow::Continue) }
+}
+```
+
+Handler, DisplayHandler, and RoutingHandler are special cases of
+Protocol + Handles\<P\> with pre-defined named methods. They exist
+for ergonomics — the lifecycle, display, and routing protocols
+benefit from named-method discoverability. Display is the visual
+projection of pane state; Routing is the namespace projection.
+Both are opt-in capabilities on top of Handler.
 
 ### Service protocols
 
@@ -432,8 +475,7 @@ enum EditorMessage {
     AutoSaveFinished,
 }
 
-#[derive(ProtocolHandler)]
-#[protocol(EditorProtocol)]
+#[pane::protocol_handler(EditorProtocol)]
 impl Editor {
     fn search_result(&mut self, proxy: &Messenger, matches: Vec<Match>) -> Result<Flow> { ... }
     fn spell_check_complete(&mut self, proxy: &Messenger, corrections: Vec<Correction>) -> Result<Flow> { ... }
@@ -456,6 +498,9 @@ pub struct Geometry {
     pub width: f64,
     pub height: f64,
     /// Physical = Logical × scale_factor.
+    /// f32: Wayland's wl_output scale is fixed-point that fits in
+    /// f32; f64 would imply false precision. Logical coordinates
+    /// use f64 for sub-pixel precision in layout math.
     pub scale_factor: f32,
 }
 
@@ -510,6 +555,13 @@ belonged there).
 /// something happened, here are the details. No obligations.
 ///
 /// BMessage, corrected: obligations extracted to internal types.
+///
+/// This enum covers the base protocol only (lifecycle + display).
+/// Service events (clipboard, observer, drag-drop) are NOT in this
+/// enum — they dispatch through Handles<P>::receive with their own
+/// per-protocol message types. This keeps Message closed: adding a
+/// new framework service does not modify this enum and does not
+/// break existing exhaustive matches.
 #[derive(Debug, Clone)]
 pub enum Message {
     // Lifecycle (no geometry — headless-first)
@@ -529,23 +581,29 @@ pub enum Message {
     CommandActivated,
     CommandDismissed,
     CommandExecuted { command: String, args: String },
-
-    // Service notifications — nested per-service enum.
-    // Top-level grows O(services), not O(services × events).
-    // Lifecycle and display variants stay flat (base protocol).
-    Clipboard(ClipboardNotification),
-    // Future: Observer(ObserverNotification), DragDrop(DragDropNotification)
-}
-
-/// Clone-safe clipboard notifications (filter-visible).
-/// Obligation-carrying clipboard messages (LockGranted) are
-/// internal, not in this enum.
-#[derive(Debug, Clone)]
-pub enum ClipboardNotification {
-    LockDenied { clipboard: String, reason: String },
-    Changed { clipboard: String, source: Id },
 }
 ```
+
+Service events are delivered through `Handles<P>::receive`, not
+through the `Message` enum. `ClipboardMessage` (including both
+Clone-safe notifications like `Changed` and obligation-carrying
+handles like `LockGranted`) is the protocol's own message type:
+
+```rust
+pub enum ClipboardMessage {
+    LockGranted(ClipboardWriteLock),
+    LockDenied { clipboard: String, reason: String },
+    Changed { clipboard: String, source: Id },
+    ServiceLost,
+}
+```
+
+Filter visibility for service events: filters that need to observe
+service notifications register per-service filter hooks at service
+registration time (e.g., `open_clipboard()` installs the clipboard
+filter hook). These hooks are keyed by `ServiceId` and can inspect
+the protocol's Clone-safe message variants. The base filter chain
+(operating on `Message`) never sees service events.
 
 Obligation-carrying messages bypass the filter chain and dispatch
 directly to their handler method. They do not form a public enum —
@@ -997,7 +1055,10 @@ request clipboard contents *after* receiving paste key event).
 
 The unified batch linearizes events from all sources into a total
 order within each dispatch cycle. This gives sequential consistency
-per-pane but not causal consistency across servers. The session-type
+per-pane but not causal consistency across servers. Events from
+different Connections that appear in the same batch have an arbitrary
+relative order determined by read readiness, not by any happened-
+before relation between the sending servers. The session-type
 formalism is silent on cross-session ordering — it's a property
 of the physical system, not the protocol.
 
@@ -1213,8 +1274,12 @@ Each service's calloop channel carries its own typed event enum.
 At the calloop callback boundary, events convert to the looper's
 internal representation and enter the unified batch. Total ordering
 within the batch is preserved. Coalescing operates within the batch.
-Filters see Message (Clone-safe) variants only. Service obligations
-bypass filters but remain ordered within the batch.
+The base filter chain sees `Message` (Clone-safe) variants only.
+Service events dispatch through `Handles<P>` and are not visible
+to the base filter chain. Per-service filter hooks, registered
+at service open time, can observe Clone-safe service events.
+Obligation-carrying messages bypass all filters and remain ordered
+within the batch.
 
 ---
 
@@ -1289,7 +1354,8 @@ failure terminals. The invariants:
 - **I2**: No blocking calls in handler methods (EAct Progress)
 - **I3**: Handler callbacks terminate (return Flow)
 - **I4**: Typestate handles: `#[must_use]` + Drop compensation
-- **I5**: Filters see only Message (Clone-safe, type-enforced)
+- **I5**: Base filters see only Message (Clone-safe, type-enforced);
+  per-service filter hooks see Clone-safe service events
 - **I6**: Sequential single-thread dispatch per pane (BLooper model)
 - **I7**: Service dispatch fn pointers called sequentially within
   the batch loop, never concurrently, preserving Rust's exclusive-
@@ -1470,8 +1536,7 @@ impl DisplayHandler for Editor {
     }
 }
 
-#[derive(ProtocolHandler)]
-#[protocol(Clipboard)]
+#[pane::protocol_handler(Clipboard)]
 impl Editor {
     fn lock_granted(&mut self, _proxy: &Messenger, lock: ClipboardWriteLock) -> Result<Flow> {
         lock.commit(self.buffer.as_bytes().to_vec(), ClipboardMetadata {
@@ -1589,10 +1654,10 @@ variants.
     state, no `reply_received` on Handler. `dispatch.fail_connection()` before
     `disconnected()`. Six invariants (S1-S6).
 
-14. **RoutingHandler: Handler**: Headless command surface via
-    DeclareInterest. `command_executed` on DisplayHandler (input)
-    and RoutingHandler (routed data access) for their respective
-    sources.
+14. **RoutingHandler: Handler**: The namespace projection counterpart
+    to DisplayHandler (visual projection). Declared via
+    DeclareInterest. Handles pane-fs queries and remote commands.
+    Phase 3 implementation; trait defined in the main spec.
 
 15. **Geometry**: Logical pixels + scale_factor. `physical_size()`
     helper. Resolves HiDPI ambiguity.
@@ -1624,17 +1689,19 @@ variants.
     senders). Protocol-defined requests route through Handles<P>.
     Ad-hoc inter-pane requests use request_received.
 
-21. **Message enum uses nested service notifications**:
-    `Message::Clipboard(ClipboardNotification)`. Top-level grows
-    O(services). Lifecycle and display stay flat (base protocol).
+21. **Message enum is base-protocol only**: Service events route
+    through `Handles<P>::receive` with per-protocol message types,
+    not through the `Message` enum. `Message` covers lifecycle +
+    display (the base protocol). New services do not modify it.
 
 22. **PointerPolicy**: Per-pane `Coalesce` (default) or
     `FullHistory` for drawing apps. Server-side filtering.
     Set via `Messenger::set_pointer_policy()`.
 
-23. **Derive macro exhaustiveness**: `rustc`'s exhaustive match IS
-    the guarantee. The macro generates the match; missing handler
-    methods produce non-exhaustive pattern errors at compile time.
+23. **Attribute macro exhaustiveness**: `rustc`'s exhaustive match IS
+    the guarantee. The `#[pane::protocol_handler(P)]` macro generates
+    the match; missing handler methods produce non-exhaustive pattern
+    errors at compile time.
 
 24. **Network discovery deferred**: Tier 1 (explicit config) is
     sufficient for all phases. Future discovery mechanisms (mDNS,
@@ -1643,16 +1710,14 @@ variants.
     metadata in map entries reaching the App. The service map is
     the abstraction boundary.
 
-25. **No `remote_insecure` escape hatch**: Ship `pane dev-certs`
-    tooling. Local CA + server cert + client cert, one command,
-    stored in `~/.config/pane/tls/`. Local dev uses unix sockets
-    (no TLS). Remote dev uses dev certs (same code path as prod).
-    Transport enum is `{Unix, Tls}`, no third option. Server
-    refuses plaintext TCP on remote listener. `PeerAuth` enum
-    replaces advisory PeerIdentity for authorization:
-    `Kernel { uid, pid }` (unix, SO_PEERCRED) or
-    `Certificate { subject, issuer }` (TLS). `pane_owned_by()`
-    checks `PeerAuth`, not self-reported strings.
+25. **No `remote_insecure` escape hatch**: Transport enum is
+    `{Unix, Tls}`, no third option. Server refuses plaintext TCP
+    on remote listener. `PeerAuth` enum replaces advisory
+    PeerIdentity for authorization: `Kernel { uid, pid }` (unix,
+    SO_PEERCRED) or `Certificate { subject, issuer }` (TLS).
+    `pane_owned_by()` checks `PeerAuth`, not self-reported strings.
+    Development certificate tooling (`pane dev-certs`) is a product
+    concern — see ops documentation, not this spec.
 
 ## Open Questions
 
@@ -1673,12 +1738,12 @@ Phase 2 breaks, Phase 1 was wrong.
 | App | Bare `Connection` field | `HashMap<ServiceName, Connection>` (1 entry) |
 | Dispatch | `HashMap<u64, Entry>` | `HashMap<(ConnectionId, u64), Entry>` |
 | Wire framing | Flat `[length][payload]` | `[length][service][payload]` (service=0); service IDs negotiated per-connection |
-| Message enum | Flat with panic-Clone | Nested services + `#[derive(Clone)]` |
+| Message enum | Flat with panic-Clone | Base-protocol only + `#[derive(Clone)]`; service events via `Handles<P>` |
 | PeerAuth | Self-reported identity | `PeerAuth::Kernel { uid, pid }` via SO_PEERCRED |
 | DeclareInterest | Implicit (connect=display) | Explicit capability declaration |
 | ConnectionSource | Pump threads + mpsc | calloop EventSource (read + buffered write) |
 | Protocol trait | None | `Lifecycle`, `Display` types exist |
-| Handles\<P\> | None | Trait exists, Handler desugars to it |
+| Handles\<P\> | None | Trait exists, Handler desugars to it, `#[pane::protocol_handler]` attribute macro |
 | Dispatch\<H\> + send_request | `reply_received` on Handler | Dispatch HashMap + CancelHandle |
 | AppPayload | `T: Send + 'static` | `T: AppPayload` (Clone + Send + 'static) |
 | I9 | Not implemented | Dispatch cleared before handler drop |
