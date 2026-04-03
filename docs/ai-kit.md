@@ -84,10 +84,20 @@ pane recovers the convention and gives it teeth.
 | What data it can send externally | Routing rules (data classification) |
 
 The mapping from `.plan` declarations to kernel enforcement is
-direct. What the `.plan` says is what the kernel enforces. There
-is no gap between specification and enforcement — the `.plan` IS
-the security policy, expressed as a file you can read, edit, and
-version-control.
+direct. What the `.plan` says is what the kernel enforces.
+
+**Trust boundary caveat:** Landlock is voluntary — a process
+applies Landlock rules to itself (or a parent applies them
+before exec). A compromised agent binary that never calls
+`landlock_create_ruleset()` runs unsandboxed. The trust
+boundary is the **s6-rc service harness**, not the agent
+binary. The service's `run` script applies Landlock rules
+(compiled from `.plan`) before exec'ing the agent. The agent
+never touches Landlock itself — by the time it runs, the
+sandbox is already in place. A compromised agent binary
+can't escape because it can't undo the Landlock rules
+applied by its parent process (Landlock is no-new-privileges
+compatible).
 
 ### Format
 
@@ -130,10 +140,17 @@ cross-user agent access.
 ### Remote agents
 
 A remote agent connecting over TLS is mapped to a local unix
-account based on its certificate subject. The local account's
-`.plan` governs what the remote agent can do — same enforcement,
-same audit trail, same `finger` output. See
-`docs/distributed-pane.md` §4 for the full identity and trust
+account. The local account's `.plan` governs what the remote
+agent can do — same enforcement, same audit trail, same
+`finger` output.
+
+The mapping from TLS certificate subject to local uid is not
+yet specified. Options include: a mapping file
+(`/etc/pane/identities.toml` with `subject → uid` entries),
+a naming convention (certificate CN = local username), or
+integration with an external identity provider. This is an
+open question — see `docs/pane-linux.md` for the full list.
+See `docs/distributed-pane.md` §4 for the identity and trust
 model.
 
 ---
@@ -527,107 +544,99 @@ system's integration tests. Its needs drive the API design. See
 
 ---
 
-## 9. Sandboxed Agent Compute
+## 9. Sub-Agent Delegation via VM
 
-On Linux, agents can run their own agent infrastructure inside
-KVM virtual machines (QEMU on macOS). The VM is a hardware-
-isolated compute environment that communicates with the agent's
-userspace through pane's protocol. This is not a special feature
-— it is the recursive application of the existing architecture.
+An agent that needs to delegate subtasks can deploy a pane
+linux VM and provision sub-agents on it. The VM is a self-
+contained pane system — its own users, its own `.plan` files,
+its own multi-user infrastructure. The sub-agents work the same
+way the outer agent does: they are unix users on a pane system.
+
+This is the recursive application of the base model. An agent
+is a user of a pane system. An agent that needs sub-agents
+deploys another pane system and provisions users on it. Same
+structure, same tools, same governance, one level down.
 
 ### How it works
 
-A VM running pane-headless is just another pane server. The
-agent connects to it via `App::connect_service()` over TCP/TLS
-— the multi-server Connection model that the architecture spec
-already defines. The VM's panes appear in the agent's namespace
-alongside its own panes, with locally-assigned numeric IDs.
+1. The outer agent has access to a hypervisor (KVM on Linux,
+   QEMU on macOS) — a tool in its environment, managed through
+   pane-checked interfaces.
+2. The agent boots a pane linux VM. The VM is provisioned via
+   a nix flake (the same mechanism that provisions the host).
+3. Inside the VM, sub-agents are unix users with accounts,
+   home directories, `.plan` files, shells — the full
+   infrastructure described in §1–§7 of this document.
+4. The sub-agents do their work inside the VM using the same
+   tools the outer agent uses: `mail` for results, `finger`
+   for status, pane-fs for structured state, cron for
+   scheduling.
+5. The outer agent retrieves results. How is a detail — ssh,
+   shared filesystem (virtiofs/9pfs), pane protocol connection,
+   or reading files from a mounted VM disk. The architectural
+   point is the recursive structure, not the retrieval mechanism.
+6. The VM is disposable. When the work is done, destroy it.
 
-```
-agent.builder (uid 1001)
-  ├─ /pane/1/  ← agent's own monitoring pane (headless, local server)
-  ├─ /pane/2/  ← agent's build status pane (headless, local server)
-  └─ /pane/3/  ← build sandbox shell (headless, VM server via TLS)
-      └─ VM runs pane-headless, isolated by KVM
-         ├─ untrusted build commands execute here
-         ├─ /pane/1/ inside the VM = /pane/3/ from the agent's view
-         └─ agent reads /pane/3/body for build output
-```
+### Why VMs
 
-The agent's `.plan` governs what passes between the agent and
-the VM:
-- Filesystem mounts passed through (virtiofs or 9pfs)
-- Network access granted to the VM (network namespace)
-- What the VM's pane server can DeclareInterest for
-
-### Why VMs, not just Landlock
-
-Landlock provides filesystem and network sandboxing at the
-process level — sufficient for trusted agent code operating
-within its declared permissions. But agents sometimes need to
-run *untrusted* code: user-submitted scripts, experimental
-builds, third-party tools. For these, process-level sandboxing
-is insufficient — the untrusted code may exploit kernel
-vulnerabilities that Landlock cannot prevent.
-
+Landlock provides process-level sandboxing — sufficient for
+trusted agent code. But sub-agent delegation often involves
+running code the outer agent doesn't fully trust: third-party
+tools, experimental configurations, user-submitted scripts.
 KVM provides hardware-enforced isolation. The VM has its own
-kernel, its own memory space, its own device model. A
-compromised process inside the VM cannot escape to the host.
-The cost is a VM boot — seconds, not minutes, with
-microVM approaches (firecracker-style, or QEMU with minimal
-firmware).
+kernel, its own memory space. A compromised sub-agent inside
+the VM cannot escape to the host.
 
-### The `cpu` pattern
+The cost is a VM boot — seconds with microVM approaches
+(firecracker-style, or QEMU with minimal firmware). The
+benefit is that the outer agent can give sub-agents broad
+permissions inside the VM without risking the host.
 
-This is Plan 9's `cpu` command applied recursively. In Plan 9,
-`cpu` ran computation on a remote machine while I/O stayed
-local. The agent's VM is the same pattern — computation
-(untrusted build, code execution, experiment) runs in the VM;
-results flow back through the pane protocol to the agent's
-namespace.
+### Relationship to Plan 9's `cpu`
 
-The agent doesn't shell out to the VM. It connects to the VM's
-pane server and uses `send_request`, `Handles<P>`, and pane-fs
-exactly as it would with any other server. If the VM crashes,
-the agent receives `PaneExited { reason: Disconnected }` on
-the affected Connection — per-Connection failure isolation.
-Other Connections are unaffected.
+Related but distinct. Plan 9's `cpu` projected the local
+namespace (devices, files, display) onto a remote machine —
+the process ran remotely but its environment was local. Pane's
+VM model goes the other direction: the sub-agents run inside
+the VM with their own environment, and the outer agent pulls
+results back into its context.
+
+Same goal — use remote compute while maintaining local
+context — but opposite direction of namespace projection.
+Plan 9 pushed environment out; pane pulls results in.
 
 ### Use cases
 
-**Build sandboxes.** A build agent runs untrusted build commands
-in a disposable VM. The build output streams through
-`/pane/3/body`. When the build completes or fails, the VM is
-destroyed. Clean environment every time — stronger than Nix's
-build sandbox because the isolation is hardware-level.
+**Task delegation.** An agent breaks a complex task into
+subtasks, provisions a sub-agent per subtask in a VM, collects
+results. The sub-agents coordinate among themselves (they're
+users on a shared system — `mail`, `finger`, shared directories)
+without the outer agent micromanaging.
 
-**Code execution.** An agent evaluates user-submitted code in a
-VM. The code runs in a pane-shell inside the VM. The agent reads
-the output via pane-fs, applies its judgment, reports results.
-If the code tries to escape the sandbox, it hits KVM, not
-Landlock.
+**Untrusted code execution.** An agent evaluates user-submitted
+code by deploying it in a VM. The code runs as a user inside
+the VM. If it misbehaves, the VM is destroyed. The outer agent
+reads the output and reports results.
 
-**Sub-agent ecosystems.** An agent runs its own sub-agents inside
-a VM — each sub-agent is a unix user in the VM, with its own
-`.plan`, its own pane connections. The outer agent orchestrates
-by connecting to the VM's pane server and observing sub-agent
-panes in its namespace. This is recursive multi-user
-infrastructure.
+**Build sandboxes.** A build agent provisions a clean VM per
+build. The build runs inside the VM with its own toolchain,
+its own user, its own `.plan`. Results are mailed to the
+outer agent or written to a shared filesystem. The VM is
+destroyed after the build — clean environment every time.
 
-**Experimentation.** An agent tests a system configuration change
-in a VM before applying it to the host. It boots a VM with the
-proposed configuration, runs tests, observes results through
-pane-fs, and reports whether the change is safe. The VM is
-disposable — the experiment is free.
+**Experimentation.** An agent tests a configuration change by
+booting a VM with the proposed configuration, running tests
+inside it, and reporting whether the change is safe. The VM
+is disposable — the experiment costs nothing to the host.
 
 ### Phase mapping
 
 | Component | Phase |
 |---|---|
-| Agent connects to VM's pane-headless | Phase 2 (multi-server + TLS) |
-| VM panes in agent namespace | Phase 2 (unified namespace) |
-| `.plan` governs VM access | Phase 1 (.plan parser + Landlock) |
-| microVM tooling (pane-vm) | Post-Phase 2 (convenience, not core) |
+| Agent manages VM via hypervisor | Phase 2 (requires pane linux VM image) |
+| Sub-agent provisioning in VM | Phase 2 (nix flake for VM config) |
+| Hypervisor access via `.plan` | Phase 1 (`.plan` parser + Landlock) |
+| Convenience tooling (pane-vm CLI) | Post-Phase 2 |
 
 ---
 
@@ -654,8 +663,9 @@ infrastructure:
 The one new component the AI Kit needs: **a `.plan` parser** that
 translates `.plan` declarations into Landlock rules, network
 namespace configuration, and pane-fs view filters. This is a
-build-time tool (part of the agent's s6 service definition), not
-a runtime service.
+launch-time tool invoked by the agent's s6-rc service `run`
+script before exec'ing the agent binary — not a build-time
+tool and not a runtime service.
 
 ### Phase mapping
 
