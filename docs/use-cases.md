@@ -15,14 +15,17 @@ parses VT escape sequences, and renders a text grid.
 
 ```rust
 struct Shell {
-    pty: Pty,
+    pty: PtySource,       // calloop source wrapping the PTY fd
     screen: ScreenBuffer,
     clipboard: ClipboardHandle,
 }
 
 impl Handler for Shell {
     fn ready(&mut self, proxy: &Messenger) -> Result<Flow> {
-        proxy.set_pulse_rate(Duration::from_millis(16))?; // 60fps
+        // No pulse timer — the shell is entirely event-driven.
+        // PTY output arrives via PtySource (a calloop fd source),
+        // not on a fixed timer. The looper wakes only when there
+        // is actual data to process.
         Ok(Flow::Continue)
     }
     fn close_requested(&mut self, proxy: &Messenger) -> Result<Flow> {
@@ -30,9 +33,13 @@ impl Handler for Shell {
         Ok(Flow::Stop)
     }
     fn request_received(&mut self, proxy: &Messenger, service: ServiceId, msg: Box<dyn Any + Send>, reply: ReplyPort) -> Result<Flow> {
-        // A script writes to /pane/<id>/text — inject into PTY
-        if let Some(text) = msg.downcast_ref::<String>() {
-            self.pty.write_all(text.as_bytes())?;
+        // A script writes to /pane/<id>/ctl — inject into PTY.
+        // Check ServiceId before downcasting (the convention from
+        // architecture.md §Protocol and Dispatch).
+        if service == service_id!("com.pane.shell.input") {
+            if let Some(text) = msg.downcast_ref::<String>() {
+                self.pty.write_all(text.as_bytes())?;
+            }
         }
         drop(reply);
         Ok(Flow::Continue)
@@ -67,17 +74,23 @@ impl Shell {
   executor.
 - **Clipboard via Handles\<Clipboard\>**: copy/paste through the
   typed service protocol, not through the Message enum.
-- **request_received with ServiceId**: scripts write text to the
-  shell through the ad-hoc request path. The ServiceId tells the
-  shell what kind of injection this is.
-- **pane-fs namespace**: `/pane/<id>/text` is a blocking-read file
-  (Plan 9 pattern). `cat /pane/<id>/text` streams terminal output.
-  `echo "ls" > /pane/<id>/cons` sends input. No special IPC —
-  the filesystem IS the scripting interface.
+- **Event-driven I/O**: the shell has no pulse timer. PTY output
+  arrives via a calloop fd source that wakes the looper only when
+  the PTY fd is readable. Zero CPU when idle. (Pulse timers are
+  for periodic work like health checks — see #2.)
+- **request_received with ServiceId**: scripts inject text through
+  the ad-hoc request path. The handler checks ServiceId before
+  downcasting — the convention established in the architecture spec.
+- **pane-fs namespace** (see `docs/pane-fs.md`): `/pane/<id>/body`
+  is the terminal's semantic content (command output as text).
+  `/pane/<id>/ctl` accepts line commands (same as writing to a
+  Plan 9 `cons` file). `/pane/<id>/event` is a blocking-read
+  JSONL stream of terminal events. No special IPC — the
+  filesystem IS the scripting interface.
 
 **Why headless matters:** A CI system runs `pane-shell` headless on
 a build server. The shell pane exists in the namespace, runs
-commands, produces output accessible at `/pane/<id>/text`. No
+commands, produces output accessible at `/pane/<id>/body`. No
 display needed. The same binary, the same protocol, the same
 Handler code.
 
@@ -97,15 +110,18 @@ desktop connects to it for display.
   connects to the remote monitoring server (TLS) and the local
   compositor (unix socket) — two Connections in one App, routed
   by ServiceRouter.
-- **pane-fs namespace**: each monitored service is a pane. The
-  unified namespace shows them at `/pane/monitor-web/`,
-  `/pane/monitor-db/`, etc. `cat /pane/monitor-db/content` returns
-  the current health status as bytes. Alerting scripts are just
-  `while read status < /pane/monitor-db/event; do ...`.
-- **Session suspension**: the dashboard pane suspends when the user
-  closes it. The monitoring panes keep running headless. When the
-  user reopens the dashboard, it resumes the suspended session —
-  the monitoring panes were never affected.
+- **pane-fs namespace**: each monitored service is a pane,
+  accessible by ID under `/pane/<id>/`. The per-signature index
+  (`/pane/by-sig/com.ops.monitor/`) lists all monitoring panes.
+  `cat /pane/<id>/body` returns the current health status.
+  Alerting scripts read the event stream:
+  `while read line < /pane/<id>/event; do ...`.
+- **Session suspension (Phase 3)**: the dashboard pane suspends
+  when the user closes it. The monitoring panes keep running
+  headless. When the user reopens the dashboard, it resumes the
+  suspended session — the monitoring panes were never affected.
+  (Suspension is a Phase 3 feature; in Phase 1, the dashboard
+  disconnects and reconnects fresh.)
 - **Host as contingent server**: the monitoring machine is a server
   the dashboard connects to. The user's local machine is also a
   server (the compositor). Neither has architectural privilege.
@@ -159,17 +175,18 @@ impl Editor {
   (e.g., `RefactorSuggestion`), the attribute macro generates a
   match that fails to compile until the editor handles it. No
   silent message drops.
-- **Undo integration**: `RecordingOptic` wraps the editor's
-  property optics. When the user accepts a completion, the
-  insertion is recorded with old/new values. Undo reverses it.
-  `CoalescingPolicy` groups rapid keystrokes into single undo
-  steps.
-- **Scripting via optics**: `/pane/<id>/attr/cursor` returns the
-  cursor position. `/pane/<id>/attr/selection` returns the
-  selected text. External tools (linters, formatters) read and
-  write through the namespace. `DynOptic` handles the
-  serialization at the boundary; the editor's internal optics are
-  monomorphic.
+- **Undo integration** (see `docs/optics-design-brief.md`):
+  `RecordingOptic` wraps the editor's property optics, capturing
+  old/new values on each `set()`. `CoalescingPolicy` groups rapid
+  keystrokes into single undo steps. These are kit-level types
+  from the optics subsystem, not core protocol concepts.
+- **Scripting via pane-fs** (see `docs/pane-fs.md`):
+  `/pane/<id>/attrs/cursor` returns the cursor position.
+  `/pane/<id>/attrs/selection` returns the selected text.
+  External tools (linters, formatters) read and write through
+  the namespace. The `DynOptic` trait (see `docs/scripting-optics-design.md`)
+  handles type-erased serialization at the boundary; the editor's
+  internal optics are monomorphic.
 
 ---
 
@@ -180,15 +197,18 @@ because the filesystem *was* the database. pane recovers this
 through pane-fs.
 
 **Architecture exercised:**
-- **pane-fs as query system**: navigating to
-  `/pane/query/kind=image&modified>2026-03-01` returns a synthetic
-  directory listing of files matching the query. The file manager
-  doesn't implement queries — it reads directories. The query
-  engine is pane-fs.
-- **Routing**: double-clicking a file routes the content to a
-  handler. The routing table matches content type to application
-  signature. `RouteResult::MultiMatch` presents a chooser to the
-  user. The quality rating determines the default.
+- **pane-fs as query system** (see `docs/pane-fs.md` §Unified
+  Namespace and `docs/distributed-pane.md` §3): every directory
+  under `/pane/` is a computed view — a filter predicate over
+  indexed pane state. The file manager navigates query directories
+  the same way it navigates regular directories. The query engine
+  is pane-fs; the file manager just reads directories.
+- **Routing** (Phase 3 — `RoutingHandler`): double-clicking a file
+  routes the content to a handler. The routing table matches
+  content type to application signature. Multi-match presents a
+  chooser to the user. Routing quality scoring (0.0–1.0, from
+  Be's Translation Kit pattern) is a routing subsystem detail,
+  not core protocol — see `docs/v1-subsystem-inventory.md` §Routing.
 - **Clipboard with locality**: copying a file path from the local
   file manager and pasting into a remote terminal session — the
   clipboard entry has `Locality::Any`, so the remote instance's
@@ -238,22 +258,27 @@ fn message_received(&mut self, proxy: &Messenger, msg: ChatMessage) -> Result<Fl
   No cross-Connection ordering guarantee needed — the handler's
   sequential execution IS the ordering.
 
-- **Session suspension**: the user closes their laptop. The
-  compositor Connection suspends. The chat Connection stays active
-  (different server, independent suspension). Messages accumulate.
-  When the laptop opens, the compositor Connection resumes, the
-  handler receives `ready()`, and renders the accumulated messages.
+- **Session suspension (Phase 3)**: the user closes their laptop.
+  The compositor Connection suspends. The chat Connection stays
+  active (different server, independent suspension). Messages
+  accumulate. When the laptop opens, the compositor Connection
+  resumes, the handler receives `ready()`, and renders the
+  accumulated messages. (In Phase 1, the compositor Connection
+  disconnects; the chat Connection is unaffected either way.)
 
 ---
 
-## 6. Build system dashboard (RoutingHandler)
+## 6. Build system dashboard (RoutingHandler — Phase 3)
 
 A build tool that exposes build status through the namespace.
 No display — it's a headless daemon that other panes query.
 
 **Architecture exercised:**
-- **RoutingHandler**: the build daemon implements RoutingHandler
-  to serve namespace queries:
+- **RoutingHandler (Phase 3)**: the build daemon implements
+  RoutingHandler to serve namespace queries. In Phase 1, the same
+  functionality is achieved through `request_received` with
+  ServiceId-based dispatch; RoutingHandler formalizes this as a
+  trait in Phase 3.
 
 ```rust
 impl Handler for BuildDaemon {
@@ -263,6 +288,7 @@ impl Handler for BuildDaemon {
     }
 }
 
+// Phase 3 — RoutingHandler formalizes namespace query handling.
 impl RoutingHandler for BuildDaemon {
     fn route_query(&mut self, proxy: &Messenger, query: RouteQuery, reply: ReplyPort) -> Result<Flow> {
         match query.path() {
@@ -282,18 +308,24 @@ impl RoutingHandler for BuildDaemon {
 }
 ```
 
-- **Namespace as API**: `/pane/build/attr/status` → "building".
-  `/pane/build/attr/targets` → "kernel\nlibc\ninit".
-  `echo "build kernel" > /pane/build/cmd` starts a build.
+- **Namespace as API** (see `docs/pane-fs.md`):
+  `/pane/<id>/attrs/status` → "building".
+  `/pane/<id>/attrs/targets` → "kernel\nlibc\ninit".
+  `echo "build kernel" > /pane/<id>/ctl` starts a build.
   Shell scripts automate builds through the filesystem.
-- **Messenger::monitor**: the editor pane monitors the build pane.
-  When the build finishes (pane_exited or state change), the editor
-  updates its diagnostics. Push-based, not polling.
+  The per-signature index at `/pane/by-sig/com.dev.build/`
+  lists all build daemon panes.
+- **Pane death notification**: the editor registers interest in
+  the build pane's exit via `pane_exited()` on Handler. When the
+  build daemon exits (crash or completion), the editor receives
+  `PaneExited { pane, reason }` and updates its diagnostics.
+  This is push-based via the ExitBroadcaster (architecture spec
+  §Termination semantics), not polling.
 - **Headless remote**: the build daemon runs on a powerful remote
   machine. The developer's local editor connects to it via
   `App::connect_service()`. Same protocol, same routing, different
-  machine. The developer types `build kernel` in their local
-  command surface; the command routes to the remote build daemon
+  machine. The developer writes `build kernel` to
+  `/pane/<id>/ctl`; the command routes to the remote build daemon
   through pane-fs.
 
 ---
@@ -305,13 +337,13 @@ demonstrating the system. The guide is a pane.
 
 **Architecture exercised:**
 - **Agent as user**: the guide runs under its own unix account.
-  Its `.plan` file governs what it can access (Landlock sandbox,
-  network namespace restrictions). PeerAuth::Kernel identifies it
-  by uid, not by self-reported string.
-- **Scripting via optics**: the guide reads and writes other panes'
-  properties to demonstrate features. It writes to
-  `/pane/editor/attr/theme` to show theming. It reads
-  `/pane/shell/attr/cursor` to point out where the user is. The
+  Its sandbox policy (Landlock rules, network namespace
+  restrictions) governs what it can access. PeerAuth::Kernel
+  identifies it by uid, not by self-reported string.
+- **Scripting via pane-fs**: the guide reads and writes other
+  panes' properties to demonstrate features. It writes to
+  `/pane/<id>/attrs/theme` to show theming. It reads
+  `/pane/<id>/attrs/cursor` to point out where the user is. The
   optic discipline (GetPut, PutGet) guarantees that reading after
   writing returns the written value — the guide's demonstrations
   are reliable, not racy.
@@ -320,8 +352,8 @@ demonstrating the system. The guide is a pane.
   user pastes them into a shell. The guide doesn't need display
   access to do this; clipboard is an independent service
   Connection.
-- **pane-fs for self-description**: `cat /pane/guide/text` returns
-  what the guide is currently saying. `cat /pane/guide/attr/topic`
+- **pane-fs for self-description**: `cat /pane/<id>/body` returns
+  what the guide is currently saying. `cat /pane/<id>/attrs/topic`
   returns what it's teaching. A curious user discovers this and
   learns the namespace by using it to inspect their teacher.
 
@@ -336,10 +368,12 @@ namespace, the scripting system. Display is something they could
 opt into, not something they're missing.
 
 **The namespace is the scripting interface.** Every use case
-involves reading or writing `/pane/<id>/...` paths. Shell scripts,
-external tools, and AI agents all use the same filesystem
-interface. No SDK needed for basic automation — `cat` and `echo`
-are sufficient.
+involves reading or writing pane-fs paths (`/pane/<id>/body`,
+`/pane/<id>/attrs/...`, `/pane/<id>/ctl`, `/pane/<id>/event`).
+Shell scripts, external tools, and AI agents all use the same
+filesystem interface. No SDK needed for basic automation — `cat`
+and `echo` are sufficient. See `docs/pane-fs.md` for the full
+path convention.
 
 **Multi-server is invisible to handlers.** The chat client (#5)
 connects to two servers. The editor (#3) might connect to a
