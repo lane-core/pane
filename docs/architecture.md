@@ -146,8 +146,17 @@ impl ServiceId {
     /// The UUID is deterministically computed via UUIDv5 using
     /// a fixed PANE_NAMESPACE. Zero ceremony — no manual UUID.
     /// Not const fn (UUIDv5 requires SHA-1, not const-evaluable
-    /// in the uuid crate). Framework ServiceId constants are
-    /// computed at initialization time or via a build-time macro.
+    /// in the uuid crate). For `const SERVICE_ID` in Protocol
+    /// impls, use the `service_id!` proc-macro which computes the
+    /// UUID at compile time:
+    ///
+    /// ```rust
+    /// const SERVICE_ID: ServiceId = service_id!("com.pane.clipboard");
+    /// // expands to: ServiceId { uuid: Uuid::from_bytes([...]), name: "com.pane.clipboard" }
+    /// ```
+    ///
+    /// This avoids runtime initialization order issues. `new()` is
+    /// available for dynamic ServiceId construction (e.g., tests).
     pub fn new(name: &'static str) -> Self {
         ServiceId {
             uuid: Uuid::new_v5(PANE_NAMESPACE, name.as_bytes()),
@@ -709,6 +718,14 @@ Filters are applied in registration order. `add_filter` appends
 to the chain. Filters can be removed by dropping the returned
 `FilterHandle` (which sends `RemoveFilter` to the looper).
 
+Filter ordering matters: earlier filters see original messages;
+later filters see the results of earlier transformations. If
+filter A transforms Key → CommandExecuted, filter B (registered
+after A) sees CommandExecuted, not the original Key. This is
+correct for composition — a shortcut filter registered first
+transforms key combos, and a command-logging filter registered
+second observes the resulting commands.
+
 ---
 
 ## Protocol
@@ -1158,7 +1175,14 @@ impl Messenger {
 /// Drop does nothing — the request completes normally.
 /// .cancel(self) removes the Dispatch entry without firing callbacks.
 /// Inverted from ReplyPort: drop = happy path, cancel = voluntary abort.
-pub struct CancelHandle { /* token + looper_tx */ }
+pub struct CancelHandle {
+    /// Which Connection to send Cancel on.
+    connection_id: ConnectionId,
+    /// The request token within that Connection's namespace.
+    token: u64,
+    /// Channel to the looper for Dispatch entry removal.
+    looper_tx: LooperSender,
+}
 
 impl CancelHandle {
     /// Cancel the request. Consumes self. Late replies silently dropped.
