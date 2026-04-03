@@ -38,7 +38,8 @@ impl Handler for Shell {
         // architecture.md §Protocol and Dispatch).
         if service == service_id!("com.pane.shell.input") {
             if let Some(text) = msg.downcast_ref::<String>() {
-                self.pty.write_all(text.as_bytes())?;
+                // Non-blocking — same discipline as key().
+                self.pty.enqueue_input(text.as_bytes());
             }
         }
         drop(reply);
@@ -427,12 +428,13 @@ impl RoutingHandler for BuildDaemon {
   Shell scripts automate builds through the filesystem.
   The per-signature index at `/pane/by-sig/com.dev.build/`
   lists all build daemon panes.
-- **Pane death notification**: the editor registers interest in
-  the build pane's exit via `pane_exited()` on Handler. When the
-  build daemon exits (crash or completion), the editor receives
-  `PaneExited { pane, reason }` and updates its diagnostics.
-  This is push-based via the ExitBroadcaster (architecture spec
-  §Termination semantics), not polling.
+- **Pane exit notification**: the server broadcasts `PaneExited`
+  to all panes on the Connection when any pane exits. The editor
+  installs a `MonitorFilter` that passes `PaneExited` for the
+  build daemon's Id and consumes the rest. When the build daemon
+  exits, the editor's `pane_exited()` handler fires and updates
+  its diagnostics. No registration API — the filter chain is the
+  opt-in mechanism. See architecture spec §Pane exit notification.
 - **Headless remote**: the build daemon runs on a powerful remote
   machine. The developer's local editor connects to it via
   `App::connect_service()`. Same protocol, same routing, different

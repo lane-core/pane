@@ -1491,6 +1491,41 @@ panes (via `pane_exited`). `Flow::Stop` is "I chose to exit."
 
 Obligation compensation completes before the server is notified.
 
+### Pane exit notification
+
+When a pane exits, the server broadcasts `PaneExited { pane, reason }`
+to all other panes on the same Connection. No registration API —
+every pane hears about every exit on its Connection. The receiving
+pane's filter chain controls what it acts on:
+
+```rust
+// A filter that only passes PaneExited for a specific pane.
+struct MonitorFilter { target: Id }
+
+impl MessageFilter for MonitorFilter {
+    fn matches(&self, msg: &Message) -> bool {
+        matches!(msg, Message::PaneExited { .. })
+    }
+    fn filter(&mut self, msg: &Message) -> FilterAction {
+        match msg {
+            Message::PaneExited { pane, .. } if *pane == self.target => FilterAction::Pass,
+            Message::PaneExited { .. } => FilterAction::Consume,
+            _ => FilterAction::Pass,
+        }
+    }
+}
+```
+
+The server stays simple (broadcast on Connection), the policy
+lives in the client (filter chain). A pane that cares about one
+specific peer's exit installs a filter. A pane that doesn't care
+about any exits lets the default `pane_exited` handler return
+`Ok(Flow::Continue)` — the events arrive and are ignored.
+
+This avoids a registration API (`monitor(target)`) and the
+server-side bookkeeping it would require. The filter chain is
+the opt-in mechanism.
+
 ---
 
 ## Developer Experience
