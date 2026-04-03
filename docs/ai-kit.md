@@ -694,12 +694,43 @@ a runtime service.
 
 ---
 
+## Appendix: Unix Multi-User UX Patterns
+
+The full research report on unix multi-user infrastructure and
+its mapping to the agent model is at
+[`docs/unix-multiuser-research.md`](unix-multiuser-research.md).
+
+It covers 13 topics in depth: inter-user communication primitives
+(write, talk, ytalk, wall), presence and identity (who, w, finger,
+rwho, ruptime), the .plan and .project files (history from Les
+Earnest through John Carmack's development logs), mail as system
+infrastructure (mbox, Maildir, cron→mail pipeline, biff/comsat,
+vacation), the unix permission model as social contract, terminal
+multiplexing and shared sessions (screen, tmux, wemux modes),
+system accounting and auditing (accton, lastcomm, sa, last),
+the login sequence as transition ritual, batch and scheduling
+(at, batch, cron, MAILTO), social protocols and etiquette
+(resource courtesy, mesg norms, the sysadmin as social role),
+forgotten patterns (Zephyr, comsat/biff, csh notify, last),
+unexpected compositions (finger+.plan+mail, who+mesg+write,
+cron+mail+.project+finger, permissions+groups+.plan,
+wall+motd+vacation, talk+tmux-sharing, accounting+.plan), and
+a synthesis of what the multi-user past offers the multi-
+inhabitant future.
+
+Primary sources: Unix man pages (V7, 4.2BSD, 4.3BSD), RFC 742
+(Name/Finger), RFC 1288 (Finger User Information Protocol),
+Ritchie's "The Evolution of the Unix Time-sharing System" (1984),
+Les Earnest's account of finger's creation (Stanford AI Lab),
+MIT Project Athena documentation on Zephyr.
+
+---
+
 ## Sources
 
-- Unix multi-user infrastructure: `who(1)`, `finger(1)`,
-  `mesg(1)`, `.plan` convention, `mail(1)`, `cron(8)`
+- Unix multi-user research: `docs/unix-multiuser-research.md`
 - Plan 9: per-process namespaces, `.plan` files, `finger`,
-  factotum (§Identity and Trust in `docs/distributed-pane.md`)
+  factotum (`docs/distributed-pane.md` §4)
 - pane architecture: Handler, headless-first, pane-fs, Protocol,
   PeerAuth (`docs/architecture.md`)
 - Distributed pane: identity model, `.plan` governance
