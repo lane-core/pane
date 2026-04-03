@@ -350,7 +350,111 @@ system's integration tests. Its needs drive the API design. See
 
 ---
 
-## 9. Relationship to Architecture Spec
+## 9. Sandboxed Agent Compute
+
+On Linux, agents can run their own agent infrastructure inside
+KVM virtual machines (QEMU on macOS). The VM is a hardware-
+isolated compute environment that communicates with the agent's
+userspace through pane's protocol. This is not a special feature
+— it is the recursive application of the existing architecture.
+
+### How it works
+
+A VM running pane-headless is just another pane server. The
+agent connects to it via `App::connect_service()` over TCP/TLS
+— the multi-server Connection model that the architecture spec
+already defines. The VM's panes appear in the agent's namespace
+alongside its own panes, with locally-assigned numeric IDs.
+
+```
+agent.builder (uid 1001)
+  ├─ /pane/1/  ← agent's own monitoring pane (headless, local server)
+  ├─ /pane/2/  ← agent's build status pane (headless, local server)
+  └─ /pane/3/  ← build sandbox shell (headless, VM server via TLS)
+      └─ VM runs pane-headless, isolated by KVM
+         ├─ untrusted build commands execute here
+         ├─ /pane/1/ inside the VM = /pane/3/ from the agent's view
+         └─ agent reads /pane/3/body for build output
+```
+
+The agent's `.plan` governs what passes between the agent and
+the VM:
+- Filesystem mounts passed through (virtiofs or 9pfs)
+- Network access granted to the VM (network namespace)
+- What the VM's pane server can DeclareInterest for
+
+### Why VMs, not just Landlock
+
+Landlock provides filesystem and network sandboxing at the
+process level — sufficient for trusted agent code operating
+within its declared permissions. But agents sometimes need to
+run *untrusted* code: user-submitted scripts, experimental
+builds, third-party tools. For these, process-level sandboxing
+is insufficient — the untrusted code may exploit kernel
+vulnerabilities that Landlock cannot prevent.
+
+KVM provides hardware-enforced isolation. The VM has its own
+kernel, its own memory space, its own device model. A
+compromised process inside the VM cannot escape to the host.
+The cost is a VM boot — seconds, not minutes, with
+microVM approaches (firecracker-style, or QEMU with minimal
+firmware).
+
+### The `cpu` pattern
+
+This is Plan 9's `cpu` command applied recursively. In Plan 9,
+`cpu` ran computation on a remote machine while I/O stayed
+local. The agent's VM is the same pattern — computation
+(untrusted build, code execution, experiment) runs in the VM;
+results flow back through the pane protocol to the agent's
+namespace.
+
+The agent doesn't shell out to the VM. It connects to the VM's
+pane server and uses `send_request`, `Handles<P>`, and pane-fs
+exactly as it would with any other server. If the VM crashes,
+the agent receives `PaneExited { reason: Disconnected }` on
+the affected Connection — per-Connection failure isolation.
+Other Connections are unaffected.
+
+### Use cases
+
+**Build sandboxes.** A build agent runs untrusted build commands
+in a disposable VM. The build output streams through
+`/pane/3/body`. When the build completes or fails, the VM is
+destroyed. Clean environment every time — stronger than Nix's
+build sandbox because the isolation is hardware-level.
+
+**Code execution.** An agent evaluates user-submitted code in a
+VM. The code runs in a pane-shell inside the VM. The agent reads
+the output via pane-fs, applies its judgment, reports results.
+If the code tries to escape the sandbox, it hits KVM, not
+Landlock.
+
+**Sub-agent ecosystems.** An agent runs its own sub-agents inside
+a VM — each sub-agent is a unix user in the VM, with its own
+`.plan`, its own pane connections. The outer agent orchestrates
+by connecting to the VM's pane server and observing sub-agent
+panes in its namespace. This is recursive multi-user
+infrastructure.
+
+**Experimentation.** An agent tests a system configuration change
+in a VM before applying it to the host. It boots a VM with the
+proposed configuration, runs tests, observes results through
+pane-fs, and reports whether the change is safe. The VM is
+disposable — the experiment is free.
+
+### Phase mapping
+
+| Component | Phase |
+|---|---|
+| Agent connects to VM's pane-headless | Phase 2 (multi-server + TLS) |
+| VM panes in agent namespace | Phase 2 (unified namespace) |
+| `.plan` governs VM access | Phase 1 (.plan parser + Landlock) |
+| microVM tooling (pane-vm) | Post-Phase 2 (convenience, not core) |
+
+---
+
+## 10. Relationship to Architecture Spec
 
 The AI Kit introduces no new protocol, no new service, no new
 runtime concept. It is a usage pattern over existing
@@ -391,7 +495,7 @@ a runtime service.
 
 ---
 
-## 10. What This Is Not
+## 11. What This Is Not
 
 - **Not an AI framework.** No `AgentRuntime`, no `AgentManager`,
   no `AgentProtocol`. Agents are users. Users run programs.
