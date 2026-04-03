@@ -48,7 +48,12 @@ impl Handler for Shell {
 
 impl DisplayHandler for Shell {
     fn key(&mut self, _proxy: &Messenger, event: KeyEvent) -> Result<Flow> {
-        self.pty.write_all(&event.to_bytes())?;
+        // Non-blocking write to the PTY's input buffer.
+        // If the child process isn't reading (buffer full),
+        // PtySource buffers the remainder and flushes on
+        // the next calloop writability event. Direct write_all
+        // would block here, violating I2.
+        self.pty.enqueue_input(&event.to_bytes());
         Ok(Flow::Continue)
     }
 }
@@ -122,6 +127,33 @@ desktop connects to it for display.
   suspended session — the monitoring panes were never affected.
   (Suspension is a Phase 3 feature; in Phase 1, the dashboard
   disconnects and reconnects fresh.)
+- **Dispatch on_failed for degraded state**: the dashboard
+  periodically requests metrics from each monitored service via
+  `send_request`. If a service is down, `on_failed` fires and the
+  dashboard updates that pane's status to "unreachable" rather
+  than crashing:
+
+```rust
+fn pulse(&mut self, proxy: &Messenger) -> Result<Flow> {
+    for (id, messenger) in &self.services {
+        let id = *id;
+        proxy.send_request::<Self, Metrics>(
+            messenger,
+            MetricsQuery,
+            move |dashboard, proxy, metrics| {
+                dashboard.update_status(id, Status::Healthy(metrics));
+                Ok(Flow::Continue)
+            },
+            move |dashboard, _proxy| {
+                dashboard.update_status(id, Status::Unreachable);
+                Ok(Flow::Continue)
+            },
+        )?;
+    }
+    Ok(Flow::Continue)
+}
+```
+
 - **Host as contingent server**: the monitoring machine is a server
   the dashboard connects to. The user's local machine is also a
   server (the compositor). Neither has architectural privilege.
@@ -175,6 +207,80 @@ impl Editor {
   (e.g., `RefactorSuggestion`), the attribute macro generates a
   match that fails to compile until the editor handles it. No
   silent message drops.
+- **Filter chain** (ShortcutFilter): the editor registers keyboard
+  shortcuts as a composable filter:
+
+```rust
+let mut shortcuts = ShortcutFilter::new();
+shortcuts.add(KeyCombo::new(Key::Char('s'), Modifiers::CTRL), "save", "");
+shortcuts.add(KeyCombo::new(Key::Char('z'), Modifiers::CTRL), "undo", "");
+pane.add_filter(shortcuts);
+```
+
+  When the user presses Ctrl+S, the filter transforms
+  `Message::Key(event)` → `Message::CommandExecuted { command: "save" }`
+  before the handler sees it. The handler's `command_executed()`
+  method fires; `key()` never sees the shortcut keystroke. Filters
+  run in registration order — a later logging filter would see
+  `CommandExecuted`, not the original `Key`.
+
+- **CancelHandle for stale completions**: when the user types,
+  the editor sends a completion request to the model. If the user
+  keeps typing before the model responds, the previous request is
+  stale:
+
+```rust
+fn key(&mut self, proxy: &Messenger, event: KeyEvent) -> Result<Flow> {
+    self.buffer.insert(event.char);
+    // Cancel any outstanding completion request.
+    if let Some(handle) = self.pending_completion.take() {
+        handle.cancel(); // Dispatch entry removed, no callback fires
+    }
+    // Send a new completion request.
+    let handle = proxy.send_request::<Self, Completion>(
+        &self.model_messenger,
+        CompletionQuery { cursor: self.cursor, context: self.context() },
+        |editor, proxy, completion| {
+            editor.show_inline_completion(&completion);
+            Ok(Flow::Continue)
+        },
+        |editor, _proxy| {
+            // Model unavailable — degrade gracefully, no crash.
+            editor.clear_completion_hint();
+            Ok(Flow::Continue)
+        },
+    )?;
+    self.pending_completion = Some(handle);
+    Ok(Flow::Continue)
+}
+```
+
+  This demonstrates three Dispatch features at once: `send_request`
+  with typed callbacks, `CancelHandle` for voluntary abort, and
+  `on_failed` for graceful degradation when the model is
+  unavailable.
+- **`post_app_message` vs application-defined Protocol**: the
+  editor uses `ModelProtocol` (a full Protocol with exhaustive
+  dispatch) for the model's structured message vocabulary. But the
+  editor also spawns a one-off worker thread to auto-save:
+
+```rust
+let messenger = proxy.clone();
+std::thread::spawn(move || {
+    if save_to_disk(&path, &content).is_ok() {
+        // Simple fire-and-forget — no Protocol needed.
+        let _ = messenger.post_app_message("Auto-save complete".to_string());
+    }
+});
+```
+
+  `post_app_message<T: AppPayload>` is for one-off notifications
+  that don't warrant a full Protocol definition. The editor handles
+  it in `Handler::app_message()`. The rule: if the message
+  vocabulary is known at compile time and has multiple variants,
+  use a Protocol. If it's a single fire-and-forget event, use
+  `post_app_message`.
+
 - **Undo integration** (see `docs/optics-design-brief.md`):
   `RecordingOptic` wraps the editor's property optics, capturing
   old/new values on each `set()`. `CoalescingPolicy` groups rapid
@@ -212,10 +318,13 @@ through pane-fs.
 - **Clipboard with locality**: copying a file path from the local
   file manager and pasting into a remote terminal session — the
   clipboard entry has `Locality::Any`, so the remote instance's
-  namespace mount sees it. Copying a password from a local
-  password manager uses `Sensitivity::Secret { ttl: 30s }` with
-  `Locality::Local` — auto-cleared after 30 seconds, invisible
-  to remote mounts.
+  namespace mount sees it. A password manager would use
+  `Sensitivity::Secret { ttl: 30s }` with `Locality::Local` —
+  auto-cleared after 30 seconds, invisible to remote mounts.
+  (The architecture spec defines `Sensitivity` and `Locality`
+  as enum types; the `Secret { ttl }` and `Local` variants
+  shown here are illustrative — the final variant set is
+  determined during clipboard service implementation.)
 - **Observer pattern via pane-notify**: the file manager watches
   the displayed directory. When a file is created or renamed,
   `pane-notify` delivers the event. The file manager updates its
@@ -291,6 +400,8 @@ impl Handler for BuildDaemon {
 // Phase 3 — RoutingHandler formalizes namespace query handling.
 impl RoutingHandler for BuildDaemon {
     fn route_query(&mut self, proxy: &Messenger, query: RouteQuery, reply: ReplyPort) -> Result<Flow> {
+        // ReplyPort::reply takes impl Serialize + Send + 'static.
+        // Strings serialize naturally via postcard.
         match query.path() {
             "status" => reply.reply(self.status.to_string()),
             "targets" => reply.reply(self.targets.join("\n")),
@@ -340,13 +451,15 @@ demonstrating the system. The guide is a pane.
   Its sandbox policy (Landlock rules, network namespace
   restrictions) governs what it can access. PeerAuth::Kernel
   identifies it by uid, not by self-reported string.
-- **Scripting via pane-fs**: the guide reads and writes other
-  panes' properties to demonstrate features. It writes to
+- **Scripting via pane-fs (Phase 3 — RoutingHandler enables
+  cross-pane writes)**: the guide reads and writes other panes'
+  properties to demonstrate features. It writes to
   `/pane/<id>/attrs/theme` to show theming. It reads
   `/pane/<id>/attrs/cursor` to point out where the user is. The
   optic discipline (GetPut, PutGet) guarantees that reading after
   writing returns the written value — the guide's demonstrations
-  are reliable, not racy.
+  are reliable, not racy. (In Phase 1, the guide can read
+  attributes but cross-pane writes require RoutingHandler.)
 - **Clipboard for teaching**: the guide copies example commands to
   the clipboard with `Sensitivity::Normal, Locality::Local` — the
   user pastes them into a shell. The guide doesn't need display
@@ -392,3 +505,29 @@ kill the chat (#5). Chat server drop doesn't kill the display.
 Build server disconnect doesn't kill the editor. Each Connection
 fails independently; the pane continues with its remaining
 capabilities.
+
+---
+
+## Feature index
+
+Quick reference: which use case demonstrates which feature.
+
+| Feature | Demonstrated in |
+|---|---|
+| Handler + DisplayHandler split | Shell (#1), Monitor (#2) |
+| Handles\<P\> for services | Shell (#1), Editor (#3), Chat (#5) |
+| Application-defined Protocol | Editor (#3) |
+| `post_app_message` (fire-and-forget) | Editor (#3) |
+| Filter chain (ShortcutFilter) | Editor (#3) |
+| Dispatch + `send_request` | Editor (#3), Monitor (#2), Chat (#5) |
+| Dispatch `on_failed` (degraded state) | Monitor (#2), Editor (#3) |
+| CancelHandle | Editor (#3) |
+| Multi-server topology | Monitor (#2), Chat (#5), Build (#6) |
+| Per-Connection failure isolation | Chat (#5) |
+| pane-fs namespace | Shell (#1), Monitor (#2), File manager (#4), Build (#6), Guide (#7) |
+| RoutingHandler (Phase 3) | Build (#6), File manager (#4) |
+| Session suspension (Phase 3) | Monitor (#2), Chat (#5) |
+| Optics / scripting | Editor (#3), Guide (#7) |
+| Clipboard | Shell (#1), File manager (#4), Guide (#7) |
+| pane-notify | File manager (#4) |
+| Headless-first | Shell (#1), Monitor (#2), Build (#6), Guide (#7) |
