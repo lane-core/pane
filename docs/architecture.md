@@ -79,11 +79,10 @@ identity when the launch daemon and package management arrived.
 
 Consequence: every type in Phase 1 must be the full architecture's
 type, populated minimally. `ServiceId { uuid, name }` from day
-one, not `&'static str` that gets promoted later. `ServiceRouter`
-with one entry, not a bare sender. The cost is near-zero
-(deterministic UUID derivation, HashMap with one entry). The
-alternative is a guaranteed future breaking change across every
-Protocol impl, Handler, and downstream application.
+one. `ServiceRouter` with one entry. `Dispatch` keyed by
+`(ConnectionId, token)`. The cost is near-zero (deterministic UUID
+derivation, HashMap with one entry). Simplifying a type in Phase 1
+guarantees a breaking change when the full architecture arrives.
 
 ---
 
@@ -192,9 +191,9 @@ pub trait Protocol {
 }
 ```
 
-Keep Protocol minimal: SERVICE_ID + Message. Do not accumulate
-associated types for caching, reconnection, priority — those
-belong on the service implementation.
+Keep Protocol minimal: SERVICE_ID + Message. Caching, reconnection,
+and priority belong on the service implementation, outside the
+Protocol trait.
 
 **Naming convention** (codify now, per Be's lesson with
 inconsistent `application/x-vnd.*` signatures): service names
@@ -461,8 +460,8 @@ impl Messenger {
 
 Per-pane, set in `display_ready` or dynamically. Server-side
 filtering — FullHistory tells the server to send all events;
-Coalesce tells it to batch. Don't send events over the wire
-just to drop them client-side.
+Coalesce tells it to batch. The server filters, so the wire
+carries only events the pane will use.
 
 ### Application-defined protocols
 
@@ -493,8 +492,8 @@ impl Editor {
 ```
 
 Application messages are `What(T)` in `Message<T>` — local to the
-looper, never cross the wire, typed at compile time. This replaces
-`app_message(Box<dyn Any + Send>)` with exhaustive typed dispatch.
+looper, never cross the wire, typed at compile time with exhaustive
+dispatch.
 
 ### Geometry
 
