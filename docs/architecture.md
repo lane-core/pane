@@ -1147,11 +1147,11 @@ impl Messenger {
     pub fn send_request<H, R>(
         &self,
         target: &Messenger,
-        msg: impl Send + 'static,
+        msg: impl Serialize + Send + 'static,
         on_reply: impl FnOnce(&mut H, &Messenger, R) -> Result<Flow> + Send + 'static,
         on_failed: impl FnOnce(&mut H, &Messenger) -> Result<Flow> + Send + 'static,
     ) -> Result<CancelHandle>
-    where H: Handler + 'static, R: Send + 'static;
+    where H: Handler + 'static, R: DeserializeOwned + Send + 'static;
 }
 
 /// Handle for cancelling an outstanding request.
@@ -1205,9 +1205,10 @@ proxy.send_request::<Self, SearchResults>(
 
 The callback receives `&mut H` (handler state) and the typed
 reply `R` directly. No `Box<dyn Any>` at the handler surface.
-The single downcast (`Box<dyn Any + Send>` → `R`) happens inside
-the framework, guaranteed to succeed because send_request and
-the reply share `R`.
+The framework handles the type boundary: for same-process requests,
+a downcast (`Box<dyn Any + Send>` → `R`); for cross-process
+requests, deserialization (postcard → `R`, where `R: DeserializeOwned`).
+Both are internal to the framework — the developer sees typed `R`.
 
 **On disconnect**: `dispatch.fail_connection()` fires `on_failed` for every
 pending entry before `handler.disconnected()` is called. The
