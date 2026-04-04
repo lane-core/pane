@@ -11,5 +11,9 @@
 - [Service disconnect analysis](project_service_disconnect_analysis.md) -- proactive required, generic variant, commit()->Result, not opt-in
 - [Handler trait debate](project_handler_trait_debate.md) -- monolithic Handler vs per-protocol: concessions, attack points, key theorems
 - [Handler debate FINAL](project_handler_debate_final.md) -- settled: commit register_channel+EventKind+commit()->Result, defer trait split, five invariants
-- [Greenfield architecture](project_greenfield_architecture.md) -- from-scratch: per-protocol traits, CompositorEvent split, Sigma<H>, builder registration
-- [Cross-proposal review](project_cross_proposal_review.md) -- Be+Plan9 review: Sigma conceded, messaging extraction argued, DeclareInterest adopted
+- [Greenfield architecture](project_greenfield_architecture.md) -- SUPERSEDED: early from-scratch proposal (Sigma<H> renamed to Dispatch, builder pattern evolved to PaneBuilder<H>); see architecture.md
+- [Cross-proposal review](project_cross_proposal_review.md) -- Be+Plan9 review: Sigma (now Dispatch) conceded, messaging extraction argued, DeclareInterest adopted
+- [AI Kit review](project_ai_kit_review.md) -- conditionally sound, 7 issues (1 moderate: event blocking on looper thread), agents are protocol participants
+- [Phase 1 session review](project_phase1_session_review.md) -- ProtocolAbort+SessionEnum+handshake: two new invariants I10/I11, abort via framing layer, Cow for ServiceId
+- [Architecture spec review](project_architecture_spec_review.md) -- full spec review: KP2 misattribution, unknown discriminant gap, 4 new invariants I10-I13
+- [Pane<H> vs PaneBuilder<H>](project_pane_generic_decision.md) -- PaneBuilder<H> confirmed (name evolved PaneSetup→PaneInit→PaneBuilder), 7 actions, EAct mapping verified, blocking correct

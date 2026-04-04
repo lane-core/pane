@@ -23,9 +23,13 @@ Session Types") is the governing formalism. It reconciles pane's
 two design lineages:
 
 - **BeOS**: EAct formalizes what Be's API achieved implicitly.
-  BLooper = EAct actor with sequential handler invocation. BHandler
-  = handler store σ. BMessenger = session endpoint. BMessageFilter
-  = channel transformer. The formalism proves why Be worked and
+  BLooper = EAct actor with sequential handler invocation. The
+  BHandler chain attached to a BLooper = handler store σ (each
+  BHandler is one entry). BMessenger approximates a session
+  endpoint (destination handle, not a formal role). BMessageFilter
+  is outside EAct's formalism (EAct dispatches messages directly
+  from queue to handler; pane formalizes filters through optic
+  discipline instead). The formalism proves why Be worked and
   reveals where it was unsound (handler chain re-entrancy, untyped
   dispatch, no coverage checking).
 
@@ -43,11 +47,18 @@ as Sessions," JFP 2014). CLL governs what a single binary protocol
 can express — Send/Recv, duality, branching, streaming. EAct
 operates at the layer above — how one actor interleaves work across
 multiple sessions. The two compose: EAct's Progress theorem
-requires individual protocols to be compliant; pane-session's
-typestate encoding mirrors CLL's structure, providing protocol
-fidelity (in the sense of Ferrite, Chen/Balzer/Toninho, ECOOP
-2022, Theorem 4.3) — if the developer's code type-checks against
-`Chan<S, T>`, the resulting protocol follows the structure of S.
+(Theorem 4.3) requires individual protocols to be compliant
+(safe and deadlock-free); the single-threaded execution model
+(I6) is pane's primary defense against inter-session deadlocks,
+corresponding to EAct's event-driven argument (§4.3). pane-
+session's typestate encoding mirrors CLL's structure, providing
+a conditional form of protocol fidelity (in the sense defined by
+Ferrite, Chen/Balzer/Toninho, ECOOP 2022, Theorem 4.3): if the
+developer's code type-checks against `Chan<S, T>` and consumes
+every intermediate channel value, the resulting protocol follows
+the structure of S. The consumption condition is enforced by
+`#[must_use]` and Drop-based failure compensation (I4), not
+statically as in Ferrite's CPS encoding.
 
 pane-session adopts three patterns from **par** (Michal Strba,
 https://github.com/faiface/par), a CLL session type library for
@@ -206,7 +217,11 @@ the ServiceId contract, not an afterthought.
 
 ```rust
 /// A handler that can receive messages from protocol P.
-/// Each impl is one entry in EAct's handler store σ.
+/// In EAct, σ maps session endpoints (s,p) to handler values —
+/// one entry per active session instance. Under pane's
+/// one-service-per-protocol constraint (duplicate open_service
+/// for the same ServiceId is rejected), each Handles<P> impl
+/// corresponds to one σ entry.
 ///
 /// The looper dispatches P::Message to this method via a
 /// monomorphized fn pointer captured at service registration.
@@ -217,15 +232,17 @@ pub trait Handles<P: Protocol> {
 
 The type system enforces: if a pane declares interest in a
 protocol, its handler must implement `Handles<P>` for that
-protocol. Registration (`open_service::<P>()`) requires the bound
-`H: Handles<P>` at compile time.
+protocol. Registration (`open_service::<P>()` on `PaneBuilder<H>`)
+requires the bound `H: Handles<P>` at compile time.
 
 ### ServiceHandle\<P\>
 
 ```rust
 /// A live connection to a service. Parameterized by protocol.
-/// Drop sends RevokeInterest. Protocol-specific methods are
-/// added via `impl ServiceHandle<Clipboard> { ... }`.
+/// Drop sends RevokeInterest (idempotent — the server tolerates
+/// duplicate RevokeInterest for the same service).
+/// Protocol-specific methods are added via
+/// `impl ServiceHandle<Clipboard> { ... }`.
 pub struct ServiceHandle<P: Protocol> {
     service_id: ServiceId,
     connection_id: ConnectionId,
@@ -250,15 +267,131 @@ impl ServiceHandle<Clipboard> {
 }
 ```
 
-Opening a service:
+### Two-phase pane lifecycle
+
+Pane construction has two phases before the event loop:
+**identity** (non-generic `Pane`) and **setup** (generic
+`PaneBuilder<H>`). `Pane` represents the pane's connection
+identity (server-assigned ID, tag, connection state). When a
+developer needs compile-time-verified service registration, they
+enter the typed setup phase via `.setup::<H>()`, which returns a
+`PaneBuilder<H>`. The builder is consumed by `run_with` /
+`run_with_display`, entering the event loop. The event loop is
+the steady state — the looper (internal, generic over H) runs
+until the handler returns `Flow::Stop` or `Err`.
+
+This makes the handler type H a setup-time concern, not a
+runtime identity. In EAct terms, the handler store σ is a
+component of the actor populated during initialization, not a
+type parameter of the actor's identity. In Plan 9 terms,
+`Pane` is the nascent process (after fork, before exec);
+`PaneBuilder<H>` is namespace construction (bind/mount);
+`run_with` is exec; the looper is the running process.
+
+Handlers that use no services skip the setup phase entirely.
 
 ```rust
+/// A pane — organized state with an interface for views.
+/// Non-generic. Represents the pane's connection identity.
+///
+/// #[must_use] — must be consumed by run, run_with,
+/// run_with_display, or setup. Drop closes the connection,
+/// triggering server-side cleanup of the pane entry.
+#[must_use = "a Pane must be consumed by run, run_with, run_with_display, or setup"]
+pub struct Pane {
+    id: Id,
+    tag: Tag,
+    connection: Connection,      // internal, not public
+    looper_tx: LooperSender,
+}
+
+impl Drop for Pane {
+    fn drop(&mut self) {
+        // Close the connection. The server detects disconnect
+        // and cleans up the pane entry.
+    }
+}
+
 impl Pane {
+    /// Enter the typed setup phase for service registration.
+    /// H is the handler that will process messages — introduced
+    /// here, not at create_pane. Returns a PaneBuilder that
+    /// enforces Handles<P> bounds at compile time.
+    pub fn setup<H: Handler>(self) -> PaneBuilder<H>;
+
+    /// Closure form — simple panes that use no protocol services.
+    /// Receives Message (Clone-safe events) only. Cannot handle
+    /// obligation-carrying protocols (clipboard locks, completion
+    /// requests, incoming requests with ReplyPort).
+    pub fn run(self, f: impl FnMut(&Messenger, Message) -> Result<Flow>) -> !;
+
+    /// Struct handler form — handlers that use no protocol
+    /// services. The looper is generic over H internally (for
+    /// dispatch to Handler/DisplayHandler methods) but H does
+    /// not propagate to the Pane type.
+    pub fn run_with<H: Handler>(self, handler: H) -> !;
+
+    /// Struct handler with display — no services needed.
+    pub fn run_with_display<H: DisplayHandler>(self, handler: H) -> !;
+}
+
+/// Setup phase for a pane that will use protocol services.
+/// Generic over H to enforce Handles<P> bounds at compile time.
+/// Consumed by run_with / run_with_display — the builder
+/// pattern, where the terminal method both builds and enters
+/// the event loop.
+///
+/// EAct: restricts σ construction to a pre-loop phase. EAct
+/// permits dynamic σ growth during execution (E-Suspend adds
+/// entries at any point); PaneBuilder requires service dispatch
+/// routes to be established before the looper starts. The
+/// dynamic part of σ (Dispatch<H> entries from send_request)
+/// still grows after run_with. When run_with is called, service
+/// dispatch routes are complete and the looper begins.
+///
+/// Plan 9: namespace construction (bind/mount) before exec.
+/// The generic parameter lives where it's needed (setup), not
+/// where it's meaningless (runtime identity).
+#[must_use = "a PaneBuilder must be consumed by run_with or run_with_display"]
+pub struct PaneBuilder<H: Handler> {
+    pane: Pane,
+    dispatch_table: Vec<ServiceDispatchEntry>,
+    registered_services: HashSet<ServiceId>,
+    _handler: PhantomData<H>,
+}
+
+impl<H: Handler> PaneBuilder<H> {
     /// Open a service connection. Resolves the capability via the
-    /// service map, sends DeclareInterest, registers a calloop
-    /// source, returns a typed handle. Requires H: Handles<P>.
+    /// service map, sends DeclareInterest, blocks until
+    /// InterestAccepted/Declined, registers a calloop source,
+    /// returns a typed handle.
+    ///
+    /// Blocking during setup is correct: the setup phase is
+    /// pre-looper and single-threaded. The blocking prohibition
+    /// (I2/I8) applies only to handler methods (post-looper).
+    ///
+    /// Duplicate open_service for the same ServiceId is rejected
+    /// (returns Err). InterestDeclined surfaces as Err — the
+    /// returned ServiceHandle always represents a confirmed
+    /// binding.
     pub fn open_service<P: Protocol>(&mut self) -> Result<ServiceHandle<P>>
     where H: Handles<P>;
+
+    /// Consumes the builder and enters the event loop (headless).
+    pub fn run_with(self, handler: H) -> !;
+
+    /// Consumes the builder and enters the event loop (display).
+    pub fn run_with_display(self, handler: H) -> !
+    where H: DisplayHandler;
+}
+
+impl<H: Handler> Drop for PaneBuilder<H> {
+    fn drop(&mut self) {
+        // Compensate: revoke all declared interests that were
+        // accepted. Best-effort (let _ = ...). The ServiceHandle<P>
+        // values returned from open_service also send RevokeInterest
+        // in their own Drop — duplicate revocations are idempotent.
+    }
 }
 ```
 
@@ -319,8 +452,6 @@ a variant, `rustc` emits a non-exhaustive pattern error. The macro
 does not discover variants — it generates code that fails to
 compile if the handler is incomplete. Variant-to-method mapping
 uses `#[handles(VariantName)]` attributes or snake_case convention.
-
-
 
 ### Framework protocols
 
@@ -479,8 +610,9 @@ impl Protocol for Routing {
 }
 ```
 
-DnD requires display: `open_service::<DragDrop>()` requires
-`H: DisplayHandler + Handles<DragDrop>`.
+DnD requires display: `builder.open_service::<DragDrop>()` requires
+`H: DisplayHandler + Handles<DragDrop>`, and the builder must be
+consumed by `run_with_display`.
 
 ### Pointer policy (mouse coalescing opt-out)
 
@@ -576,8 +708,9 @@ has no geometry parameter).
 ```rust
 /// Handler control flow. Replaces Result<bool>.
 /// Errors are orthogonal — methods return Result<Flow>.
-/// EAct §5: actor failure (Err) is separate from session
-/// communication (Flow).
+/// Inspired by EAct §5's separation of actor failure (raise/zap)
+/// from session communication: Err = actor failure, Flow = protocol
+/// control.
 ///
 /// When a handler returns Flow::Stop, the looper exits, drops the
 /// handler (triggering Drop compensation on all held obligation
@@ -596,8 +729,12 @@ pub enum Flow {
 ### The split: values vs obligations
 
 Clonable value events and affine obligation-carrying handles must
-not share a type. Conflating them produces Clone panics and
-violates EAct KP2 (no channel endpoints in message values).
+not share a type. Conflating them produces Clone panics. The
+separation follows the linear/affine distinction: obligation-
+carrying handles are affine (consumed once, Drop compensates)
+and must not appear in Clone-safe message values. The filter
+chain operates on immutable borrows of Message, which requires
+Clone; obligation handles are !Clone by design.
 
 The public type retains the Be name `Message` (tier 1 faithful —
 this is what BMessage was, minus the obligations that never
@@ -653,8 +790,8 @@ pub enum ClipboardMessage {
 
 Filter visibility for service events: filters that need to observe
 service notifications register per-service filter hooks at service
-registration time (e.g., `open_service::<Clipboard>()` installs the clipboard
-filter hook). These hooks are keyed by `ServiceId` and can inspect
+registration time (e.g., `builder.open_service::<Clipboard>()` installs
+the clipboard filter hook). These hooks are keyed by `ServiceId` and can inspect
 the protocol's Clone-safe message variants. The base filter chain
 (operating on `Message`) never sees service events.
 
@@ -1022,8 +1159,9 @@ A typical topology:
 
 The App resolves servers from the service map and connects lazily
 when a service is first opened. Each connection is an internal
-calloop source. The developer sees only `App`, `Pane`, `Messenger`,
-and `ServiceHandle<P>`.
+calloop source. The developer sees `App`, `Pane`,
+`PaneBuilder<H>` (when services are needed), `Messenger`, and
+`ServiceHandle<P>`.
 
 ### Service discovery
 
@@ -1300,15 +1438,17 @@ entry without firing callbacks. Late-arriving replies are silently
 dropped. Same as 9P's Tflush. Dropping the CancelHandle without
 calling cancel is a no-op — the request completes normally.
 
-**Lifecycle** (EAct terms):
-- **E-Suspend**: `send_request` installs entry in σ
-- **Active**: entry waits; looper services other sessions
-- **E-React**: reply arrives, entry consumed, callback fires
-- **Failed**: target drops ReplyPort → `on_failed` fires
-- **Cancelled**: handler-initiated removal, no callbacks
-- **Abandoned**: handler drops (Flow::Stop, panic) → entry dropped
-  without callbacks. Safe: pending entry is a receive-endpoint;
-  dropping it doesn't block any peer (DLfActRiS §3.2).
+**Lifecycle** (by analogy with EAct's E-Suspend/E-React):
+- **Install** (cf. E-Suspend): `send_request` installs entry in σ
+- **Idle** (cf. EAct idle): entry waits; looper services other sessions
+- **Dispatch** (cf. E-React): reply arrives, entry consumed, callback fires
+- **Failed** (pane-specific): target drops ReplyPort → `on_failed` fires
+- **Cancelled** (pane-specific): handler-initiated removal, no callbacks
+- **Abandoned** (pane-specific): handler drops (Flow::Stop, panic) →
+  entry dropped without callbacks. Safe: pending entry is a receive-
+  endpoint; dropping it doesn't block any peer (the structural argument
+  from DLfActRiS §4-5: dropping a receive can only decrease connectivity,
+  never create a cycle).
 
 **What this removes from Handler**: `reply_received(token, payload)`
 and `reply_failed(token)` are gone. Reply dispatch is structural,
@@ -1322,15 +1462,19 @@ Token allocation is internal to the framework.
 
 ## Service Registration
 
-Services are opened at pane setup time. Opening a service:
+Services are opened during the `PaneBuilder<H>` setup phase,
+before the event loop starts. Opening a service:
 1. Resolves the capability to a Connection (via service map)
 2. Sends `DeclareInterest` on that Connection
-3. Registers a typed calloop source in the looper
-4. Returns a handle the developer uses to interact with the service
+3. Blocks until `InterestAccepted` or `InterestDeclined`
+4. On acceptance: registers a typed calloop source in the looper,
+   captures the monomorphized `Handles<P>::receive` fn pointer
+5. Returns a `ServiceHandle<P>` representing a confirmed binding
 
 ```rust
-// Clipboard registration — the framework finds the right Connection
-let clipboard = pane.open_service::<Clipboard>()?;
+// Clipboard registration — PaneBuilder finds the right Connection
+let mut builder = pane.setup::<Editor>();
+let clipboard = builder.open_service::<Clipboard>()?;
 
 // In the handler — same as single-server:
 fn command_executed(&mut self, proxy: &Messenger, cmd: &str, _: &str) -> Result<Flow> {
@@ -1345,10 +1489,14 @@ The developer writes zero additional code for multi-server vs
 single-server. The difference is App configuration (which servers
 to connect to), not handler code.
 
-Service calloop sources registered during handler methods take
-effect on the next dispatch cycle, not the current batch. Events
-from a newly registered source cannot arrive in the same batch
-as the registration.
+Because all `open_service` calls happen during the setup phase
+(before `run_with` starts the calloop loop), the
+`InterestAccepted`/`Declined` responses for all services are
+resolved before any handler method fires. There is no window
+where a service event arrives before its interest is confirmed.
+This is enforced structurally: `PaneBuilder<H>` is consumed by
+`run_with`, so `open_service` cannot be called after dispatch
+begins.
 
 ### Typed ingress, unified batch
 
@@ -1367,28 +1515,43 @@ within the batch.
 
 ## Dispatch
 
-Match-based dispatch in the looper. The monomorphized match IS
-the handler store σ. No explicit struct — the compiler
-provides what it would add.
+Service event dispatch (routing protocol events to `Handles<P>`
+implementations) is a monomorphized match — no explicit struct,
+the compiler provides what it would add. Request/reply dispatch
+uses `Dispatch<H>`, a HashMap whose entries store typed callbacks
+taking `&mut H` (see Request/Reply via the Dispatch below).
+`Dispatch<H>` is internal to the looper — it never appears in the
+public API.
 
-The looper is generic over `H`:
-- `run_with<H: Handler>` for headless panes
-- `run_with_display<H: DisplayHandler>` for display panes
+The looper is generic over `H` internally — it knows the
+handler type for dispatch, but this generic parameter is
+encapsulated. Externally, the developer interacts with
+non-generic `Pane` and `Messenger`. The generic parameter is
+introduced only when needed: either at `pane.setup::<H>()`
+(when services are required) or at `pane.run_with(handler)`
+(when the handler type is inferred from the value).
 
 Service dispatch uses fn pointers captured at registration time
-(the Dispatch pattern). When `open_service::<Clipboard>()` is called on a pane
-whose handler implements `Handles<Clipboard>`, the registration
-captures the monomorphized `Handles<Clipboard>::receive` as a fn
-pointer. The attribute macro's generated match delegates to the
-developer's named methods. These are called during batch
-processing, sharing `&mut H` with the main dispatch — sequentially,
-never concurrently (I7).
+(the Dispatch pattern). When `builder.open_service::<Clipboard>()`
+is called on a `PaneBuilder<H>` whose `H` implements
+`Handles<Clipboard>`, the registration captures the monomorphized
+`Handles<Clipboard>::receive` as a fn pointer. The attribute
+macro's generated match delegates to the developer's named
+methods. These are called during batch processing, sharing
+`&mut H` with the main dispatch — sequentially, never
+concurrently (I7).
 
-The closure form (`pane.run(|proxy, msg| ...)`) receives `Message`
-(Clone-safe events) only. It cannot handle obligation-carrying
-protocols (clipboard locks, completion requests, incoming requests
-with ReplyPort). These require the struct + trait form
-(`pane.run_with(handler)`).
+Three paths into the event loop:
+
+- `pane.run(|proxy, msg| ...)` — closure form. Receives `Message`
+  (Clone-safe events) only. Cannot handle obligation-carrying
+  protocols (clipboard locks, completion requests, incoming
+  requests with ReplyPort).
+- `pane.run_with(handler)` — struct handler, no services. The
+  looper is generic over H internally but H is not exposed.
+- `pane.setup::<H>().open_service(...)...run_with(handler)` —
+  struct handler with services. The `PaneBuilder<H>` phase
+  enforces `Handles<P>` bounds, then is consumed.
 
 ---
 
@@ -1404,8 +1567,10 @@ Every obligation-carrying type follows the pattern:
 - Drop sends failure terminal — Revert, ReplyFailed, ProtocolAbort, RevokeInterest
 
 Proven on: ReplyPort, CompletionReplyPort, ClipboardWriteLock,
-CreateFuture, TimerToken, ServiceHandle<Clipboard> (Drop sends
-RevokeInterest).
+CreateFuture (Drop cancels the pending pane creation on the
+server), TimerToken (Drop cancels the timer), ServiceHandle<P>
+(Drop sends RevokeInterest), Pane (Drop closes connection),
+PaneBuilder<H> (Drop revokes accepted interests).
 
 Destruction sequence on handler exit: dispatch.fail_connection() (per S4)
 → handler dropped → service handles (ServiceHandle<Clipboard>, etc.)
@@ -1414,9 +1579,15 @@ RevokeInterest (best-effort, `let _ = ...`).
 
 ### Extended linear discipline
 
-- **Service handles**: `open_service::<Clipboard>()` returns a `ServiceHandle<Clipboard>`
-  whose Drop sends `RevokeInterest`. The service lifecycle is
-  linearly tracked.
+- **Pane**: `#[must_use]`. Drop closes the connection (server-side
+  cleanup). Consumed by `run`, `run_with`, `run_with_display`, or
+  `setup`.
+- **PaneBuilder\<H\>**: `#[must_use]`. Drop compensates any
+  `DeclareInterest` already sent (revokes accepted interests).
+  Consumed by `run_with` or `run_with_display`.
+- **Service handles**: `builder.open_service::<Clipboard>()` returns
+  a `ServiceHandle<Clipboard>` whose Drop sends `RevokeInterest`
+  (idempotent). The service lifecycle is linearly tracked.
 - **Batch processing**: the batch `Vec` is taken (`mem::take`) and
   drained. Events are consumed by dispatch — no re-buffering.
 - **Filter chain**: `filter()` takes `&Message` (immutable borrow).
@@ -1432,8 +1603,14 @@ Rust is affine (values can be dropped), not linear (values must
 be consumed). The gap is compensated by Drop impls that send
 failure terminals. The invariants:
 
-- **I1**: `panic = unwind` in all pane binaries (Drop must fire)
-- **I2**: No blocking calls in handler methods (EAct Progress)
+- **I1**: `panic = unwind` in all pane binaries (Drop must fire).
+  Residual risks where Drop cannot fire: double panic during
+  unwind (abort), `std::process::abort()`, SIGKILL, OOM-triggered
+  abort. The server detects these via fd hangup (EPOLLHUP on unix
+  sockets, TCP RST on remote) and cleans up the pane entry — this
+  is the backstop when I1 is violated.
+- **I2**: No blocking calls in handler methods (EAct Global Progress,
+  Corollary 6.1 — requires handler termination)
 - **I3**: Handler callbacks terminate (return Flow)
 - **I4**: Typestate handles: `#[must_use]` + Drop compensation
 - **I5**: Base filters see only Message (Clone-safe, type-enforced);
@@ -1443,15 +1620,34 @@ failure terminals. The invariants:
   the batch loop, never concurrently, preserving Rust's exclusive-
   reference invariant on `&mut H`
 - **I8**: No blocking calls (`send_and_wait`) in handler methods.
-  Prevents cross-Connection blocking within handlers. Same-
-  Connection cycles (pane A → pane B → pane A through one server)
-  remain a runtime hazard, mitigated by timeout on `send_and_wait`
-  and documented as a mutual-deadlock risk.
+  Enforced at runtime: the looper sets a thread-local during
+  dispatch; `send_and_wait` panics if called from the looper
+  thread. Same-Connection cycles (pane A → pane B → pane A
+  through one server) remain a runtime hazard, documented as a
+  mutual-deadlock risk.
 
 - **I9**: Dispatch is cleared (`dispatch.fail_connection()` or `dispatch.clear()`)
   before the handler is dropped. CancelHandle's inverted Drop
   (no-op) depends on this ordering — without it, dropped Dispatch
   entries could reference a destroyed handler during callbacks.
+- **I10**: Chan Drop must not block. The ProtocolAbort write is
+  best-effort (`let _ = ...`). A blocking Drop would violate I2
+  transitively during unwind.
+- **I11**: The ProtocolAbort sentinel `[0xFF][0xFF]` must not be
+  valid postcard encoding for any message type. The sentinel is
+  checked at the framing layer (before postcard deserialization).
+  This is satisfied because postcard uses 0xFF only for the
+  largest varint continuations, never as a two-byte standalone
+  sequence for any type in the protocol vocabulary.
+- **I12**: Unknown service discriminants on the wire must be
+  rejected (connection-level error, not silently dropped). A
+  message with an unrecognized service byte indicates framing
+  corruption or version skew.
+- **I13**: `open_service` blocks until `InterestAccepted` or
+  `InterestDeclined`. The returned `ServiceHandle<P>` represents
+  a confirmed binding. Enforced structurally: `open_service`
+  lives on `PaneBuilder<H>`, which is consumed before the looper
+  starts — no race between interest confirmation and dispatch.
 
 Dispatch entry invariants (request/reply):
 
@@ -1543,8 +1739,11 @@ disjoint.
 Both paths trigger identical Drop compensation. The distinction
 is in the exit reason reported to the server and to monitoring
 panes (via `pane_exited`). `Flow::Stop` is "I chose to exit."
-`Err` is "something went wrong." EAct §5 separates actor failure
-(zap/supervision) from session termination (clean end).
+`Err` is "something went wrong." This mirrors EAct §5's
+separation of actor failure (raise → zap/supervision) from
+clean session termination, though pane's Drop compensation
+fires identically in both cases (EAct-zap propagates cancellation
+only on failure).
 
 Obligation compensation completes before the server is notified.
 
@@ -1668,13 +1867,14 @@ impl Editor {
 
 fn main() -> pane_app::Result<()> {
     let app = App::connect("com.pane.editor")?;
-    let mut pane = app.create_pane(
+    let pane = app.create_pane(
         Tag::new("Editor")
             .command(cmd("copy", "Copy").shortcut("Ctrl+C")),
     )?.wait()?;
 
-    let clipboard = pane.open_service::<Clipboard>()?;
-    pane.run_with_display(Editor {
+    let mut builder = pane.setup::<Editor>();
+    let clipboard = builder.open_service::<Clipboard>()?;
+    builder.run_with_display(Editor {
         buffer: String::new(),
         clipboard,
     })
@@ -1834,6 +2034,19 @@ variants.
     Development certificate tooling (`pane dev-certs`) is a product
     concern — see ops documentation, not this spec.
 
+26. **Two-phase pane lifecycle (Pane / PaneBuilder\<H\>)**: `Pane`
+    is non-generic (connection identity). `PaneBuilder<H>` is the
+    typed setup phase for service registration. Three-agent review
+    (Be, Plan 9, session-type) unanimous: the handler type H is a
+    setup-time concern, not a runtime identity. BeOS's BWindow was
+    not generic over its handler; Plan 9 separates namespace
+    construction from the running process; EAct's handler store σ
+    is a component populated during initialization. `Pane::run_with`
+    and `Pane::run_with_display` provide a direct path for handlers
+    that use no services. `RevokeInterest` is idempotent (handles
+    PaneBuilder Drop + ServiceHandle Drop overlap). Duplicate
+    `open_service` for the same ServiceId is rejected.
+
 ## Open Questions
 
 None. The spec is implementation-ready for Phase 1.
@@ -1858,7 +2071,8 @@ Phase 2 breaks, Phase 1 was wrong.
 | DeclareInterest | Implicit (connect=display) | Explicit capability declaration |
 | ConnectionSource | Pump threads + mpsc | calloop EventSource (read + buffered write) |
 | Protocol trait | None | `Lifecycle`, `Display` types exist |
-| Handles\<P\> | None | Trait exists, Handler desugars to it, `#[pane::protocol_handler]` attribute macro |
+| Pane lifecycle | `Pane<H>` or no compile-time check | `Pane` (non-generic) + `PaneBuilder<H>` (setup phase, consumed by `run_with`) |
+| Handles\<P\> | None | Trait exists, `PaneBuilder<H>` enforces bounds, `#[pane::protocol_handler]` attribute macro |
 | Dispatch\<H\> + send_request | `reply_received` on Handler | Dispatch HashMap + CancelHandle |
 | AppPayload | `T: Send + 'static` | `T: AppPayload` (Clone + Send + 'static) |
 | I9 | Not implemented | Dispatch cleared before handler drop |
@@ -1878,12 +2092,13 @@ exist from day one so Phase 2 is additive.
 **Phase 1 — Core.** Single server (N=1), headless, no suspension,
 no streaming. All multi-server data structures present with one
 entry (see Phase 1 Structural Invariants). Validate: Protocol +
-Handles<P> + attribute macro, Handler/DisplayHandler split,
-Message/obligation split, Flow, Dispatch<H> for request/reply,
-calloop ConnectionSource (read+write), filter chain, Messenger +
-ServiceRouter, PeerAuth::Kernel, DeclareInterest, wire framing
+Handles<P> + attribute macro, Pane/PaneBuilder<H> two-phase
+lifecycle, Handler/DisplayHandler split, Message/obligation split,
+Flow, Dispatch\<H\> for request/reply, calloop ConnectionSource
+(read+write), filter chain, Messenger + ServiceRouter,
+PeerAuth::Kernel, DeclareInterest, wire framing
 [length][service][payload], AppPayload marker, CancelHandle,
-max_message_size, I1-I9 + S1-S6. This is the proof that the
+max_message_size, I1-I13 + S1-S6. This is the proof that the
 linear discipline works end-to-end.
 
 **Phase 2 — Distribution.** Add Connections (N>1). TLS +

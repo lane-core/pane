@@ -15,9 +15,9 @@ The project is undergoing a fresh implementation based on the architecture spec 
 ## What was struck
 
 Source files emptied, Cargo.toml preserved:
-- **pane-app** — kit crate (Handler, Message, Messenger, looper, filter). Needs complete reimplementation per architecture spec.
+- **pane-app** — kit crate (Protocol, Handles<P>, Handler, DisplayHandler, PaneBuilder<H>, Message, Messenger, Dispatch<H>, ServiceHandle<P>, Flow, filter chain). Needs complete reimplementation per architecture spec.
 - **pane-proto** — wire types, handshake. Needs new Protocol trait, ServiceId, ClientToServer/ServerToClient, PeerAuth.
-- **pane-server** — protocol server. Needs service-aware routing, DeclareInterest dispatch.
+- **pane-server** — protocol server. Needs Control protocol (wire service 0), DeclareInterest/RevokeInterest, per-connection service binding, ServiceTeardown, PaneExited broadcast, Cancel handling, max_message_size enforcement.
 - **pane-comp** — compositor. Needs new protocol integration.
 - **pane-headless** — headless server binary. Needs new handshake/protocol.
 - **pane-hello** — example app. Direct consumer of pane-app API.
@@ -46,4 +46,4 @@ All protocol work designed against the EAct-derived session-type principles:
 - `pane/eact_what_not_to_adopt` — anti-patterns
 - `pane/plan9_reference_insights` — Plan 9 patterns per subsystem
 
-Key: sub-protocols use typestate handles (C2), new channels are separate typed sources (C1), failure modes consider per-conversation callbacks (C3).
+Key: sub-protocols use typestate handles (C2), new channels are separate typed sources (C1), failure modes use per-request Dispatch entries (C3).

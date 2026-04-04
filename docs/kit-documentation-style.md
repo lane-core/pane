@@ -144,7 +144,7 @@ Analogous to the Be Book's method documentation.
 - **Lifecycle methods** (connect, create_pane, run, run_with): full treatment.
   These are the methods developers get wrong.
 - **Hook methods** (Handler trait): explain what triggers the call, what
-  the default does, what returning Ok(false) means, and give a concrete
+  the default does, what returning Ok(Flow::Stop) means, and give a concrete
   use case.
 - **Side-effecting methods** (set_title, send_message, monitor): state what
   happens, when it takes effect, and what can go wrong.
@@ -158,7 +158,7 @@ Analogous to the Be Book's method documentation.
 /// this pane. Override to update visual state (cursor style,
 /// selection highlight) or start input capture.
 ///
-/// Default: continues the event loop (`Ok(true)`).
+/// Default: continues the event loop (`Ok(Flow::Continue)`).
 ///
 /// # BeOS
 ///

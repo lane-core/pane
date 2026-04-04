@@ -78,6 +78,28 @@ directories, `.plan` files. They communicate through the same protocols and
 filesystem interfaces as human users — whether they run locally or on a remote
 headless instance.
 
+## Agents
+
+`finger ada` shows what your agent is working on. `mail -s
+"review this PR" ada` sends it a task. `write ada` opens a
+real-time conversation on the terminal. `cat /pane/5/body`
+shows its live output. `ls /pane/by-sig/com.pane.ai.agent.ada/`
+lists every pane it's running. `cat ~/.access` shows exactly
+what it's allowed to touch.
+
+The agent isn't a chatbot in a sidebar. It's a peer on the
+system — a unix user with a home directory, a login session,
+mail, cron, and the full pane protocol. It communicates through
+the same interfaces humans use, its work is inspectable through
+the same namespace, and its permissions are governed by the same
+kernel mechanisms. When it needs to delegate, it deploys a VM
+with sub-agents that coordinate among themselves using the same
+tools. The infrastructure that made unix a multi-user system
+in 1971 turns out to be exactly the infrastructure agents need
+in 2026 — pane just recovers it.
+
+See `docs/ai-kit.md`.
+
 ## Adoption
 
 You don't reinstall your OS to try pane. You can integrate it in your nix flakes.

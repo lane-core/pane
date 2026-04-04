@@ -42,10 +42,9 @@ mapped to a local unix account by the server. The architecture
 spec's transport-derived identity model (§Connection Model)
 applies identically to agents and humans.
 
-`who` shows which agents are logged in. `finger agent.builder`
-shows the agent's `.plan` — what it does, what it's working on,
-what it's allowed to access. Standard unix commands, standard
-output, standard composability.
+`who` shows which agents are logged in. `finger ada`
+shows the agent's `.plan` — what it does, what it's working on.
+Standard unix commands, standard output, standard composability.
 
 ### Headless panes
 
@@ -58,22 +57,77 @@ protocols, `request_received` for ad-hoc inter-pane requests,
 `pane_exited` for monitoring, `send_request` for typed
 request/reply.
 
+The agent's s6 service harness allocates a login session (utmp
+entry, PTY) before exec'ing the agent binary. The agent is both
+a Handler speaking the pane protocol and a unix user with a
+terminal it can drive programmatically — spawning subprocesses,
+running shell commands, the same way a coding assistant drives
+a terminal today. The PTY is infrastructure the harness
+provides; the Handler doesn't manage it. This makes the agent
+addressable via `write` and `talk` alongside its protocol
+participation — two interfaces to the same process, not an
+impedance mismatch.
+
 The same binary, the same protocol, the same Handler code that
 runs headless can opt into display by adding `DisplayHandler`.
 An agent that normally runs headless can present a visual
 interface when a user opens a session with it.
 
+Agent panes are enumerable through the per-signature pane-fs
+index: `ls /pane/by-sig/com.pane.ai.agent.<name>/` lists all
+running panes owned by that agent. This is the mechanism that
+makes "find all instances of this agent" a filesystem operation
+— the same role BApplication's scripting suite served when
+`hey` enumerated windows by index. Without pane-fs (Phase 2),
+agent panes are not externally discoverable.
+
+### Crash safety
+
+When an agent's pane crashes (handler returns `Err`, panic
+unwind), the same machinery that handles any pane exit applies:
+
+1. **Drop compensation fires.** Obligation handles held by the
+   crashing agent (ReplyPort, ClipboardWriteLock) are dropped,
+   sending failure terminals to peers. Panes with pending
+   requests receive `on_failed` via their Dispatch entries.
+2. **Server broadcasts `PaneExited`.** All panes on the same
+   Connection receive `pane_exited(pane, reason)` where reason
+   is `Error`. The restarted agent gets a new pane Id — agents
+   monitoring by Id lose track; monitoring via the `by-sig`
+   index is resilient to restarts.
+3. **pane-fs updates.** The crashed pane's directory
+   (`/pane/<n>/`) is removed from the namespace. Computed views
+   (`by-sig`, `by-uid`) reflect the removal.
+4. **Presence.** `who` shows the agent as logged out only if
+   the s6 service exits. A pane crash doesn't end the unix
+   session — the harness may restart the agent. `finger` shows
+   `.plan` regardless; the account still exists.
+
+The agent's persistent state — `.plan`, `.access`, memories,
+mail spool — is on-disk, not in-process. The agent restarts
+into its persistent context. The s6 service decides restart
+policy; the pane protocol reports what happened but does not
+manage supervision. See architecture spec §Termination.
+
 ---
 
-## 2. Governance: `.plan` and `.access`
+## 2. `.plan` and `.access`
 
-Every agent has two governance files in its home directory.
-`~/.plan` is the human-readable description (what `finger`
-displays). `~/.access` is the machine-parsed enforcement
-specification (what the kernel enforces). The names come from
-Plan 9's `finger` convention (`.plan` for people to read)
-extended with a structured companion (`.access` for machines
-to enforce).
+Every agent has two files in its home directory with distinct
+purposes and distinct ownership.
+
+`~/.plan` is self-description — free-form text that `finger`
+displays. The agent writes and updates its own `.plan` as it
+works. It is not governance; it is communication.
+
+`~/.access` is governance — machine-parsed declarations that
+the s6 harness compiles into kernel enforcement (Landlock,
+network namespaces) at launch time. The agent's *owner* writes
+`.access`. The agent cannot modify it.
+
+The names come from Plan 9's `finger` convention (`.plan` for
+people to read) extended with a structured companion (`.access`
+for machines to enforce).
 
 ### What `.access` governs
 
@@ -83,10 +137,12 @@ to enforce).
 | `[tools]` allowed tool names | Nix profile resolution → Landlock execute on store paths |
 | `[network]` allowed destinations | Network namespaces |
 | pane-fs visibility | pane-fs view filtering (per-uid) |
-| `[models]` model routing | Routing rules; hard-enforced only if `[network]` restricts egress |
+| `[models]` model access | Resolved at launch; hard-enforced only if `[network]` restricts egress |
 
 The mapping from `.access` declarations to kernel enforcement is
-direct. What `.access` says is what the kernel enforces.
+direct for `[filesystem]`, `[tools]`, and `[network]`. `[models]`
+is advisory unless `[network]` makes it hard by blocking
+alternative endpoints.
 
 **Trust boundary caveat:** Landlock is voluntary — a process
 applies Landlock rules to itself (or a parent applies them
@@ -94,23 +150,20 @@ before exec). A compromised agent binary that never calls
 `landlock_create_ruleset()` runs unsandboxed. The trust
 boundary is the **s6-rc service harness**, not the agent
 binary. The service's `run` script applies Landlock rules
-(compiled from `.plan`) before exec'ing the agent. The agent
+(compiled from `.access`) before exec'ing the agent. The agent
 never touches Landlock itself — by the time it runs, the
 sandbox is already in place. A compromised agent binary
 can't escape because it can't undo the Landlock rules
 applied by its parent process (Landlock is no-new-privileges
 compatible).
 
-### Two files, not one
+### `.plan` — self-description
 
-Governance is split into two files in the agent's home directory:
-
-**`~/.plan`** — human-readable, displayed by `finger`. Free-form
+`~/.plan` is human-readable, displayed by `finger`. Free-form
 text. What the agent does, what it's working on, how to reach
-it. No machine-parsed structure. This is the Plan 9 convention
-preserved: `.plan` is for people to read. The agent itself
-updates `.plan` as it works — communicating its current
-objectives and status. This is the original use case: a user
+it. No machine-parsed structure. The agent itself updates
+`.plan` as it works — communicating its current objectives and
+status. This is the Plan 9 convention preserved: a user
 maintains their own `.plan` to tell others what they're up to.
 
 ```
@@ -118,11 +171,24 @@ Development assistant for pane.
 Run test suites on commit.
 Monitor build output for patterns.
 Mail results to lane.
+
+Currently: refactoring docs/ai-kit.md. Applying review
+feedback from three specialist agents. Fixing .plan/.access
+framing, reordering §3 communication hierarchy, adding
+crash safety and event notification specs. Staleness pass
+in progress.
 ```
 
-**`~/.access`** — machine-parsed, compiled to Landlock rules by
-the s6-rc service harness at launch time. Structured declarations
-that the kernel enforces.
+The static part (role, responsibilities) stays. The live part
+(what the agent is working on right now) updates as work
+progresses. `finger ada` shows both — the agent's
+purpose and its current state.
+
+### `.access` — governance
+
+`~/.access` is machine-parsed, compiled to Landlock rules by
+the s6-rc service harness at launch time. Structured
+declarations that the kernel enforces.
 
 ```
 [filesystem]
@@ -147,21 +213,36 @@ concrete store paths that get Landlock execute permission. If a
 name doesn't resolve (tool not in the profile), the agent refuses
 to start — loud failure, not silent omission. The `[network]`
 section maps to network namespace configuration. The `[models]`
-section maps to routing rules for model invocation; if
-`[network] allow = none`, model routing is enforced by the
-network sandbox. If network is open, model routing is advisory.
+section declares which model the agent uses, resolved by the
+harness at launch time — same mechanism as `[tools]`. If
+`[network] allow = none`, the model declaration is
+hard-enforced by the network sandbox. Runtime data routing
+(classifying requests and directing them to different models
+based on content) is an open design question not yet specified.
 
-The separation avoids opposing pressures: `.plan` is pleasant
-to read in `finger` output; `.access` is reliably parseable by
-the Landlock compiler. Changes to governance (`.access`) don't
-affect the display (`.plan`), and vice versa.
+The agent cannot modify its own `.access` — the harness reads
+it before exec'ing the agent, and Landlock rules cannot be
+relaxed once applied.
 
-**Ownership:** the agent writes its own `.plan` (self-
-description, updated as it works). The agent's *owner* writes
-`.access` (governance, determines what the agent is allowed to
-do). The agent cannot modify its own `.access` — the harness
-reads it before exec'ing the agent, and Landlock rules cannot
-be relaxed once applied.
+**Requesting new tools:** when an agent needs a tool not in
+its `[tools]` list, the workflow is human-mediated:
+
+1. The agent sends `mail` to its owner requesting the tool
+   (what it needs, why).
+2. The mail surfaces as an interactive notification pane.
+   The owner can approve (grant exactly what was requested),
+   deny, respond to the agent with clarification, or open
+   the agent's `.access` for broader editing — e.g., granting
+   several permissions at once so repeated requests don't
+   become pestering.
+3. On approval, the owner's action updates `~agent/.access`
+   and the agent's Nix profile. The s6 service restarts. The
+   harness re-reads `.access`, resolves tool names against
+   the updated profile, and applies fresh Landlock rules.
+
+The agent cannot shortcut this. Landlock is no-new-privileges
+— the running process cannot gain execute permission for new
+paths. Tool additions require a service restart.
 
 ### Cross-user enrichment
 
@@ -176,9 +257,9 @@ cross-user agent access.
 ### Remote agents
 
 A remote agent connecting over TLS is mapped to a local unix
-account. The local account's `.plan` governs what the remote
-agent can do — same enforcement, same audit trail, same
-`finger` output.
+account. The local account's `.access` governs what the remote
+agent can do — same enforcement, same audit trail. `finger`
+shows the local `.plan`.
 
 The mapping from TLS certificate subject to local uid is not
 yet specified. Options include: a mapping file
@@ -189,69 +270,59 @@ open question — see `docs/pane-linux.md` for the full list.
 See `docs/distributed-pane.md` §4 for the identity and trust
 model.
 
+### Agent groups
+
+Unix groups provide shared permissions across agent teams.
+The `agent` group includes all agent users — shared baseline
+permissions (e.g., read access to system documentation, write
+access to shared mail directories) are set once on the group,
+not duplicated per agent. Specialized groups narrow from there:
+a `builders` group grants access to CI tools and build
+directories to any agent that needs them, not just a dedicated
+build agent.
+
+```
+# /etc/group
+agent:x:1099:ada,bob,guide
+builders:x:1100:ada,bob
+```
+
+Group membership is managed by the system administrator (or
+provisioned via Nix). `.access` `[filesystem]` paths interact
+with groups through standard unix semantics: if a directory is
+group-readable and the agent is in the group, Landlock permits
+the read. Permissions set on groups are imparted to all agent
+users in that group — the intended solution for shared agent
+permissions is `.access` + unix groups, not per-agent
+duplication.
+
 ---
 
 ## 3. Communication
 
-Agents are real unix users with real TTYs. The unix communication
-commands work out of the box. pane enriches them additively.
+Two communication domains, each with a natural surface:
 
-Two communication domains with different natural tools:
+**Agent ↔ agent (and agent ↔ system):** pane-fs and the
+protocol. Agents read and write pane state through the
+namespace (`/pane/<n>/body`, `/pane/<n>/attrs/`,
+`/pane/<n>/ctl`), use `Handles<P>` with `DeclareInterest` for
+typed protocol interaction, and `mail` for async messaging
+(file-based, composable, queryable via pane-store). This is the
+designed surface for structured interaction. Which agents can
+communicate with which — and through what paths — is governed
+by `.access` policy. The system defaults are hardened; `.access`
+declarations selectively relax them per agent.
 
-**Human ↔ agent:** unix terminal commands are natural. A human
-runs `write agent.builder` or `talk agent.reviewer` — text
-appears on the agent's terminal, the agent responds. `mail` for
-async. `mesg` for availability. These are the tools humans
-already know; agents participate because they're users.
+**Human ↔ agent:** unix terminal commands. A human runs
+`write ada` or `talk bob` — text appears
+on the agent's terminal, the agent responds. `mail` for async.
+`mesg` for availability. These work because agents are real
+unix users with real TTYs (§1).
 
-**Agent ↔ agent:** pane-fs and the protocol are natural. Agents
-communicating with each other use `mail` for async messaging
-(file-based, composable, queryable via pane-store) and
-`Handles<P>` with `DeclareInterest` for structured synchronous
-interaction. `write` and `talk` — tty-level byte injection —
-are not useful for agent-to-agent communication because agents
-process structured data, not terminal streams.
-
-The hierarchy: `mail` works for both domains (it's files, it
-composes). `write`/`talk` are for humans at terminals. pane-fs
-and the typed protocol are for structured interaction. All
-coexist; none replaces the others.
-
-### `write(1)` — direct terminal message
-
-An agent runs `write lane` and types a message. The message
-appears on lane's terminal, interspersed with whatever lane is
-doing. The mechanism is the same as it was in 1971: `write`
-opens lane's tty device (`/dev/pts/N`) and writes text to it.
-
-`mesg n` on lane's terminal revokes group-write permission on
-the tty device. The agent's `write` open() fails silently. The
-agent must decide: queue the message as mail, escalate, or wait.
-This is the unix convention — the refusal is silent, the agent
-adapts.
-
-**pane enrichment:** in addition to writing to the tty, the
-agent can write to `/pane/3/ctl` to deliver a structured
-command to a specific pane. The tty path is for human-readable
-text; the pane-fs path is for structured interaction. Both
-coexist. The agent chooses based on what it's communicating.
-
-### `talk(1)` — split-screen real-time session
-
-The user runs `talk agent.reviewer`. `talkd` negotiates the
-connection. The screen splits: the user types in the top half,
-the agent responds in the bottom half. Character-by-character —
-the user sees the agent "thinking" (streaming tokens), the
-same intimacy that talk provided between humans in 1983. When
-done, Ctrl-D ends the session.
-
-**pane enrichment:** the talk session can be attached to a
-shared pane — both participants see the same editor buffer or
-terminal output alongside the conversation. The pane namespace
-makes the session observable: `cat /pane/9/body` shows the
-conversation transcript. talk itself doesn't do this; pane's
-namespace does. The unix layer provides the session; pane
-provides the enrichment.
+The hierarchy: pane-fs and the typed protocol are the primary
+agent interface. `mail` bridges both domains (it's files, it
+composes). `write`/`talk` are for humans at terminals — unix
+compatibility, not the designed surface.
 
 ### `mail(1)` — asynchronous messages
 
@@ -277,7 +348,7 @@ pane-store attributes:
 ```
 ~/mail/build-result-2026-04-02
   user.pane.type = mail
-  user.pane.from = agent.builder
+  user.pane.from = ada
   user.pane.subject = Build failed — session type mismatch
   user.pane.status = unread
   user.pane.component = pane-roster
@@ -285,12 +356,71 @@ pane-store attributes:
 ```
 
 pane-store indexes these. "Show me all unread mail from
-agent.builder where component is pane-roster" is a standard
+ada where component is pane-roster" is a standard
 query — the same mechanism that indexes music, documents, and
 every other file with typed attributes. This is the BeOS email
 proof: no component was designed to be a "build result tracker."
 The mail infrastructure, the attribute store, the query engine
 compose into one because the infrastructure is right.
+
+**Attribute schema:** `user.pane.type`, `user.pane.from`, and
+`user.pane.status` are system-defined attributes — pane-store
+indexes them by default. Application-specific attributes
+(`user.pane.component`, `user.pane.commit`) are agent-defined
+extensions. Agents can introduce new `user.pane.*` attributes
+freely; they become queryable when pane-store adds them to
+its index (either by configuration or on first encounter —
+the same mechanism as BeOS's `mkindex`). The schema is open,
+not fixed.
+
+### Unix terminal commands
+
+The following commands work because agents have login sessions
+with real TTYs (§1). They are the natural interface for
+human-to-agent communication. Agent-to-agent communication
+should use pane-fs and the protocol instead.
+
+### `write(1)` — direct terminal message
+
+An agent runs `write lane` and types a message. The message
+appears on lane's terminal, interspersed with whatever lane is
+doing. The mechanism is the same as it was in 1971: `write`
+opens lane's tty device (`/dev/pts/N`) and writes text to it.
+
+`mesg n` on lane's terminal revokes group-write permission on
+the tty device. The agent's `write` open() fails silently. The
+agent must decide: queue the message as mail, escalate, or wait.
+This is the unix convention — the refusal is silent, the agent
+adapts.
+
+**pane enrichment:** in addition to writing to the tty, the
+agent can interact with a pane through its namespace.
+`/pane/3/ctl` accepts line commands (write-only) — `echo
+"save" > /pane/3/ctl` invokes the save command, same as
+selecting it from the command surface. `/pane/3/attrs/theme`
+reads or writes a property (read/write) — `echo "dark" >
+/pane/3/attrs/theme` sets the theme. `ctl` is imperative
+(do this); `attrs/` is declarative (set this to that). The
+agent chooses based on whether it's issuing a command or
+modifying state. `ls /pane/3/commands/` is the discovery
+surface for what `ctl` accepts.
+
+### `talk(1)` — split-screen real-time session
+
+The user runs `talk bob`. `talkd` negotiates the
+connection. The screen splits: the user types in the top half,
+the agent responds in the bottom half. Character-by-character —
+the user sees the agent "thinking" (streaming tokens), the
+same intimacy that talk provided between humans in 1983. When
+done, Ctrl-D ends the session.
+
+**pane enrichment:** the talk session can be attached to a
+shared pane — both participants see the same editor buffer or
+terminal output alongside the conversation. The pane namespace
+makes the session observable: `cat /pane/9/body` shows the
+conversation transcript. talk itself doesn't do this; pane's
+namespace does. The unix layer provides the session; pane
+provides the enrichment.
 
 ### `wall(1)` — broadcast to all users
 
@@ -397,41 +527,7 @@ agents as contributors alongside humans.
 
 ---
 
-## 6. Model Routing
-
-The choice of what data goes to which model is expressed as a
-routing rule — a file, not a setting.
-
-```
-# ~/.config/pane/models/routing.toml
-
-[default]
-model = "local"          # local model for everything by default
-
-[rules]
-# Work directory contents stay local
-[[rules.local]]
-match = "path:~/src/*"
-
-# General knowledge questions can go remote
-[[rules.remote]]
-match = "kind:general-knowledge"
-provider = "api.anthropic.com"
-
-# Credentials never leave the machine
-[[rules.deny]]
-match = "kind:credential"
-destination = "*"
-```
-
-The routing rule IS the privacy policy. It is a file — readable,
-editable, shareable, version-controllable. A user running entirely
-on local models gets the same agent infrastructure as someone with
-API access. The difference is one file.
-
----
-
-## 7. Presence and Discovery
+## 6. Presence and Discovery
 
 Unix presence commands work as-is because agents are real users.
 pane enriches them with structured state through the namespace.
@@ -443,8 +539,8 @@ agent alike:
 
 ```
 lane           pts/0   2026-04-02 09:00
-agent.builder  pts/1   2026-04-02 09:01
-agent.reviewer pts/2   2026-04-02 09:01
+ada            pts/1   2026-04-02 09:01
+bob            pts/2   2026-04-02 09:01
 ```
 
 `w` adds activity information — idle time, current process,
@@ -455,33 +551,38 @@ waiting for input.
 ```
 USER           TTY     FROM     LOGIN@  IDLE  WHAT
 lane           pts/0   :0       09:00   0.00s vim architecture.md
-agent.builder  pts/1   :0       09:01   0.00s cargo test
-agent.reviewer pts/2   :0       09:01   3:22  (idle)
+ada            pts/1   :0       09:01   0.00s cargo test
+bob            pts/2   :0       09:01   3:22  (idle)
 ```
 
-`who | grep agent` shows all active agents. These are standard
-commands reading standard utmp entries written by the agent's
-s6 service on login.
+Agent users are members of the `agent` group (§2). `who` output
+combined with group membership identifies which logged-in users
+are agents. These are standard utmp entries written by the
+agent's s6 service on login.
 
 ### `finger(1)` — the user profile
 
-`finger agent.builder` displays the agent's `.plan` —
-purpose, current work, permissions, governance. This is the
-primary discovery mechanism. Same command, same output as 1971:
+`finger ada` displays the agent's `.plan` —
+purpose and current work. This is the primary discovery
+mechanism. Same command, same output as 1971:
 
 ```
-$ finger agent.builder
-Login: agent.builder          Name: Build Agent
-Directory: /home/agent.builder Shell: /bin/sh
+$ finger ada
+Login: ada                    Name: Ada
+Directory: /home/ada          Shell: /bin/sh
 On since Apr  2 09:01 on pts/1
 
 Project: Running test suite (87% complete)
 
 Plan:
-Development build agent for pane.
+Development assistant for pane.
 Run test suites on commit.
 Monitor build output for patterns.
 Mail results to lane.
+
+Currently: refactoring docs/ai-kit.md. Applying review
+feedback from three specialist agents. Staleness pass
+in progress.
 ```
 
 `finger` shows `.plan` (human-readable description) and
@@ -491,17 +592,17 @@ s6 harness and auditors (`cat ~/.access`), not for casual
 inspection. The agent updates `.project` as it works —
 `finger` shows live status.
 
-For remote agents: `finger agent.builder@headless.internal`
+For remote agents: `finger ada@headless.internal`
 queries the remote machine's finger daemon. Same command, same
 output, network-transparent (RFC 1288).
 
 ### pane enrichment — structured state via pane-fs
 
-`finger` shows identity and governance. pane-fs adds live
+`finger` shows identity and self-description. pane-fs adds live
 structured state that finger can't provide:
 
 ```
-$ ls /pane/by-sig/com.pane.agent.builder/
+$ ls /pane/by-sig/com.pane.ai.agent.ada/
 5  8
 
 $ cat /pane/5/body
@@ -523,20 +624,27 @@ pane adds: structured, typed, queryable state accessible through
 the namespace. The unix layer (`who`, `finger`, `w`) provides
 presence and identity; pane provides operational detail.
 
+**Capability discovery:** an agent that finds a pane can also
+discover what it supports. `ls /pane/5/attrs/` lists the
+properties the pane exposes. `ls /pane/5/commands/` lists the
+commands it accepts. `cat /pane/5/commands/build` shows the
+command's metadata (description, shortcut, group). These
+directories reflect `supported_properties()` and the command
+vocabulary declared by the handler (architecture spec
+§Handler). An automation agent uses these listings to adapt
+to the panes it encounters — no hardcoded knowledge of what
+a specific application supports.
+
 ### Composability
 
 ```sh
-# All active agents
-who | grep agent
-
-# All agents' plans
-for agent in $(who | grep agent | awk '{print $1}'); do
-  echo "=== $agent ==="
-  finger $agent
+# All agents' plans (agent group members who are logged in)
+for user in $(getent group agent | cut -d: -f4 | tr , '\n'); do
+  who | grep -q "^$user " && finger $user
 done
 
-# All build agent panes and their status
-for pane in $(ls /pane/by-sig/com.pane.agent.builder/); do
+# All of ada's panes and their status
+for pane in $(ls /pane/by-sig/com.pane.ai.agent.ada/); do
   echo "pane $pane: $(cat /pane/$pane/attrs/status)"
 done
 
@@ -550,9 +658,38 @@ is pane-store. The monitoring interface is pane-notify or
 `/pane/<n>/event`. Standard unix tools, enriched with pane-fs,
 all composable.
 
+### Event notification
+
+An agent that needs to react to changes in another pane reads
+`/pane/<n>/event` — a blocking read that yields one line per
+event:
+
+```
+$ cat /pane/5/event
+attrs/status building
+attrs/status testing
+body 1024
+exited graceful
+```
+
+Each line names the changed resource and (for attributes) its
+new value. The read blocks until the next event arrives. This
+is the Plan 9 pattern (rio's `wctl`, acme's event file):
+structured text, one event per line, blocking read. An agent
+monitoring a build pane reads the event file in a loop and
+reacts to status changes without polling. The blocking read
+must run on a dedicated thread, not in a Handler callback
+(architecture spec I2: looper must not block).
+
+For bulk monitoring, pane-notify provides filesystem-level
+change notification on pane-fs paths — watching
+`/pane/by-sig/com.pane.ai.agent.<name>/` to detect new or
+exiting agent panes. `/pane/<n>/event` is per-pane;
+pane-notify is per-path.
+
 ---
 
-## 8. The Guide
+## 7. The Guide
 
 The canonical first agent. Its purpose: teach new users by
 demonstrating the system. The guide uses pane *using pane*.
@@ -566,6 +703,10 @@ demonstrating the system. The guide uses pane *using pane*.
   guide reads and writes other panes' properties to demonstrate
   features. `echo "dark" > /pane/2/attrs/theme` shows theming.
   `cat /pane/1/attrs/cursor` points out where the user is.
+  The guide discovers what a pane supports by listing its
+  scripting surface: `ls /pane/2/attrs/` for properties,
+  `ls /pane/2/commands/` for commands — the same capability
+  discovery any agent uses (§6).
 - **Clipboard**: the guide copies example commands to the
   clipboard for the user to paste. Clipboard is an independent
   service Connection — no display access needed.
@@ -590,7 +731,7 @@ system's integration tests. Its needs drive the API design. See
 
 ---
 
-## 9. Sub-Agent Delegation via VM
+## 8. Sub-Agent Delegation via VM
 
 An agent that needs to delegate subtasks can deploy a pane
 linux VM and provision sub-agents on it. The VM is a self-
@@ -638,19 +779,6 @@ The cost is a VM boot — seconds with microVM approaches
 benefit is that the outer agent can give sub-agents broad
 permissions inside the VM without risking the host.
 
-### Relationship to Plan 9's `cpu`
-
-Related but distinct. Plan 9's `cpu` projected the local
-namespace (devices, files, display) onto a remote machine —
-the process ran remotely but its environment was local. Pane's
-VM model goes the other direction: the sub-agents run inside
-the VM with their own environment, and the outer agent pulls
-results back into its context.
-
-Same goal — use remote compute while maintaining local
-context — but opposite direction of namespace projection.
-Plan 9 pushed environment out; pane pulls results in.
-
 ### Use cases
 
 **Task delegation.** An agent breaks a complex task into
@@ -686,7 +814,7 @@ is disposable — the experiment costs nothing to the host.
 
 ---
 
-## 10. Relationship to Architecture Spec
+## 9. Relationship to Architecture Spec
 
 The AI Kit introduces no new protocol, no new service, no new
 runtime concept. It is a usage pattern over existing
@@ -698,15 +826,16 @@ infrastructure:
 | PeerAuth::Kernel | Agent identity from uid via SO_PEERCRED |
 | PeerAuth::Certificate | Remote agent identity from TLS certificate |
 | pane-fs namespace | Agent panes visible at `/pane/<n>/` |
-| pane-fs `by-sig` view | `ls /pane/by-sig/com.pane.agent.builder/` |
+| pane-fs `by-sig` view | `ls /pane/by-sig/com.pane.ai.agent.<name>/` |
 | Messenger + send_request | Inter-agent and agent-user communication |
 | Handles\<P\> | Typed protocol participation (e.g., SessionProtocol) |
 | pane-store attributes | Memory indexing, mail indexing, query |
 | pane-notify | File watching (commit monitoring, config changes) |
-| Routing rules | Model selection, data classification |
-| `.plan` + `.access` | `.plan` for display (finger); `.access` for enforcement (Landlock + network namespace) |
+| `.access` `[models]` | Model access declaration, resolved at launch |
+| `.plan` | Agent self-description, displayed by `finger` |
+| `.access` | Governance: Landlock, network namespace, model access, pane-fs view filtering |
 
-The one new component the AI Kit needs: **a `.plan` parser** that
+The one new component the AI Kit needs: **an `.access` parser** that
 translates `.access` declarations into Landlock rules, network
 namespace configuration, and pane-fs view filters. This is a
 launch-time tool invoked by the agent's s6-rc service `run`
@@ -725,12 +854,32 @@ producing concrete store paths for Landlock execute permission.
 | Agent memory (pane-store queries) | Phase 2 (requires pane-store) |
 | Agent pane-fs presence | Phase 2 (requires pane-fs) |
 | Guide agent cross-pane scripting | Phase 3 (requires RoutingHandler) |
-| Model routing rules | Phase 2 (requires routing subsystem) |
 | `.access` parser → Landlock | Phase 1 (standalone tool) |
+
+### Consistency model
+
+pane-fs for local panes is sequentially consistent — reads
+reflect the most recent write in dispatch order. For remote
+panes, pane-fs reads from pane-store's cached index, updated
+asynchronously via change notifications over the protocol.
+This is eventually consistent: a remote pane's `attrs/status`
+may lag behind the remote pane's actual state.
+
+Writes to remote panes (`ctl`, `attrs/`) route over TLS to
+the owning instance and are applied synchronously on the
+remote side. The local cache updates when the change
+notification arrives back. An agent that writes to a remote
+pane and immediately reads the same attribute may see the
+old value.
+
+Agents should treat pane-fs reads of remote state as
+advisory. For coordination requiring stronger guarantees,
+use `send_request` — the typed request/reply mechanism
+provides a synchronous round-trip to the remote pane.
 
 ---
 
-## 11. What This Is Not
+## 10. What This Is Not
 
 - **Not an AI framework.** No `AgentRuntime`, no `AgentManager`,
   no `AgentProtocol`. Agents are users. Users run programs.
@@ -741,14 +890,14 @@ producing concrete store paths for Landlock execute permission.
   coordinate. No central coordinator, no DAG engine, no
   workflow DSL.
 
-- **Not a model hosting system.** pane does not run models. It
-  routes requests to models (local or remote) via routing rules.
-  The model is infrastructure the agent uses, not infrastructure
-  pane provides.
+- **Not a model hosting system.** pane does not run models.
+  The agent's `.access` declares which model it uses; the
+  harness resolves it at launch. The model is infrastructure
+  the agent uses, not infrastructure pane provides.
 
 - **Not cloud-dependent.** A user running entirely on local
   models gets the same agent infrastructure. The difference
-  between local and cloud is one routing rule file.
+  between local and cloud is one `.access` field.
 
 ---
 
@@ -791,7 +940,7 @@ MIT Project Athena documentation on Zephyr.
   factotum (`docs/distributed-pane.md` §4)
 - pane architecture: Handler, headless-first, pane-fs, Protocol,
   PeerAuth (`docs/architecture.md`)
-- Distributed pane: identity model, `.plan` governance
+- Distributed pane: identity model, `.access` governance
   (`docs/distributed-pane.md` §4)
 - The guide agent: `docs/use-cases.md` §7
 - Agent vision: `docs/agents.md`, `docs/agent-perspective.md`

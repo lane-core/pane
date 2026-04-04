@@ -84,7 +84,7 @@ Each pane SHALL be exposed under `/pane/<n>/` with a tree structure that present
 
 The tree does not expose rendering internals (glyph data, buffer state, GPU resources). A script reading `body` gets the content a human would see, at the semantic level the content operates at.
 
-**Compositional equivalence** (architecture §2): when panes are composed, pane-fs reflects the composition structure as directory nesting. A split containing panes A and B appears as a directory with its own `attrs/` (orientation, ratio) and child entries `A/`, `B/`. Independent panes are top-level entries; composed panes are nested under their container. The filesystem tree mirrors the layout tree. Tools that walk `/pane/` see composition structure directly.
+**Compositional equivalence** (architecture spec, "What Is a Pane"): when panes are composed, pane-fs reflects the composition structure as directory nesting. A split containing panes A and B appears as a directory with its own `attrs/` (orientation, ratio) and child entries `A/`, `B/`. Independent panes are top-level entries; composed panes are nested under their container. The filesystem tree mirrors the layout tree. Tools that walk `/pane/` see composition structure directly.
 
 #### Scenario: Tag as title text
 - **WHEN** `cat /pane/1/tag` is executed
@@ -152,8 +152,7 @@ selection to `ctl`.
 
 `commands/` is read-only from the filesystem perspective. The
 command vocabulary is set by the pane's handler (via the Tag
-builder at creation time and `Messenger::set_vocabulary()` for
-dynamic updates). Bridge processes add commands through the
+builder at creation time). Bridge processes add commands through the
 enrichment protocol (see `docs/legacy-wrapping.md` §3).
 
 The `ctl` file SHALL accept line-oriented commands. Each line is
@@ -221,7 +220,7 @@ This addresses the round-trip concern: reading 10 individual attribute files req
 - **AND** the result SHALL be equivalent to reading each file in `attrs/` individually
 
 ### Requirement: Pane boundary principle
-pane-fs SHALL NOT expose the internal widget hierarchy of a pane. The scriptable surface of a pane is the set of attributes its handler declares via `Attribute`. Internal rendering state (view trees, widget layouts, buffer positions) is opaque.
+pane-fs SHALL NOT expose the internal widget hierarchy of a pane. The scriptable surface of a pane is the set of properties its handler declares via `PropertyInfo`. Internal rendering state (view trees, widget layouts, buffer positions) is opaque.
 
 This is a deliberate divergence from BeOS, where `hey` could traverse into any application's view hierarchy (`get Frame of View "statusbar" of Window 0`). BeOS's deep traversal was powerful but fragile — scripts broke when applications rearranged their internal UI.
 

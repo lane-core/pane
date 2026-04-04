@@ -44,7 +44,8 @@ Single server (N=1), headless, no suspension, no streaming. All multi-server dat
 - [ ] **Dispatch\<H\>** — per-request typed dispatch entries for request/reply; `send_request<H, R>` with typed callbacks, `CancelHandle`
 - [ ] **AppPayload** — `Clone + Send + 'static` marker trait, compile-time exclusion of obligation handles
 - [ ] **Filter chain** — `MessageFilter` on Clone-safe `Message` only; `FilterAction::Pass/Transform/Consume`
-- [ ] **Service registration** — `open_service::<P>()` resolves capability via service map → DeclareInterest → typed calloop source → ServiceHandle<P>
+- [ ] **PaneBuilder\<H\>** — two-phase pane lifecycle: non-generic `Pane` + generic `PaneBuilder<H>` setup phase; `Pane::setup::<H>()`, `Pane::run_with`, `Pane::run_with_display`; `#[must_use]` on both; Drop compensation
+- [ ] **Service registration** — `PaneBuilder::open_service::<P>()` resolves capability via service map → DeclareInterest (blocking) → InterestAccepted → typed calloop source → ServiceHandle<P>; duplicate ServiceId rejected
 - [ ] **Looper** — calloop-backed, per-protocol typed channels, unified batch, coalescing
 
 #### Server (pane-server)
@@ -59,7 +60,7 @@ Single server (N=1), headless, no suspension, no streaming. All multi-server dat
 
 #### Invariants to validate
 
-All of I1–I9 and S1–S6 from the architecture spec. Phase 1 is the proof that the linear discipline works end-to-end.
+All of I1–I13 and S1–S6 from the architecture spec. Phase 1 is the proof that the linear discipline works end-to-end.
 
 ## Next
 

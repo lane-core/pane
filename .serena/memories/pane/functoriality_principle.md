@@ -28,11 +28,11 @@ The functor from "architecture" to "programs buildable on it" is not additive ov
 
 - ServiceId { uuid, name } from day one (not &'static str → ServiceId later)
 - ServiceRouter with HashMap (not bare mpsc::Sender)
-- Sigma keyed by (ConnectionId, token) (not bare token)
+- Dispatch keyed by (ConnectionId, token) (not bare token)
 - PeerAuth enum (not PeerIdentity strings)
 - DeclareInterest in the protocol (not implicit capability)
 - Wire framing [length][service][payload] (not v1's [length][payload])
-- Message enum Clone-safe with nested services (not flat with panic Clone)
+- Message enum base-protocol only, Clone-safe (not flat with panic Clone); service events via Handles<P>
 - calloop ConnectionSource (not pump threads)
 
-Documented in: `docs/workflow.md` (process rule), `docs/superpowers/specs/2026-04-01-pane-v2-architecture.md` (theoretical foundation + Phase 1 structural invariants table).
+Documented in: `docs/workflow.md` (process rule), `docs/architecture.md` (theoretical foundation + Phase 1 structural invariants table).

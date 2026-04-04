@@ -1,12 +1,16 @@
 ---
-name: Pane-as-trait assessment
-description: Plan 9 analysis of making Pane a trait with service extension traits (ClipboardPane, etc.) — approved with caveats
+name: Pane-as-trait assessment (SUPERSEDED)
+description: SUPERSEDED by PaneBuilder<H> decision (2026-04-03). Pane-as-trait was explored but not adopted. See architecture.md §Two-phase pane lifecycle.
 type: project
+---
+
+**SUPERSEDED**: The architecture adopted `PaneBuilder<H>` (non-generic Pane + generic builder phase) instead of Pane-as-trait. See `docs/architecture.md` §Two-phase pane lifecycle and resolved question 26.
+
 ---
 
 Pane-as-trait consultation (2026-03-31).
 
-## Decision: Pane-as-trait is sound, with caveats
+## Decision: Pane-as-trait is sound, with caveats (NOT ADOPTED)
 
 Lane proposed making Pane a trait (app type IS the pane) with service capabilities as extension traits (ClipboardPane, ObserverPane, etc.). Five questions answered from Plan 9 perspective.
 

@@ -19,7 +19,7 @@ Session-type sub-protocols at the API layer using Rust typestate. The Protocol t
 - Request/reply: `ReplyPort` (obligation), `CancelHandle` (option)
 - Completion: `CompletionReplyPort` (obligation)
 
-**Motivation:** EAct KP2 (no explicit channels). Non-blocking state types provide methods, blocking state types are traits.
+**Motivation:** EAct's type/value separation in handler stores — obligation handles are session endpoints that must not appear in Clone-safe values. Obligation handles provide consuming methods (`.commit()`, `.reply()`). All handler methods are non-blocking (I2).
 
 **How to apply:** When designing new sub-protocols, expose typestate handles at the API surface. The developer never sees session type machinery. `#[pane::protocol_handler(P)]` attribute macro generates dispatch.
 
@@ -29,7 +29,7 @@ Per-request failure handling via Dispatch<H>, not just global death notification
 
 **Motivation:** EAct's `suspend` takes an explicit failure callback per conversation.
 
-**How to apply:** `send_request` registers (on_reply, on_failed) callback pairs as Dispatch entries. On Connection loss, `dispatch.fail_connection()` fires on_failed for every pending entry before `handler.disconnected()`. PaneExited (via ExitBroadcaster) remains the actor-level signal; Dispatch provides conversation-level failure.
+**How to apply:** `send_request` registers (on_reply, on_failed) callback pairs as Dispatch entries. On Connection loss, `dispatch.fail_connection()` fires on_failed for entries keyed to the lost Connection only, before `handler.disconnected()`. Entries for other Connections are unaffected. PaneExited (via ExitBroadcaster) remains the actor-level signal; Dispatch provides conversation-level failure.
 
 ## C4: Access Points for Service Discovery
 
@@ -41,11 +41,11 @@ EAct's access point model maps to pane's DeclareInterest + ServiceRouter. Servic
 
 ## C5: Handler Declaration of Interest (Handles<P>)
 
-Handlers declare what protocol types they handle via `impl Handles<P>`. The `open_clipboard()` call requires `H: Handles<Clipboard>` at compile time — the bound IS the interest declaration.
+Handlers declare what protocol types they handle via `impl Handles<P>`. The `PaneBuilder::open_service::<Clipboard>()` call requires `H: Handles<Clipboard>` at compile time — the bound IS the interest declaration.
 
 **Motivation:** EAct handlers are parameterized by their input session type.
 
-**How to apply:** Protocol::Message + Handles<P> + attribute macro provides compile-time coverage checking. If a handler opens a service, it must implement the corresponding Handles<P>. Missing method → compile error (exhaustive match in generated dispatch).
+**How to apply:** Protocol::Message + Handles<P> + attribute macro provides compile-time coverage checking. If a pane declares interest in a service (via PaneBuilder), its handler must implement the corresponding Handles<P>. Missing method → compile error (exhaustive match in generated dispatch).
 
 ## C6: Looper = Concurrency Boundary, Session Types = Type Boundary
 

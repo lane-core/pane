@@ -1,7 +1,11 @@
 ---
-name: Greenfield architecture decision (2026-03-31)
-description: From-scratch architecture analysis — per-protocol traits over shared state, CompositorEvent/service split, Sigma<H> dispatch, builder registration
+name: Greenfield architecture decision (2026-03-31) — SUPERSEDED
+description: SUPERSEDED by architecture.md (2026-04-03). Early from-scratch proposal. Sigma<H> renamed to Dispatch<H>. Builder pattern evolved to PaneBuilder<H>. See architecture.md for current design.
 type: project
+---
+
+**SUPERSEDED**: This was an early from-scratch proposal. The architecture evolved significantly. `Sigma<H>` → `Dispatch<H>`. Builder pattern → `PaneBuilder<H>`. See `docs/architecture.md` for the current spec.
+
 ---
 
 Clean-slate architecture analysis requested 2026-03-31. All prior expediency arguments stripped.
