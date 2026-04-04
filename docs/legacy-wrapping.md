@@ -334,7 +334,7 @@ server enforces:
 ### Optic law status
 
 Enrichment attributes are DynOptic-backed (see
-`docs/optics-design-brief.md`). The bridge's
+`docs/archive/optics-design-brief.md`). The bridge's
 `set_enrichment_attr()` is a DynOptic `set()`; the namespace
 read is a DynOptic `get()`.
 

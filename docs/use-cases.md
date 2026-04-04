@@ -17,7 +17,7 @@ parses VT escape sequences, and renders a text grid.
 struct Shell {
     pty: PtySource,       // calloop source wrapping the PTY fd
     screen: ScreenBuffer,
-    clipboard: ClipboardHandle,
+    clipboard: ServiceHandle<Clipboard>,
 }
 
 impl Handler for Shell {
@@ -284,7 +284,7 @@ std::thread::spawn(move || {
   use a Protocol. If it's a single fire-and-forget event, use
   `post_app_message`.
 
-- **Undo integration** (see `docs/optics-design-brief.md`):
+- **Undo integration** (see `docs/archive/optics-design-brief.md`):
   `RecordingOptic` wraps the editor's property optics, capturing
   old/new values on each `set()`. `CoalescingPolicy` groups rapid
   keystrokes into single undo steps. These are kit-level types
@@ -293,7 +293,7 @@ std::thread::spawn(move || {
   `/pane/2/attrs/cursor` returns the cursor position.
   `/pane/2/attrs/selection` returns the selected text.
   External tools (linters, formatters) read and write through
-  the namespace. The `DynOptic` trait (see `docs/scripting-optics-design.md`)
+  the namespace. The `DynOptic` trait (see `docs/archive/scripting-optics-design.md`)
   handles type-erased serialization at the boundary; the editor's
   internal optics are monomorphic.
 
