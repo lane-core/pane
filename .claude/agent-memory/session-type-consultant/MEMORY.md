@@ -17,3 +17,4 @@
 - [Phase 1 session review](project_phase1_session_review.md) -- ProtocolAbort+SessionEnum+handshake: two new invariants I10/I11, abort via framing layer, Cow for ServiceId
 - [Architecture spec review](project_architecture_spec_review.md) -- full spec review: KP2 misattribution, unknown discriminant gap, 4 new invariants I10-I13
 - [Pane<H> vs PaneBuilder<H>](project_pane_generic_decision.md) -- PaneBuilder<H> confirmed (name evolved PaneSetup→PaneInit→PaneBuilder), 7 actions, EAct mapping verified, blocking correct
+- [Optics doc audit](project_optics_doc_audit.md) -- both optics docs stale vs architecture.md, recommend archive, 26 stale type refs total

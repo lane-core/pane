@@ -14,8 +14,8 @@ docs/
 ├── aesthetic.md                  — visual design language
 ├── pane-fs.md                    — filesystem interface
 ├── pane-compositor.md            — compositor design
-├── optics-design-brief.md        — optic layer design rationale and decisions
-├── scripting-optics-design.md    — optics × session types exploration
+├── archive/optics-design-brief.md — optic layer design (archived: stale vs architecture.md)
+├── archive/scripting-optics-design.md — optics × routing exploration (archived: stale)
 ├── introduction.md               — user-facing intro
 ├── development-methodology.md    — development approach
 ├── agent-perspective.md          — agent integration perspective

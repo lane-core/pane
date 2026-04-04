@@ -239,6 +239,11 @@ requires the bound `H: Handles<P>` at compile time.
 
 ```rust
 /// A live connection to a service. Parameterized by protocol.
+/// Bound to a specific Connection and negotiated version at open
+/// time — service map changes affect new opens, not existing
+/// handles (Plan 9 fid semantics: a fid is bound at open, mount
+/// table changes affect new walks only).
+///
 /// Drop sends RevokeInterest (idempotent — the server tolerates
 /// duplicate RevokeInterest for the same service).
 /// Protocol-specific methods are added via
@@ -284,7 +289,7 @@ This makes the handler type H a setup-time concern, not a
 runtime identity. In EAct terms, the handler store σ is a
 component of the actor populated during initialization, not a
 type parameter of the actor's identity. In Plan 9 terms,
-`Pane` is the nascent process (after fork, before exec);
+`Pane` is the bare process (after rfork, before namespace customization);
 `PaneBuilder<H>` is namespace construction (bind/mount);
 `run_with` is exec; the looper is the running process.
 
@@ -1679,8 +1684,8 @@ failure terminals. The invariants:
   abort. The server detects these via fd hangup (EPOLLHUP on unix
   sockets, TCP RST on remote) and cleans up the pane entry — this
   is the backstop when I1 is violated.
-- **I2**: No blocking calls in handler methods (EAct Global Progress,
-  Corollary 6.1 — requires handler termination)
+- **I2**: No blocking calls in handler methods (EAct Global Progress
+  — the stronger result requiring handler termination, §4.3)
 - **I3**: Handler callbacks terminate (return Flow)
 - **I4**: Typestate handles: `#[must_use]` + Drop compensation
 - **I5**: Base filters see only Message (Clone-safe, type-enforced);
