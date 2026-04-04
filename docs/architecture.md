@@ -226,7 +226,7 @@ the ServiceId contract, not an afterthought.
 /// The looper dispatches P::Message to this method via a
 /// monomorphized fn pointer captured at service registration.
 pub trait Handles<P: Protocol> {
-    fn receive(&mut self, proxy: &Messenger, msg: P::Message) -> Result<Flow>;
+    fn receive(&mut self, proxy: &Messenger, msg: P::Message) -> anyhow::Result<Flow>;
 }
 ```
 
@@ -328,7 +328,7 @@ impl Pane {
     /// Receives Message (Clone-safe events) only. Cannot handle
     /// obligation-carrying protocols (clipboard locks, completion
     /// requests, incoming requests with ReplyPort).
-    pub fn run(self, f: impl FnMut(&Messenger, Message) -> Result<Flow>) -> Result;
+    pub fn run(self, f: impl FnMut(&Messenger, Message) -> anyhow::Result<Flow>) -> Result;
 
     /// Struct handler form — handlers that use no protocol
     /// services. The looper is generic over H internally (for
@@ -435,7 +435,7 @@ impl Editor {
 
 // The macro generates:
 impl Handles<Clipboard> for Editor {
-    fn receive(&mut self, proxy: &Messenger, msg: ClipboardMessage) -> Result<Flow> {
+    fn receive(&mut self, proxy: &Messenger, msg: ClipboardMessage) -> anyhow::Result<Flow> {
         match msg {
             ClipboardMessage::LockGranted(lock) => self.lock_granted(proxy, lock),
             ClipboardMessage::LockDenied { clipboard, reason } =>
@@ -524,10 +524,10 @@ directly because there is no DeclareInterest for messaging:
 /// these methods. Lifecycle and messaging are universal —
 /// every pane speaks them, no DeclareInterest required.
 pub trait Handler: Send + 'static {
-    fn ready(&mut self, proxy: &Messenger) -> Result<Flow> { Ok(Flow::Continue) }
-    fn close_requested(&mut self, proxy: &Messenger) -> Result<Flow> { Ok(Flow::Stop) }
-    fn disconnected(&mut self, proxy: &Messenger) -> Result<Flow> { Ok(Flow::Stop) }
-    fn pulse(&mut self, proxy: &Messenger) -> Result<Flow> { Ok(Flow::Continue) }
+    fn ready(&mut self, proxy: &Messenger) -> anyhow::Result<Flow> { Ok(Flow::Continue) }
+    fn close_requested(&mut self, proxy: &Messenger) -> anyhow::Result<Flow> { Ok(Flow::Stop) }
+    fn disconnected(&mut self, proxy: &Messenger) -> anyhow::Result<Flow> { Ok(Flow::Stop) }
+    fn pulse(&mut self, proxy: &Messenger) -> anyhow::Result<Flow> { Ok(Flow::Continue) }
     /// Incoming request from another pane. The payload is intentionally
     /// type-erased: the requester and receiver may have different types
     /// (different processes, different T). The service_id identifies the
@@ -536,13 +536,13 @@ pub trait Handler: Send + 'static {
     /// defined requests route through Handles<P> with typed messages
     /// instead. The reply is an obligation — default drops it (sends
     /// ReplyFailed).
-    fn request_received(&mut self, proxy: &Messenger, service: ServiceId, msg: Box<dyn Any + Send>, reply: ReplyPort) -> Result<Flow> {
+    fn request_received(&mut self, proxy: &Messenger, service: ServiceId, msg: Box<dyn Any + Send>, reply: ReplyPort) -> anyhow::Result<Flow> {
         drop(reply);
         Ok(Flow::Continue)
     }
     // reply_received and reply_failed are NOT on Handler.
     // Replies route to per-request Dispatch entries (see Request/Reply).
-    fn pane_exited(&mut self, proxy: &Messenger, pane: Id, reason: ExitReason) -> Result<Flow> { Ok(Flow::Continue) }
+    fn pane_exited(&mut self, proxy: &Messenger, pane: Id, reason: ExitReason) -> anyhow::Result<Flow> { Ok(Flow::Continue) }
     fn supported_properties(&self) -> &[PropertyInfo] { &[] }
     /// &self for deadlock freedom. Side effects must happen
     /// before returning true (save in close_requested, not here).
@@ -736,23 +736,53 @@ pub enum Flow {
 }
 ```
 
+### Error types: two domains
+
+Handler methods return `anyhow::Result<Flow>`. The handler
+speaks its own error vocabulary — application-level failures
+(`io::Error`, parse errors, state invariants). The handler
+cannot construct infrastructure errors (`Disconnected`, `Infra`)
+because those variants don't exist in `anyhow::Error`. This
+matches BeOS (handlers returned `void` — no error path at all;
+pane adds `Result` for error propagation but keeps the handler's
+error domain separate) and 9P (handlers produce Rerror strings;
+transport errors are a disjoint concept the handler can't forge).
+
+The looper wraps handler errors at the boundary:
+
+```rust
+match handler.ready(proxy) {
+    Ok(Flow::Continue) => { /* keep dispatching */ }
+    Ok(Flow::Stop) => break Ok(()),
+    Err(e) => break Err(PaneError::Handler(e)),
+}
+```
+
+`PaneError::Disconnected` is constructed only by the looper when
+it detects connection loss — never from a handler return.
+
 ### PaneError and Result
 
 ```rust
-/// Project-wide result type. Ok(()) = graceful exit (Flow::Stop).
+/// Process-level result type for run methods and main().
+/// Ok(()) = graceful exit (Flow::Stop).
 /// Err(PaneError) = something went wrong.
+///
+/// NOT used in handler signatures — handlers return
+/// anyhow::Result<Flow>. The looper translates handler
+/// errors into PaneError::Handler(e) at the boundary.
 pub type Result<T = ()> = std::result::Result<T, PaneError>;
 
 /// Why a pane stopped running. Private to the process — carries
 /// full error details for logging and diagnostics. Uses anyhow
-/// for ergonomic error wrapping (any std::error::Error converts
-/// via ?).
+/// for ergonomic error wrapping.
 pub enum PaneError {
     /// Primary connection lost. The handler's disconnected() was
     /// called and returned Flow::Stop, but the cause was
     /// connection loss, not voluntary exit.
     Disconnected,
-    /// Handler returned Err(e) from a method.
+    /// Handler returned Err(e) from a method. The looper wraps
+    /// the handler's anyhow::Error into this variant.
     Handler(anyhow::Error),
     /// Infrastructure failure: calloop, socket, handshake, framing.
     Infra(anyhow::Error),
@@ -1435,9 +1465,9 @@ impl Messenger {
         &self,
         target: &Messenger,
         msg: impl Serialize + Send + 'static,
-        on_reply: impl FnOnce(&mut H, &Messenger, R) -> Result<Flow> + Send + 'static,
-        on_failed: impl FnOnce(&mut H, &Messenger) -> Result<Flow> + Send + 'static,
-    ) -> Result<CancelHandle>
+        on_reply: impl FnOnce(&mut H, &Messenger, R) -> anyhow::Result<Flow> + Send + 'static,
+        on_failed: impl FnOnce(&mut H, &Messenger) -> anyhow::Result<Flow> + Send + 'static,
+    ) -> anyhow::Result<CancelHandle>
     where H: Handler + 'static, R: DeserializeOwned + Send + 'static;
 }
 
@@ -1864,7 +1894,8 @@ the opt-in mechanism.
 ### Minimal headless agent
 
 ```rust
-use pane_app::{App, Tag, Handler, Messenger, Flow, Result};
+use anyhow::Result;
+use pane_app::{App, Tag, Handler, Messenger, Flow};
 
 struct StatusAgent;
 
@@ -1882,7 +1913,7 @@ impl Handler for StatusAgent {
     }
 }
 
-fn main() -> pane_app::Result<()> {
+fn main() -> pane_app::Result {
     let app = App::connect("com.ops.status")?;
     let pane = app.create_pane(Tag::new("Server Status"))?.wait()?;
     pane.run_with(StatusAgent)
@@ -1892,7 +1923,9 @@ fn main() -> pane_app::Result<()> {
 ### Display editor with clipboard
 
 ```rust
-use pane_app::*;
+use anyhow::Result;
+use pane_app::{App, Tag, Handler, Messenger, Flow, ServiceHandle,
+    Clipboard, ClipboardWriteLock, ClipboardMetadata, Sensitivity, Locality};
 
 struct Editor {
     buffer: String,
@@ -1941,7 +1974,7 @@ impl Editor {
     fn service_lost(&mut self, _: &Messenger) -> Result<Flow> { Ok(Flow::Continue) }
 }
 
-fn main() -> pane_app::Result<()> {
+fn main() -> pane_app::Result {
     let app = App::connect("com.pane.editor")?;
     let pane = app.create_pane(
         Tag::new("Editor")
@@ -1960,7 +1993,7 @@ fn main() -> pane_app::Result<()> {
 ### Closure form (simple case)
 
 ```rust
-fn main() -> pane_app::Result<()> {
+fn main() -> pane_app::Result {
     let app = App::connect("com.example.hello")?;
     let pane = app.create_pane(Tag::new("Hello"))?.wait()?;
     pane.run(|_proxy, msg| match msg {
