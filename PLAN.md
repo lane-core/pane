@@ -44,7 +44,7 @@ Single server (N=1), headless, no suspension, no streaming. All multi-server dat
 - [ ] **Dispatch\<H\>** — per-request typed dispatch entries for request/reply; `send_request<H, R>` with typed callbacks, `CancelHandle`
 - [ ] **AppPayload** — `Clone + Send + 'static` marker trait, compile-time exclusion of obligation handles
 - [ ] **Filter chain** — `MessageFilter` on Clone-safe `Message` only; `FilterAction::Pass/Transform/Consume`
-- [ ] **Service registration** — `open_clipboard()` etc. resolves capability → Connection → DeclareInterest → typed calloop source
+- [ ] **Service registration** — `open_service::<P>()` resolves capability via service map → DeclareInterest → typed calloop source → ServiceHandle<P>
 - [ ] **Looper** — calloop-backed, per-protocol typed channels, unified batch, coalescing
 
 #### Server (pane-server)

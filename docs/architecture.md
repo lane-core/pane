@@ -320,9 +320,7 @@ does not discover variants — it generates code that fails to
 compile if the handler is incomplete. Variant-to-method mapping
 uses `#[handles(VariantName)]` attributes or snake_case convention.
 
-Note: `#[derive(ProtocolHandler)]` appears in some examples as
-shorthand. The actual mechanism is the attribute macro
-`#[pane::protocol_handler(P)]` on the impl block.
+
 
 ### Framework protocols
 
@@ -385,9 +383,9 @@ directly because there is no DeclareInterest for messaging:
 /// The headless-complete interface.
 ///
 /// Named methods are the developer-facing API. The looper
-/// dispatches lifecycle events through Handles<Lifecycle>;
-/// messaging methods are on Handler directly (universal,
-/// no DeclareInterest).
+/// dispatches lifecycle and messaging events directly to
+/// these methods. Lifecycle and messaging are universal —
+/// every pane speaks them, no DeclareInterest required.
 pub trait Handler: Send + 'static {
     fn ready(&mut self, proxy: &Messenger) -> Result<Flow> { Ok(Flow::Continue) }
     fn close_requested(&mut self, proxy: &Messenger) -> Result<Flow> { Ok(Flow::Stop) }
@@ -456,7 +454,7 @@ Both are opt-in capabilities on top of Handler.
 ### Service protocols
 
 Clipboard, routing, observer, DnD — each defines a Protocol
-and the developer implements Handles\<P\> via the derive macro.
+and the developer implements Handles\<P\> via the attribute macro.
 The protocol's Message enum defines the variants; the macro
 generates the dispatch; the developer provides named handlers.
 
@@ -482,7 +480,7 @@ impl Protocol for Routing {
 ```
 
 DnD requires display: `open_service::<DragDrop>()` requires
-`H: Handles<Display> + Handles<DragDrop>`.
+`H: DisplayHandler + Handles<DragDrop>`.
 
 ### Pointer policy (mouse coalescing opt-out)
 
@@ -511,8 +509,9 @@ carries only events the pane will use.
 
 ### Application-defined protocols
 
-Applications define their own Protocol for custom messages.
-`Message<T>` with `What(T)` is the application protocol:
+Applications define their own Protocol with a custom Message enum.
+The same `Protocol + Handles<P>` mechanism handles both framework
+and application protocols:
 
 ```rust
 struct EditorProtocol;
@@ -537,9 +536,9 @@ impl Editor {
 }
 ```
 
-Application messages are `What(T)` in `Message<T>` — local to the
-looper, never cross the wire, typed at compile time with exhaustive
-dispatch.
+Application protocol messages are local to the looper, never cross
+the wire, typed at compile time with exhaustive dispatch via the
+attribute macro.
 
 ### Geometry
 
@@ -683,9 +682,10 @@ Two categories visible to the handler:
    ClipboardWriteLock): non-Clone due to session obligation.
    Dropping triggers failure compensation via Drop impl.
 
-`AppMessage` is the type-erased escape hatch for worker-to-handler
-communication. Obligation handles (ReplyPort, ClipboardWriteLock)
-are excluded at compile time via the `AppPayload` marker trait:
+`post_app_message` is the type-erased escape hatch for worker-to-
+handler fire-and-forget notifications. Obligation handles
+(ReplyPort, ClipboardWriteLock) are excluded at compile time via
+the `AppPayload` marker trait:
 
 ```rust
 pub trait AppPayload: Clone + Send + 'static {}
@@ -696,7 +696,7 @@ pub fn post_app_message<T: AppPayload>(&self, msg: T) -> Result<()>;
 `AppPayload` requires `Clone + Send + 'static`. All obligation
 types (ReplyPort, ClipboardWriteLock, CompletionReplyPort) are
 intentionally `!Clone` — they cannot implement `AppPayload` and
-cannot be smuggled through AppMessage, even via wrapper structs
+cannot be smuggled through `post_app_message`, even via wrapper structs
 (a `struct Smuggle(ReplyPort)` cannot derive Clone). Orphan rules
 provide a second layer: external crates cannot impl `AppPayload`
 for obligation types. User payloads (strings, structs, enums)
@@ -705,7 +705,7 @@ derive Clone trivially. Non-Clone payloads wrap in `Arc`.
 A `debug_assert` in the looper dispatch provides defense-in-depth.
 
 **When to use `post_app_message` vs application-defined protocols:**
-Application protocols (via `Handles<P>` + derive macro) are for
+Application protocols (via `Handles<P>` + attribute macro) are for
 structured, exhaustively-checked dispatch from worker threads. Use
 them when the message vocabulary is known at compile time.
 `post_app_message` (via `AppPayload`) is for simple fire-and-forget
@@ -982,11 +982,36 @@ in linear logic" (LICS 2021).
 
 ---
 
-## Connection Model
+## App and Connections
+
+### App: the developer entry point
+
+App is the process-level entry point — the BApplication pattern.
+It connects to servers, manages service routing, creates panes,
+and owns the calloop event sources. The developer interacts with
+App; the connection infrastructure is internal.
+
+```rust
+impl App {
+    /// Connect to the primary server (compositor or headless).
+    /// The service map determines which servers to connect to.
+    ///
+    /// BeOS: BApplication(signature). One per process.
+    pub fn connect(signature: &str) -> Result<Self>;
+
+    /// Create a pane on this App's primary server.
+    pub fn create_pane(&self, tag: Tag) -> Result<CreateFuture>;
+}
+```
+
+The developer writes `App::connect("com.example.hello")` and gets
+back an App. No `Connection` or `source` parameter — the App
+manages server connections, calloop sources, and service routing
+internally through its `ServiceRouter`.
 
 ### Multi-server by design
 
-A pane connects to multiple servers. Each server provides different
+App connects to multiple servers. Each server provides different
 capabilities. No server is a mandatory intermediary — "host as
 contingent server."
 
@@ -995,30 +1020,15 @@ A typical topology:
 - Clipboard service on machine C (Clipboard)
 - Registry on machine D (Roster, AppRegistry)
 
-Each is an independent Connection with its own calloop source.
-
-### App as service router
-
-App holds multiple Connections and routes operations by capability.
-The developer sees object APIs (Clipboard, Messenger) that hide
-which server backs them. The complexity lives in App, not in
-Pane/Looper/Handler.
-
-```rust
-impl App {
-    /// Connect to the primary server (compositor or headless).
-    pub fn connect(signature: &str) -> Result<Self>;
-
-    /// Connect to an additional service server.
-    /// The server's capabilities are discovered during handshake.
-    pub fn connect_service(&self, addr: impl ToSocketAddrs) -> Result<()>;
-}
-```
+The App resolves servers from the service map and connects lazily
+when a service is first opened. Each connection is an internal
+calloop source. The developer sees only `App`, `Pane`, `Messenger`,
+and `ServiceHandle<P>`.
 
 ### Service discovery
 
-The App receives a **service map** from the environment — not from
-any single server. This is the Plan 9 namespace(1) approach:
+App receives a **service map** from the environment — not from any
+single server. This is the Plan 9 namespace(1) approach:
 declarative configuration, lazy connection.
 
 ```
@@ -1032,23 +1042,30 @@ tls = true
 ```
 
 For headless instances without a compositor, the service map omits
-the compositor entry. The App works — it just can't create visual
-panes.
+the compositor entry. The App works — it creates panes, they
+appear in the namespace, they handle protocol messages. They just
+have no display view.
 
-### Per-Connection handshake
+### Per-connection handshake
 
-Every Connection starts with the same Phase 1 (uniform, like 9P's
-Tversion):
+Every server connection starts with the same handshake (uniform,
+like 9P's Tversion):
 
 ```
 Client → Server: Hello { version, max_message_size: u32, interests: Vec<ServiceInterest> }
-Server → Client: Welcome { version, instance_id, max_message_size: u32, bindings: Vec<ServiceBinding> }
+Server → Client: Welcome { version, instance_id: String, max_message_size: u32, bindings: Vec<ServiceBinding> }
 ```
+
+`instance_id` is a server-assigned string that uniquely identifies
+this server instance. It lets clients detect server restarts (new
+instance_id = old session tokens are dead) and is used in federation
+to distinguish instances.
 
 Hello declares requested services. Welcome returns bindings (name
 → session-local wire ID + negotiated version). PeerAuth is derived
-from the transport (SO_PEERCRED for unix, TLS certificate for
-remote) — not carried in Hello.
+from the transport (OS-provided peer credentials for unix, TLS
+certificate for remote) — identity is transport-level, not
+carried in Hello.
 
 ```rust
 pub struct ServiceInterest {
@@ -1067,30 +1084,25 @@ The compositor's Welcome says `bindings: [{com.pane.display, 0, 1}]`.
 The clipboard server says `bindings: [{com.pane.clipboard, 1, 1}]`.
 A combined local server might bind both on one connection.
 
-### ConnectionSource
+### Internal: connection sources
 
-```rust
-/// calloop event source for a single Connection.
-/// Handles both read (fd-readiness) and write (buffered, flushed
-/// on write-readiness). High-water mark backpressure on writes.
-pub struct ConnectionSource { ... }
-```
-
-Each Connection produces a ConnectionSource. App's dispatcher
-routes incoming events from all Connections to the right pane's
-looper channel. The looper sees `LooperMessage` variants regardless
-of which server they came from.
+Each server connection is internally a calloop event source
+handling both read (fd-readiness) and write (buffered, flushed on
+write-readiness) with high-water mark backpressure. App routes
+incoming events from all connections to the right pane's looper.
+The looper sees events regardless of which server they came from.
+This is infrastructure — the developer never touches it.
 
 ### Remote connections require TLS
 
-`Connection::remote` requires TLS. `PeerAuth` is derived from the
-transport: `PeerAuth::Kernel { uid, pid }` for unix sockets (via
-SO_PEERCRED), `PeerAuth::Certificate { subject, issuer }` for TLS.
-The Hello message carries no identity — authentication is transport-
-level. `pane_owned_by()` checks `PeerAuth`, not self-reported
-strings. Plaintext TCP is not supported. No `remote_insecure`
-escape hatch — ship `pane dev-certs` tooling for development
-(see resolved question 25).
+Connections to remote servers require TLS. `PeerAuth` is derived
+from the transport: `PeerAuth::Kernel { uid, pid }` for unix
+sockets (via OS-provided peer credentials), `PeerAuth::Certificate
+{ subject, issuer }` for TLS. The Hello message carries no
+identity — authentication is transport-level. `pane_owned_by()`
+checks `PeerAuth`. Plaintext TCP is not supported. Development
+uses `pane dev-certs` tooling for self-signed certificates (see
+resolved question 25).
 
 ### Maximum message size
 
@@ -1108,10 +1120,10 @@ All payloads use **postcard** encoding (the same format used by
 pane-session for the handshake). This is the canonical wire format
 for all active-phase messages.
 
-### Cross-Connection ordering
+### Cross-connection ordering
 
-Events within a single Connection are FIFO (TCP guarantees this).
-Events across Connections are **not causally ordered**. The handler
+Events within a single server connection are FIFO (TCP guarantees
+this). Events across connections are **not causally ordered**. The handler
 imposes causal order through its control flow when needed (e.g.,
 request clipboard contents *after* receiving paste key event).
 
@@ -1124,7 +1136,7 @@ before relation between the sending servers. The session-type
 formalism is silent on cross-session ordering — it's a property
 of the physical system, not the protocol.
 
-For cross-Connection patterns (paste: receive key event from
+For cross-connection patterns (paste: receive key event from
 compositor, then fetch clipboard from clipboard service), the
 handler uses `send_request` with typed callbacks:
 
@@ -1155,19 +1167,19 @@ fetch → insert) is expressed in the callback chain, not in handler
 state fields.
 
 The batch provides a *processing* order, not a *causal* order.
-Handlers that need cross-Connection causality use `send_request`
+Handlers that need cross-connection causality use `send_request`
 callbacks, not event observation.
 
 ### Failure isolation
 
-A Connection going down affects only the capabilities it provides.
-Other Connections are unaffected. The pane continues running.
+A server connection going down affects only the capabilities it
+provides. Other connections are unaffected. The pane continues.
 
-- Compositor Connection lost → pane can't display (likely exits)
-- Clipboard Connection lost → paste/copy operations return `Err`
-- Registry Connection lost → app discovery fails, pane unaffected
+- Compositor connection lost → pane can't display (likely exits)
+- Clipboard connection lost → paste/copy operations return `Err`
+- Registry connection lost → app discovery fails, pane unaffected
 
-This is Plan 9's `Ehangup` applied per-Connection. Failure surfaces
+This is Plan 9's `Ehangup` applied per-connection. Failure surfaces
 at the use site — when the handler tries to use the lost capability.
 Service-specific `ServiceLost` variants in each protocol's Message enum
 provide async notification for handlers holding stale state.
@@ -1367,16 +1379,16 @@ Service dispatch uses fn pointers captured at registration time
 (the Dispatch pattern). When `open_service::<Clipboard>()` is called on a pane
 whose handler implements `Handles<Clipboard>`, the registration
 captures the monomorphized `Handles<Clipboard>::receive` as a fn
-pointer. The derive macro's generated match delegates to the
+pointer. The attribute macro's generated match delegates to the
 developer's named methods. These are called during batch
 processing, sharing `&mut H` with the main dispatch — sequentially,
 never concurrently (I7).
 
-The closure form (`pane.run(source, |proxy, msg| ...)`) receives
-`Message` (Clone-safe events) only. It cannot handle obligation-
-carrying protocols (clipboard locks, completion requests, incoming
-requests with ReplyPort). These require the struct + trait form
-(`pane.run_with(source, handler)`).
+The closure form (`pane.run(|proxy, msg| ...)`) receives `Message`
+(Clone-safe events) only. It cannot handle obligation-carrying
+protocols (clipboard locks, completion requests, incoming requests
+with ReplyPort). These require the struct + trait form
+(`pane.run_with(handler)`).
 
 ---
 
@@ -1389,7 +1401,7 @@ Every obligation-carrying type follows the pattern:
 - `#[must_use]` — compiler warns on unused
 - Move-only — no Clone
 - Single success method consumes — `.commit()`, `.reply()`, `.wait()`
-- Drop sends failure terminal — revert, ReplyFailed, RequestClose
+- Drop sends failure terminal — Revert, ReplyFailed, ProtocolAbort, RevokeInterest
 
 Proven on: ReplyPort, CompletionReplyPort, ClipboardWriteLock,
 CreateFuture, TimerToken, ServiceHandle<Clipboard> (Drop sends
@@ -1578,7 +1590,7 @@ the opt-in mechanism.
 ### Minimal headless agent
 
 ```rust
-use pane_app::{Connection, Tag, Handler, Messenger, Flow, Result};
+use pane_app::{App, Tag, Handler, Messenger, Flow, Result};
 
 struct StatusAgent;
 
@@ -1597,11 +1609,9 @@ impl Handler for StatusAgent {
 }
 
 fn main() -> pane_app::Result<()> {
-    let (conn, source) = Connection::remote(
-        "com.ops.status", "headless.internal:9090",
-    )?;
-    let pane = conn.create_pane(Tag::new("Server Status"))?.wait()?;
-    pane.run_with(source, StatusAgent)
+    let app = App::connect("com.ops.status")?;
+    let pane = app.create_pane(Tag::new("Server Status"))?.wait()?;
+    pane.run_with(StatusAgent)
 }
 ```
 
@@ -1657,14 +1667,14 @@ impl Editor {
 }
 
 fn main() -> pane_app::Result<()> {
-    let (conn, source) = Connection::local("com.pane.editor")?;
-    let mut pane = conn.create_pane(
+    let app = App::connect("com.pane.editor")?;
+    let mut pane = app.create_pane(
         Tag::new("Editor")
             .command(cmd("copy", "Copy").shortcut("Ctrl+C")),
     )?.wait()?;
 
     let clipboard = pane.open_service::<Clipboard>()?;
-    pane.run_with_display(source, Editor {
+    pane.run_with_display(Editor {
         buffer: String::new(),
         clipboard,
     })
@@ -1675,9 +1685,9 @@ fn main() -> pane_app::Result<()> {
 
 ```rust
 fn main() -> pane_app::Result<()> {
-    let (conn, source) = Connection::local("com.example.hello")?;
-    let pane = conn.create_pane(Tag::new("Hello"))?.wait()?;
-    pane.run(source, |_proxy, msg| match msg {
+    let app = App::connect("com.example.hello")?;
+    let pane = app.create_pane(Tag::new("Hello"))?.wait()?;
+    pane.run(|_proxy, msg| match msg {
         Message::CloseRequested => Ok(Flow::Stop),
         _ => Ok(Flow::Continue),
     })
@@ -1729,7 +1739,7 @@ variants.
    through `Handles<P>`. Scoped to per-protocol dispatch — no
    Handler growth per service.
 
-7. **TLS for remote**: `Connection::remote` requires TLS.
+7. **TLS for remote**: Remote connections require TLS.
    `PeerAuth::Certificate` derived from TLS certificate. Plaintext
    TCP not supported. No `remote_insecure` escape hatch.
 
@@ -1840,7 +1850,7 @@ Phase 2 breaks, Phase 1 was wrong.
 | Component | Shortcut to avoid | Correct Phase 1 implementation |
 |---|---|---|
 | Messenger | Bare `mpsc::Sender` | `ServiceRouter` (HashMap, 1 entry) |
-| App | Bare `Connection` field | `HashMap<ServiceName, Connection>` (1 entry) |
+| App | Bare `Connection` field | `HashMap<ServiceId, Connection>` (1 entry) |
 | Dispatch | `HashMap<u64, Entry>` | `HashMap<(ConnectionId, u64), Entry>` |
 | Wire framing | Flat `[length][payload]` | `[length][service][payload]` (service=0); service IDs negotiated per-connection |
 | Message enum | Flat with panic-Clone | Base-protocol only + `#[derive(Clone)]`; service events via `Handles<P>` |
@@ -1868,7 +1878,7 @@ exist from day one so Phase 2 is additive.
 **Phase 1 — Core.** Single server (N=1), headless, no suspension,
 no streaming. All multi-server data structures present with one
 entry (see Phase 1 Structural Invariants). Validate: Protocol +
-Handles<P> + derive macro, Handler/DisplayHandler split,
+Handles<P> + attribute macro, Handler/DisplayHandler split,
 Message/obligation split, Flow, Dispatch<H> for request/reply,
 calloop ConnectionSource (read+write), filter chain, Messenger +
 ServiceRouter, PeerAuth::Kernel, DeclareInterest, wire framing
