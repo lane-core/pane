@@ -15,7 +15,7 @@
 - Three-phase protocol: session-typed handshake → per-service typed messages → session-typed teardown
 - Message is base-protocol-only (lifecycle + display). Clone-safe. Service events dispatch through Handles<P>.
 - Messenger wraps scoped Handle + ServiceRouter. Cloneable Send handle.
-- Handler (lifecycle) + DisplayHandler (display) + Handles<P> (services)
+- Handler (lifecycle) + Handles<P> (Display, Clipboard, Routing, and all other protocols)
 - Protocol trait links ServiceId + Message type. Protocol::Message requires Serialize + DeserializeOwned.
 - FilterChain applies in registration order, any filter can consume or transform
 - ExitReason distinguishes HandlerExit / CompositorClose / Disconnected

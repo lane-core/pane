@@ -178,7 +178,7 @@ What exists today:
     pane-hello       struck — reimplementing per architecture spec
 
 What's next: Phase 1 (Core) — Protocol trait, ServiceId,
-Handler/DisplayHandler/Handles<P> split, Message (base-protocol-
+Handler + Handles<P> (Display, Clipboard, etc.), Message (base-protocol-
 only), Flow, Dispatch<H>, ConnectionSource, filter chain,
 Messenger + ServiceRouter. See `PLAN.md`.
 

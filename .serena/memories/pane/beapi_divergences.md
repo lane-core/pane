@@ -13,7 +13,7 @@ Default policy: use Be name (snake_case). Deviations are exceptions.
 | `BMessage` | `Message` | Faithful. Clone-safe value events only; obligations extracted to internal types. |
 | `BMessenger` | `Messenger` | Faithful. Wraps scoped Handle + ServiceRouter (routes by capability, not server). |
 | `BHandler` | `Handler` | Faithful. Lifecycle + messaging only (~11 methods). |
-| `BWindow` (display methods) | `DisplayHandler` | Separate trait — display is an opt-in capability, not the base case. |
+| `BWindow` (display methods) | `Handles<Display>` | Same `Protocol + Handles<P>` mechanism as all services — display is an opt-in capability, not a special trait. |
 | `BMenuBar`/`BMenuItem` | `Tag`/`CommandBuilder` | Architectural: command surface, not menu bar. |
 | `BMessageRunner` | `TimerToken` (receipt from `send_periodic_fn`) | Rule 2: method on host, not standalone type. Cancel-on-drop matches BMessageRunner's cancel-on-destruct. |
 | `property_info` | `PropertyInfo` | Faithful adaptation. Carries operations, specifier forms, value type. |
@@ -36,10 +36,10 @@ Default policy: use Be name (snake_case). Deviations are exceptions.
 |----|------|-----------|
 | `QuitRequested()` | `close_requested()` | Unified vocabulary with Message::CloseRequested. |
 | `Pulse()` | `pulse()` | Faithful |
-| `FrameResized()` | `resized()` | On DisplayHandler. Wayland has no position; deferred. |
-| `WindowActivated(bool)` | `activated()`/`deactivated()` | On DisplayHandler. Split — better Rust API. |
-| `KeyDown()`/`KeyUp()` | `key(event)` | On DisplayHandler. Collapsed — Rust tagged unions. |
-| `MouseDown()`/`MouseUp()`/`MouseMoved()` | `mouse(event)` | On DisplayHandler. Collapsed — same reason. |
+| `FrameResized()` | `resized()` | On Handles<Display>. Wayland has no position; deferred. |
+| `WindowActivated(bool)` | `activated()`/`deactivated()` | On Handles<Display>. Split — better Rust API. |
+| `KeyDown()`/`KeyUp()` | `key(event)` | On Handles<Display>. Collapsed — Rust tagged unions. |
+| `MouseDown()`/`MouseUp()`/`MouseMoved()` | `mouse(event)` | On Handles<Display>. Collapsed — same reason. |
 | (none — implicit via `IsSourceWaiting`) | `request_received()` | On Handler. Explicit request-reply hook with `ReplyPort`. |
 | `AddCommonFilter()` | `add_filter()` | One filter level only. |
 | `AddShortcut()` | `add_shortcut()` | Faithful |
@@ -81,7 +81,7 @@ Builder methods use bare names per Rust convention, not `set_`/`add_` prefixes:
 | `be_app` global | `App` is a held value | No globals. |
 | No crash monitoring | `Messenger::monitor()` + `Message::PaneExited` | Erlang-style. |
 | C++ overloading for SendMessage | Distinct method names (`send_message`, `send_and_wait`, `send_request`) | Tier 3: Rust doesn't overload. |
-| Single handler with all methods | Handler (lifecycle) + DisplayHandler (display) + `Handles<P>` (services) | Display is a capability, not the default. Services are per-protocol. |
+| Single handler with all methods | Handler (lifecycle) + `Handles<P>` (Display, Clipboard, Routing, all protocols) | Display is a capability, not the default. All protocols use the same Handles<P> mechanism. |
 | `application/x-vnd.*` strings | `ServiceId` (UUID + reverse-DNS) | Deterministic UUID survives renames; reverse-DNS prevents collisions. |
 | Monolithic message enum | Clone-safe `Message` + internal obligation types | EAct KP2: no channel endpoints in message values. |
 | `reply_received` / `reply_failed` on Handler | Dispatch entries with typed callbacks | No ghost state. No `Box<dyn Any>` downcast at handler surface. |

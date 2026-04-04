@@ -12,7 +12,7 @@ Four gaps identified by analyzing Fowler et al. EventActors against pane's archi
 
 **What EAct reveals:** Actors must handle multiple heterogeneous sessions via the event loop.
 
-**Resolution (architecture spec):** Each protocol relationship is a separate typed calloop source. The looper selects across all sources (ConnectionSource per Connection, plus per-service channels) and dispatches to Handler (lifecycle), DisplayHandler (display), or Handles<P> (services). Base Message is lifecycle+display only; service events never enter it.
+**Resolution (architecture spec):** Each protocol relationship is a separate typed calloop source. The looper selects across all sources (ConnectionSource per Connection, plus per-service channels) and dispatches to Handler (lifecycle) or Handles<P> (Display, Clipboard, and all other protocols). Base Message is lifecycle only; display and service events dispatch through Handles<P>.
 
 ## Gap 3: Per-Conversation Failure → Dispatch<H>
 

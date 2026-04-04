@@ -87,7 +87,7 @@ new identifier.
 | `BMessageRunner` | `TimerToken` | 2 | Configure-and-attach → method on host (translation rule 2) |
 | `filter_result` | `FilterAction` | 2 | More descriptive enum name |
 | `property_info` | `PropertyInfo` | 1 | Faithful adaptation. Carries operations, specifier forms, value type. |
-| `BWindow` (display methods) | `DisplayHandler` | 2 | Separate trait — display is an opt-in capability, not the base case |
+| `BWindow` (display methods) | `Handles<Display>` | 2 | Same `Protocol + Handles<P>` mechanism as all services — display is an opt-in capability, not a special trait |
 | (none) | `Protocol` | — | Novel: typed service relationship (SERVICE_ID + Message). |
 | (none) | `Handles<P>` | — | Novel: per-protocol dispatch trait. |
 | (none) | `Flow` | — | Novel: `Continue`/`Stop`. Replaces `bool` (true=continue was ambiguous). |
@@ -173,7 +173,7 @@ fn pulse(&mut self, proxy: &Messenger) -> Result<Flow>;
 fn pane_exited(&mut self, proxy: &Messenger, pane: Id, reason: ExitReason) -> Result<Flow>;
 ```
 
-DisplayHandler (display — panes with a visual surface):
+Handles<Display> (display — panes with a visual surface, via `#[pane::protocol_handler(Display)]`):
 ```rust
 fn display_ready(&mut self, proxy: &Messenger, geom: Geometry) -> Result<Flow>;
 fn resized(&mut self, proxy: &Messenger, geom: Geometry) -> Result<Flow>;
@@ -232,20 +232,20 @@ one path.
 ### Message variant ↔ handler method correspondence
 
 Every `Message` variant has a corresponding handler method on either
-`Handler` (lifecycle/messaging) or `DisplayHandler` (display). The
+`Handler` (lifecycle/messaging) or `Handles<Display>` (display). The
 variant is CamelCase; the method is the snake_case equivalent:
 
-| Variant | Trait | Method |
-|---------|-------|--------|
+| Variant | Dispatch | Method |
+|---------|----------|--------|
 | `Message::Ready` | `Handler` | `ready()` |
 | `Message::CloseRequested` | `Handler` | `close_requested()` |
 | `Message::Disconnected` | `Handler` | `disconnected()` |
 | `Message::Pulse` | `Handler` | `pulse()` |
 | `Message::PaneExited { .. }` | `Handler` | `pane_exited()` |
-| `Message::DisplayReady(geom)` | `DisplayHandler` | `display_ready()` |
-| `Message::Resize(geom)` | `DisplayHandler` | `resized()` |
-| `Message::Activated` | `DisplayHandler` | `activated()` |
-| `Message::Key(event)` | `DisplayHandler` | `key()` |
+| `Message::DisplayReady(geom)` | `Handles<Display>` | `display_ready()` |
+| `Message::Resize(geom)` | `Handles<Display>` | `resized()` |
+| `Message::Activated` | `Handles<Display>` | `activated()` |
+| `Message::Key(event)` | `Handles<Display>` | `key()` |
 
 This correspondence is mechanical. If you add a `Message` variant,
 the handler method name follows automatically.

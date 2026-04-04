@@ -51,7 +51,7 @@ Standard unix commands, standard output, standard composability.
 An agent's running processes are headless panes — `Handler`
 implementations connected to a pane server, participating in
 the protocol, visible in the namespace at `/pane/<n>/`. An
-agent pane has no `DisplayHandler` (no visual surface), but it
+agent pane has no `Handles<Display>` (no visual surface), but it
 has full protocol participation: `Handles<P>` for service
 protocols, `request_received` for ad-hoc inter-pane requests,
 `pane_exited` for monitoring, `send_request` for typed
@@ -69,7 +69,7 @@ participation — two interfaces to the same process, not an
 impedance mismatch.
 
 The same binary, the same protocol, the same Handler code that
-runs headless can opt into display by adding `DisplayHandler`.
+runs headless can opt into display by implementing `Handles<Display>`.
 An agent that normally runs headless can present a visual
 interface when a user opens a session with it.
 
@@ -699,7 +699,7 @@ demonstrating the system. The guide uses pane *using pane*.
 - **Headless pane**: the guide runs without a display. It
   connects to the pane server, participates in the protocol,
   appears in the namespace.
-- **Scripting via pane-fs (Phase 3 — RoutingHandler)**: the
+- **Scripting via pane-fs (Phase 3 — Handles<Routing>)**: the
   guide reads and writes other panes' properties to demonstrate
   features. `echo "dark" > /pane/2/attrs/theme` shows theming.
   `cat /pane/1/attrs/cursor` points out where the user is.
@@ -853,7 +853,7 @@ producing concrete store paths for Landlock execute permission.
 | Agent communication (mail, notifications) | Phase 1 (filesystem + pane-notify) |
 | Agent memory (pane-store queries) | Phase 2 (requires pane-store) |
 | Agent pane-fs presence | Phase 2 (requires pane-fs) |
-| Guide agent cross-pane scripting | Phase 3 (requires RoutingHandler) |
+| Guide agent cross-pane scripting | Phase 3 (requires Handles<Routing>) |
 | `.access` parser → Landlock | Phase 1 (standalone tool) |
 
 ### Consistency model

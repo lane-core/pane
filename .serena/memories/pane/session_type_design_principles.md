@@ -8,7 +8,7 @@ The looper supports multiple typed channels — one per protocol relationship (s
 
 **Motivation:** EAct KP3 (multiple sessions). An actor participating in only one session cannot implement server applications or multi-service clients.
 
-**How to apply:** Each service opened via DeclareInterest is a separate typed calloop source. Handler (lifecycle), DisplayHandler (display), and Handles<P> (services) each receive their own protocol's events. Service events never enter the base Message enum.
+**How to apply:** Each service opened via DeclareInterest is a separate typed calloop source. Handler (lifecycle) and Handles<P> (Display, Clipboard, and all other protocols) each receive their own protocol's events. Service events never enter the base Message enum.
 
 ## C2: Sub-Protocol Typestate, Not Active-Phase Session Types
 

@@ -202,12 +202,12 @@ Ready,
 
 /// The display surface is ready with initial geometry.
 ///
-/// Dispatches to [`DisplayHandler::display_ready`].
+/// Dispatches to [`Handles<Display>::receive`] → `display_ready`.
 DisplayReady(Geometry),
 
 /// The pane was resized by the compositor or layout engine.
 ///
-/// Dispatches to [`DisplayHandler::resized`].
+/// Dispatches to [`Handles<Display>::receive`] → `resized`.
 ///
 /// # BeOS
 ///

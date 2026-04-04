@@ -47,7 +47,8 @@ impl Handler for Shell {
     }
 }
 
-impl DisplayHandler for Shell {
+#[pane::protocol_handler(Display)]
+impl Shell {
     fn key(&mut self, _proxy: &Messenger, event: KeyEvent) -> Result<Flow> {
         // Non-blocking write to the PTY's input buffer.
         // If the child process isn't reading (buffer full),
@@ -74,7 +75,7 @@ impl Shell {
 ```
 
 **Architecture exercised:**
-- **Handler + DisplayHandler split**: the shell works headless
+- **Handler + Handles<Display> split**: the shell works headless
   (Handler only — PTY I/O, scripting) or with display (adds key
   input, visual rendering). A headless shell is a remote command
   executor.
@@ -110,7 +111,7 @@ desktop connects to it for display.
 
 **Architecture exercised:**
 - **Headless as base case**: the agent is Handler only. No
-  DisplayHandler, no compositor dependency. It connects to a
+  Handles<Display>, no compositor dependency. It connects to a
   headless pane server on the monitoring machine.
 - **Multi-server topology**: the dashboard on the user's machine
   connects to the remote monitoring server (TLS) and the local
@@ -311,7 +312,7 @@ through pane-fs.
   indexed pane state. The file manager navigates query directories
   the same way it navigates regular directories. The query engine
   is pane-fs; the file manager just reads directories.
-- **Routing** (Phase 3 — `RoutingHandler`): double-clicking a file
+- **Routing** (Phase 3 — `Handles<Routing>`): double-clicking a file
   routes the content to a handler. The routing table matches
   content type to application signature. Multi-match presents a
   chooser to the user. Routing quality scoring (0.0–1.0, from
@@ -379,16 +380,16 @@ fn message_received(&mut self, proxy: &Messenger, msg: ChatMessage) -> Result<Fl
 
 ---
 
-## 6. Build system dashboard (RoutingHandler — Phase 3)
+## 6. Build system dashboard (Handles<Routing> — Phase 3)
 
 A build tool that exposes build status through the namespace.
 No display — it's a headless daemon that other panes query.
 
 **Architecture exercised:**
-- **RoutingHandler (Phase 3)**: the build daemon implements
-  RoutingHandler to serve namespace queries. In Phase 1, the same
+- **Handles<Routing> (Phase 3)**: the build daemon implements
+  Handles<Routing> to serve namespace queries. In Phase 1, the same
   functionality is achieved through `request_received` with
-  ServiceId-based dispatch; RoutingHandler formalizes this as a
+  ServiceId-based dispatch; Handles<Routing> formalizes this as a
   trait in Phase 3.
 
 ```rust
@@ -399,8 +400,9 @@ impl Handler for BuildDaemon {
     }
 }
 
-// Phase 3 — RoutingHandler formalizes namespace query handling.
-impl RoutingHandler for BuildDaemon {
+// Phase 3 — Handles<Routing> formalizes namespace query handling.
+#[pane::protocol_handler(Routing)]
+impl BuildDaemon {
     fn route_query(&mut self, proxy: &Messenger, query: RouteQuery, reply: ReplyPort) -> Result<Flow> {
         // ReplyPort::reply takes impl Serialize + Send + 'static.
         // Strings serialize naturally via postcard.
@@ -454,7 +456,7 @@ demonstrating the system. The guide is a pane.
   Its sandbox policy (Landlock rules, network namespace
   restrictions) governs what it can access. PeerAuth::Kernel
   identifies it by uid, not by self-reported string.
-- **Scripting via pane-fs (Phase 3 — RoutingHandler enables
+- **Scripting via pane-fs (Phase 3 — Handles<Routing> enables
   cross-pane writes)**: the guide reads and writes other panes'
   properties to demonstrate features. It writes to
   `/pane/2/attrs/theme` to show theming. It reads
@@ -462,7 +464,7 @@ demonstrating the system. The guide is a pane.
   optic discipline (GetPut, PutGet) guarantees that reading after
   writing returns the written value — the guide's demonstrations
   are reliable, not racy. (In Phase 1, the guide can read
-  attributes but cross-pane writes require RoutingHandler.)
+  attributes but cross-pane writes require Handles<Routing>.)
 - **Clipboard for teaching**: the guide copies example commands to
   the clipboard with `Sensitivity::Normal, Locality::Local` — the
   user pastes them into a shell. The guide doesn't need display
@@ -517,7 +519,7 @@ Quick reference: which use case demonstrates which feature.
 
 | Feature | Demonstrated in |
 |---|---|
-| Handler + DisplayHandler split | Shell (#1), Monitor (#2) |
+| Handler + Handles<Display> split | Shell (#1), Monitor (#2) |
 | Handles\<P\> for services | Shell (#1), Editor (#3), Chat (#5) |
 | Application-defined Protocol | Editor (#3) |
 | `post_app_message` (fire-and-forget) | Editor (#3) |
@@ -528,7 +530,7 @@ Quick reference: which use case demonstrates which feature.
 | Multi-server topology | Monitor (#2), Chat (#5), Build (#6) |
 | Per-Connection failure isolation | Chat (#5) |
 | pane-fs namespace | Shell (#1), Monitor (#2), File manager (#4), Build (#6), Guide (#7) |
-| RoutingHandler (Phase 3) | Build (#6), File manager (#4) |
+| Handles<Routing> (Phase 3) | Build (#6), File manager (#4) |
 | Session suspension (Phase 3) | Monitor (#2), Chat (#5) |
 | Optics / scripting | Editor (#3), Guide (#7) |
 | Clipboard | Shell (#1), File manager (#4), Guide (#7) |

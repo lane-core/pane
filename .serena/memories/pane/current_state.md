@@ -15,7 +15,7 @@ The project is undergoing a fresh implementation based on the architecture spec 
 ## What was struck
 
 Source files emptied, Cargo.toml preserved:
-- **pane-app** — kit crate (Protocol, Handles<P>, Handler, DisplayHandler, PaneBuilder<H>, Message, Messenger, Dispatch<H>, ServiceHandle<P>, Flow, filter chain). Needs complete reimplementation per architecture spec.
+- **pane-app** — kit crate (Protocol, Handles<P>, Handler, PaneBuilder<H>, Message, Messenger, Dispatch<H>, ServiceHandle<P>, Flow, filter chain). Needs complete reimplementation per architecture spec.
 - **pane-proto** — wire types, handshake. Needs new Protocol trait, ServiceId, ClientToServer/ServerToClient, PeerAuth.
 - **pane-server** — protocol server. Needs Control protocol (wire service 0), DeclareInterest/RevokeInterest, per-connection service binding, ServiceTeardown, PaneExited broadcast, Cancel handling, max_message_size enforcement.
 - **pane-comp** — compositor. Needs new protocol integration.

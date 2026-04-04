@@ -95,7 +95,7 @@ Synthetic panes are not full pane citizens. They lack:
   a bridge.
 - **Handles\<P\>**: no typed service protocol participation. A
   synthetic pane cannot open the clipboard service, respond to
-  scripting queries, or implement RoutingHandler. These require
+  scripting queries, or implement Handles<Routing>. These require
   a bridge process.
 - **Optic-governed properties**: the compositor exposes `tag`,
   `signature`, `pid`, and `geometry`. These are not DynOptic-

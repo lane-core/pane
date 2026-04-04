@@ -323,16 +323,16 @@ impl Pane {
     /// Receives Message (Clone-safe events) only. Cannot handle
     /// obligation-carrying protocols (clipboard locks, completion
     /// requests, incoming requests with ReplyPort).
-    pub fn run(self, f: impl FnMut(&Messenger, Message) -> Result<Flow>) -> !;
+    pub fn run(self, f: impl FnMut(&Messenger, Message) -> Result<Flow>) -> Result;
 
     /// Struct handler form — handlers that use no protocol
     /// services. The looper is generic over H internally (for
-    /// dispatch to Handler/DisplayHandler methods) but H does
+    /// dispatch to Handler and Handles<Display> methods) but H does
     /// not propagate to the Pane type.
-    pub fn run_with<H: Handler>(self, handler: H) -> !;
+    pub fn run_with<H: Handler>(self, handler: H) -> Result;
 
     /// Struct handler with display — no services needed.
-    pub fn run_with_display<H: DisplayHandler>(self, handler: H) -> !;
+    pub fn run_with_display<H: Handler + Handles<Display>>(self, handler: H) -> Result;
 }
 
 /// Setup phase for a pane that will use protocol services.
@@ -378,11 +378,11 @@ impl<H: Handler> PaneBuilder<H> {
     where H: Handles<P>;
 
     /// Consumes the builder and enters the event loop (headless).
-    pub fn run_with(self, handler: H) -> !;
+    pub fn run_with(self, handler: H) -> Result;
 
     /// Consumes the builder and enters the event loop (display).
-    pub fn run_with_display(self, handler: H) -> !
-    where H: DisplayHandler;
+    pub fn run_with_display(self, handler: H) -> Result
+    where H: Handles<Display>;
 }
 
 impl<H: Handler> Drop for PaneBuilder<H> {
@@ -491,13 +491,14 @@ of having a connection. It is the control plane for the session.
 **Dispatch path for Control protocol variants:** the looper
 receives `ControlMessage` from wire service 0, pattern-matches
 on the variant, and routes: lifecycle variants dispatch to
-`Handler` methods, display variants dispatch to `DisplayHandler`
-methods, connection-management variants (`DeclareInterest`,
-`ServiceTeardown`) are handled internally by the framework.
-Display capability is declared in the handshake (Hello's
-interests list), not via DeclareInterest — the server allocates
-surface resources at connection time. The developer never sees
-`ControlMessage` directly.
+`Handler` methods, display variants dispatch to
+`Handles<Display>::receive` (via the same fn-pointer mechanism
+as other protocols), connection-management variants
+(`DeclareInterest`, `ServiceTeardown`) are handled internally
+by the framework. Display capability is declared in the
+handshake (Hello's interests list), not via DeclareInterest —
+the server allocates surface resources at connection time. The
+developer never sees `ControlMessage` directly.
 
 Services with their own negotiated wire discriminants (clipboard,
 routing) get their session-local u8 from the server during
@@ -543,44 +544,52 @@ pub trait Handler: Send + 'static {
     fn quit_requested(&self) -> bool { true }
 }
 
-/// Display protocol — panes with a visual surface.
-pub trait DisplayHandler: Handler {
-    fn display_ready(&mut self, proxy: &Messenger, geom: Geometry) -> Result<Flow> { Ok(Flow::Continue) }
-    fn resized(&mut self, proxy: &Messenger, geom: Geometry) -> Result<Flow> { Ok(Flow::Continue) }
-    fn activated(&mut self, proxy: &Messenger) -> Result<Flow> { Ok(Flow::Continue) }
-    fn deactivated(&mut self, proxy: &Messenger) -> Result<Flow> { Ok(Flow::Continue) }
-    fn key(&mut self, proxy: &Messenger, event: KeyEvent) -> Result<Flow> { Ok(Flow::Continue) }
-    fn mouse(&mut self, proxy: &Messenger, event: MouseEvent) -> Result<Flow> { Ok(Flow::Continue) }
-    fn command_activated(&mut self, proxy: &Messenger) -> Result<Flow> { Ok(Flow::Continue) }
-    fn command_dismissed(&mut self, proxy: &Messenger) -> Result<Flow> { Ok(Flow::Continue) }
-    fn command_executed(&mut self, proxy: &Messenger, cmd: &str, args: &str) -> Result<Flow> { Ok(Flow::Continue) }
-    fn completion_request(&mut self, proxy: &Messenger, input: &str, reply: CompletionReplyPort) -> Result<Flow> { Ok(Flow::Continue) }
-}
-```
+Display and Routing are protocols, dispatched through
+`Handles<P>` via the attribute macro — the same mechanism as
+Clipboard and all other services. No special handler traits.
 
 ```rust
+/// Display protocol — panes with a visual surface.
+/// Opt-in: the developer implements Handles<Display> via the
+/// attribute macro. run_with_display requires H: Handles<Display>.
+///
+/// Display capability is declared in the handshake (Hello's
+/// interests list), not via DeclareInterest.
+#[pane::protocol_handler(Display)]
+impl Editor {
+    fn display_ready(&mut self, proxy: &Messenger, geom: Geometry) -> Result<Flow> { ... }
+    fn resized(&mut self, proxy: &Messenger, geom: Geometry) -> Result<Flow> { ... }
+    fn activated(&mut self, proxy: &Messenger) -> Result<Flow> { ... }
+    fn deactivated(&mut self, proxy: &Messenger) -> Result<Flow> { ... }
+    fn key(&mut self, proxy: &Messenger, event: KeyEvent) -> Result<Flow> { ... }
+    fn mouse(&mut self, proxy: &Messenger, event: MouseEvent) -> Result<Flow> { ... }
+    fn command_activated(&mut self, proxy: &Messenger) -> Result<Flow> { ... }
+    fn command_dismissed(&mut self, proxy: &Messenger) -> Result<Flow> { ... }
+    fn command_executed(&mut self, proxy: &Messenger, cmd: &str, args: &str) -> Result<Flow> { ... }
+    fn completion_request(&mut self, proxy: &Messenger, input: &str, reply: CompletionReplyPort) -> Result<Flow> { ... }
+}
+
 /// Routing protocol — panes with a namespace projection.
-/// The headless equivalent of DisplayHandler: Display projects
-/// state visually, Routing projects state as structured data
-/// accessible through pane-fs queries and remote commands.
+/// The headless counterpart to Display: Display projects state
+/// visually, Routing projects state as structured data accessible
+/// through pane-fs queries and remote commands.
 ///
 /// Declared via DeclareInterest (not handshake — unlike Display,
 /// routing capability is opened mid-session when the handler is
 /// ready to serve queries).
 ///
-/// Phase 3 implementation. Trait defined here for completeness.
-pub trait RoutingHandler: Handler {
-    fn route_query(&mut self, proxy: &Messenger, query: RouteQuery, reply: ReplyPort) -> Result<Flow>;
-    fn route_command(&mut self, proxy: &Messenger, cmd: &str, args: &str) -> Result<Flow> { Ok(Flow::Continue) }
+/// Phase 3 implementation. Protocol defined here for completeness.
+#[pane::protocol_handler(Routing)]
+impl MyHandler {
+    fn route_query(&mut self, proxy: &Messenger, query: RouteQuery, reply: ReplyPort) -> Result<Flow> { ... }
+    fn route_command(&mut self, proxy: &Messenger, cmd: &str, args: &str) -> Result<Flow> { ... }
 }
 ```
 
-Handler, DisplayHandler, and RoutingHandler are special cases of
-Protocol + Handles\<P\> with pre-defined named methods. They exist
-for ergonomics — the lifecycle, display, and routing protocols
-benefit from named-method discoverability. Display is the visual
-projection of pane state; Routing is the namespace projection.
-Both are opt-in capabilities on top of Handler.
+Handler is the only trait. Display, Routing, Clipboard, and all
+other protocols use `Handles<P>` via the attribute macro. Display
+is the visual projection of pane state; Routing is the namespace
+projection. Both are opt-in capabilities on top of Handler.
 
 ### Service protocols
 
@@ -611,7 +620,7 @@ impl Protocol for Routing {
 ```
 
 DnD requires display: `builder.open_service::<DragDrop>()` requires
-`H: DisplayHandler + Handles<DragDrop>`, and the builder must be
+`H: Handles<Display> + Handles<DragDrop>`, and the builder must be
 consumed by `run_with_display`.
 
 ### Pointer policy (mouse coalescing opt-out)
@@ -722,6 +731,67 @@ pub enum Flow {
 }
 ```
 
+### PaneError and Result
+
+```rust
+/// Project-wide result type. Ok(()) = graceful exit (Flow::Stop).
+/// Err(PaneError) = something went wrong.
+pub type Result<T = ()> = std::result::Result<T, PaneError>;
+
+/// Why a pane stopped running. Private to the process — carries
+/// full error details for logging and diagnostics. Uses anyhow
+/// for ergonomic error wrapping (any std::error::Error converts
+/// via ?).
+pub enum PaneError {
+    /// Primary connection lost. The handler's disconnected() was
+    /// called and returned Flow::Stop, but the cause was
+    /// connection loss, not voluntary exit.
+    Disconnected,
+    /// Handler returned Err(e) from a method.
+    Handler(anyhow::Error),
+    /// Infrastructure failure: calloop, socket, handshake, framing.
+    Infra(anyhow::Error),
+}
+
+impl From<io::Error> for PaneError {
+    fn from(e: io::Error) -> Self { PaneError::Infra(e.into()) }
+}
+```
+
+`run_with` returns `pane_app::Result`:
+- `Ok(())` — Flow::Stop. The handler chose to exit. Exit code 0.
+- `Err(PaneError::Disconnected)` — primary connection lost. Exit code 1.
+- `Err(PaneError::Handler(e))` — handler error. Exit code 1.
+- `Err(PaneError::Infra(e))` — infrastructure failure. Exit code 2.
+
+Pre-run failures (connect, create_pane, open_service) also produce
+`PaneError` via `From` impls, so `?` works throughout `main()`.
+
+### ExitReason (broadcast)
+
+```rust
+/// Why a pane exited — carried in PaneExited notifications
+/// broadcast to other panes on the Connection. Stripped of error
+/// details: a pane's internal failure reason is not broadcast
+/// to peers.
+pub enum ExitReason {
+    /// Handler returned Flow::Stop voluntarily.
+    Graceful,
+    /// Primary connection lost.
+    Disconnected,
+    /// Handler returned an error.
+    Failed,
+    /// Infrastructure failure (transport, framing).
+    InfraError,
+}
+
+impl From<&PaneError> for ExitReason { ... }
+```
+
+The looper constructs `ExitReason` from the run outcome:
+`Ok(())` → `ExitReason::Graceful`, `Err(e)` → `ExitReason::from(&e)`.
+Error details go to the server log, not to other panes.
+
 ---
 
 ## Message Types
@@ -761,7 +831,7 @@ pub enum Message {
     PaneExited { pane: Id, reason: ExitReason },
     Pulse,
 
-    // Display (only arrives if DisplayHandler declared)
+    // Display (only arrives if Handles<Display> declared)
     DisplayReady(Geometry),
     Resize(Geometry),
     Activated,
@@ -1835,7 +1905,8 @@ impl Handler for Editor {
     }
 }
 
-impl DisplayHandler for Editor {
+#[pane::protocol_handler(Display)]
+impl Editor {
     fn key(&mut self, proxy: &Messenger, event: KeyEvent) -> Result<Flow> {
         self.buffer.push(event.char);
         proxy.set_content(self.buffer.as_bytes())?;
@@ -1969,10 +2040,12 @@ variants.
     state, no `reply_received` on Handler. `dispatch.fail_connection()` before
     `disconnected()`. Six invariants (S1-S6).
 
-14. **RoutingHandler: Handler**: The namespace projection counterpart
-    to DisplayHandler (visual projection). Declared via
+14. **Routing via Handles\<Routing\>**: The namespace projection
+    counterpart to Display (visual projection). Declared via
     DeclareInterest. Handles pane-fs queries and remote commands.
-    Phase 3 implementation; trait defined in the main spec.
+    Phase 3 implementation; protocol defined in the main spec.
+    Uses the same `Handles<P>` + attribute macro mechanism as all
+    other protocols — no special trait.
 
 15. **Geometry**: Logical pixels + scale_factor. `physical_size()`
     helper. Resolves HiDPI ambiguity.
@@ -2093,7 +2166,7 @@ exist from day one so Phase 2 is additive.
 no streaming. All multi-server data structures present with one
 entry (see Phase 1 Structural Invariants). Validate: Protocol +
 Handles<P> + attribute macro, Pane/PaneBuilder<H> two-phase
-lifecycle, Handler/DisplayHandler split, Message/obligation split,
+lifecycle, Handler + Handles<Display> (no special trait), Message/obligation split,
 Flow, Dispatch\<H\> for request/reply, calloop ConnectionSource
 (read+write), filter chain, Messenger + ServiceRouter,
 PeerAuth::Kernel, DeclareInterest, wire framing
@@ -2108,7 +2181,7 @@ entries, per-Connection failure isolation, cross-Connection
 ordering, multi-server Dispatch (connection_id, token) routing.
 
 **Phase 3 — Lifecycle.** Session suspension/resumption, streaming
-(Queue pattern), RoutingHandler. These interact — streams must
+(Queue pattern), Handles<Routing>. These interact — streams must
 close before suspend — so they're designed together.
 
 **Phase 4 — Performance.** Batch coalescing optimizations, write

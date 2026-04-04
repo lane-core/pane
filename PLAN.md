@@ -35,7 +35,7 @@ Single server (N=1), headless, no suspension, no streaming. All multi-server dat
 
 - [ ] **Message split** — Clone-safe `Message` enum (value events) + internal obligation types (ReplyPort, ClipboardWriteLock, CompletionReplyPort)
 - [ ] **Handler trait** — ~11 lifecycle + messaging methods, headless-complete
-- [ ] **DisplayHandler trait** — ~10 display methods, extends Handler
+- [ ] **Display protocol** — `Handles<Display>` via attribute macro, ~10 display methods
 - [ ] **Handles\<P\> trait** — `fn receive(&mut self, proxy: &Messenger, msg: P::Message) -> Result<Flow>`
 - [ ] **ProtocolHandler derive macro** — generates `Handles<P>::receive` match from named methods; rustc exhaustive match IS the guarantee
 - [ ] **Flow** — `Continue` / `Stop`, orthogonal to `Result`
@@ -77,11 +77,11 @@ Add Connections (N>1). TLS + PeerAuth::Certificate. Service map full precedence 
 
 ### Phase 3 — Lifecycle
 
-Session suspension/resumption, streaming (Queue pattern), RoutingHandler. These interact — streams must close before suspend — so they're designed together.
+Session suspension/resumption, streaming (Queue pattern), Handles<Routing>. These interact — streams must close before suspend — so they're designed together.
 
 - [ ] **Session suspension/resumption** — serializable token, re-declare interests on resume
 - [ ] **Streaming** — `StreamSend<T, S>` / `StreamRecv<T, S>`, backpressure via write buffer high-water mark
-- [ ] **RoutingHandler** — headless command surface via DeclareInterest
+- [ ] **Handles\<Routing\>** — headless command surface via DeclareInterest, attribute macro
 
 ### Phase 4 — Performance
 
@@ -97,7 +97,7 @@ Orthogonal to protocol phases — can proceed in parallel once Phase 1 server ex
 
 - [ ] **pane-comp** — smithay/winit backend providing the Display view
 - [ ] **Rendering** — compositor draws pane chrome (title bar from Tag), body area receives client content
-- [ ] **Input routing** — keyboard/mouse events → DisplayHandler methods
+- [ ] **Input routing** — keyboard/mouse events → Handles<Display> methods
 - [ ] **Multi-pane layout** — tiling, splits, focus tracking
 
 ### Applications
