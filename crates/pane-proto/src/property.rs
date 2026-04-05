@@ -121,9 +121,10 @@ mod tests {
             buffer: "hello".into(),
         };
 
-        // PutPut: two writes collapse to the last write
-        let state2 = cursor.set(cursor.set(state, 10), 20);
-        assert_eq!(cursor.view(state2), 20);
+        // PutPut: two writes collapse to the last write (full state)
+        let left = cursor.set(cursor.set(state.clone(), 10), 20);
+        let right = cursor.set(state, 20);
+        assert_eq!(left, right, "PutPut violated on full state");
     }
 
     #[test]

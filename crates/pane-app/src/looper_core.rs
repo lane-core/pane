@@ -43,6 +43,7 @@ pub struct LooperCore<H> {
     messenger: Messenger,
     primary_connection: ConnectionId,
     exit_tx: mpsc::Sender<ExitReason>,
+    exited: bool,
 }
 
 impl<H: pane_proto::Handler> LooperCore<H> {
@@ -57,6 +58,7 @@ impl<H: pane_proto::Handler> LooperCore<H> {
             messenger: Messenger::new(),
             primary_connection,
             exit_tx,
+            exited: false,
         }
     }
 
@@ -85,6 +87,10 @@ impl<H: pane_proto::Handler> LooperCore<H> {
         &mut self,
         callback: impl FnOnce(&mut H) -> Flow,
     ) -> DispatchOutcome {
+        if self.exited {
+            return DispatchOutcome::Exit(ExitReason::Failed);
+        }
+
         // catch_unwind requires FnOnce: UnwindSafe. The handler
         // is &mut H which is !UnwindSafe. AssertUnwindSafe is
         // sound because we never re-use the handler after a
@@ -149,6 +155,8 @@ impl<H: pane_proto::Handler> LooperCore<H> {
     ///    handles fire Drop compensation)
     /// 4. exit_tx.send(reason) — notifies the server
     fn run_destruction(&mut self, reason: ExitReason) {
+        self.exited = true;
+
         // Step 1: fail pending requests on the primary connection (S4)
         self.dispatch.fail_connection(
             self.primary_connection,
@@ -289,22 +297,48 @@ mod tests {
     #[test]
     fn handler_not_reused_after_panic() {
         // After a panic, dispatch() returns Exit(Failed).
-        // The caller must shut down — if they tried to dispatch
-        // again, the handler might be in an inconsistent state.
-        // This test verifies that the API makes misuse obvious
-        // (Exit outcome signals "stop calling dispatch").
+        // The exited flag prevents further dispatch into the
+        // handler, which may be in an inconsistent state.
         let (log, exit_tx, _exit_rx) = setup();
         let mut core = make_core(log.clone(), exit_tx);
 
         let outcome = core.dispatch(|_h| panic!("crash"));
         assert_eq!(outcome, DispatchOutcome::Exit(ExitReason::Failed));
 
-        // The API allows another dispatch (we can't consume self
-        // from &mut self), but the caller SHOULD stop. A second
-        // dispatch after panic would catch_unwind again — the
-        // handler is still there but possibly corrupted.
-        // This is a protocol obligation on the caller, enforced
-        // by the DispatchOutcome::Exit return.
+        // Second dispatch returns Exit immediately — the exited
+        // guard prevents touching the handler.
+        let outcome2 = core.dispatch(|_h| {
+            panic!("should never run");
+        });
+        assert_eq!(outcome2, DispatchOutcome::Exit(ExitReason::Failed));
+    }
+
+    #[test]
+    fn dispatch_after_exit_returns_exit_immediately() {
+        // After Exit(Failed) from a panic, a second dispatch
+        // must return Exit(Failed) without running the callback.
+        let (log, exit_tx, _exit_rx) = setup();
+        let mut core = make_core(log.clone(), exit_tx);
+
+        // Trigger panic → Exit(Failed)
+        let outcome = core.dispatch(|_h| panic!("crash"));
+        assert_eq!(outcome, DispatchOutcome::Exit(ExitReason::Failed));
+
+        // Clear the log so we can verify the callback doesn't run
+        log.lock().unwrap().clear();
+
+        // Second dispatch — callback must NOT execute
+        let ran = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let ran2 = ran.clone();
+        let outcome2 = core.dispatch(|_h| {
+            ran2.store(true, std::sync::atomic::Ordering::SeqCst);
+            Flow::Continue
+        });
+
+        assert_eq!(outcome2, DispatchOutcome::Exit(ExitReason::Failed),
+            "post-exit dispatch must return Exit immediately");
+        assert!(!ran.load(std::sync::atomic::Ordering::SeqCst),
+            "callback must not run after exit");
     }
 
     // ── Claim: destruction sequence ordering ───────────────
@@ -443,10 +477,9 @@ mod tests {
 
     #[test]
     fn multiple_flow_stop_does_not_double_destruct() {
-        // If dispatch returns Exit, calling dispatch again
-        // should still work (catch_unwind protects), but the
-        // destruction sequence runs again. This tests that
-        // double-destruction doesn't panic or corrupt state.
+        // After Exit, the exited flag prevents re-entering the
+        // handler. A second dispatch returns Exit(Failed)
+        // immediately — no double destruction, no handler access.
         let (log, exit_tx, _) = setup();
         let mut core = make_core(log.clone(), exit_tx);
 
@@ -454,10 +487,9 @@ mod tests {
         // dispatch table is now empty (clear() ran)
         assert!(core.dispatch_mut().is_empty());
 
-        // Second dispatch — destruction runs again on empty state
+        // Second dispatch — guarded by exited flag
         let outcome = core.dispatch(|_h| Flow::Stop);
-        assert_eq!(outcome, DispatchOutcome::Exit(ExitReason::Graceful));
-        // No panic, no double-free
+        assert_eq!(outcome, DispatchOutcome::Exit(ExitReason::Failed));
     }
 
     // ── Claim: fail_connection only affects keyed entries ───

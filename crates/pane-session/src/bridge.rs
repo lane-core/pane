@@ -131,7 +131,7 @@ mod tests {
     }
 
     #[test]
-    fn phase1_catches_bad_transport() {
+    fn phase1_accepts_valid_transport() {
         let (ct, _st) = MemoryTransport::pair();
         let result = verify_transport(ct);
         assert!(result.is_ok());

@@ -502,6 +502,69 @@ mod tests {
         }
     }
 
+    // ── Claim 7: Display/FromStr roundtrip for f64 ─────────────
+
+    #[test]
+    fn claim_7_display_fromstr_roundtrip_f64() {
+        // Values that survive Display → FromStr roundtrip:
+        // integers-as-f64 and powers of 2 have exact representations.
+        let exact_values: Vec<f64> = vec![
+            0.0, 1.0, -1.0, 2.0, 0.5, 0.25, 0.125,
+            1024.0, -0.0, f64::INFINITY, f64::NEG_INFINITY,
+        ];
+        for v in &exact_values {
+            let s = v.to_string();
+            let parsed: f64 = s.parse().unwrap();
+            assert_eq!(v.to_bits(), parsed.to_bits(),
+                "exact roundtrip failed for {}", v);
+        }
+
+        // NaN: Display prints "NaN", FromStr parses it back, but
+        // NaN != NaN so we check is_nan instead.
+        let nan_str = f64::NAN.to_string();
+        let parsed_nan: f64 = nan_str.parse().unwrap();
+        assert!(parsed_nan.is_nan(), "NaN did not roundtrip");
+
+        // Values that LOSE precision through Display → FromStr.
+        // This documents the PutGet violation risk on the ctl path:
+        // writing "0.1" through a f64 lens, then reading it back
+        // through Display, may not produce the original text.
+        let lossy_values: Vec<f64> = vec![
+            0.1,
+            0.2,
+            0.1 + 0.2,  // notoriously != 0.3
+            1.0_f64 / 3.0,
+            std::f64::consts::PI,
+            f64::MIN_POSITIVE,
+            f64::EPSILON,
+        ];
+        for v in &lossy_values {
+            let s = v.to_string();
+            let parsed: f64 = s.parse().unwrap();
+            // Rust's Display for f64 uses enough digits for a
+            // faithful roundtrip (Ryū algorithm), so bit-exact
+            // equality holds. The risk is text→f64→text when the
+            // original text used fewer digits than Display emits:
+            // "0.1" → 0.1_f64 → "0.1" works, but
+            // "0.10" → 0.1_f64 → "0.1" does not preserve text.
+            // This is a text-level PutGet issue, not a value-level one.
+            assert_eq!(v.to_bits(), parsed.to_bits(),
+                "value-level roundtrip unexpectedly failed for {}", v);
+
+            // Demonstrate the text-level risk: a user writes "0.10"
+            // and reads back "0.1". The VALUE is identical but the
+            // TEXT differs. This is the real ctl-path concern.
+        }
+
+        // Text-level demonstration: "0.10" → parse → Display → "0.1"
+        let input_text = "0.10";
+        let value: f64 = input_text.parse().unwrap();
+        let output_text = value.to_string();
+        assert_ne!(input_text, output_text,
+            "text-level roundtrip should differ for trailing-zero input");
+        assert_eq!(output_text, "0.1");
+    }
+
     // ── Claim 8: AttrSet::to_json_str bulk read ────────────────
 
     #[test]
@@ -616,7 +679,7 @@ mod tests {
     // ── Claim 11: close violates GetPut if forced into lens ─
 
     #[test]
-    fn claim_11_close_violates_getput() {
+    fn claim_11_close_inexpressible_as_monadic_lens() {
         // If we tried to model close as a lens on a "running" bool:
         let close_lens = MonadicLens::<EditorState, bool> {
             name: "running",
