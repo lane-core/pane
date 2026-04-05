@@ -22,3 +22,4 @@
 - [project_scripting_optics_design.md](project_scripting_optics_design.md) — Scripting optics design (2026-03-30): concrete optics + DynOptic, flat request-response session, ResolveSpecifier as trait-object chain
 - [reference_haiku_rs.md](reference_haiku_rs.md) — haiku-rs Rust bindings: design choices, API coverage, comparison with pane, interop feasibility
 - [project_handler_debate_assessment.md](project_handler_debate_assessment.md) — Handler debate final assessment (2026-03-31): typed ingress unified batch, defer trait split, calloop multi-source is the key advance
+- [project_eact_framework_assessment.md](project_eact_framework_assessment.md) — EAct framework assessment (2026-04-03): pane-app IS EAct, par reimplemented not imported, no MPST needed, BWindow dual-channel evidence

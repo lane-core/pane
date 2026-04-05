@@ -1,44 +1,40 @@
-//! Session-typed channels for the pane desktop environment.
+//! pane-session: IPC adaptation of par's CLL session types.
 //!
-//! Provides `Chan<S, T>` — a channel whose type tracks the protocol state.
-//! The session type `S` describes what messages can be sent and received,
-//! in what order, with what choices. The transport `T` handles serialization
-//! and delivery (unix sockets for production, in-memory for testing).
+//! Three layers:
+//!   par          — CLL binary channel correctness (complete, Strba)
+//!   pane-session — IPC bridge + type vocabulary (this crate)
+//!   pane-app     — EAct actor framework (Fowler et al.)
 //!
-//! Crash-safe: `recv()` returns `Err(SessionError::Disconnected)`, not a panic.
-//! This is the property that par cannot provide and the reason for the custom
-//! implementation.
-//!
-//! Theoretical basis: Caires-Pfenning/Wadler correspondence between linear
-//! logic and session types. Formal primitives verified in Lean/Agda.
-//!
-//! # BeOS
-//!
-//! No BeOS equivalent. BeOS used untyped kernel ports — any thread could
-//! send any `BMessage` to any port at any time. Session types replace
-//! that with compile-time protocol verification: the type system
-//! guarantees message ordering, branch coverage, and deadlock freedom.
-//!
-//! # Plan 9
-//!
-//! 9P provides protocol structure through convention and the `intro(5)`
-//! specification: clients and servers agree on message ordering (attach
-//! before walk, walk before open, open before read). Errors are caught
-//! at runtime when a server receives an unexpected message. Session
-//! types move this structure into the type system — 9P's `intro(5)`
-//! rules become compile-time constraints. The transport trait mirrors
-//! 9P's transport independence: the same protocol runs over unix
-//! sockets, TCP, or in-memory channels.
+//! This crate provides:
+//!   - par re-exports (Send, Recv, Enqueue, Dequeue, Server, etc.)
+//!   - Message trait (Clone + Serialize + DeserializeOwned + Send + 'static)
+//!   - Protocol trait + ServiceId
+//!   - Flow enum (Continue / Stop)
+//!   - Handles<P> trait (uniform dispatch, σ entries)
+//!   - Handler trait (lifecycle sugar, blanket Handles<Lifecycle>)
+//!   - Framework protocols (Lifecycle, Display, Clipboard, Routing)
+//!   - MessageFilter<M> (typed per-protocol filters)
+//!   - Property<S,A> (optic-backed state access via fp-library)
 
-pub mod types;
-pub mod dual;
-pub mod error;
-pub mod framing;
-pub mod transport;
-pub mod calloop;
-#[macro_use]
-pub mod macros;
+// Re-export par's CLL types — the session type vocabulary.
+pub use par::exchange::{Send, Recv};
+pub use par::queue::{Dequeue, Enqueue};
+pub use par::server::{Server, Proxy, Connection};
+pub use par::{Session, Dual};
 
-pub use types::{Send, Recv, Select, Branch, Offer, End, Chan};
-pub use dual::Dual;
-pub use error::SessionError;
+pub mod message;
+pub mod protocol;
+pub mod flow;
+pub mod handles;
+pub mod handler;
+pub mod protocols;
+pub mod filter;
+pub mod property;
+
+// Convenient re-exports for consumers
+pub use flow::Flow;
+pub use handles::Handles;
+pub use handler::Handler;
+pub use message::Message;
+pub use protocol::{Protocol, ServiceId};
+pub use filter::{MessageFilter, FilterAction};

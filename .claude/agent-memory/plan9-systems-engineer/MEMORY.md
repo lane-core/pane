@@ -18,3 +18,5 @@
 - [Project: Pane-is-directory architecture](project_pane_is_directory_architecture.md) — clean-slate: services as opened handles, DeclareInterest protocol, Handler shrinks to compositor
 - [Project: AI Kit review findings](project_ai_kit_review.md) — two rounds: identity, governance, communication, namespace, cpu, events, crash recovery (2026-04-03)
 - [Project: Pane generic parameter decision](project_pane_generic_decision.md) — PaneBuilder<H> approved (name evolved PaneSetup→PaneInit→PaneBuilder): run_with shortcuts, ServiceHandle binding semantics (2026-04-03)
+- [Project: EAct vs MPST decision](project_eact_vs_mpst_decision.md) — bottom-up (par CLL + EAct) over top-down (MPST): Plan 9 alignment, recursion gap, debugging risk (2026-04-03)
+- [Project: Three-channel error model](project_three_channel_error_model.md) — Handler returns bare Flow; errors split into protocol/control/crash channels (2026-04-03)

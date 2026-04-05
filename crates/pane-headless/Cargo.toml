@@ -1,8 +1,0 @@
-[package]
-name = "pane-headless"
-version = "0.1.0"
-edition = "2021"
-description = "Headless pane server — speaks the full pane protocol without rendering. Runs on any unix-like."
-license = "AGPL-3.0-only"
-
-[dependencies]

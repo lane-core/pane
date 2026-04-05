@@ -2,22 +2,11 @@
 name = "pane-session"
 version = "0.1.0"
 edition = "2021"
-description = "Session-typed channels for the pane desktop environment. Typestate Chan<S, Transport> with crash-safe error handling, unix socket transport, and calloop integration."
+description = "IPC adaptation of par's CLL session types for the pane protocol framework."
 license = "BSD-3-Clause"
 
-[features]
-default = []
-tls = ["rustls", "rustls-pemfile", "webpki-roots"]
-
 [dependencies]
+par = { version = "0.3.10", default-features = false }
+fp-library = { version = "0.15", features = ["serde", "rayon"] }
 serde = { version = "1", features = ["derive"] }
 postcard = { version = "1", features = ["alloc"] }
-calloop = "0.14.4"
-socket2 = "0.5"
-rustls = { version = "0.23", optional = true }
-rustls-pemfile = { version = "2", optional = true }
-webpki-roots = { version = "0.26", optional = true }
-
-[dev-dependencies]
-proptest = "1"
-tempfile = "3"

@@ -1,8 +1,0 @@
-[package]
-name = "pane-hello"
-version = "0.1.0"
-edition = "2021"
-description = "Hello pane — the canonical first pane application"
-license = "BSD-3-Clause"
-
-[dependencies]

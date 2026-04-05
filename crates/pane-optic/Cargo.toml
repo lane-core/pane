@@ -1,6 +1,0 @@
-[package]
-name = "pane-optic"
-version = "0.1.0"
-edition = "2021"
-description = "Composable optic types for structured state access in the pane desktop environment"
-license = "BSD-3-Clause"
