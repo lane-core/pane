@@ -1,96 +1,42 @@
 # pane Architecture
 
-A pane is organized state with an interface for views of that state.
-Display is one view. The namespace (`/pane/`, routed queries, remote
-access) is another. Both are projections of the same state, kept
-consistent by optic laws. The protocol governs how views are accessed,
-negotiated, and coordinated.
-
-pane is a protocol framework that happens to have a display mode. The
-headless server is the base case. Display is a capability panes opt
-into.
+A pane is organized state with views of that state. Display is
+one view. The namespace at `/pane/` is another. Both project
+the same state; optic laws keep them consistent. Headless is
+the base case. Display is opt-in.
 
 ---
 
-## Foundation
-
-Three layers, each grounded in published work:
+## Layers
 
 ```
-par (Strba)              binary session types with duality
-  ↓ bridged to IPC
-pane-session             transport, serialization, handshake
-  ↓ composed into actors
-pane-app                 single-threaded actor dispatch
+par (Strba)        session-typed binary channels, duality
+pane-session       bridges par to IPC transports (postcard, unix/tcp/tls)
+pane-app           single-threaded dispatch, request/reply, service binding
 ```
 
-**par** (Michal Strba, https://github.com/faiface/par) provides
-session-typed binary channels with duality checking. pane-session
-uses par as a direct dependency. The handler calls par's
-Send::send() and Recv::recv() directly. Bridge threads (spawned
-via par's fork_sync) serialize between par's in-process oneshot
-channels and the Transport trait using postcard. Par drives the
-handshake; the active phase uses calloop + typed enum dispatch.
-Sessions panic on disconnect — the looper's catch_unwind
-boundary converts this to a structured exit. Two-phase connect:
-Phase 1 verifies the transport (returns Result), Phase 2 runs
-the par-driven handshake.
+**pane-session.** The handler calls par's Send::send() and
+Recv::recv() directly. Bridge threads serialize between par's
+oneshot channels and the Transport trait. Par drives the
+handshake; the active phase uses calloop and typed enum dispatch.
 
-Design reference: Wadler, "Propositions as Sessions" (JFP 2014).
+Connection is two-phase. Phase 1 verifies the transport and
+returns Result — common failures (server not running) are caught
+here. Phase 2 runs the par handshake. Transport death mid-
+handshake panics; the session is aborted.
 
-**pane-app** provides single-threaded actor dispatch over multiple
-session endpoints. Each pane is an actor: one thread, sequential
-message dispatch, multiple protocol bindings. The handler store
-maps protocols to dispatch functions (static, from open_service)
-and request tokens to reply callbacks (dynamic, from send_request).
+**pane-app.** Each pane runs on one thread. The looper dispatches
+messages sequentially — one at a time, never concurrent. Protocol
+bindings are registered at setup (fn pointers captured by
+open_service). Reply callbacks are installed per-request
+(send_request) and consumed on reply.
 
-Design reference: Fowler et al., "Safe Actor Programming with
-Multiparty Session Types" (EAct).
+**Optics.** Reading `/pane/<n>/attrs/cursor` projects handler state
+through a named getter. The optic laws (GetPut, PutGet, PutPut)
+guarantee the projection is consistent with the handler's
+internal state.
 
-| Concept | pane-app |
-|---|---|
-| Actor | Handler impl (one per pane) |
-| Handler store | Handles\<P\> fn pointers + Dispatch\<H\> entries |
-| Install callback | `send_request` installs Dispatch entry |
-| Consume callback | Reply arrives, entry consumed, callback fires |
-| Normal return | Handler returns Flow (both Continue and Stop) |
-| Actor failure | panic → catch_unwind |
-| Progress | I6 (single-threaded) + compliant protocols |
-| Global Progress | I2/I3/I8 + event-driven dispatch |
-
-Design heritage: BeOS BLooper — one thread, one message queue,
-sequential dispatch. BHandler chain mapped to handler store.
-
-**Optics** guarantee consistency between handler state and its
-namespace projection. The optic laws (GetPut, PutGet, PutPut)
-ensure that reading a value from `/pane/<n>/attrs/<name>` and
-writing it back doesn't corrupt state, and that writing then
-reading returns what was written. Session types govern protocol
-relationships; optics govern state-access relationships.
-
-Design reference: Clarke et al., profunctor optics. Plan 9
-heritage: /proc/N/status as read-only projection of kernel state.
-
-### Composition guarantee
-
-Par's duality (Session::Dual) ensures each binary session's
-endpoints match. Single-threaded dispatch (I6) prevents
-inter-session deadlocks — the handler processes one event at
-a time, never blocking on one session while another needs
-attention. Handler termination (I3) and no blocking (I2/I8)
-ensure the looper always returns to idle.
-
-Protocol fidelity: if par's session types are consumed (not
-dropped), the protocol follows the declared structure. The
-consumption condition is enforced by `#[must_use]` and Drop-
-based failure compensation (I4).
-
-Multi-session composition is bottom-up: correct binary sessions
-+ correct actor discipline = correct system. No global
-choreography layer. Each connection is bilateral; the actor
-composes them.
-
-### Three error channels
+### Error channels
 
 | Channel | Mechanism | Audience |
 |---------|-----------|----------|
@@ -98,74 +44,53 @@ composes them.
 | Control | Flow::Stop / Continue | The looper |
 | Crash | panic → catch_unwind | Looper + server |
 
-The channels are disjoint. Handler methods return Flow, not
-Result. Three outcomes for a handler invocation: normal return
-(Flow), callback installation (send_request), or failure (panic).
+The channels are disjoint. Handler methods return Flow. Protocol
+errors are valid protocol messages — the handler continues.
+Control is the handler's lifecycle decision. Crash is
+unrecoverable — the looper catches the panic, fires Drop
+compensation, and notifies the server.
 
-Protocol errors (channel 1) are part of the session — the error
-response is a valid protocol message. The handler continues.
+### Composition
 
-Control (channel 2) is the handler's lifecycle decision.
+Each binary session's endpoints match (par's duality). Single-
+threaded dispatch prevents inter-session deadlocks. If par's
+session types are consumed (not dropped), the protocol follows
+the declared structure. `#[must_use]` and Drop compensation
+handle the affine gap.
 
-Crash (channel 3) is unrecoverable failure. The looper catches
-the panic, fires obligation compensation via Drop, and notifies
-the server.
-
-Design heritage: BeOS had the same three — SendReply(error) for
-protocol, QuitRequested() → bool for control, thread death for
-crash.
+Each connection is bilateral. The actor composes multiple
+connections by dispatching their events sequentially.
 
 ---
 
-## Type Vocabulary
+## Types
 
-### Channel substrate (pane-session)
-
-pane-session uses par directly — the handler calls par's native
-Send::send() and Recv::recv(). Bridge threads (spawned via
-par::Session::fork_sync) serialize between par's oneshot
-channels and the Transport trait using postcard.
+### Sessions (pane-session)
 
 ```rust
-// Handshake protocol defined with par's types:
 type ClientHandshake = par::exchange::Send<Hello, par::exchange::Recv<Welcome>>;
 type ServerHandshake = par::Dual<ClientHandshake>;
 
-// Bridge connects par to a Transport:
-let client = bridge_client_handshake(transport);  // returns par session endpoint
-let client = client.send(hello);                  // par's native send
-let welcome = block_on(client.recv1());           // par's native recv
-
-// par provides: Send, Recv (exchange), Enqueue, Dequeue (streaming),
-// Server, Proxy (lifecycle), Session trait (duality), Dual type alias.
-// Branching via Rust enums (par's approach — no Select/Branch types).
-// Recursion via native Rust enum types.
+let client = bridge_client_handshake(transport);
+let client = client.send(hello);
+let welcome = block_on(client.recv1());
 ```
 
-Two-phase connect: Phase 1 verifies the transport (returns
-Result — "server not running" caught here). Phase 2 runs the
-par-driven handshake. Transport death mid-handshake panics
-(session aborted — the exceptional case).
-
-Transport trait abstracts over unix sockets, TCP, TLS, and
-in-memory channels. Serialization via postcard.
+Par provides Send, Recv, Enqueue, Dequeue, Server, Proxy,
+Session (duality), and Dual. Branching uses Rust enums.
+Recursion uses Rust enum types. Transport abstracts over unix
+sockets, TCP, TLS, and in-memory channels.
 
 ### Message
 
 ```rust
-/// The universal message contract. Every protocol's message type
-/// implements this. What BMessage was — the common currency of
-/// the system — but typed.
-///
-/// Clone is required: messages may be filtered, logged, projected
-/// into the namespace, forwarded. Obligation handles are not
-/// Message variants — they are delivered via separate callbacks.
 pub trait Message:
     Serialize + DeserializeOwned + Clone + Send + 'static {}
 ```
 
-`#[derive(Message)]` on protocol enums. The trait is a marker —
-the bounds ARE the contract.
+Blanket impl — any type satisfying the bounds is a Message.
+Obligation handles (ReplyPort, ClipboardWriteLock) are not
+Message types. They are delivered via separate callbacks.
 
 ### Protocol and ServiceId
 
@@ -175,125 +100,63 @@ pub struct ServiceId {
     pub name: &'static str,
 }
 
-impl ServiceId {
-    /// UUIDv5 from reverse-DNS name. Not const fn (SHA-1).
-    pub fn new(name: &'static str) -> Self { ... }
-}
-
-/// A protocol relationship between a pane and a service.
 pub trait Protocol {
-    /// Service identity. Not const (UUIDv5 requires SHA-1).
     fn service_id() -> ServiceId;
     type Message: Message;
 }
 ```
 
-Naming convention: `com.pane.*` for framework services,
-`com.vendor.*` for third-party.
+ServiceId uses UUIDv5 derived from the reverse-DNS name.
+Framework services: `com.pane.*`. Third-party: `com.vendor.*`.
 
-<!-- Plan 9: ServiceId's UUID is analogous to qid.path (stable,
-machine-comparable); the name is the directory entry. -->
-
-### Handles\<P\>: uniform dispatch
+### Handles\<P\>
 
 ```rust
-/// A handler that can receive messages from protocol P.
-/// Each Handles<P> impl handles messages for one protocol.
-/// Under pane's one-service-per-protocol constraint, each
-/// impl corresponds to one entry in the handler store.
 pub trait Handles<P: Protocol> {
     fn receive(&mut self, msg: P::Message) -> Flow;
 }
 ```
 
-`#[pane::protocol_handler(P)]` attribute macro on an impl block
-generates the `Handles<P>::receive` match from named methods.
-Rust's exhaustive match provides the coverage guarantee.
+One impl per protocol. The `#[pane::protocol_handler(P)]` macro
+generates the match from named methods. Exhaustive match is the
+coverage guarantee.
 
-The macro generates two dispatch surfaces:
-1. **Value dispatch** — `Handles<P>::receive` match over `P::Message`
-   variants (Clone-safe values: Changed, LockDenied, ServiceLost).
-2. **Obligation dispatch** — separate typed callbacks for obligation
-   handles (lock_granted receives ClipboardWriteLock, completion_request
-   receives CompletionReplyPort). These bypass the filter chain.
+The macro generates two dispatch paths: value messages through
+`Handles<P>::receive`, obligation handles through separate typed
+callbacks. Both dispatch to the same `&mut H` on the looper
+thread.
 
-Both dispatch to the same `&mut H`, same looper thread (I6/I7).
-
-### Handler: lifecycle sugar
+### Handler
 
 ```rust
-/// Every pane implements this. Lifecycle + messaging.
-/// Internally equivalent to Handles<Lifecycle> via blanket impl.
-///
-/// The handler communicates with the framework through a Messenger
-/// stored in its own state (typically `self.messenger`), set up
-/// during the PaneBuilder phase — not passed as a dispatch parameter.
-/// This keeps dispatch signatures uniform and avoids threading a
-/// framework reference through every callback.
 pub trait Handler: Send + 'static {
     fn ready(&mut self) -> Flow { Flow::Continue }
     fn close_requested(&mut self) -> Flow { Flow::Stop }
     fn disconnected(&mut self) -> Flow { Flow::Stop }
     fn pulse(&mut self) -> Flow { Flow::Continue }
-    fn pane_exited(&mut self, pane: Id,
-        reason: ExitReason) -> Flow { Flow::Continue }
-    /// Query, not dispatch — returns bool, not Flow. &self for
-    /// deadlock freedom. Side effects must happen before returning
-    /// true (save in close_requested, not here).
-    /// BeOS: BLooper::QuitRequested() → bool.
+    fn pane_exited(&mut self, pane: Id, reason: ExitReason) -> Flow { Flow::Continue }
     fn quit_requested(&self) -> bool { true }
-    /// Scripting/automation entry point. PropertyInfo describes
-    /// which properties this pane exposes through the namespace.
-    /// PropertyInfo definition deferred to routing/scripting design.
     fn supported_properties(&self) -> &[PropertyInfo] { &[] }
-
-    /// Obligation callback: incoming request from another pane.
-    /// Payload is type-erased (requester and receiver may have
-    /// different types). ServiceId identifies the protocol the
-    /// sender used — check before downcasting. Reply is an
-    /// obligation — default drops it (sends ReplyFailed).
-    fn request_received(&mut self,
-        service: ServiceId, msg: Box<dyn Any + Send>,
-        reply: ReplyPort) -> Flow
-    {
-        drop(reply);
-        Flow::Continue
-    }
-}
-
-// Framework-provided blanket:
-impl<H: Handler> Handles<Lifecycle> for H {
-    fn receive(&mut self, msg: LifecycleMessage) -> Flow {
-        match msg {
-            LifecycleMessage::Ready => self.ready(),
-            LifecycleMessage::CloseRequested => self.close_requested(),
-            LifecycleMessage::Disconnected => self.disconnected(),
-            LifecycleMessage::Pulse => self.pulse(),
-            // ...
-        }
+    fn request_received(&mut self, service: ServiceId,
+        msg: Box<dyn Any + Send>, reply: ReplyPort) -> Flow {
+        drop(reply); Flow::Continue
     }
 }
 ```
 
-Handler is the zero-cost on-ramp. Every pane has lifecycle.
-The developer overrides named methods with defaults — no
-attribute macro needed for the common case.
+A blanket impl maps Handler to Handles\<Lifecycle\>. The
+developer overrides named methods. The handler communicates
+with the framework through a Messenger it stores in its own
+fields, set up during the PaneBuilder phase.
 
 ### Flow
 
 ```rust
-/// Handler control flow. Both variants represent normal handler
-/// completion — the handler finished without panic.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Flow {
-    Continue,
-    Stop,
-}
+pub enum Flow { Continue, Stop }
 ```
 
-No Result. Errors are the handler's domain (handle internally
-or panic). The looper doesn't receive errors — it receives
-lifecycle decisions.
+Both variants are normal completion. Errors are the handler's
+domain — handle internally or panic.
 
 ### Pane and PaneBuilder\<H\>
 
