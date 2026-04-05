@@ -11,6 +11,7 @@ pub use par;
 
 pub mod transport;
 pub mod bridge;
+pub mod frame;
 pub mod handshake;
 
 pub use transport::Transport;
