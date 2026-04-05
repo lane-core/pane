@@ -179,11 +179,12 @@ struct LibreWolfBridge {
 }
 
 impl Handler for LibreWolfBridge {
-    fn ready(&mut self, proxy: &Messenger) -> Result<Flow> {
-        self.dbus = DbusProxy::new("org.mozilla.firefox")?;
+    fn ready(&mut self) -> Flow {
+        self.dbus = DbusProxy::new("org.mozilla.firefox")
+            .expect("D-Bus connection to firefox");
 
         // Declare enrichment for the synthetic pane.
-        proxy.send_request::<Self, EnrichmentGrant>(
+        self.messenger.send_request::<Self, EnrichmentGrant>(
             &self.server_messenger,
             EnrichRequest {
                 target: self.target_pane,
@@ -195,41 +196,45 @@ impl Handler for LibreWolfBridge {
                 ],
                 commands: vec!["new-tab", "open"],
             },
-            |bridge, proxy, grant| {
+            |bridge, grant| {
                 bridge.enrichment_id = Some(grant.id);
-                Ok(Flow::Continue)
+                Flow::Continue
             },
-            |bridge, _| {
+            |bridge| {
                 // Server denied enrichment — degrade to no-op.
-                Ok(Flow::Stop)
+                Flow::Stop
             },
-        )?;
+        );
 
         // Poll D-Bus for state changes.
         // (Event-driven via D-Bus signal subscription is better;
         // polling shown here for clarity.)
-        proxy.set_pulse_rate(Duration::from_secs(1))?;
-        Ok(Flow::Continue)
+        self.messenger.set_pulse_rate(Duration::from_secs(1));
+        Flow::Continue
     }
 
-    fn pulse(&mut self, proxy: &Messenger) -> Result<Flow> {
+    fn pulse(&mut self) -> Flow {
         if let Ok(url) = self.dbus.get_property("URL") {
-            proxy.set_enrichment_attr("url", &url)?;
+            self.messenger.set_enrichment_attr("url", &url);
         }
         if let Ok(tabs) = self.dbus.call_method("GetTabs") {
-            proxy.set_enrichment_attr("tabs", &tabs)?;
+            self.messenger.set_enrichment_attr("tabs", &tabs);
         }
-        Ok(Flow::Continue)
+        Flow::Continue
     }
 
-    fn request_received(&mut self, proxy: &Messenger, service: ServiceId, msg: Box<dyn Any + Send>, reply: ReplyPort) -> Result<Flow> {
+    fn request_received(&mut self, service: ServiceId, msg: Box<dyn Any + Send>, reply: ReplyPort) -> Flow {
         if service == service_id!("com.pane.enrichment.command") {
             if let Some(cmd) = msg.downcast_ref::<EnrichmentCommand>() {
                 match cmd.name.as_str() {
-                    "new-tab" => { self.dbus.call_method("NewTab")?; }
+                    "new-tab" => {
+                        self.dbus.call_method("NewTab")
+                            .expect("D-Bus NewTab call");
+                    }
                     "open" => {
                         if let Some(url) = cmd.args.get("url") {
-                            self.dbus.call_method_with_args("Open", &[url])?;
+                            self.dbus.call_method_with_args("Open", &[url])
+                                .expect("D-Bus Open call");
                         }
                     }
                     _ => {}
@@ -237,7 +242,7 @@ impl Handler for LibreWolfBridge {
             }
         }
         drop(reply);
-        Ok(Flow::Continue)
+        Flow::Continue
     }
 }
 ```
@@ -528,7 +533,7 @@ and adds bridge-specific utilities:
 ```rust
 use pane_bridge::{DbusAttr, FileAttr, CliCommand, BridgeBuilder};
 
-fn main() -> pane_app::Result<()> {
+fn main() {
     BridgeBuilder::new("org.librewolf.Librewolf")
         // Attributes sourced from D-Bus properties
         .attr(DbusAttr::new("url")

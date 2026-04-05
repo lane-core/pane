@@ -29,8 +29,10 @@ session type library for Rust. CLL (classical linear logic, Wadler
 "Propositions as Sessions" JFP 2014) governs binary channel
 correctness: Send/Recv duality, branching, streaming. par is
 complete per its author. pane-session reimplements par's type
-vocabulary for IPC (serialization, crash safety via Result not
-panic, transport abstraction). The type-level session types
+vocabulary for IPC (serialization, transport abstraction).
+Chan operations panic on disconnect (par's CLL model — sessions
+complete or are annihilated; the looper's catch_unwind boundary
+is the crash safety mechanism). The type-level session types
 (Send, Recv, Select, Branch, End, Queue, Server) are par's
 contribution; the IPC adaptation is pane-session's.
 
@@ -158,9 +160,9 @@ Recursion uses native Rust enum types — no Rec/Var combinators.
 Channel indirection provides the boxing par relies on.
 
 Transport trait abstracts over unix sockets, TCP, TLS, and
-in-memory channels. Serialization via postcard. Crash safety:
-all operations return `Result<_, SessionError>`, never panic
-on peer disconnect.
+in-memory channels. Serialization via postcard. Chan operations
+panic on disconnect — the looper's catch_unwind boundary
+converts panics to ExitReason::Failed for the crash channel.
 
 ### Message
 
@@ -1213,8 +1215,10 @@ Token allocation is internal to the framework.
    mechanisms).
 
 3. **par as CLL substrate.** par is complete. pane-session
-   reimplements the type vocabulary for IPC. No crate dependency
-   (runtime models incompatible — par panics, pane returns Result).
+   reimplements the type vocabulary for IPC. par is a direct
+   dependency (design-time reference + duality checking); Chan<S,T>
+   uses par's types as phantom state markers over pane-session's
+   Transport trait. Chan panics on disconnect (same model as par).
 
 4. **EAct, not MPST.** Bottom-up composition (correct binaries +
    correct actors = correct system). MPST can be added later for

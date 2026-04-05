@@ -21,4 +21,5 @@
 - [Message trait analysis](project_message_trait_analysis.md) -- Message-as-trait conditionally sound, 5 conditions, CLONE_SAFE via #[obligation], naming collision
 - [Three-tier assessment](project_three_tier_assessment.md) -- telltale+par+pane-session: composition gap closed, two projection steps, vendor types, defer to Phase 2
 - [EAct homeroll analysis](project_eact_homeroll_analysis.md) -- SUPERSEDES three-tier: par+EAct sufficient for binary, no MPST layer needed, 4 critical invariants
-- [architecture-next.md review](project_architecture_next_review.md) -- v2 spec second pass: first-pass fixes verified, 1 moderate (Message not object-safe), 2 minor
+- [architecture.md review](project_architecture_next_review.md) -- spec review (now promoted to architecture.md): typed filters resolved object-safety, 2 minor
+- [Three-crate code review](project_three_crate_review.md) -- updated 2026-04-03: 2 moderate (Messenger crate boundary, Chan no Drop), 5 minor, EAct+CLL sound

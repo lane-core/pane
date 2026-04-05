@@ -144,7 +144,7 @@ Analogous to the Be Book's method documentation.
 - **Lifecycle methods** (connect, create_pane, run, run_with): full treatment.
   These are the methods developers get wrong.
 - **Hook methods** (Handler trait): explain what triggers the call, what
-  the default does, what returning Ok(Flow::Stop) means, and give a concrete
+  the default does, what returning Flow::Stop means, and give a concrete
   use case.
 - **Side-effecting methods** (set_title, send_message, monitor): state what
   happens, when it takes effect, and what can go wrong.
@@ -158,14 +158,14 @@ Analogous to the Be Book's method documentation.
 /// this pane. Override to update visual state (cursor style,
 /// selection highlight) or start input capture.
 ///
-/// Default: continues the event loop (`Ok(Flow::Continue)`).
+/// Default: continues the event loop (`Flow::Continue`).
 ///
 /// # BeOS
 ///
 /// `BWindow::WindowActivated` — pane splits the `bool active`
 /// parameter into separate `activated` / `deactivated` hooks.
-fn activated(&mut self, _proxy: &Messenger) -> Result<Flow> {
-    Ok(Flow::Continue)
+fn activated(&mut self) -> Flow {
+    Flow::Continue
 }
 ```
 
@@ -244,7 +244,7 @@ A type or method may have annotations from one or both traditions.
 /// [BHandler documentation](reference/haiku-book/app/BHandler.dox)).
 /// Key changes:
 /// - Trait with default methods replaces virtual class
-/// - Returns `Result<Flow>` instead of `void`
+/// - Returns `Flow` instead of `void`
 /// - Per-event methods replace single `MessageReceived(BMessage*)`
 ```
 

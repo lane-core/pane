@@ -21,18 +21,18 @@ struct Shell {
 }
 
 impl Handler for Shell {
-    fn ready(&mut self, proxy: &Messenger) -> Result<Flow> {
+    fn ready(&mut self) -> Flow {
         // No pulse timer — the shell is entirely event-driven.
         // PTY output arrives via PtySource (a calloop fd source),
         // not on a fixed timer. The looper wakes only when there
         // is actual data to process.
-        Ok(Flow::Continue)
+        Flow::Continue
     }
-    fn close_requested(&mut self, proxy: &Messenger) -> Result<Flow> {
-        self.pty.signal(SIGHUP)?;
-        Ok(Flow::Stop)
+    fn close_requested(&mut self) -> Flow {
+        self.pty.signal(SIGHUP);
+        Flow::Stop
     }
-    fn request_received(&mut self, proxy: &Messenger, service: ServiceId, msg: Box<dyn Any + Send>, reply: ReplyPort) -> Result<Flow> {
+    fn request_received(&mut self, service: ServiceId, msg: Box<dyn Any + Send>, reply: ReplyPort) -> Flow {
         // A script writes to /pane/1/ctl — inject into PTY.
         // Check ServiceId before downcasting (the convention from
         // architecture.md §Protocol and Dispatch).
@@ -43,32 +43,32 @@ impl Handler for Shell {
             }
         }
         drop(reply);
-        Ok(Flow::Continue)
+        Flow::Continue
     }
 }
 
 #[pane::protocol_handler(Display)]
 impl Shell {
-    fn key(&mut self, _proxy: &Messenger, event: KeyEvent) -> Result<Flow> {
+    fn key(&mut self, event: KeyEvent) -> Flow {
         // Non-blocking write to the PTY's input buffer.
         // If the child process isn't reading (buffer full),
         // PtySource buffers the remainder and flushes on
         // the next calloop writability event. Direct write_all
         // would block here, violating I2.
         self.pty.enqueue_input(&event.to_bytes());
-        Ok(Flow::Continue)
+        Flow::Continue
     }
 }
 
 #[pane::protocol_handler(Clipboard)]
 impl Shell {
-    fn lock_granted(&mut self, _proxy: &Messenger, lock: ClipboardWriteLock) -> Result<Flow> {
+    fn lock_granted(&mut self, lock: ClipboardWriteLock) -> Flow {
         lock.commit(self.screen.selection_bytes(), ClipboardMetadata {
             content_type: "text/plain".into(),
             sensitivity: Sensitivity::Normal,
             locality: Locality::Any,
-        })?;
-        Ok(Flow::Continue)
+        });
+        Flow::Continue
     }
     // ...
 }
@@ -136,23 +136,23 @@ desktop connects to it for display.
   than crashing:
 
 ```rust
-fn pulse(&mut self, proxy: &Messenger) -> Result<Flow> {
+fn pulse(&mut self) -> Flow {
     for (id, messenger) in &self.services {
         let id = *id;
-        proxy.send_request::<Self, Metrics>(
+        self.messenger.send_request::<Self, Metrics>(
             messenger,
             MetricsQuery,
-            move |dashboard, proxy, metrics| {
+            move |dashboard, metrics| {
                 dashboard.update_status(id, Status::Healthy(metrics));
-                Ok(Flow::Continue)
+                Flow::Continue
             },
-            move |dashboard, _proxy| {
+            move |dashboard| {
                 dashboard.update_status(id, Status::Unreachable);
-                Ok(Flow::Continue)
+                Flow::Continue
             },
-        )?;
+        );
     }
-    Ok(Flow::Continue)
+    Flow::Continue
 }
 ```
 
@@ -188,19 +188,19 @@ enum ModelMessage {
 
 #[pane::protocol_handler(ModelProtocol)]
 impl Editor {
-    fn completion(&mut self, proxy: &Messenger, cursor: usize, text: String, confidence: f32) -> Result<Flow> {
+    fn completion(&mut self, cursor: usize, text: String, confidence: f32) -> Flow {
         if cursor == self.cursor_position {
             self.show_inline_completion(&text, confidence);
         }
-        Ok(Flow::Continue)
+        Flow::Continue
     }
-    fn diagnostic_ready(&mut self, proxy: &Messenger, path: String, diagnostics: Vec<Diagnostic>) -> Result<Flow> {
+    fn diagnostic_ready(&mut self, path: String, diagnostics: Vec<Diagnostic>) -> Flow {
         self.update_diagnostics(&path, diagnostics);
-        Ok(Flow::Continue)
+        Flow::Continue
     }
-    fn indexing_progress(&mut self, _proxy: &Messenger, done: u32, total: u32) -> Result<Flow> {
+    fn indexing_progress(&mut self, done: u32, total: u32) -> Flow {
         self.status_bar.set_progress(done, total);
-        Ok(Flow::Continue)
+        Flow::Continue
     }
 }
 ```
@@ -232,28 +232,28 @@ pane.add_filter(shortcuts);
   stale:
 
 ```rust
-fn key(&mut self, proxy: &Messenger, event: KeyEvent) -> Result<Flow> {
+fn key(&mut self, event: KeyEvent) -> Flow {
     self.buffer.insert(event.char);
     // Cancel any outstanding completion request.
     if let Some(handle) = self.pending_completion.take() {
         handle.cancel(); // Dispatch entry removed, no callback fires
     }
     // Send a new completion request.
-    let handle = proxy.send_request::<Self, Completion>(
+    let handle = self.messenger.send_request::<Self, Completion>(
         &self.model_messenger,
         CompletionQuery { cursor: self.cursor, context: self.context() },
-        |editor, proxy, completion| {
+        |editor, completion| {
             editor.show_inline_completion(&completion);
-            Ok(Flow::Continue)
+            Flow::Continue
         },
-        |editor, _proxy| {
+        |editor| {
             // Model unavailable — degrade gracefully, no crash.
             editor.clear_completion_hint();
-            Ok(Flow::Continue)
+            Flow::Continue
         },
-    )?;
+    );
     self.pending_completion = Some(handle);
-    Ok(Flow::Continue)
+    Flow::Continue
 }
 ```
 
@@ -267,11 +267,11 @@ fn key(&mut self, proxy: &Messenger, event: KeyEvent) -> Result<Flow> {
   editor also spawns a one-off worker thread to auto-save:
 
 ```rust
-let messenger = proxy.clone();
+let sender = self.messenger.sender();
 std::thread::spawn(move || {
     if save_to_disk(&path, &content).is_ok() {
         // Simple fire-and-forget — no Protocol needed.
-        let _ = messenger.post_app_message("Auto-save complete".to_string());
+        let _ = sender.post_app_message("Auto-save complete".to_string());
     }
 });
 ```
@@ -360,10 +360,10 @@ local compositor. Demonstrates the multi-Connection architecture.
   flow establishes the causal order:
 
 ```rust
-fn message_received(&mut self, proxy: &Messenger, msg: ChatMessage) -> Result<Flow> {
+fn message_received(&mut self, msg: ChatMessage) -> Flow {
     self.messages.push(msg);
-    proxy.set_content(self.render_messages())?; // goes to compositor Connection
-    Ok(Flow::Continue)
+    self.messenger.set_content(self.render_messages()); // goes to compositor Connection
+    Flow::Continue
 }
 ```
 
@@ -394,16 +394,16 @@ No display — it's a headless daemon that other panes query.
 
 ```rust
 impl Handler for BuildDaemon {
-    fn ready(&mut self, proxy: &Messenger) -> Result<Flow> {
-        proxy.set_content(b"idle")?;
-        Ok(Flow::Continue)
+    fn ready(&mut self) -> Flow {
+        self.messenger.set_content(b"idle");
+        Flow::Continue
     }
 }
 
 // Phase 3 — Handles<Routing> formalizes namespace query handling.
 #[pane::protocol_handler(Routing)]
 impl BuildDaemon {
-    fn route_query(&mut self, proxy: &Messenger, query: RouteQuery, reply: ReplyPort) -> Result<Flow> {
+    fn route_query(&mut self, query: RouteQuery, reply: ReplyPort) -> Flow {
         // ReplyPort::reply takes impl Serialize + Send + 'static.
         // Strings serialize naturally via postcard.
         match query.path() {
@@ -412,13 +412,13 @@ impl BuildDaemon {
             "log" => reply.reply(self.current_log.clone()),
             _ => drop(reply), // ReplyFailed for unknown paths
         }
-        Ok(Flow::Continue)
+        Flow::Continue
     }
-    fn route_command(&mut self, proxy: &Messenger, cmd: &str, args: &str) -> Result<Flow> {
+    fn route_command(&mut self, cmd: &str, args: &str) -> Flow {
         if cmd == "build" {
-            self.start_build(args)?;
+            self.start_build(args);
         }
-        Ok(Flow::Continue)
+        Flow::Continue
     }
 }
 ```

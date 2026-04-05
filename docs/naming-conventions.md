@@ -161,26 +161,26 @@ Be's `AddHandler()` / `RemoveHandler()` maps directly.
 ### Notification hooks — past participle
 
 Called when something *already happened*. Name reflects the
-completed event. All return `Result<Flow>` — `Flow::Continue` to
+completed event. All return `Flow` — `Flow::Continue` to
 keep processing, `Flow::Stop` to exit cleanly.
 
 Handler (lifecycle — every pane):
 ```rust
-fn ready(&mut self, proxy: &Messenger) -> Result<Flow>;
-fn close_requested(&mut self, proxy: &Messenger) -> Result<Flow>;
-fn disconnected(&mut self, proxy: &Messenger) -> Result<Flow>;
-fn pulse(&mut self, proxy: &Messenger) -> Result<Flow>;
-fn pane_exited(&mut self, proxy: &Messenger, pane: Id, reason: ExitReason) -> Result<Flow>;
+fn ready(&mut self) -> Flow;
+fn close_requested(&mut self) -> Flow;
+fn disconnected(&mut self) -> Flow;
+fn pulse(&mut self) -> Flow;
+fn pane_exited(&mut self, pane: Id, reason: ExitReason) -> Flow;
 ```
 
 Handles<Display> (display — panes with a visual surface, via `#[pane::protocol_handler(Display)]`):
 ```rust
-fn display_ready(&mut self, proxy: &Messenger, geom: Geometry) -> Result<Flow>;
-fn resized(&mut self, proxy: &Messenger, geom: Geometry) -> Result<Flow>;
-fn activated(&mut self, proxy: &Messenger) -> Result<Flow>;
-fn deactivated(&mut self, proxy: &Messenger) -> Result<Flow>;
-fn key(&mut self, proxy: &Messenger, event: KeyEvent) -> Result<Flow>;
-fn mouse(&mut self, proxy: &Messenger, event: MouseEvent) -> Result<Flow>;
+fn display_ready(&mut self, geom: Geometry) -> Flow;
+fn resized(&mut self, geom: Geometry) -> Flow;
+fn activated(&mut self) -> Flow;
+fn deactivated(&mut self) -> Flow;
+fn key(&mut self, event: KeyEvent) -> Flow;
+fn mouse(&mut self, event: MouseEvent) -> Flow;
 ```
 
 Headless-first: `ready()` has no geometry (headless panes may have

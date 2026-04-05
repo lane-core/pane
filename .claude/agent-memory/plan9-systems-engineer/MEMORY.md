@@ -5,7 +5,7 @@
 - [Reference: key Plan 9 design decisions for pane](reference_plan9_decisions.md) — which Plan 9 patterns were adopted/adapted/rejected and why
 - [Project: Phase 1 protocol extension decisions](project_protocol_extension_decisions.md) — PeerIdentity placement, instance_id format, calloop channel, Cancel deferral
 - [Project: test suite design for distributed pane](project_test_suite_design.md) — three-layer test taxonomy, MockCompositor vs headless roles, PaneId discipline
-- [Project: code review findings](project_code_review_findings.md) — 14 findings: ownership bypass, identity loss, session continuity, TLS gap (2026-03-31)
+- [Project: code review findings](project_code_review_findings.md) — 3-crate rewrite review: ServiceId UUID gap, Box::leak DoS, wire framing (2026-04-03)
 - [Project: clipboard and undo design](project_clipboard_undo_design.md) — MIME negotiation, TTL, cross-machine policy, undo ctl pattern (2026-03-31)
 - [Project: C1 looper evolution](project_c1_looper_evolution.md) — calloop multi-source select: wire stays single-stream, source priorities, coalescing risk (2026-03-31)
 - [Project: Plan 9 lineage audit](project_plan9_lineage_audit.md) — 10 new annotations needed, licensing clear (MIT), divergences tracker proposed (2026-03-31)

@@ -18,8 +18,8 @@
 - Handler (lifecycle) + Handles<P> (Display, Clipboard, Routing, and all other protocols)
 - Protocol trait links ServiceId + Message type. Protocol::Message requires Serialize + DeserializeOwned.
 - FilterChain applies in registration order, any filter can consume or transform
-- ExitReason distinguishes HandlerExit / CompositorClose / Disconnected
-- Result<Flow> return convention. Flow::Continue / Flow::Stop. Err = actor failure.
+- ExitReason (looper-internal): Graceful / Disconnected / Failed / InfraError
+- Handler methods return Flow (not Result). Three error channels: Protocol (ReplyPort), Control (Flow), Crash (panic → catch_unwind).
 
 ## Testing
 - proptest for roundtrip serialization tests
