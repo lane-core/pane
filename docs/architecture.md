@@ -250,13 +250,13 @@ pub struct CancelHandle { ... }
 ```
 
 Dispatch\<H\> is a `HashMap<(ConnectionId, Token), Entry>` —
-the dynamic part of σ. Service dispatch (fn pointers) is the
-static part. Both are looper-internal.
+the per-request part of the handler store. Service dispatch (fn
+pointers) is the per-protocol part. Both are looper-internal.
 
 Lifecycle of a Dispatch entry:
-- **Install** (cf. E-Suspend): send_request installs entry
+- **Install**: send_request installs entry
 - **Idle**: entry waits; looper services other sessions
-- **Dispatch** (cf. E-React): reply arrives, entry consumed, callback fires
+- **Dispatch**: reply arrives, entry consumed, callback fires
 - **Failed** (pane-specific): target drops ReplyPort → on_failed fires
 - **Cancelled** (pane-specific): .cancel() removes entry, no callbacks
 - **Abandoned** (pane-specific): handler drops → entry dropped without
@@ -656,7 +656,7 @@ Obligation handles dispatch through separate callbacks.
 Every obligation-carrying type: `#[must_use]`, move-only,
 single success method consumes, Drop sends failure terminal.
 
-### Affine gap
+### Drop compensation
 
 Rust allows values to be dropped without consuming them. Drop
 impls compensate by sending failure terminals.
@@ -1028,7 +1028,7 @@ plus payload. The length field does NOT include itself.
 
 ## Design Principles
 
-### Functoriality
+### Full-structure types
 
 Types carry the full architecture's structure from the start.
 A type that omits structure forces patterns that break when
