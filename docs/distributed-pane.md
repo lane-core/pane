@@ -166,71 +166,12 @@ The `Transport` trait provides identity uniformly via `PeerAuth`:
 
 Each transport derives identity its own way. The protocol layer sees `PeerAuth` regardless of how it was obtained. This is factotum's principle — separate auth from application logic — achieved through Rust's trait system rather than a separate daemon.
 
----
-
-## 5. The Core/Full Decomposition
-
-Every server in the pane ecosystem has two versions: a portable _core_ that runs on any unix-like, and a platform-optimized _full_ version that leverages Pane Linux's specific infrastructure. Both expose the same protocol interface. Clients do not know or care which version they are talking to.
-
-| Server            | Core (portable)                                    | Full (Pane Linux)                                                   |
-| ----------------- | -------------------------------------------------- | ------------------------------------------------------------------- |
-| **pane-store**    | SQLite backend, query interface, HNSW vector index | xattr backend (`user.pane.*`), fanotify mount-wide change detection |
-| **pane-fs**       | Standard FUSE (libfuse / FUSE-T on Darwin)         | FUSE-over-io_uring (Linux 6.14+)                                    |
-| **pane-roster**   | Portable process monitoring, init-agnostic         | pidfd, s6-rc integration, s6-fdholder socket activation             |
-| **pane-watchdog** | Pipes + heartbeats, platform-abstracted restart    | pidfd, s6 restart escalation                                        |
-| **pane-notify**   | Already split: `linux.rs` / `stub.rs`              | fanotify + inotify                                                  |
-
-The init system abstraction follows the same pattern:
-
-| Platform            | Init backend | Integration                                                     |
-| ------------------- | ------------ | --------------------------------------------------------------- |
-| Pane Linux          | s6-rc        | Service directories, s6-fdholder, readiness notification via fd |
-| Darwin              | launchd      | Plist generation, `launchctl`, KeepAlive                        |
-| Other Linux (NixOS) | systemd      | Unit files, socket activation, `systemctl`                      |
-
-pane-roster is responsible for the init abstraction. It provides a trait — `register_service()`, `restart_service()`, `query_liveness()` — and each platform backend implements it against the native supervisor.
+The core/full server decomposition and the Nix flake architecture
+are documented in `docs/pane-linux.md`.
 
 ---
 
-## 6. The Flake Architecture
-
-### Three layers
-
-```
-Layer 0: nixpkgs                    120,000 packages
-Layer 1: sixos                      s6 system builder, infuse combinator, libudev-zero overlay
-Layer 2: pane flake
-         ├── pane-core              cross-platform: packages + service modules
-         └── pane-linux             sixos consumer: pane-core + compositor + desktop
-```
-
-**sixos as base.** Pane Linux is a sixos flake, not a custom system builder. sixos (codeberg.org/amjoseph/sixos) is a production-grade NixOS alternative that replaces systemd with s6 and the NixOS module system with the `infuse` combinator. It has been deployed across workstations, servers, and a 768-core buildfarm. It provides the s6-linux-init boot chain, s6-rc service compilation, the libudev-zero overlay, and the composition layer.
-
-Pane provides the personality: the protocol, the compositor, the kits, the desktop experience. sixos provides the init and service substrate. nixpkgs provides 120,000 packages. Each layer depends on the one below it. None forks the other.
-
-### Target-agnostic service definitions
-
-The pane flake exports abstract service definitions consumed by all platform backends:
-
-```nix
-pane.lib.services.headless = {
-  enable, listenAddress, unixSocket, enableTls, certFile, keyFile, geometry
-};
-pane.lib.services.roster = { enable, federation, ... };
-pane.lib.services.store = { enable, backend, ... };
-```
-
-The user writes `pane.services.headless.enable = true`. The platform backend — systemd, launchd, or s6-rc — generates the appropriate service definition. The user never writes an init-system-specific configuration.
-
-### The seed property
-
-A user's pane configuration is a nix expression. On Darwin, it lives in their nix-darwin flake. On NixOS, in their NixOS configuration. When they install Pane Linux, the same `pane.services.*` options feed into the sixos-based system. The init backend changes from launchd or systemd to s6-rc; the pane configuration does not.
-
-The flake that configured their headless pane deployment IS the seed of their full Pane Linux configuration. Adding `pane-linux.sixosModules.desktop` to a system that already has `pane-core.nixosModules.core` is an upgrade, not a migration.
-
----
-
-## 7. Emergent Patterns
+## 5. Emergent Patterns
 
 Network-transparent pane enables compositions that no individual feature was designed to provide.
 
@@ -246,7 +187,7 @@ Network-transparent pane enables compositions that no individual feature was des
 
 ---
 
-## 8. Comparison
+## 6. Comparison
 
 ### Plan 9
 

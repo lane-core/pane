@@ -4,7 +4,7 @@ What optics are in pane, how they work, and the rules for code
 that touches them. Read this before working on pane-proto's
 monadic lens module, pane-fs, or any handler state projection.
 
-Background deliberation: `docs/optics-deliberation.md`.
+Background deliberation archived. Language comparison: `docs/language-deliberation.md`.
 
 ---
 

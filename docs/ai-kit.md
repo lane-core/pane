@@ -592,8 +592,7 @@ What makes it possible:
 The guide inhabits the system from the earliest possible
 moment — not as a feature for later, but as a development
 tool. Its failures are the system's integration tests. Its
-needs drive the API design. See
-`docs/development-methodology.md`.
+needs drive the API design. See `docs/workflow.md`.
 
 ---
 
@@ -766,8 +765,8 @@ a synchronous round-trip.
 ## Appendix: Unix Multi-User UX Patterns
 
 The full research report on unix multi-user infrastructure
-and its mapping to the agent model is at
-[`docs/unix-multiuser-research.md`](unix-multiuser-research.md).
+and its mapping to the agent model was completed and its
+conclusions are incorporated below.
 
 It covers: inter-user communication (write, talk, ytalk,
 wall), presence and identity (who, w, finger, rwho, ruptime),
@@ -790,7 +789,6 @@ Lab), MIT Project Athena documentation on Zephyr.
 
 ## Sources
 
-- Unix multi-user research: `docs/unix-multiuser-research.md`
 - Plan 9: per-process namespaces, `.plan` files, `finger`,
   factotum (`docs/distributed-pane.md` §4)
 - pane architecture: Handler, headless-first, Protocol,

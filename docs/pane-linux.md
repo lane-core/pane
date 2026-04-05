@@ -373,7 +373,7 @@ have systemd integration points.
 
 ### O8. Configuration as files
 
-pane-fs.md specifies that server configuration lives as files
+The architecture spec (§Namespace) specifies that server configuration lives as files
 in `/etc/pane/<server>/` on a persistent btrfs volume, with
 xattr metadata.
 
@@ -394,8 +394,7 @@ xattr metadata.
 - sixos: codeberg.org/amjoseph/sixos
 - Nix base layer research: `docs/archive/openspec/changes/spec-tightening/research-nix-base.md`
 - Linux subsystem research: `docs/archive/openspec/changes/spec-tightening/research-linux-stack.md`
-- Distributed pane: `docs/distributed-pane.md` §5-6
-- Architecture spec: `docs/architecture.md` §Implementation Phases
+- Distributed pane: `docs/distributed-pane.md`
+- Architecture spec: `docs/architecture.md`
 - Adoption funnel: `docs/introduction.md`
-- pane-fs: `docs/pane-fs.md`
 - AI Kit (agent provisioning): `docs/ai-kit.md`

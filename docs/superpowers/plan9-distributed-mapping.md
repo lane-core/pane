@@ -339,7 +339,7 @@ This diverges from the plumber's architecture (central file server) but preserve
 
 1. **Distributed evaluation instead of central server.** The plumber is a single process. Pane distributes rule evaluation into each client process via the kit. This means rule files must be watched for changes (pane-notify) and re-evaluated on modification. The plumber re-evaluated on every message; pane should re-load rules when the files change (not on every dispatch — cache the parsed rules).
 
-2. **Typed messages instead of text headers.** The plumber's six-line text format is universal but untyped. Pane's routing messages should be typed — using the scripting protocol's `PropertyInfo` and `AttrValue` system. A routing message has a source, destination hint, working directory, content type, typed attributes, and payload. The typing provides validation; the text-based filesystem interface provides the universal fallback.
+2. **Typed messages instead of text headers.** The plumber's six-line text format is universal but untyped. Pane's routing messages should be typed — using the scripting protocol's `AttrInfo` and `AttrValue` system. A routing message has a source, destination hint, working directory, content type, typed attributes, and payload. The typing provides validation; the text-based filesystem interface provides the universal fallback.
 
 3. **No named ports as files.** The plumber's port files (`/mnt/plumb/edit`, `/mnt/plumb/image`) are the delivery mechanism: apps read from them. In pane's model, delivery goes through the compositor protocol or direct Messenger connections. Filesystem-based delivery (write to `/pane/plumb/send`, read from `/pane/plumb/edit`) should exist as the universal fallback for scripts, but kit-native routing should use typed channels.
 
@@ -347,7 +347,7 @@ This diverges from the plumber's architecture (central file server) but preserve
 
 1. **The file server architecture for the router itself.** The plumber is a 9P server because everything in Plan 9 is a 9P server. Pane's routing is a library, not a server. This is correct. Making routing a server reintroduces the single-point-of-failure problem. Making it a library means it cannot crash independently of the application using it.
 
-2. **The click attribute and mouse-position-based extraction.** The plumber's click attribute is specific to acme's text-based interaction model. Pane has typed tag-line commands and a structured scripting protocol. Content extraction should use the optic-based specifier chain, not mouse-position regex matching. The B3-click behavior (route the clicked text) is a compositor feature (the tag line's command activation), not a routing feature.
+2. **The click attribute and mouse-position-based extraction.** The plumber's click attribute is specific to acme's text-based interaction model. Pane has typed tag-line commands and a structured scripting protocol. Content extraction should use the flat attribute surface (monadic lens dispatch), not mouse-position regex matching. The B3-click behavior (route the clicked text) is a compositor feature (the tag line's command activation), not a routing feature.
 
 ### Warnings about naive translation
 

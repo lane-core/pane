@@ -687,6 +687,45 @@ same pattern as `tag`, `body`, `ctl`. Each `json` file
 returns a structured snapshot of its parent directory in one
 FUSE read.
 
+### Pane numbering and identity
+
+Panes are numbered sequentially: `/pane/1/`, `/pane/2/`,
+`/pane/3/`. The number is a locally-assigned index — the name
+in this namespace, not the identity. Not stable across
+restarts. Plan 9's /proc convention: PIDs are local indices.
+
+The UUID is the globally-unique identity. It lives in a view
+directory: `/pane/by-uuid/<uuid>/` contains a symlink to the
+corresponding `/pane/<n>/`. Scripts needing cross-machine
+stability use the UUID path. `/pane/self/` is a context-
+dependent symlink to the calling pane's directory (from the
+FUSE request's PID, analogous to `/proc/self/`).
+
+Remote panes receive local numbers alongside local panes.
+`/pane/7/` might be local or remote — namespace transparency.
+
+### Computed views
+
+Every directory under `/pane/` is a computed projection of
+indexed pane state through a filter predicate:
+
+```
+/pane/                  all panes (local + remote), numbered
+/pane/by-uuid/<uuid>/   stable global identity (symlinks)
+/pane/by-sig/<sig>/     filter by application signature
+/pane/by-type/<type>/   filter by pane type
+/pane/local/            local instance only
+/pane/remote/           remote instances only
+/pane/remote/<host>/    specific remote host
+/pane/self/             calling pane's own directory
+```
+
+These are projections over the same indexed state. The
+top-level numbered listing is the primary interface. `local`
+and `remote` are discovery views, not architectural
+boundaries. See `docs/distributed-pane.md` §3 for the full
+design.
+
 ### Snapshot model
 
 The handler state lives on the looper thread (`&mut self`).
@@ -1102,6 +1141,56 @@ their maximum; the effective limit is the minimum. Default: 16MB.
 The server rejects frames exceeding this. The `length` field in
 `[length: u32][service: u8][payload]` counts the service byte
 plus payload. The length field does NOT include itself.
+
+---
+
+## Compositor
+
+<!-- Condensed from docs/pane-compositor.md. Full protocol
+lists and BDD scenarios are in git history. -->
+
+Clients render their own body content into buffers (shared-
+memory or DMA-BUF). The compositor composites those buffers
+with its own chrome (tag lines, borders, focus indicators).
+Legacy Wayland clients participate through the same surface
+model.
+
+### Wayland protocols
+
+Core: wl_shm, wl_seat, xdg-shell, linux-dmabuf, viewporter,
+fractional-scale, presentation-time. Extensions: ext-session-
+lock, ext-idle-notify, ext-image-copy-capture, ext-data-control,
+ext-color-management, layer-shell, xdg-decoration,
+wlr-output-management, input method protocols.
+
+Pane-native clients connect over a unix socket. Multiple panes
+per connection (sub-sessions).
+
+### Three-tier access model
+
+| Tier | Mechanism | Latency | Use case |
+|------|-----------|---------|----------|
+| Filesystem | FUSE at `/pane/` | ~15-30us | Shell scripts, inspection |
+| Protocol | Session-typed unix sockets | ~1.5-3us | Kit-to-compositor |
+| In-process | Kit API | Sub-us | Application logic |
+
+pane-fs is a translation layer — just another client of the
+compositor, no special privilege.
+
+### Threading model
+
+| BeOS | Pane | Role |
+|------|------|------|
+| Desktop | Main thread (calloop) | Compositing, Wayland, input |
+| ServerApp | Dispatcher (1/connection) | Demuxes socket to per-pane threads |
+| ServerWindow | Pane thread (1/pane) | Per-pane session protocol |
+
+calloop is scoped to the main thread (smithay requires it for
+Wayland fd polling). Per-pane threads use std::thread + channels.
+Layout tree protected by RwLock: read lock for geometry queries
+(concurrent across panes), write lock for structural changes
+(exclusive, main thread only). At 50 panes: ~1MB memory,
+~1.5us context switch overhead.
 
 ---
 

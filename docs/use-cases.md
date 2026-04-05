@@ -88,7 +88,7 @@ impl Shell {
 - **request_received with ServiceId**: scripts inject text through
   the ad-hoc request path. The handler checks ServiceId before
   downcasting — the convention established in the architecture spec.
-- **pane-fs namespace** (see `docs/pane-fs.md`): `/pane/1/body`
+- **pane-fs namespace** (see `docs/architecture.md` §Namespace): `/pane/1/body`
   is the terminal's semantic content (command output as text).
   `/pane/1/ctl` accepts line commands (same as writing to a
   Plan 9 `cons` file). `/pane/1/event` is a blocking-read
@@ -284,18 +284,19 @@ std::thread::spawn(move || {
   use a Protocol. If it's a single fire-and-forget event, use
   `post_app_message`.
 
-- **Undo integration** (see `docs/archive/optics-design-brief.md`):
+- **Undo integration** (see `docs/optics-design-brief.md`):
   `RecordingOptic` wraps the editor's property optics, capturing
   old/new values on each `set()`. `CoalescingPolicy` groups rapid
   keystrokes into single undo steps. These are kit-level types
   from the optics subsystem, not core protocol concepts.
-- **Scripting via pane-fs** (see `docs/pane-fs.md`):
+- **Scripting via pane-fs** (see `docs/architecture.md` §Namespace):
   `/pane/2/attrs/cursor` returns the cursor position.
   `/pane/2/attrs/selection` returns the selected text.
   External tools (linters, formatters) read and write through
-  the namespace. The `DynOptic` trait (see `docs/archive/scripting-optics-design.md`)
-  handles type-erased serialization at the boundary; the editor's
-  internal optics are monomorphic.
+  the namespace. The monadic lens layer (`MonadicLens<S,A>` in
+  `pane-proto/src/monadic_lens.rs`) handles type-erased
+  serialization at the boundary; the editor's internal optics
+  are monomorphic.
 
 ---
 
@@ -306,7 +307,7 @@ because the filesystem *was* the database. pane recovers this
 through pane-fs.
 
 **Architecture exercised:**
-- **pane-fs as query system** (see `docs/pane-fs.md` §Unified
+- **pane-fs as query system** (see `docs/architecture.md` §Namespace,
   Namespace and `docs/distributed-pane.md` §3): every directory
   under `/pane/` is a computed view — a filter predicate over
   indexed pane state. The file manager navigates query directories
@@ -317,7 +318,7 @@ through pane-fs.
   content type to application signature. Multi-match presents a
   chooser to the user. Routing quality scoring (0.0–1.0, from
   Be's Translation Kit pattern) is a routing subsystem detail,
-  not core protocol — see `docs/v1-subsystem-inventory.md` §Routing.
+  not core protocol.
 - **Clipboard with locality**: copying a file path from the local
   file manager and pasting into a remote terminal session — the
   clipboard entry has `Locality::Any`, so the remote instance's
@@ -423,7 +424,7 @@ impl BuildDaemon {
 }
 ```
 
-- **Namespace as API** (see `docs/pane-fs.md`):
+- **Namespace as API** (see `docs/architecture.md` §Namespace):
   `/pane/5/attrs/status` → "building".
   `/pane/5/attrs/targets` → "kernel\nlibc\ninit".
   `echo "build kernel" > /pane/5/ctl` starts a build.
@@ -490,8 +491,8 @@ involves reading or writing pane-fs paths (`/pane/<n>/body`,
 `/pane/<n>/attrs/...`, `/pane/<n>/ctl`, `/pane/<n>/event`).
 Shell scripts, external tools, and AI agents all use the same
 filesystem interface. No SDK needed for basic automation — `cat`
-and `echo` are sufficient. See `docs/pane-fs.md` for the full
-path convention.
+and `echo` are sufficient. See `docs/architecture.md` §Namespace
+for the path convention.
 
 **Multi-server is invisible to handlers.** The chat client (#5)
 connects to two servers. The editor (#3) might connect to a

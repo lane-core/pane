@@ -37,7 +37,7 @@ The Wayland protocol provides:
 | `xdg_toplevel.close` / client disconnect | `PaneExited` |
 
 The synthetic pane appears in the namespace at its locally-
-assigned numeric path (see `docs/pane-fs.md` §Pane numbering):
+assigned numeric path (see `docs/architecture.md` §Pane numbering):
 
 ```
 /pane/4/tag              -> "LibreWolf"
@@ -98,11 +98,10 @@ Synthetic panes are not full pane citizens. They lack:
   scripting queries, or implement Handles<Routing>. These require
   a bridge process.
 - **Optic-governed properties**: the compositor exposes `tag`,
-  `signature`, `pid`, and `geometry`. These are not DynOptic-
-  backed — they are direct translations from Wayland state.
-  GetPut/PutGet hold trivially (the compositor is the sole
-  writer), but the properties are not composable with the optic
-  layer's composition operators.
+  `signature`, `pid`, and `geometry`. These are not optic-backed — they are direct translations
+  from Wayland state. GetPut/PutGet hold trivially (the
+  compositor is the sole writer), but the properties are not
+  composable with the monadic lens layer.
 
 The gap between synthetic panes and native panes is the space
 that bridge processes fill.
@@ -338,10 +337,10 @@ server enforces:
 
 ### Optic law status
 
-Enrichment attributes are DynOptic-backed (see
-`docs/archive/optics-design-brief.md`). The bridge's
-`set_enrichment_attr()` is a DynOptic `set()`; the namespace
-read is a DynOptic `get()`.
+Enrichment attributes are optic-backed (see
+`docs/optics-design-brief.md`). The bridge's
+`set_enrichment_attr()` writes through the monadic lens
+layer; the namespace read projects through an AttrReader.
 
 - **GetPut**: if the bridge writes a value and nobody else
   writes, reading returns the written value. Holds.
@@ -748,7 +747,7 @@ spec components:
 | ServiceId (reverse-DNS) | Wayland `app_id` maps directly to service signature |
 | pane-fs namespace | Synthetic panes appear at `/pane/<n>/` with numeric IDs |
 | pane-fs `by-uuid` view | Stable cross-machine reference for synthetic panes |
-| DynOptic + AttrInfo | Enrichment attributes are DynOptic-backed |
+| MonadicLens + AttrInfo | Enrichment attributes use the monadic lens layer |
 | DeclareInterest | Bridge declares `com.pane.enrichment` |
 | PeerAuth::Kernel | Bridge authenticated by uid; same-uid enrichment is default |
 | Dispatch + send_request | Bridge requests enrichment grant from server |

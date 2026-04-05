@@ -60,9 +60,9 @@ BeOS proved empirically that message-passing discipline produces robust systems.
 
 ### Session types as formalization
 
-Session types formalize exactly this discipline. What BMessage enforced by convention, session types enforce at compile time. The conversation structure — what is sent, in what order, by whom — is verified before the program runs. Deadlock freedom follows from the underlying proof theory (session types), not from testing. Pane stands on both: the empirical proof that message-passing discipline works, and the theoretical framework that lets the compiler verify it. Fowler and Hu's event actor model (Maty, OOPSLA) provides a third leg: formal proof that an event-loop-based actor servicing multiple sessions is deadlock-free across those sessions — validating the architectural pattern BeOS's app_server proved empirically.
+Session types formalize exactly this discipline. What BMessage enforced by convention, session types enforce at compile time. The conversation structure — what is sent, in what order, by whom — is verified before the program runs. Deadlock freedom follows from the underlying proof theory (session types), not from testing. Pane stands on both: the empirical proof that message-passing discipline works, and the theoretical framework that lets the compiler verify it. Fowler, Lindley, Wadler, and Tunnell Hill's "Mixing Metaphors" (ECOOP 2019) provides a third leg: formal proof that an event-loop-based actor servicing multiple sessions is deadlock-free across those sessions — validating the architectural pattern BeOS's app_server proved empirically. See also Fowler's PhD thesis (2020) for the EAct calculus that par implements.
 
-The concrete session-typed handshake in pane is defined by `ClientHandshake` and `ServerHandshake` type aliases in pane-proto, composing `Send`/`Recv`/`Branch`/`End` primitives from pane-session. `ServerHandshake` is the dual of `ClientHandshake`, computed automatically — the compiler enforces that both sides agree on the conversation structure.
+The concrete session-typed handshake in pane is defined by `ClientHandshake` and `ServerHandshake` type aliases in pane-proto, composing `Send`/`Recv`/`Branch`/`End` primitives from par, via pane-session. `ServerHandshake` is the dual of `ClientHandshake`, computed automatically — the compiler enforces that both sides agree on the conversation structure.
 
 Session types compose over network boundaries. The `Chan<S, T>` typestate is parameterized over transport — `UnixTransport` for local connections, `TcpTransport` for remote, `MemoryTransport` for testing. The protocol logic is identical in all cases; the transport is the plumbing. TLS is a transport concern, not a protocol concern — it wraps the byte stream beneath the session layer. This is the property that makes pane's protocol naturally distributed: adding a network transport requires no protocol changes, because the protocol was never aware of the transport in the first place.
 
@@ -94,7 +94,7 @@ This creates a tension that deserves naming: the boundary between pane's typed w
 
 ## 4. Multiple Views Through Optics
 
-A pane is one object with many views. The relationship between internal state and each external view is governed by optics — composable, bidirectional access paths. We use theory because it resolves a real design dilemma: keeping multiple views consistent is hard, and optics make it tractable.
+A pane is one object with many views. The relationship between internal state and each external view is governed by optics — composable access paths with asymmetric read and write channels. The view (read) path is pure; the set (write) path is effectful, returning side effects that the framework executes after state mutation. We use theory because it resolves a real design dilemma: keeping multiple views consistent is hard, and optics make it tractable.
 
 ### Lens laws as correctness criteria
 
@@ -102,6 +102,7 @@ Every read-write interface to a pane should satisfy:
 
 - **GetPut**: read a value through a view and write it back unchanged → internal state unchanged.
 - **PutGet**: write a value through a view and read it back → you get what you wrote.
+- **PutPut**: writing a value and then writing another is the same as writing only the second. This law is what makes queued write coalescing safe — the looper can discard an earlier write to the same attribute within a batch.
 
 These hold up to semantic equality. Violations are either intentionally lossy (documented) or bugs.
 
@@ -123,7 +124,7 @@ Session types and optics recover it with stronger guarantees. A scripting intera
 
 This connects the three theoretical commitments — session types, optics, monadic error composition — at a single convergence point. The implementation specs must define the concrete scripting protocol, but the principle is: every pane is automatable through the same protocol it uses for everything else, with structured, discoverable access to its state.
 
-An open design question: BeOS's scripting protocol resolved specifier chains at runtime — "get Frame of Window 1 of Application Tracker" was resolved by each handler peeling off one specifier and forwarding to the next. This was compositional and dynamic. Optics are typically static. How optic-addressed access composes across handler boundaries in a running system — where the structure is only known at runtime — is the hardest design problem in translating this concept, and the implementation specs must solve it.
+Resolved: BeOS's scripting protocol resolved specifier chains at runtime — "get Frame of Window 1 of Application Tracker" was resolved by each handler peeling off one specifier and forwarding to the next. Pane uses flat attribute surfaces per pane instead. Each pane exposes a fixed set of attributes declared at setup time. The filesystem path IS the address — no handler-chain forwarding needed. Deep traversal into widget hierarchies (Be's fragile power) is replaced by each pane declaring a stable scripting contract through `AttrInfo`. See `docs/optics-design-brief.md`.
 
 ---
 
@@ -257,7 +258,7 @@ Agents communicate through the same graduated model as humans, and they build: p
 - **BeOS (1995–2001)**: Empirical proof that message-passing discipline and infrastructure-first design produce stable, compelling desktop systems. The Be Newsletter archive (231 issues) documents the engineering reasoning.
 - **Plan 9 from Bell Labs**: Proof that protocol uniformity enables emergent capabilities. Bell Labs' decades of thinking about Unix's evolution.
 - **Session type theory**: Honda (1993), Vasconcelos (2009), Caires-Pfenning (2010), Wadler (2012). Protocol discipline with deadlock freedom as a theorem of linear logic.
-- **Optics**: Profunctor optics as composable, bidirectional state access. Lens laws as correctness criteria.
+- **Optics**: Profunctor optics as composable state access with asymmetric read/write paths. Lens laws as correctness criteria.
 - **NeXTSTEP**: Developer productivity as design philosophy.
 - **Imai, Yoshida, Yuen (2017/2019)**: Session-OCaml — practical combination of session types with lenses.
 - **Fowler et al. (POPL 2019)**: Exceptional Asynchronous Session Types.

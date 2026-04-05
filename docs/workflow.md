@@ -12,10 +12,9 @@ docs/
 ├── kit-documentation-style.md    — API doc style guide for kit crates
 ├── naming-conventions.md         — identifier naming policy (Be conventions + Rust idiom)
 ├── aesthetic.md                  — visual design language
-├── pane-fs.md                    — filesystem interface
-├── pane-compositor.md            — compositor design
+├── optics-design-brief.md        — optics role, layers, boundary rules
+├── language-deliberation.md      — Rust vs OCaml/Haskell assessment
 ├── introduction.md               — user-facing intro
-├── development-methodology.md    — development approach
 ├── agents.md                     — agent integration
 ├── licensing.md                  — license structure
 ├── workflow.md                   — this file
@@ -81,7 +80,7 @@ Consult the be-systems-engineer (for Be/Haiku heritage), the plan9-systems-engin
 1. **Protocol soundness** — is the proposed session type correct? Are there stuck states, orphaned channels, or missing branches?
 2. **Ownership discipline** — do correlation IDs at the API surface have typed handles? Is ghost state recognized and documented?
 3. **Failure composition** — does the `Drop`-based recovery chain compose correctly through newtypes? Are there panic paths that bypass cleanup?
-4. **Invariant identification** — what runtime invariants does the design require? (e.g., `panic = unwind`, no custom `Drop` on wrappers, `Err` not panic on downcast failure)
+4. **Invariant identification** — what runtime invariants does the design require? (e.g., `panic = unwind`, no custom `Drop` on wrappers, `Err` not panic on downcast failure). The authoritative invariant list is in `docs/architecture.md`: system invariants I1-I13 and dispatch entry invariants S1-S6.
 
 Also consult the EAct-derived session-type design principles in serena memory `pane/session_type_design_principles`. Specifically:
 1. New sub-protocols (clipboard, DnD, observer, inter-pane messaging) should use typestate handles at the API surface, not session-type the active-phase transport (principle C2).
