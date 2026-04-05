@@ -11,7 +11,7 @@ use pane_proto::ServiceId;
 
 /// The handshake protocol from the client's perspective.
 /// Send Hello, receive Welcome.
-pub type ClientHandshake = par::exchange::Send<Hello, par::exchange::Recv<Welcome, ()>>;
+pub type ClientHandshake = par::exchange::Send<Hello, par::exchange::Recv<Welcome>>;
 
 /// The handshake protocol from the server's perspective (dual).
 pub type ServerHandshake = par::Dual<ClientHandshake>;

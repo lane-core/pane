@@ -1,20 +1,14 @@
-//! pane-session: IPC session channels backed by par's CLL formalism.
+//! pane-session: par-backed session channels for IPC.
 //!
-//! par (Michal Strba) provides the session type vocabulary and
-//! duality checking. par is in-process (oneshot channels, panics on
-//! disconnect). pane-session provides the IPC adaptation:
+//! par (Michal Strba) provides the CLL session type vocabulary:
+//! Send/Recv (exchange), Enqueue/Dequeue (streaming), Server/Proxy
+//! (lifecycle), Session trait (duality), Dual type alias.
 //!
-//!   - Transport trait (unix, tcp, tls, memory)
-//!   - Serialization via postcard
-//!   - Chan<S> — session-typed channel over a Transport
-//!   - Handshake types (Hello, Welcome, ControlMessage)
-//!   - Wire framing ([length][service][payload])
-//!
-//! par's types are re-exported for protocol design and duality:
-//! use par::exchange::{Send, Recv} to define protocol types, then
-//! run them over pane-session's Chan + Transport.
+//! pane-session provides Chan<S, T> — par's session types over a
+//! Transport trait with postcard serialization. Par's types are used
+//! directly as phantom state parameters on Chan. PhantomData<S> is
+//! zero-size regardless of S's internal structure.
 
-// Re-export par for protocol design
 pub use par;
 
 pub mod transport;
