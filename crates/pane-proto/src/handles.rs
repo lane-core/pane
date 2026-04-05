@@ -1,13 +1,12 @@
-//! Handles<P>: uniform dispatch trait.
+//! Uniform per-protocol dispatch.
 //!
-//! Each Handles<P> impl is one entry in EAct's handler store σ
-//! (under pane's one-service-per-protocol constraint). The looper
-//! dispatches P::Message to this method via a monomorphized fn
-//! pointer captured at service registration.
+//! Each Handles<P> impl handles messages for one protocol.
+//! The looper dispatches P::Message to this method via a fn
+//! pointer captured at service registration time.
 //!
 //! The #[pane::protocol_handler(P)] attribute macro generates the
 //! Handles<P>::receive match from named methods. Rust's exhaustive
-//! match IS the coverage guarantee.
+//! match provides the coverage guarantee.
 
 use crate::flow::Flow;
 use crate::protocol::Protocol;

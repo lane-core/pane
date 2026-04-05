@@ -1,12 +1,12 @@
-//! Dispatch<H>: request/reply state (the dynamic part of EAct's σ).
+//! Request/reply dispatch state.
 //!
-//! Each send_request installs a one-shot entry (by analogy with
-//! E-Suspend). When the reply arrives, the entry is consumed and
-//! the callback fires (by analogy with E-React).
+//! Each send_request installs a one-shot callback entry. When
+//! the reply arrives, the entry is consumed and the callback
+//! fires. Keyed by (ConnectionId, Token).
 //!
-//! HashMap<(ConnectionId, Token), Entry> — keyed by connection +
-//! request token. The static part of σ (Handles<P> fn pointers)
-//! lives in the service dispatch table on PaneBuilder/looper.
+//! Static protocol dispatch (Handles<P> fn pointers) lives in
+//! the service dispatch table on PaneBuilder/looper. Dispatch<H>
+//! handles the dynamic request/reply correlation.
 
 use std::collections::HashMap;
 use pane_proto::Flow;

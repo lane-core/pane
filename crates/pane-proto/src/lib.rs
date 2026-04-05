@@ -1,20 +1,14 @@
-//! pane-proto: protocol vocabulary for the pane framework.
+//! Protocol vocabulary for pane.
 //!
-//! The type contracts that all pane crates depend on. No IO, no
-//! runtime, no par. Pure type definitions:
-//!
+//! Type contracts that all pane crates depend on. No IO, no
+//! runtime. Defines:
 //!   - Message trait (Clone + Serialize + DeserializeOwned + Send + 'static)
 //!   - Protocol trait + ServiceId
-//!   - Flow enum (Continue / Stop)
-//!   - Handles<P> trait (uniform dispatch, σ entries)
-//!   - Handler trait (lifecycle sugar, blanket Handles<Lifecycle>)
+//!   - Flow (Continue / Stop)
+//!   - Handles<P> (uniform per-protocol dispatch)
+//!   - Handler (lifecycle convenience, blanket Handles<Lifecycle>)
 //!   - MessageFilter<M> (typed per-protocol filters)
-//!   - Property<S,A> (optic-backed state access via fp-library)
-//!
-//! Three layers:
-//!   pane-proto   — type contracts (this crate)
-//!   pane-session — par-backed session channels, transport, wire framing
-//!   pane-app     — EAct actor framework
+//!   - Property<S,A> (optic-backed state access)
 
 pub mod message;
 pub mod protocol;
@@ -25,7 +19,6 @@ pub mod protocols;
 pub mod filter;
 pub mod property;
 
-// Convenient re-exports
 pub use flow::Flow;
 pub use handles::Handles;
 pub use handler::Handler;

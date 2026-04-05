@@ -1,12 +1,13 @@
-//! Handler: lifecycle sugar over Handles<Lifecycle>.
+//! Lifecycle handler trait.
 //!
-//! Every pane implements Handler. Named lifecycle methods are the
-//! ergonomic surface. Internally, Handler is Handles<Lifecycle> via
-//! blanket impl — one dispatch mechanism for everything.
+//! Every pane implements Handler. Named lifecycle methods with
+//! defaults provide the ergonomic surface. A blanket impl maps
+//! Handler to Handles<Lifecycle>, so lifecycle dispatch uses the
+//! same mechanism as all other protocols.
 //!
-//! BeOS: BLooper::QuitRequested() → bool, BHandler::MessageReceived()
-//! → void. pane's Handler returns Flow from every method (except
-//! quit_requested which is a bool query, not dispatch).
+//! Design heritage: BeOS BHandler::MessageReceived returned void;
+//! pane returns Flow. BLooper::QuitRequested returned bool; pane
+//! keeps this as quit_requested(&self) -> bool.
 
 use crate::flow::Flow;
 use crate::handles::Handles;

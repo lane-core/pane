@@ -1,15 +1,11 @@
-//! Flow: handler control flow.
+//! Handler control flow.
 //!
-//! EAct E-Reset: the handler returns control to the looper with a
-//! lifecycle decision. Both variants are E-Reset (the handler
-//! completed without panic). Flow::Stop triggers the destruction
-//! sequence; Flow::Continue returns to idle for the next event.
+//! Returned by every handler method and Handles<P>::receive.
+//! Both variants represent normal handler completion — the handler
+//! finished processing without panic. Flow::Stop triggers the
+//! destruction sequence; Flow::Continue returns to idle.
 
-/// Handler control flow. Returned by every handler method and
-/// every Handles<P>::receive dispatch.
-///
-/// No Result — errors are the handler's domain (handle internally
-/// or panic). The looper receives lifecycle decisions, not errors.
+/// Handler control flow.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Flow {
     Continue,

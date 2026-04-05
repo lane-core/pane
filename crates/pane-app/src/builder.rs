@@ -1,14 +1,13 @@
-//! PaneBuilder<H>: typed setup phase for service registration.
+//! Typed setup phase for service registration.
 //!
-//! Generic over H to enforce Handles<P> bounds at compile time.
-//! Consumed by run_with — the builder pattern where the terminal
-//! method both builds and enters the event loop.
+//! PaneBuilder<H> is generic over the handler type to enforce
+//! Handles<P> bounds at compile time. Consumed by run_with.
+//! Service dispatch routes are established before the event loop
+//! starts; request/reply (Dispatch<H>) grows dynamically after.
 //!
-//! EAct: restricts σ construction to a pre-loop phase. The dynamic
-//! part of σ (Dispatch<H> entries from send_request) still grows
-//! after run_with.
-//!
-//! Plan 9: namespace construction (bind/mount) before exec.
+//! Design heritage: BeOS constructed BWindow + AddChild + handlers
+//! before Show()/Run(). Plan 9 assembled namespaces (bind/mount)
+//! before exec.
 
 use std::collections::HashSet;
 use std::marker::PhantomData;

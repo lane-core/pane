@@ -1,18 +1,13 @@
-//! pane-app: the EAct actor framework.
+//! Actor framework for pane.
 //!
-//! This is the runtime layer — it composes pane-proto's type
-//! contracts into a working actor system:
+//! Runtime layer: composes pane-proto's type contracts into a
+//! working actor system with single-threaded dispatch.
 //!
-//!   pane-proto — type contracts (Message, Protocol, Handles<P>, Handler, Flow)
-//!   pane-app     — runtime (Messenger, Pane, PaneBuilder, Dispatch, looper)
+//! Provides: Pane, PaneBuilder, Dispatch (request/reply),
+//! Messenger, ServiceHandle, ExitReason.
 //!
-//! EAct correspondence:
-//!   Actor         = a Pane running its Handler on the looper thread
-//!   Handler store σ = Handles<P> fn pointers + Dispatch<H> entries
-//!   E-Suspend     = send_request installs Dispatch entry
-//!   E-React       = reply arrives, entry consumed, callback fires
-//!   E-Reset       = handler returns Flow (back to idle)
-//!   E-Raise       = panic → catch_unwind (actor annihilated)
+//! Design heritage: BeOS BLooper (sequential dispatch, one thread
+//! per actor). Formalized by Fowler et al.'s EAct.
 
 pub mod exit_reason;
 pub mod messenger;

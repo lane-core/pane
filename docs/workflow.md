@@ -65,6 +65,16 @@ Follow the kit documentation style guide (`docs/kit-documentation-style.md`). Ke
    - `# BeOS` sections for Be/Haiku heritage (type mapping, method naming, behavioral divergences)
    - `# Plan 9` sections for Plan 9/Inferno heritage (distributed model, namespace design, protocol patterns)
    - Both sections may appear on the same type when it draws from both traditions
+
+**Technical writing standard:**
+Documentation uses strict technical language. Explain what the code
+does, its operational semantics, and design heritage where relevant.
+Do not lead with formalism names or use them as marketing ("CLL
+types", "EAct actor framework"). Reference formalisms briefly where
+they clarify design rationale — e.g., "Design heritage: Fowler et
+al.'s EAct" — not as the primary framing. Avoid emphatic "IS"
+constructions ("pane-app IS the EAct framework"). Write balanced,
+ergonomic technical prose.
 4. Hook methods document trigger, default behavior, and concrete use case
 5. `cargo doc` builds without warnings
 
