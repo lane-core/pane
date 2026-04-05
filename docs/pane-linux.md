@@ -392,8 +392,8 @@ xattr metadata.
 ## Sources
 
 - sixos: codeberg.org/amjoseph/sixos
-- Nix base layer research: `docs/archive/openspec/changes/spec-tightening/research-nix-base.md`
-- Linux subsystem research: `docs/archive/openspec/changes/spec-tightening/research-linux-stack.md`
+- Nix base layer research: (archived — see git history)
+- Linux subsystem research: (archived — see git history)
 - Distributed pane: `docs/distributed-pane.md`
 - Architecture spec: `docs/architecture.md`
 - Adoption funnel: `docs/introduction.md`

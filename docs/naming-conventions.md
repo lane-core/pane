@@ -294,7 +294,7 @@ Crate names in code follow `pane-{kit}` convention:
 | Protocol | `pane-proto` | (new; wire types, service definitions) |
 | Server | `pane-server` | (new; protocol server library) |
 | Notification Kit | `pane-notify` | (new; replaces `StartWatching`) |
-| Optics | `pane-optic` | (new; composable state accessors) |
+| Optics | in `pane-proto` (monadic_lens module) | MonadicLens, AttrReader, AttrWriter |
 | Session Types | `pane-session` | (new; session-typed channels) |
 
 "Kit" is valuable vocabulary — it implies a curated, designed

@@ -2,7 +2,7 @@
 
 Pane uses two licenses, chosen by what the code does and where it runs.
 
-**BSD-3-Clause (protocol + kits):** pane-proto, pane-session, pane-app, pane-optic, pane-notify, pane-hello
+**BSD-3-Clause (protocol + kits):** pane-proto, pane-session, pane-app, pane-notify, pane-hello
 **AGPL-3.0-only (servers):** pane-comp, pane-headless, pane-server
 
 Future crates follow the same split: kits (client libraries) are BSD-3-Clause, servers (infrastructure processes) are AGPL-3.0-only.
