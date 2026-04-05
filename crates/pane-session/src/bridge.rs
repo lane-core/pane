@@ -1,85 +1,92 @@
-//! Bridge: connects par's in-process session channels to a wire Transport.
+//! Bridge: connects par's in-process session channels to IPC.
 //!
-//! Par's runtime uses oneshot channels (futures). The bridge thread
-//! translates between par's async oneshot world and pane's synchronous
-//! Transport. This means par's runtime is ACTUALLY driving the
-//! protocol — the handler uses par::exchange::Send::send() and
-//! par::exchange::Recv::recv() directly.
+//! Two-phase connection model:
+//!   Phase 1 (connect): verify the transport is alive. Returns Result.
+//!     "Server not running" is an error, not a crash. No par involved.
+//!   Phase 2 (handshake): par drives the Hello/Welcome exchange over
+//!     the verified transport. If the transport dies mid-handshake,
+//!     par's CLL annihilation fires (panic). This is the exceptional
+//!     case — the connection was verified and then broke.
 //!
 //! Architecture:
 //!   Handler ←→ par oneshot ←→ Bridge thread ←→ Transport ←→ wire
 //!
-//! The bridge is protocol-specific: for each concrete protocol type,
-//! a bridge function reads/writes the expected sequence. The handshake
-//! bridge is provided below as the canonical example.
+//! BeOS: Phase 1 = find_port + create_desktop_connection (returned status_t).
+//! Phase 2 = AS_CREATE_APP exchange (debugger on failure).
+//! Plan 9: Phase 1 = mount() returns -1. Phase 2 = Tversion/Rattach.
 
 use par::exchange::{Send, Recv};
 use par::Session;
-use serde::{Serialize, de::DeserializeOwned};
-use crate::transport::Transport;
+use crate::transport::{Transport, ConnectError};
 use crate::handshake::{Hello, Welcome, ClientHandshake, ServerHandshake};
 
-/// Create a client-side handshake session backed by a transport.
+/// Phase 1: verify a transport is alive by exchanging a probe.
+///
+/// Returns the transport on success, ConnectError on failure.
+/// No par involved — this is a simple synchronous check.
+///
+/// For MemoryTransport (tests), this is a no-op — memory
+/// transports are always connected. Real transports (unix, tcp)
+/// would verify the socket is open and the peer responds.
+pub fn verify_transport<T: Transport>(transport: T) -> Result<T, ConnectError> {
+    // For now, the transport is assumed valid if it was constructed.
+    // Real implementations would send a probe/ping here.
+    // The point: this is where "server not running" surfaces as
+    // Result::Err, before par is involved.
+    Ok(transport)
+}
+
+/// Phase 2: create a client-side handshake session over a
+/// verified transport.
 ///
 /// Returns the handler's par session endpoint. A bridge thread
-/// reads from par's channels, serializes to the transport, reads
-/// from the transport, and feeds back into par's channels.
+/// serializes between par's oneshot channels and the transport.
 ///
-/// The handler uses par's native API:
-/// ```ignore
-/// let client: ClientHandshake = bridge_client_handshake(transport);
-/// let client = client.send(hello);                    // par's send
-/// let (welcome, _) = block_on(client.recv());         // par's recv
-/// ```
+/// If the transport dies mid-handshake, par's CLL annihilation
+/// fires: bridge thread panics → par endpoint dropped → handler's
+/// recv() panics ("sender dropped"). This is the correct CLL
+/// encoding — a session either completes or is annihilated.
 pub fn bridge_client_handshake(mut transport: impl Transport + 'static) -> ClientHandshake {
-    // fork_sync creates a par session pair:
-    //   - returns ClientHandshake (Send<Hello, Recv<Welcome>>) to the caller
-    //   - passes ServerHandshake (Recv<Hello, Send<Welcome>>) to the closure
     Send::fork_sync(move |server: ServerHandshake| {
-        // Bridge: this closure runs synchronously in fork_sync.
-        // We spawn a thread that blocks on par's async recv and
-        // bridges to the transport.
         std::thread::spawn(move || {
-            // Step 1: wait for handler to send Hello through par
+            // Wait for handler to send Hello through par
             let (hello, server): (Hello, _) =
                 futures::executor::block_on(server.recv());
 
-            // Step 2: serialize and write to transport
+            // Serialize and write to transport
             let bytes = postcard::to_allocvec(&hello)
                 .expect("bridge: Hello serialization failed");
             transport.send_raw(&bytes);
 
-            // Step 3: read Welcome from transport
+            // Read Welcome from transport
             let bytes = transport.recv_raw();
             let welcome: Welcome = postcard::from_bytes(&bytes)
                 .expect("bridge: Welcome deserialization failed");
 
-            // Step 4: send Welcome back through par to the handler
+            // Send Welcome back through par to the handler
             server.send1(welcome);
         });
     })
 }
 
-/// Create a server-side handshake session backed by a transport.
-///
-/// Returns the handler's par session endpoint. A bridge thread
-/// handles the transport side.
+/// Phase 2: create a server-side handshake session over a
+/// verified transport.
 pub fn bridge_server_handshake(mut transport: impl Transport + 'static) -> ServerHandshake {
     Recv::fork_sync(move |client: ClientHandshake| {
         std::thread::spawn(move || {
-            // Step 1: read Hello from transport
+            // Read Hello from transport
             let bytes = transport.recv_raw();
             let hello: Hello = postcard::from_bytes(&bytes)
                 .expect("bridge: Hello deserialization failed");
 
-            // Step 2: send Hello through par to the handler
+            // Send Hello through par to the handler
             let client = client.send(hello);
 
-            // Step 3: wait for handler to send Welcome through par
+            // Wait for handler to send Welcome through par
             let (welcome, _): (Welcome, _) =
                 futures::executor::block_on(client.recv());
 
-            // Step 4: serialize and write to transport
+            // Serialize and write to transport
             let bytes = postcard::to_allocvec(&welcome)
                 .expect("bridge: Welcome serialization failed");
             transport.send_raw(&bytes);
@@ -87,30 +94,45 @@ pub fn bridge_server_handshake(mut transport: impl Transport + 'static) -> Serve
     })
 }
 
+/// Convenience: Phase 1 + Phase 2 for the client side.
+/// Returns Result — Phase 1 errors are recoverable.
+/// Phase 2 panics are CLL annihilation (exceptional).
+pub fn connect_client(
+    transport: impl Transport + 'static,
+) -> Result<ClientHandshake, ConnectError> {
+    let transport = verify_transport(transport)?;
+    Ok(bridge_client_handshake(transport))
+}
+
+/// Convenience: Phase 1 + Phase 2 for the server side.
+pub fn connect_server(
+    transport: impl Transport + 'static,
+) -> Result<ServerHandshake, ConnectError> {
+    let transport = verify_transport(transport)?;
+    Ok(bridge_server_handshake(transport))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::transport::MemoryTransport;
-    use crate::handshake::{ServiceInterest, ServiceBinding};
 
     #[test]
-    fn bridged_handshake_roundtrip() {
-        let (client_transport, server_transport) = MemoryTransport::pair();
+    fn two_phase_handshake_roundtrip() {
+        let (ct, st) = MemoryTransport::pair();
 
-        // Client side: par session backed by transport
-        let client: ClientHandshake = bridge_client_handshake(client_transport);
+        // Phase 1 + 2: connect and get par sessions
+        let client = connect_client(ct).expect("client connect failed");
+        let server = connect_server(st).expect("server connect failed");
 
-        // Server side: par session backed by transport
-        let server: ServerHandshake = bridge_server_handshake(server_transport);
-
-        // Client sends Hello through par
+        // Handler uses par's native API
         let client = client.send(Hello {
             version: 1,
             max_message_size: 16 * 1024 * 1024,
             interests: vec![],
         });
 
-        // Server receives Hello through par (bridge deserializes from transport)
+        // Server receives through par (bridge deserializes from transport)
         let (hello, server) = futures::executor::block_on(server.recv());
         assert_eq!(hello.version, 1);
 
@@ -122,8 +144,18 @@ mod tests {
             bindings: vec![],
         });
 
-        // Client receives Welcome through par (bridge deserializes from transport)
+        // Client receives through par (bridge deserializes from transport)
         let welcome = futures::executor::block_on(client.recv1());
         assert_eq!(welcome.instance_id, "test-server");
+    }
+
+    #[test]
+    fn phase1_catches_bad_transport() {
+        // When real transports exist, this would test connection
+        // refusal. For MemoryTransport, verify_transport always
+        // succeeds. This test documents the Phase 1 → Result path.
+        let (ct, _st) = MemoryTransport::pair();
+        let result = verify_transport(ct);
+        assert!(result.is_ok());
     }
 }

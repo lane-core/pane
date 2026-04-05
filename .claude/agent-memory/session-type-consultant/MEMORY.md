@@ -23,3 +23,4 @@
 - [EAct homeroll analysis](project_eact_homeroll_analysis.md) -- SUPERSEDES three-tier: par+EAct sufficient for binary, no MPST layer needed, 4 critical invariants
 - [architecture.md review](project_architecture_next_review.md) -- spec review (now promoted to architecture.md): typed filters resolved object-safety, 2 minor
 - [Three-crate code review](project_three_crate_review.md) -- updated 2026-04-03: 2 moderate (Messenger crate boundary, Chan no Drop), 5 minor, EAct+CLL sound
+- [Handshake disconnect analysis](project_handshake_disconnect_analysis.md) -- panic=correct CLL encoding, error-through-channel violates 3-channel separation, 4 conditions

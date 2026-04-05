@@ -1,25 +1,21 @@
 ---
 name: pane-session crate code review findings
-description: Code review of pane-session (2026-03-22) — typestate correct, crash safety holds, calloop integration needs rework before Phase 3
+description: Code review of pane-session (2026-04-03) — par drives protocol directly (no Chan wrapper), bridge thread pattern, transport death propagation analysis
 type: project
 ---
 
-Reviewed all source and test files in pane-session. Full review at `openspec/changes/spec-tightening/review-pane-session-code.md`.
+Reviewed pane-session after redesign where par is the direct session channel (no Chan<S,T> wrapper).
 
-**Core verdict:** Chan<S, T> typestate is sound. Crash safety guarantee holds (Disconnected error, not panic). Unix transport framing works. Good Phase 2 deliverable.
+**Architecture:** Handler <-> par oneshot <-> bridge thread <-> Transport <-> wire. Bridge created via par::fork_sync, spawns std::thread, uses futures::executor::block_on for par's async recv.
 
-**Critical issues:**
-1. No max message size check in `recv_raw` — malformed length prefix causes unbounded allocation (unix.rs:37, calloop.rs:109)
-2. Calloop `SessionSource` uses `try_clone()` + `set_nonblocking()` toggle — affects shared file description, can block compositor on partial messages
+**Core verdict:** Bridge pattern is sound and has good BeOS lineage (structurally identical to app_server's per-client ServerApp thread). Thread-per-bridge is correct and acceptable cost. fork_sync + block_on is mechanically correct.
 
-**Moderate issues:**
-3. Calloop integration bypasses session types entirely (raw bytes, manual deser)
-4. Framing logic duplicated between unix.rs and calloop.rs
-5. `ConnectionAborted` not mapped to `Disconnected` in error.rs
-6. `data.len() as u32` in send_raw silently truncates on >4GB
+**Key issue — transport death propagation:** Transport panics on disconnect. Bridge thread unwinds, dropping par session endpoint. Par's internal `.expect("sender dropped")` / `.expect("receiver dropped")` causes handler thread to panic. This is correct for protocol violations but wrong for expected transport failures (network drop, server restart). Be's ports returned B_BAD_PORT_ID for recoverable disconnects. Current design is defensible IF watchdog/restart story is solid, but should be an explicit documented decision. For ephemeral connections (network services, remote pane), will eventually need Result-based error propagation.
 
-**Architecture note:** Current calloop path does client I/O from compositor main loop. Production architecture (per-pane threads with Chan, calloop only for connection accept + draw loop) is the right design and eliminates the calloop blocking issues. The calloop rework should happen as part of Phase 3 per-pane threading, not as a standalone fix.
+**Par internals (v0.3.10):** Each send() calls fork_sync internally, creating a fresh oneshot pair for the continuation. No custom Drop impl on Send/Recv — relies on futures::oneshot::Canceled for peer-drop detection. #[must_use] on both types. send is non-blocking, recv is async (oneshot wait).
 
-**Why:** The session type primitives are the foundation for all pane protocols. Getting them right early prevents compounding errors. The calloop issues are real but scoped — they affect the compositor integration path, not the primitives themselves.
+**Previous issues resolved by redesign:** Old Chan wrapper, calloop blocking mode, framing duplication — all eliminated. Transport trait is now minimal (send_raw/recv_raw, panics on disconnect).
 
-**How to apply:** When reviewing Phase 3 protocol work, verify it uses Chan on per-pane threads (not raw calloop dispatch). When the calloop rework happens, reference the blocking mode and buffering issues from this review.
+**Why:** Session layer is the foundation for all pane IPC. The par-direct design is cleaner than the old Chan wrapper and gets real CLL guarantees. The transport death issue is the main thing to resolve before production use.
+
+**How to apply:** When reviewing protocol extensions beyond handshake, verify bridge functions march through protocol in lockstep. When transport error handling is designed, reference the panic propagation analysis from this review.
