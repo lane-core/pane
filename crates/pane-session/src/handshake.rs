@@ -1,10 +1,11 @@
 //! Handshake types for the pane wire protocol.
 //!
-//! The handshake is a session-typed exchange:
+//! The handshake is a par session-typed exchange:
 //!   Client → Server: Hello
 //!   Server → Client: Welcome
 //!
-//! Defined as par session types, run over Chan<S>.
+//! Protocol types defined with par. Executed over a Transport
+//! via the bridge module.
 
 use serde::{Serialize, Deserialize};
 use pane_proto::ServiceId;
@@ -46,40 +47,4 @@ pub struct ServiceBinding {
     pub service: ServiceId,
     pub session_id: u8,
     pub version: u32,
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::transport::MemoryTransport;
-    use crate::Chan;
-
-    #[test]
-    fn handshake_roundtrip() {
-        let (ta, tb) = MemoryTransport::pair();
-
-        // Client sends Hello
-        let client: Chan<ClientHandshake, _> = Chan::new(ta);
-        let client = client.send(Hello {
-            version: 1,
-            max_message_size: 16 * 1024 * 1024,
-            interests: vec![],
-        });
-
-        // Server receives Hello, sends Welcome
-        let server: Chan<ServerHandshake, _> = Chan::new(tb);
-        let (hello, server) = server.recv();
-        assert_eq!(hello.version, 1);
-
-        server.send1(Welcome {
-            version: 1,
-            instance_id: "test-server-1".into(),
-            max_message_size: 16 * 1024 * 1024,
-            bindings: vec![],
-        });
-
-        // Client receives Welcome
-        let welcome = client.recv1();
-        assert_eq!(welcome.instance_id, "test-server-1");
-    }
 }
