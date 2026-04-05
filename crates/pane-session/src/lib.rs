@@ -14,6 +14,7 @@ pub use par;
 pub mod transport;
 pub mod chan;
 pub mod handshake;
+pub mod bridge;
 
 pub use chan::Chan;
 pub use transport::Transport;
