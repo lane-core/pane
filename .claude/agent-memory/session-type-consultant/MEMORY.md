@@ -29,3 +29,4 @@
 - [Optics x session types deliberation](project_optics_session_deliberation.md) -- no unified calculus, linear lenses=obligation handles, 8 findings, three-concern separation validated
 - [Session/optic boundary rules](project_boundary_rules.md) -- R1-R10 implementer rules, obligation handle placement, cartesian/linear split verified against code
 - [Language deliberation](project_language_deliberation.md) -- Haskell/OCaml vs Rust+par: stay with Rust, affine gap compensated, OCaml CBV real but narrow
+- [Wire framing analysis](project_wire_framing_analysis.md) -- sentinel collision, reserve 0xFF, I12 framing/looper split, Frame codec type+tests
