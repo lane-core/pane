@@ -6,7 +6,6 @@ description = "Protocol vocabulary for pane. Traits and types for handler dispat
 license = "BSD-3-Clause"
 
 [dependencies]
-fp-library = { version = "0.15", features = ["serde", "rayon"] }
 serde = { version = "1", features = ["derive"] }
 uuid = { version = "1", features = ["v5", "serde"] }
 
