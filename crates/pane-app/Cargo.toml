@@ -1,0 +1,12 @@
+[package]
+name = "pane-app"
+version = "0.1.0"
+edition = "2021"
+description = "The EAct actor framework for pane. Looper, Messenger, Pane, PaneBuilder, Dispatch."
+license = "BSD-3-Clause"
+
+[dependencies]
+pane-session = { path = "../pane-session" }
+
+[dev-dependencies]
+serde = { version = "1", features = ["derive"] }
