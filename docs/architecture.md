@@ -12,112 +12,108 @@ into.
 
 ---
 
-## Formal Foundation
+## Foundation
 
-Three published formalisms, one per layer:
+Three layers, each grounded in published work:
 
 ```
-par (CLL — Strba)            binary channel correctness
-  ↓ adapted for IPC
-pane-session                  transport, serialization, crash safety
+par (Strba)              binary session types with duality
+  ↓ bridged to IPC
+pane-session             transport, serialization, handshake
   ↓ composed into actors
-pane-app (EAct — Fowler et al.)   actor discipline over multiple sessions
+pane-app                 single-threaded actor dispatch
 ```
 
-**par** (Michal Strba, https://github.com/faiface/par) is a CLL
-session type library for Rust. CLL (classical linear logic, Wadler
-"Propositions as Sessions" JFP 2014) governs binary channel
-correctness: Send/Recv duality, branching, streaming. par is
-complete per its author. pane-session uses par as a direct
-dependency. The handler uses par's native Send::send() and
-Recv::recv() API directly. Bridge threads (spawned via par's
-fork_sync) mediate between par's in-process oneshot channels
-and the Transport trait, serializing with postcard for IPC.
-Par's session types drive the handshake; the active phase uses
-calloop + typed enum dispatch. Sessions panic on disconnect
-(the looper's catch_unwind boundary is the crash safety
-mechanism). Two-phase connect: Phase 1 verifies the transport
-(returns Result), Phase 2 runs the par-driven handshake.
+**par** (Michal Strba, https://github.com/faiface/par) provides
+session-typed binary channels with duality checking. pane-session
+uses par as a direct dependency. The handler calls par's
+Send::send() and Recv::recv() directly. Bridge threads (spawned
+via par's fork_sync) serialize between par's in-process oneshot
+channels and the Transport trait using postcard. Par drives the
+handshake; the active phase uses calloop + typed enum dispatch.
+Sessions panic on disconnect — the looper's catch_unwind
+boundary converts this to a structured exit. Two-phase connect:
+Phase 1 verifies the transport (returns Result), Phase 2 runs
+the par-driven handshake.
 
-**EAct** (Fowler et al., "Safe Actor Programming with Multiparty
-Session Types") governs how one actor interleaves work across
-multiple sessions. pane-app IS the EAct framework:
+Design reference: Wadler, "Propositions as Sessions" (JFP 2014).
 
-| EAct concept | pane-app |
+**pane-app** provides single-threaded actor dispatch over multiple
+session endpoints. Each pane is an actor: one thread, sequential
+message dispatch, multiple protocol bindings. The handler store
+maps protocols to dispatch functions (static, from open_service)
+and request tokens to reply callbacks (dynamic, from send_request).
+
+Design reference: Fowler et al., "Safe Actor Programming with
+Multiparty Session Types" (EAct).
+
+| Concept | pane-app |
 |---|---|
 | Actor | Handler impl (one per pane) |
-| Handler store σ | Handles\<P\> impls + Dispatch\<H\> entries |
-| E-Suspend | `send_request` installs Dispatch entry |
-| E-React | Reply arrives, entry consumed, callback fires |
-| E-Reset | Handler returns Flow (back to idle — both Continue and Stop) |
-| E-Raise | panic → catch_unwind (actor annihilated) |
-| Progress | I6 + compliant protocols → system reduces |
-| Global Progress | I2/I3/I8 + event-driven dispatch → eventual progress |
+| Handler store | Handles\<P\> fn pointers + Dispatch\<H\> entries |
+| Install callback | `send_request` installs Dispatch entry |
+| Consume callback | Reply arrives, entry consumed, callback fires |
+| Normal return | Handler returns Flow (both Continue and Stop) |
+| Actor failure | panic → catch_unwind |
+| Progress | I6 (single-threaded) + compliant protocols |
+| Global Progress | I2/I3/I8 + event-driven dispatch |
 
-<!-- BeOS: BLooper = EAct actor. BHandler chain = σ. The formalism
-proves why Be worked and reveals where it was unsound (dispatch
-re-entrancy, untyped messages, no coverage checking). -->
+Design heritage: BeOS BLooper — one thread, one message queue,
+sequential dispatch. BHandler chain mapped to handler store.
 
-**Optic discipline** (Clarke et al.) formalizes what Plan 9
-achieved through filesystem convention. `/proc/N/status` (a
-read-only lens onto process state), rio's per-window synthetic
-files, per-process namespaces — optic projections. The optic
-laws (GetPut, PutGet, PutPut) guarantee consistency between
-views. Session types govern protocol relationships; optics
-govern state-access relationships.
+**Optics** guarantee consistency between handler state and its
+namespace projection. The optic laws (GetPut, PutGet, PutPut)
+ensure that reading a value from `/pane/<n>/attrs/<name>` and
+writing it back doesn't corrupt state, and that writing then
+reading returns what was written. Session types govern protocol
+relationships; optics govern state-access relationships.
+
+Design reference: Clarke et al., profunctor optics. Plan 9
+heritage: /proc/N/status as read-only projection of kernel state.
 
 ### Composition guarantee
 
-CLL duality (HasDual) gives binary compliance — each binary
-session's dual types match (Wadler JFP 2014, Theorem 1: cut
-elimination = deadlock freedom for binary sessions). EAct's
-Progress theorem (Thm 3.10) requires compliant protocols +
-well-typed actors; CLL duality provides compliance. The single-
-threaded execution model (I6) is pane's primary defense against
-inter-session deadlocks, corresponding to EAct's event-driven
-argument (§4.2.2, Progress). Global Progress requires handler termination
-(I3) and no blocking in handlers (I2/I8).
+Par's duality (Session::Dual) ensures each binary session's
+endpoints match. Single-threaded dispatch (I6) prevents
+inter-session deadlocks — the handler processes one event at
+a time, never blocking on one session while another needs
+attention. Handler termination (I3) and no blocking (I2/I8)
+ensure the looper always returns to idle.
 
-Conditional protocol fidelity: if the developer's code type-checks
-against par's session types and consumes every intermediate
-session endpoint, the resulting protocol follows the declared
-structure. The consumption condition is enforced by par's
-`#[must_use]` and Drop-based failure compensation (I4).
+Protocol fidelity: if par's session types are consumed (not
+dropped), the protocol follows the declared structure. The
+consumption condition is enforced by `#[must_use]` and Drop-
+based failure compensation (I4).
 
-No MPST layer. EAct handles multi-session composition bottom-up
-(correct binary sessions + correct actor discipline = correct
-system). If multi-party protocols are ever needed, an MPST layer
-can be added without changing the binary channel substrate.
-
-<!-- Plan 9 was bottom-up too: each file server spoke 9P correctly,
-composition emerged from the namespace. No global choreography. -->
+Multi-session composition is bottom-up: correct binary sessions
++ correct actor discipline = correct system. No global
+choreography layer. Each connection is bilateral; the actor
+composes them.
 
 ### Three error channels
 
-| Channel | Mechanism | Formal rule | Audience |
-|---------|-----------|-------------|----------|
-| Protocol | ReplyPort, ServiceLost | CLL ⊕ branching | Other participants |
-| Control | Flow::Stop / Continue | EAct E-Reset | The looper |
-| Crash | panic → catch_unwind | EAct E-Raise | Looper + server |
+| Channel | Mechanism | Audience |
+|---------|-----------|----------|
+| Protocol | ReplyPort, ServiceLost | Other participants |
+| Control | Flow::Stop / Continue | The looper |
+| Crash | panic → catch_unwind | Looper + server |
 
-The channels are disjoint. No Result in the handler API. Handler
-methods return Flow. EAct has exactly three actor thread outcomes:
-E-Reset (returns value), E-Suspend (installs handler), E-Raise
-(annihilation). There is no fourth.
+The channels are disjoint. Handler methods return Flow, not
+Result. Three outcomes for a handler invocation: normal return
+(Flow), callback installation (send_request), or failure (panic).
 
-Protocol errors (channel 1) are within-session CLL branching — the
-error response IS the protocol. The handler continues.
+Protocol errors (channel 1) are part of the session — the error
+response is a valid protocol message. The handler continues.
 
-Control (channel 2) is the handler's lifecycle decision — continue
-or stop. EAct E-Reset.
+Control (channel 2) is the handler's lifecycle decision.
 
-Crash (channel 3) is unrecoverable failure. panic → catch_unwind at
-the looper boundary → Drop fires obligation compensation → server
-notified. EAct E-Raise → zap propagation.
+Crash (channel 3) is unrecoverable failure. The looper catches
+the panic, fires obligation compensation via Drop, and notifies
+the server.
 
-<!-- BeOS had exactly these three: SendReply(error) for protocol,
-QuitRequested() → bool for control, thread death for crash.
-Handler methods returned void. -->
+Design heritage: BeOS had the same three — SendReply(error) for
+protocol, QuitRequested() → bool for control, thread death for
+crash.
 
 ---
 
@@ -202,9 +198,9 @@ machine-comparable); the name is the directory entry. -->
 
 ```rust
 /// A handler that can receive messages from protocol P.
-/// In EAct, σ maps session endpoints (s,p) to handler values.
+/// Each Handles<P> impl handles messages for one protocol.
 /// Under pane's one-service-per-protocol constraint, each
-/// Handles<P> impl corresponds to one σ entry.
+/// impl corresponds to one entry in the handler store.
 pub trait Handles<P: Protocol> {
     fn receive(&mut self, msg: P::Message) -> Flow;
 }
@@ -212,7 +208,7 @@ pub trait Handles<P: Protocol> {
 
 `#[pane::protocol_handler(P)]` attribute macro on an impl block
 generates the `Handles<P>::receive` match from named methods.
-Rust's exhaustive match IS the coverage guarantee.
+Rust's exhaustive match provides the coverage guarantee.
 
 The macro generates two dispatch surfaces:
 1. **Value dispatch** — `Handles<P>::receive` match over `P::Message`
@@ -286,8 +282,8 @@ attribute macro needed for the common case.
 ### Flow
 
 ```rust
-/// Handler control flow. EAct E-Reset: the handler returns
-/// control to the looper with a lifecycle decision.
+/// Handler control flow. Both variants represent normal handler
+/// completion — the handler finished without panic.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Flow {
     Continue,
@@ -374,7 +370,7 @@ running process. -->
 ```rust
 impl Messenger {
     /// Send a request, register typed reply callback.
-    /// By analogy with EAct E-Suspend: installs one-shot entry in σ.
+    /// Installs a one-shot reply callback in the handler store.
     pub fn send_request<H, R>(
         &self,
         target: &Messenger,
@@ -394,7 +390,7 @@ Dispatch\<H\> is a `HashMap<(ConnectionId, Token), Entry>` —
 the dynamic part of σ. Service dispatch (fn pointers) is the
 static part. Both are looper-internal.
 
-Lifecycle (by analogy with EAct):
+Lifecycle of a Dispatch entry:
 - **Install** (cf. E-Suspend): send_request installs entry
 - **Idle**: entry waits; looper services other sessions
 - **Dispatch** (cf. E-React): reply arrives, entry consumed, callback fires
@@ -848,8 +844,8 @@ check, panic on violation (I8).
 
 - **I1**: `panic = unwind` in all pane binaries (Drop must fire).
   Backstop: fd hangup detection.
-- **I2**: No blocking calls in handler methods (EAct Global
-  Progress — requires handler termination).
+- **I2**: No blocking calls in handler methods. Required for the
+  looper to remain responsive across all session endpoints.
 - **I3**: Handler callbacks terminate (return Flow).
 - **I4**: Typestate handles: `#[must_use]` + Drop compensation.
 - **I5**: Filters see only Clone-safe Message variants.
@@ -1224,9 +1220,10 @@ Token allocation is internal to the framework.
    disconnect (same model as par). Two-phase connect: Phase 1
    verifies transport (Result), Phase 2 runs par handshake.
 
-4. **EAct, not MPST.** Bottom-up composition (correct binaries +
-   correct actors = correct system). MPST can be added later for
-   multi-party protocols without changing the channel substrate.
+4. **Bottom-up composition.** Correct binary sessions + correct
+   actor discipline = correct system. Each connection is bilateral;
+   the actor composes them. Multi-party protocols can be added
+   later without changing the channel substrate.
 
 5. **No phases.** The spec describes the full architecture.
    Implementation order in PLAN.md.
