@@ -3,85 +3,106 @@
 Each entry: what Be called it, what pane calls it, why.
 Default policy: use Be name (snake_case). Deviations are exceptions.
 
-## Type Names
+Verified against `docs/architecture.md` as of 2026-04-05.
+Entries marked (deferred) are planned but not yet in the spec.
+
+---
+
+## Core Types
 
 | Be | pane | Rationale |
 |----|------|-----------|
-| `BApplication` | `App` | Widespread contemporary convention (gtk, winit). |
+| `BApplication` | `App` | Widespread convention (gtk, winit). |
 | `BWindow` | `Pane` | Architectural: pane is the universal object, not a window. |
-| `BMessageFilter` | `MessageFilter` | Faithful (dropped B prefix) |
-| `BMessage` | `Message` | Faithful. Clone-safe value events only; obligations extracted to internal types. |
-| `BMessenger` | `Messenger` | Faithful. Wraps scoped Handle + ServiceRouter (routes by capability, not server). |
-| `BHandler` | `Handler` | Faithful. Lifecycle + messaging only (~11 methods). |
-| `BWindow` (display methods) | `Handles<Display>` | Same `Protocol + Handles<P>` mechanism as all services — display is an opt-in capability, not a special trait. |
-| `BMenuBar`/`BMenuItem` | `Tag`/`CommandBuilder` | Architectural: command surface, not menu bar. |
-| `BMessageRunner` | `TimerToken` (receipt from `send_periodic_fn`) | Rule 2: method on host, not standalone type. Cancel-on-drop matches BMessageRunner's cancel-on-destruct. |
-| `property_info` | `PropertyInfo` | Faithful adaptation. Carries operations, specifier forms, value type. |
-| `BHandler::ResolveSpecifier` + `GetSupportedSuites` | `ScriptableHandler` trait | Separate companion trait to Handler. Be had these on BHandler because every handler participated in the scripting chain; pane has one handler per pane. |
-| (none) | `Protocol` | Novel: typed service relationship linking ServiceId + Message type. |
-| (none) | `Handles<P>` | Novel: per-protocol dispatch trait. Derive macro generates dispatch. |
-| (none) | `Flow` | Novel: `Continue`/`Stop` replaces `bool` return. Clearer than true=continue. |
-| (none) | `ServiceId` | Novel: UUID + reverse-DNS name for service identity. Replaces string-based signatures. |
-| (none) | `CompletionReplyPort` | Novel: typed ownership handle for completion responses. Consumed by `.reply()`, Drop sends empty list. |
-| (none) | `ScriptReply` | Novel: newtype over ReplyPort for scripting response schema enforcement. |
-| (none) | `CancelHandle` | Novel: handle for cancelling outstanding requests. Drop = no-op (request completes normally), `.cancel()` = voluntary abort. |
-| (none) | `Dispatch<H>` | Novel: per-request typed dispatch entries for request/reply. Replaces ghost state in handler. |
-| `filter_result` | `FilterAction` | More descriptive. `Pass`/`Transform`/`Consume` (three-way, not two-way). |
-| `ReplyPort` | `ReplyPort` | Novel: Be had no explicit reply handle (reply was via `BMessage::SendReply`). |
-| `PaneId`, `PaneGeometry`, `PaneTitle` | `Id`, `Geometry`, `Title` | Crate path is the namespace — `pane_proto::Id`, not `PaneId`. |
+| `BHandler` | `Handler` | Faithful (dropped B prefix). Lifecycle methods only. |
+| `BMessenger` | `Messenger` | Faithful. Wraps Handle + ServiceRouter. |
+| `BMessage` | `Message` trait | Faithful. Clone-safe value events only; obligations extracted to separate callbacks. |
+| `BMessageFilter` | `MessageFilter<M>` | Faithful. Typed per-protocol, not erased. |
+| `BLooper` | (looper, internal) | calloop event loop. Not a public type — the looper is the dispatch mechanism inside run_with. |
+| `BMessageRunner` | `TimerToken` | Receipt from `set_pulse_rate()`. Cancel-on-drop matches BMessageRunner's cancel-on-destruct. |
+| `property_info` | `PropertyInfo` | Faithful. Returned by `Handler::supported_properties()`. |
+| `filter_result` | `FilterAction<M>` | `Pass`/`Transform(M)`/`Consume` (three-way, not two-way). |
+| `BMenuBar`/`BMenuItem` | `Tag`/`CommandBuilder` | Architectural: command surface, not menu bar. Commands declared at pane creation via Tag. |
+
+## Novel Types (no Be ancestor)
+
+| pane | Role |
+|------|------|
+| `Protocol` | Typed service relationship: ServiceId + Message type. |
+| `Handles<P>` | Per-protocol dispatch trait. Macro generates exhaustive match. |
+| `Flow` | `Continue`/`Stop`. Handler's lifecycle decision. |
+| `ServiceId` | UUID + reverse-DNS name. Deterministic UUID prevents collisions. |
+| `ServiceHandle<P>` | Live connection to a service. Drop → RevokeInterest. |
+| `PaneBuilder<H>` | Setup phase. Generic over H for Handles<P> bounds. Consumed by run_with. |
+| `Dispatch<H>` | Per-request typed dispatch entries. Replaces ghost state in handler. |
+| `CancelHandle` | Sender's handle for outstanding request. Drop = no-op, .cancel() = voluntary abort. |
+| `ReplyPort` | Obligation handle for replies. Consumed by .reply(), Drop → ReplyFailed. |
+| `CompletionReplyPort` | (in architecture.md obligation list, details deferred) |
+| `ClipboardWriteLock` | Obligation handle. Consumed by .commit(), Drop → Revert. |
+| `CreateFuture` | Obligation handle. Drop → cancel pending creation. |
+| `AppPayload` | Marker trait (Clone + Send + 'static). Prevents smuggling obligation handles via post_app_message. |
 
 ## Handler Methods
 
 | Be | pane | Rationale |
 |----|------|-----------|
-| `QuitRequested()` | `close_requested()` | Unified vocabulary with Message::CloseRequested. |
-| `Pulse()` | `pulse()` | Faithful |
-| `FrameResized()` | `resized()` | On Handles<Display>. Wayland has no position; deferred. |
-| `WindowActivated(bool)` | `activated()`/`deactivated()` | On Handles<Display>. Split — better Rust API. |
-| `KeyDown()`/`KeyUp()` | `key(event)` | On Handles<Display>. Collapsed — Rust tagged unions. |
-| `MouseDown()`/`MouseUp()`/`MouseMoved()` | `mouse(event)` | On Handles<Display>. Collapsed — same reason. |
-| (none — implicit via `IsSourceWaiting`) | `request_received()` | On Handler. Explicit request-reply hook with `ReplyPort`. |
-| `AddCommonFilter()` | `add_filter()` | One filter level only. |
-| `AddShortcut()` | `add_shortcut()` | Faithful |
+| `QuitRequested()` | `close_requested()` | Unified vocabulary with LifecycleMessage::CloseRequested. |
+| `Pulse()` | `pulse()` | Faithful. |
+| (none) | `ready()` | Novel: always the first event delivered. |
+| (none) | `disconnected()` | Novel: primary connection lost. |
+| (none) | `pane_exited(pane, reason)` | Novel: death notification for monitored panes. |
+| (none) | `quit_requested() -> bool` | Novel: pre-close query. |
+| (none) | `supported_properties()` | Novel: scripting property declaration. |
+| (none) | `request_received(service, msg, reply)` | Novel: explicit request-reply hook with ReplyPort. |
+
+Display-specific methods (FrameResized, WindowActivated, KeyDown,
+MouseDown, etc.) are on `Handles<Display>`, not Handler. The
+protocol_handler macro generates named methods from Display's
+Message enum. Specific display message variants are deferred
+pending Display protocol design.
 
 ## Messenger Methods
 
 | Be | pane | Rationale |
 |----|------|-----------|
-| `SendMessage()` | `send_message()` | Faithful |
-| `SendMessage(msg, &reply)` (sync) | `send_and_wait()` | Tier 3: Rust has no overloading. Name describes what happens to the caller's thread. |
-| (none — async with typed callback) | `send_request()` | Novel: returns `CancelHandle`, reply routes to typed callback via Dispatch entry. No ghost state. |
-| `PostMessage()` (app-defined) | `post_app_message()` | Faithful. `T: AppPayload` (Clone + Send + 'static) excludes obligation handles at compile time. |
-| `SetTitle()` | `set_title()` | Faithful |
-| `SetPulseRate()` | `set_pulse_rate()` | Faithful (on Messenger due to Rust ownership) |
-| `ResizeTo()` | `resize_to()` | Faithful |
-| `SetSizeLimits()` | `set_size_limits()` | Faithful |
-| `Hide()`/`Show()` | `set_hidden(bool)` | Single method — Rust-idiomatic. |
+| `PostMessage()` (app-defined) | `post_app_message<T: AppPayload>()` | Faithful. AppPayload bound excludes obligation handles at compile time. |
+| `SendMessage(msg, handler, &reply)` (sync) | `send_and_wait()` | Distinct name — Rust has no overloading. |
+| (none — async with typed callback) | `send_request()` | Novel: returns CancelHandle, reply routes to typed callback via Dispatch entry. |
+| (none) | `set_content(data)` | Novel: set the pane's semantic content. |
+| (none) | `set_pulse_rate(duration) -> TimerToken` | Faithful concept, returns cancel handle. |
+| (none) | `set_pointer_policy(policy)` | Novel. |
+
+Additional display/window methods (set_title, resize_to,
+set_size_limits, show/hide) are deferred pending Display protocol
+and compositor design.
 
 ## Filter Methods
 
 | Be | pane | Rationale |
 |----|------|-----------|
-| Static criteria (`message_delivery`, `message_source`) | `matches(&self, event)` | Novel: runtime predicate replacing static enum criteria. Named `matches` (standard predicate vocabulary). |
-
-## Builder Patterns (Tier 3 Exception)
-
-Builder methods use bare names per Rust convention, not `set_`/`add_` prefixes:
-`Tag::new("Title").short("T").command(cmd(...))`. Be didn't have builders (used multi-param constructors). Haiku's `BLayoutBuilder` kept `Set`/`Add` but that was C++. Documented as a tier 3 exception in naming conventions.
+| Static criteria (message_delivery, message_source) | `matches(&self, msg) -> bool` | Runtime predicate replaces static enum criteria. |
+| `B_DISPATCH_MESSAGE` / `B_SKIP_MESSAGE` | `FilterAction::Pass` / `Transform(M)` / `Consume` | Three-way. Transform is novel — modify in-flight. |
 
 ## Structural
 
 | Be | pane | Rationale |
 |----|------|-----------|
-| `MessageReceived` switch | `Handles<P>` derive macro + exhaustive match | Compiler catches missing variants. Typed per-protocol dispatch. |
-| `Lock()`/`Unlock()` | `&mut self` on Handler | Borrow checker replaces locking. |
-| Dynamic `BMessage` fields | Typed `Message` enum + filesystem scripting | Two roles separated. |
-| Deep view traversal | Pane boundary principle — declared Attributes only | Stable scripting contracts. |
-| Unbounded kernel port | Unbounded calloop channel | Be's kernel ports were unbounded; pane matches. |
+| `MessageReceived` switch | `Handles<P>` macro + exhaustive match | Compiler catches missing variants. Typed per-protocol. |
+| `Lock()`/`Unlock()` | `&mut self` on Handler | Borrow checker replaces locking. See `beapi_internals` for full rationale. |
+| Dynamic `BMessage` fields | Typed `Message` enum + filesystem scripting | Two roles separated. Protocol messages are typed; external scripting uses pane-fs. |
+| Single handler with all methods | `Handler` (lifecycle) + `Handles<P>` per protocol | Display is an opt-in capability, not the default. All protocols use the same mechanism. |
+| `application/x-vnd.*` strings | `ServiceId` (UUID + reverse-DNS) | Deterministic UUID survives renames. See `beapi_internals` gap 5 for roster comparison. |
+| Monolithic message enum | Clone-safe `Message` + separate obligation handles | Forced by Serialize bound. Obligation handles contain LooperSender — not serializable. |
+| reply_received/reply_failed on Handler | Dispatch entries with typed callbacks | No ghost state. No Box<dyn Any> downcast at handler surface. |
 | `be_app` global | `App` is a held value | No globals. |
-| No crash monitoring | `Messenger::monitor()` + `Message::PaneExited` | Erlang-style. |
-| C++ overloading for SendMessage | Distinct method names (`send_message`, `send_and_wait`, `send_request`) | Tier 3: Rust doesn't overload. |
-| Single handler with all methods | Handler (lifecycle) + `Handles<P>` (Display, Clipboard, Routing, all protocols) | Display is a capability, not the default. All protocols use the same Handles<P> mechanism. |
-| `application/x-vnd.*` strings | `ServiceId` (UUID + reverse-DNS) | Deterministic UUID survives renames; reverse-DNS prevents collisions. |
-| Monolithic message enum | Clone-safe `Message` + internal obligation types | EAct KP2: no channel endpoints in message values. |
-| `reply_received` / `reply_failed` on Handler | Dispatch entries with typed callbacks | No ghost state. No `Box<dyn Any>` downcast at handler surface. |
+| Unbounded kernel port | Unbounded calloop channel | Be's kernel ports were unbounded; pane matches. |
+| Deep view traversal for scripting | Declared properties only (PropertyInfo) | Stable scripting contracts at pane boundary. |
+| Per-window thread (BWindow) | Single-threaded calloop per pane | Same responsiveness, no lock contention. See `beapi_internals` gap 2+7. |
+
+## Deferred (not yet in architecture.md)
+
+- Display-specific Messenger methods (set_title, resize_to, etc.)
+- Death monitoring API (pane_exited hook exists; how to register interest is unspecified)
+- Scripting handler (request_received exists; specifier chain and suite negotiation deferred)
+- Dynamic filter management (add_filter/remove_filter API shape)
+- Dynamic shortcut management (commands declared via Tag at creation; runtime mutation deferred)

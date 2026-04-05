@@ -13,9 +13,27 @@ from the Fourth Edition distribution:
 
 - **man/** — All man page sections (1-8), 565 pages in troff format
 - **papers/** — Troff sources (.ms) and HTML for the system papers
+- **src/** — Curated source subset (119 files, ~1MB) for design consultation
 
 Binary-generated files (PostScript, PDF) are excluded to keep the
 repo lean. The troff sources are the authoritative versions.
+
+The source subset contains the subsystems pane draws from directly:
+
+    src/sys/src/cmd/rio/       — window system (compositor reference)
+    src/sys/src/cmd/plumb/     — plumber (routing reference)
+    src/sys/src/cmd/exportfs/  — exportfs (namespace export)
+    src/sys/src/cmd/acme/      — acme editor (integration paradigm)
+    src/sys/src/cmd/import.c   — import command (remote mount)
+    src/sys/src/cmd/cpu.c      — cpu command (reverse-export)
+    src/sys/src/libthread/     — thread library (event loop reference)
+    src/sys/src/lib9p/         — 9P server library
+    src/sys/src/libplumb/      — plumb message library
+    src/sys/src/9/port/devpipe.c  — pipe device
+    src/sys/src/9/port/devproc.c  — proc device
+    src/sys/src/9/port/devmnt.c   — mount driver (9P multiplexer)
+    src/sys/src/9/port/devsrv.c   — srv device
+    src/sys/src/9/port/devcons.c  — console device
 
 ## How to use
 
