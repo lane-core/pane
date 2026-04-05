@@ -176,7 +176,7 @@ application-defined protocol messages.
 ```rust
 struct ModelProtocol;
 impl Protocol for ModelProtocol {
-    const SERVICE_ID: ServiceId = service_id!("com.pane.editor.model");
+    fn service_id() -> ServiceId { ServiceId::new("com.pane.editor.model") }
     type Message = ModelMessage;
 }
 

@@ -18,7 +18,7 @@ docs/
 ├── archive/scripting-optics-design.md — optics × routing exploration (archived: stale)
 ├── introduction.md               — user-facing intro
 ├── development-methodology.md    — development approach
-├── agent-perspective.md          — agent integration perspective
+├── archive/agent-perspective.md   — agent integration perspective (archived)
 ├── agents.md                     — agent integration
 ├── licensing.md                  — license structure
 ├── workflow.md                   — this file

@@ -194,13 +194,13 @@ pub struct ServiceId {
 
 impl ServiceId {
     /// UUIDv5 from reverse-DNS name. Not const fn (SHA-1).
-    /// Use service_id! proc-macro for const SERVICE_ID.
     pub fn new(name: &'static str) -> Self { ... }
 }
 
 /// A protocol relationship between a pane and a service.
 pub trait Protocol {
-    const SERVICE_ID: ServiceId;
+    /// Service identity. Not const (UUIDv5 requires SHA-1).
+    fn service_id() -> ServiceId;
     type Message: Message;
 }
 ```
@@ -1031,25 +1031,25 @@ All use Protocol + Handles\<P\> + `#[pane::protocol_handler]`.
 ```rust
 struct Lifecycle;
 impl Protocol for Lifecycle {
-    const SERVICE_ID: ServiceId = service_id!("com.pane.lifecycle");
+    fn service_id() -> ServiceId { ServiceId::new("com.pane.lifecycle") }
     type Message = LifecycleMessage;
 }
 
 struct Display;
 impl Protocol for Display {
-    const SERVICE_ID: ServiceId = service_id!("com.pane.display");
+    fn service_id() -> ServiceId { ServiceId::new("com.pane.display") }
     type Message = DisplayMessage;
 }
 
 struct Clipboard;
 impl Protocol for Clipboard {
-    const SERVICE_ID: ServiceId = service_id!("com.pane.clipboard");
+    fn service_id() -> ServiceId { ServiceId::new("com.pane.clipboard") }
     type Message = ClipboardMessage;
 }
 
 struct Routing;
 impl Protocol for Routing {
-    const SERVICE_ID: ServiceId = service_id!("com.pane.routing");
+    fn service_id() -> ServiceId { ServiceId::new("com.pane.routing") }
     type Message = RoutingMessage;
 }
 ```
@@ -1071,7 +1071,7 @@ and application protocols:
 ```rust
 struct ModelProtocol;
 impl Protocol for ModelProtocol {
-    const SERVICE_ID: ServiceId = service_id!("com.example.editor.model");
+    fn service_id() -> ServiceId { ServiceId::new("com.example.editor.model") }
     type Message = ModelMessage;
 }
 

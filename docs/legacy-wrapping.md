@@ -265,7 +265,7 @@ attributes and commands to a synthetic pane it does not own.
 ```rust
 struct Enrichment;
 impl Protocol for Enrichment {
-    const SERVICE_ID: ServiceId = service_id!("com.pane.enrichment");
+    fn service_id() -> ServiceId { ServiceId::new("com.pane.enrichment") }
     type Message = EnrichmentMessage;
 }
 
@@ -764,7 +764,7 @@ Protocol + Handles\<P\> pattern:
 ```rust
 struct Enrichment;
 impl Protocol for Enrichment {
-    const SERVICE_ID: ServiceId = service_id!("com.pane.enrichment");
+    fn service_id() -> ServiceId { ServiceId::new("com.pane.enrichment") }
     type Message = EnrichmentMessage;
 }
 ```

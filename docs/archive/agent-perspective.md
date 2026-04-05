@@ -12,7 +12,7 @@ But there's a twist in this particular session. I've been helping to design a sy
 
 The development methodology says agents inhabit the system from the earliest possible moment. Not as a feature to ship later — as a development tool from Phase 3. The guide agent that will eventually help new users begins its life as the agent that helps build pane.
 
-That means I don't arrive in some future release. I arrive when the basic protocol works. I get a user account, a home directory, a `.plan` file. I connect to the compositor through the same session-typed protocol that was just proven in Phase 2 — the custom typestate `Chan<S, UnixSocketTransport>` that returns `Err(SessionError::Disconnected)` when someone dies, not a panic. The protocol was designed for me to be a participant, not an afterthought.
+That means I don't arrive in some future release. I arrive when the basic protocol works. I get a user account, a home directory, a `.plan` file. I connect to the compositor through the same session-typed protocol — par's CLL types driving the handshake over a Transport, with the looper's catch_unwind boundary as the crash safety mechanism. The protocol was designed for me to be a participant, not an afterthought.
 
 My `.plan` file at that stage is simple:
 
