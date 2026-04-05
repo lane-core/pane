@@ -33,4 +33,14 @@ fp-library 0.15.0 (crates.io dependency of pane-proto) provides profunctor-encod
 
 **PointerBrand:** `RcBrand` for single-threaded, `ArcBrand` for Send+Sync. Pane uses RcBrand in current property.rs.
 
+**Send+Sync analysis (verified 2026-04-03):**
+- fp-library has a parallel send-aware trait hierarchy: `SendRefCountedPointer`, `SendUnsizedCoercible`, `SendCloneableFn`
+- `ArcBrand` implements ALL of these — it CAN produce `Arc<dyn Fn + Send + Sync>` via `SendCloneableFn::SendOf`
+- BUT `Lens` (and all optic types) hardcode `CloneableFn::Of`, which produces `Arc<dyn Fn>` (no Send+Sync on trait object)
+- Therefore `Lens<ArcBrand, ...>` is `!Send` despite using Arc — the trait object inside lacks Send+Sync bounds
+- This is NOT fixable by changing the brand. It requires rewriting the optic types to use `SendCloneableFn::SendOf`
+- Estimated cost of a parallel SendLens/SendShop/etc: 400-600 lines tracking upstream
+
+**by-value cost:** `from_view_set` clones S once for view, twice for set (nested closure captures clone, then re-clones per call). Concrete encoding's `fn(&S)->A` / `fn(&mut S, A)` avoids all clones.
+
 **Critical note:** `Composed` doesn't expose `.view()` or `.set()` directly — must use `optics_view`/`optics_set` helper functions or the `Optic::evaluate` trait method with a specific profunctor.
