@@ -20,3 +20,6 @@
 - [Project: Pane generic parameter decision](project_pane_generic_decision.md) — PaneBuilder<H> approved (name evolved PaneSetup→PaneInit→PaneBuilder): run_with shortcuts, ServiceHandle binding semantics (2026-04-03)
 - [Project: EAct vs MPST decision](project_eact_vs_mpst_decision.md) — bottom-up (par CLL + EAct) over top-down (MPST): Plan 9 alignment, recursion gap, debugging risk (2026-04-03)
 - [Project: Three-channel error model](project_three_channel_error_model.md) — Handler returns bare Flow; errors split into protocol/control/crash channels (2026-04-03)
+- [Project: Namespace-as-test-surface](project_namespace_testing.md) — synchronous ctl, snapshot consistency, shell test idioms for pane-fs (2026-04-05)
+- [Project: 9P-as-optic-composition deliberation](project_optics_deliberation.md) — structural mapping real but keep optics as semantic model, not wire mechanism (2026-04-05)
+- [Project: Language split deliberation](project_language_split_deliberation.md) — core in OCaml/Haskell: postcard blocks it, CBOR recommended, split after Phase 1 (2026-04-05)

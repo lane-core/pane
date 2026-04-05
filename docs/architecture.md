@@ -32,9 +32,17 @@ open_service). Reply callbacks are installed per-request
 (send_request) and consumed on reply.
 
 **Optics.** Reading `/pane/<n>/attrs/cursor` projects handler state
-through a named getter. The optic laws (GetPut, PutGet, PutPut)
-guarantee the projection is consistent with the handler's
-internal state.
+through a monadic lens. Writing `cursor 42` to `/pane/<n>/ctl`
+routes through the same lens's setter. The optic laws (GetPut,
+PutGet, PutPut) guarantee read/write consistency — the ctl write
+path and the namespace read path use the same fn pointer.
+
+A monadic lens has a pure view and an effectful set that returns
+`Vec<Effect>`. Effects (compositor notifications, content
+updates) are executed by the framework after state mutation,
+before snapshot publication. Lifecycle commands (`close`) and
+IO-first commands (`reload`) bypass the optic layer and dispatch
+to a freeform handler method. Details in `docs/optics-design-brief.md`.
 
 ### Error channels
 
@@ -646,6 +654,89 @@ unified batch. Total ordering within the batch. Coalescing
 within the batch (mouse events, etc.). Base filter chain sees
 Message variants. Service events dispatch through Handles\<P\>.
 Obligation handles dispatch through separate callbacks.
+
+---
+
+## Namespace (pane-fs)
+
+<!-- Plan 9: /proc per-process synthetic files. rio: /dev/wsys
+per-window synthetic files. pane-fs is the same idea — each
+pane gets a directory in /pane/ with structured entries. The
+filesystem IS the scripting and test interface. -->
+
+Each pane appears as a directory under `/pane/`:
+
+```
+/pane/json              all panes as JSON array
+/pane/<id>/tag          title text (read-only)
+/pane/<id>/body         content (semantic, not rendered)
+/pane/<id>/attrs/<name> named attributes via monadic lenses
+/pane/<id>/attrs/json   all attrs from one snapshot as JSON
+/pane/<id>/ctl          line-oriented command interface
+/pane/<id>/json         full pane state as JSON object
+```
+
+`json` is a reserved filename at every directory level —
+same pattern as `tag`, `body`, `ctl`. Each `json` file
+returns a structured snapshot of its parent directory in one
+FUSE read.
+
+### Snapshot model
+
+The handler state lives on the looper thread (`&mut self`).
+pane-fs reads from a FUSE thread. The looper publishes a
+Clone'd state snapshot after each dispatch cycle. FUSE threads
+read from the snapshot via ArcSwap (zero-contention atomic
+swap). Reads never block the looper.
+
+Per-pane snapshot consistency: all attributes read within one
+FUSE operation come from the same dispatch cycle. `attrs.json`
+extends this to cross-attribute reads — one FUSE read, one
+snapshot, all attributes as a JSON object with string values.
+
+### Ctl writes
+
+Ctl writes are synchronous. The FUSE write blocks until the
+looper processes the command and publishes the updated snapshot.
+A read after a ctl write sees the effect. This is the Plan 9
+model — devproc.c, rio's wctl.c, acme's xfidctlwrite all
+block writes until the command takes effect.
+
+Mechanism: FUSE write handler sends (command, oneshot_tx) to
+the looper via calloop channel, blocks on oneshot_rx. The
+looper processes the command, executes effects, publishes the
+snapshot, sends the result on oneshot_tx.
+
+Multi-line writes process sequentially, stop on first error,
+return bytes consumed up to the error. Error reporting via
+FUSE errno: EINVAL (bad syntax), EIO (handler error/panic),
+ENXIO (pane exited), ETIMEDOUT (5s timeout).
+
+### Ctl dispatch
+
+State-mutating commands (`cursor 42`, `set-tag "foo"`, `goto`,
+`focus`) route through the monadic lens layer. The dispatcher
+parses the command, looks up the attribute by name, and calls
+the monadic setter. This eliminates wiring divergence by
+construction — the same fn pointer serves both the read path
+(AttrReader) and the write path (ctl).
+
+Lifecycle commands (`close`) and IO-first commands (`reload`)
+bypass optics and dispatch to `ctl_fallback()` on the handler.
+
+### Failure model
+
+A crashed pane's namespace entry is removed immediately — not
+left stale. Concurrent reads in flight return EIO. New reads
+return ENOENT.
+
+### Namespace as test surface
+
+Seven invariants are directly testable through the namespace:
+I1, I4, I6, I8, I9, I13, S4. Three of these (I9, I13,
+I6-through-snapshots) are testable ONLY through the namespace —
+unit tests on dispatch.rs cannot cover the publication
+boundary where looper state becomes externally observable.
 
 ---
 

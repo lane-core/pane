@@ -25,3 +25,7 @@
 - [Three-crate code review](project_three_crate_review.md) -- updated 2026-04-03: 2 moderate (Messenger crate boundary, Chan no Drop), 5 minor, EAct+CLL sound
 - [Handshake disconnect analysis](project_handshake_disconnect_analysis.md) -- panic=correct CLL encoding, error-through-channel violates 3-channel separation, 4 conditions
 - [EAct invariant verification](project_eact_invariant_verification.md) -- I1-I13+S1-S6: 9 satisfied, 2 convention, 8 need looper; Dispatch<H> correctly defunctionalizes sigma
+- [Namespace invariant observability](project_namespace_invariant_observability.md) -- 7 observable, 8 internal-only, 4-test minimal set, publication boundary is the unique value
+- [Optics x session types deliberation](project_optics_session_deliberation.md) -- no unified calculus, linear lenses=obligation handles, 8 findings, three-concern separation validated
+- [Session/optic boundary rules](project_boundary_rules.md) -- R1-R10 implementer rules, obligation handle placement, cartesian/linear split verified against code
+- [Language deliberation](project_language_deliberation.md) -- Haskell/OCaml vs Rust+par: stay with Rust, affine gap compensated, OCaml CBV real but narrow
