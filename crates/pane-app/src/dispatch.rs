@@ -9,7 +9,7 @@
 //! lives in the service dispatch table on PaneBuilder/looper.
 
 use std::collections::HashMap;
-use pane_session::Flow;
+use pane_proto::Flow;
 
 /// Connection identity. Stub — will be assigned by the server.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]

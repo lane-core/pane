@@ -13,7 +13,7 @@
 use std::collections::HashSet;
 use std::marker::PhantomData;
 
-use pane_session::{Flow, Handler, Handles, Protocol, ServiceId};
+use pane_proto::{Flow, Handler, Handles, Protocol, ServiceId};
 
 use crate::pane::Pane;
 use crate::service_handle::ServiceHandle;
@@ -77,7 +77,7 @@ impl<H: Handler> Drop for PaneBuilder<H> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use pane_session::protocols::lifecycle::LifecycleMessage;
+    use pane_proto::protocols::lifecycle::LifecycleMessage;
     use serde::{Serialize, Deserialize};
 
     // A test protocol

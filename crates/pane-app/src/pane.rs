@@ -3,7 +3,7 @@
 //! Plan 9: the bare process after rfork, before namespace
 //! customization. PaneBuilder = bind/mount. run_with = exec.
 
-use pane_session::{Flow, Handler};
+use pane_proto::{Flow, Handler};
 
 use crate::builder::PaneBuilder;
 
@@ -47,7 +47,7 @@ impl Pane {
     /// Closure form — no services. Lifecycle messages only.
     pub fn run(
         self,
-        _f: impl FnMut(&crate::Messenger, pane_session::protocols::lifecycle::LifecycleMessage) -> Flow,
+        _f: impl FnMut(&crate::Messenger, pane_proto::protocols::lifecycle::LifecycleMessage) -> Flow,
     ) -> ! {
         // TODO: looper with catch_unwind, calloop
         let _ = self;

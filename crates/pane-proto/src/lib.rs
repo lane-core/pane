@@ -1,26 +1,20 @@
-//! pane-session: IPC adaptation of par's CLL session types.
+//! pane-proto: protocol vocabulary for the pane framework.
 //!
-//! Three layers:
-//!   par          — CLL binary channel correctness (complete, Strba)
-//!   pane-session — IPC bridge + type vocabulary (this crate)
-//!   pane-app     — EAct actor framework (Fowler et al.)
+//! The type contracts that all pane crates depend on. No IO, no
+//! runtime, no par. Pure type definitions:
 //!
-//! This crate provides:
-//!   - par re-exports (Send, Recv, Enqueue, Dequeue, Server, etc.)
 //!   - Message trait (Clone + Serialize + DeserializeOwned + Send + 'static)
 //!   - Protocol trait + ServiceId
 //!   - Flow enum (Continue / Stop)
 //!   - Handles<P> trait (uniform dispatch, σ entries)
 //!   - Handler trait (lifecycle sugar, blanket Handles<Lifecycle>)
-//!   - Framework protocols (Lifecycle, Display, Clipboard, Routing)
 //!   - MessageFilter<M> (typed per-protocol filters)
 //!   - Property<S,A> (optic-backed state access via fp-library)
-
-// Re-export par's CLL types — the session type vocabulary.
-pub use par::exchange::{Send, Recv};
-pub use par::queue::{Dequeue, Enqueue};
-pub use par::server::{Server, Proxy, Connection};
-pub use par::{Session, Dual};
+//!
+//! Three layers:
+//!   pane-proto   — type contracts (this crate)
+//!   pane-session — par-backed session channels, transport, wire framing
+//!   pane-app     — EAct actor framework
 
 pub mod message;
 pub mod protocol;
@@ -31,7 +25,7 @@ pub mod protocols;
 pub mod filter;
 pub mod property;
 
-// Convenient re-exports for consumers
+// Convenient re-exports
 pub use flow::Flow;
 pub use handles::Handles;
 pub use handler::Handler;

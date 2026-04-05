@@ -1,0 +1,10 @@
+[package]
+name = "pane-proto"
+version = "0.1.0"
+edition = "2021"
+description = "Protocol vocabulary for the pane framework. Message, Protocol, Handles<P>, Handler, Flow."
+license = "BSD-3-Clause"
+
+[dependencies]
+fp-library = { version = "0.15", features = ["serde", "rayon"] }
+serde = { version = "1", features = ["derive"] }

@@ -1,9 +1,9 @@
 //! pane-app: the EAct actor framework.
 //!
-//! This is the runtime layer — it composes pane-session's type
+//! This is the runtime layer — it composes pane-proto's type
 //! contracts into a working actor system:
 //!
-//!   pane-session — type contracts (Message, Protocol, Handles<P>, Handler, Flow)
+//!   pane-proto — type contracts (Message, Protocol, Handles<P>, Handler, Flow)
 //!   pane-app     — runtime (Messenger, Pane, PaneBuilder, Dispatch, looper)
 //!
 //! EAct correspondence:
@@ -27,8 +27,8 @@ pub use service_handle::ServiceHandle;
 pub use pane::Pane;
 pub use builder::PaneBuilder;
 
-// Re-export pane-session types for convenience
-pub use pane_session::{
+// Re-export pane-proto types for convenience
+pub use pane_proto::{
     Flow, Handler, Handles, Message, Protocol, ServiceId,
     MessageFilter, FilterAction,
 };

@@ -8,7 +8,7 @@
 //! Drop sends RevokeInterest (idempotent).
 
 use std::marker::PhantomData;
-use pane_session::Protocol;
+use pane_proto::Protocol;
 
 /// A live connection to a service. Parameterized by protocol.
 ///

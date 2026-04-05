@@ -6,7 +6,8 @@ description = "The EAct actor framework for pane. Looper, Messenger, Pane, PaneB
 license = "BSD-3-Clause"
 
 [dependencies]
-pane-session = { path = "../pane-session" }
+pane-proto = { path = "../pane-proto" }
+# pane-session will be added when par-backed channels are built
 
 [dev-dependencies]
 serde = { version = "1", features = ["derive"] }
