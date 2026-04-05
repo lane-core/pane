@@ -1,253 +1,443 @@
 # pane Architecture
 
-A pane is organized state with an interface that allows views of
-that state. Display is one view. The namespace (filesystem
-projection at `/pane/`, routed queries via optics, remote access)
-is another. Both are projections of the same state, structured
-by the protocol and kept consistent by optic laws.
+A pane is organized state with an interface for views of that state.
+Display is one view. The namespace (`/pane/`, routed queries, remote
+access) is another. Both are projections of the same state, kept
+consistent by optic laws. The protocol governs how views are accessed,
+negotiated, and coordinated.
 
-pane is a protocol framework that happens to have a display mode,
-not a display framework that also works headless. The headless
-server — running the same protocol with no display — is the base
-case. Display is a capability that panes opt into, not the default.
-
-Designed with input from be-systems-engineer, plan9-systems-engineer,
-and session-type-consultant.
+pane is a protocol framework that happens to have a display mode. The
+headless server is the base case. Display is a capability panes opt
+into.
 
 ---
 
-## Theoretical Foundation
+## Formal Foundation
+
+Three published formalisms, one per layer:
+
+```
+par (CLL — Strba)            binary channel correctness
+  ↓ adapted for IPC
+pane-session                  transport, serialization, crash safety
+  ↓ composed into actors
+pane-app (EAct — Fowler et al.)   actor discipline over multiple sessions
+```
+
+**par** (Michal Strba, https://github.com/faiface/par) is a CLL
+session type library for Rust. CLL (classical linear logic, Wadler
+"Propositions as Sessions" JFP 2014) governs binary channel
+correctness: Send/Recv duality, branching, streaming. par is
+complete per its author. pane-session reimplements par's type
+vocabulary for IPC (serialization, crash safety via Result not
+panic, transport abstraction). The type-level session types
+(Send, Recv, Select, Branch, End, Queue, Server) are par's
+contribution; the IPC adaptation is pane-session's.
 
 **EAct** (Fowler et al., "Safe Actor Programming with Multiparty
-Session Types") is the governing formalism. It reconciles pane's
-two design lineages:
+Session Types") governs how one actor interleaves work across
+multiple sessions. pane-app IS the EAct framework:
 
-- **BeOS**: EAct formalizes what Be's API achieved implicitly.
-  BLooper = EAct actor with sequential handler invocation. The
-  BHandler chain attached to a BLooper = handler store σ (each
-  BHandler is one entry). BMessenger approximates a session
-  endpoint (destination handle, not a formal role). BMessageFilter
-  is outside EAct's formalism (EAct dispatches messages directly
-  from queue to handler; pane formalizes filters through optic
-  discipline instead). The formalism proves why Be worked and
-  reveals where it was unsound (handler chain re-entrancy, untyped
-  dispatch, no coverage checking).
+| EAct concept | pane-app |
+|---|---|
+| Actor | Handler impl (one per pane) |
+| Handler store σ | Handles\<P\> impls + Dispatch\<H\> entries |
+| E-Suspend | `send_request` installs Dispatch entry |
+| E-React | Reply arrives, entry consumed, callback fires |
+| E-Reset | Handler returns Flow (back to idle — both Continue and Stop) |
+| E-Raise | panic → catch_unwind (actor annihilated) |
+| Progress | I6 + compliant protocols → system reduces |
+| Global Progress | I2/I3/I8 + event-driven dispatch → eventual progress |
 
-- **Plan 9**: Optic discipline (Clarke et al.) formalizes what
-  Plan 9 achieved through filesystem convention. /dev/snarf, rio's
-  per-window synthetic files, per-process namespaces — all are
-  optic projections. The optic laws (GetPut, PutGet, PutPut)
-  guarantee consistency between views. Session types govern protocol
-  relationships between components; optics govern state-access
-  relationships within and across components.
+<!-- BeOS: BLooper = EAct actor. BHandler chain = σ. The formalism
+proves why Be worked and reveals where it was unsound (dispatch
+re-entrancy, untyped messages, no coverage checking). -->
 
-**The channel discipline**: pane-session's types are CLL-derived
-(classical linear logic, in the lineage of Wadler's "Propositions
-as Sessions," JFP 2014). CLL governs what a single binary protocol
-can express — Send/Recv, duality, branching, streaming. EAct
-operates at the layer above — how one actor interleaves work across
-multiple sessions. The two compose: EAct's Progress theorem
-(Theorem 4.3) requires individual protocols to be compliant
-(safe and deadlock-free); the single-threaded execution model
-(I6) is pane's primary defense against inter-session deadlocks,
-corresponding to EAct's event-driven argument (§4.3). pane-
-session's typestate encoding mirrors CLL's structure, providing
-a conditional form of protocol fidelity (in the sense defined by
-Ferrite, Chen/Balzer/Toninho, ECOOP 2022, Theorem 4.3): if the
-developer's code type-checks against `Chan<S, T>` and consumes
-every intermediate channel value, the resulting protocol follows
-the structure of S. The consumption condition is enforced by
-`#[must_use]` and Drop-based failure compensation (I4), not
-statically as in Ferrite's CPS encoding.
+**Optic discipline** (Clarke et al.) formalizes what Plan 9
+achieved through filesystem convention. `/proc/N/status` (a
+read-only lens onto process state), rio's per-window synthetic
+files, per-process namespaces — optic projections. The optic
+laws (GetPut, PutGet, PutPut) guarantee consistency between
+views. Session types govern protocol relationships; optics
+govern state-access relationships.
 
-pane-session adopts three patterns from **par** (Michal Strba,
-https://github.com/faiface/par), a CLL session type library for
-Rust: enum-based branching, the Queue streaming combinator, and
-the Server connect/suspend/resume lifecycle. The Server pattern
-additionally draws from Balzer & Pfenning, "Client-server sessions
-in linear logic" (LICS 2021). par is in-process only (values by
-move, panics on disconnect); pane-session adapts these patterns
-for IPC with serialization, crash safety (Result, not panic), and
-transport abstraction.
+### Composition guarantee
 
-**The linear discipline**: pane's core subsystems use the subset of
-Rust that most closely approximates linear types. Move-only types,
-`#[must_use]`, ownership transfer, Drop-based failure compensation.
-The developer-facing API is ergonomic; the infrastructure beneath
-it is linearly disciplined.
+CLL duality (HasDual) gives binary compliance — each binary
+session's dual types match (Wadler JFP 2014, Theorem 1: cut
+elimination = deadlock freedom for binary sessions). EAct's
+Progress theorem (Thm 3.10) requires compliant protocols +
+well-typed actors; CLL duality provides compliance. The single-
+threaded execution model (I6) is pane's primary defense against
+inter-session deadlocks, corresponding to EAct's event-driven
+argument (§4.2.2, Progress). Global Progress requires handler termination
+(I3) and no blocking in handlers (I2/I8).
 
-**The functoriality principle**: `Prog(Phase1 + Phase2) ≠
-Prog(Phase1) + Prog(Phase2)`. The programs buildable on the full
-architecture are not decomposable into programs buildable on each
-phase independently. Phase 1 type signatures shape the design
-space — developers (including us) build patterns against the
-types they see. A Phase 1 type that omits structure needed in
-Phase 2 produces patterns that assume that structure doesn't
-exist, creating an ecosystem that can't cleanly accommodate the
-full design. BeOS demonstrated this: string-based app signatures
-(`strcmp()` everywhere) prevented clean evolution to structured
-identity when the launch daemon and package management arrived.
+Conditional protocol fidelity: if the developer's code type-checks
+against `Chan<S, T>` and consumes every intermediate channel value,
+the resulting protocol follows the structure of S. The consumption
+condition is enforced by `#[must_use]` and Drop-based failure
+compensation (I4), not statically as in Ferrite's CPS encoding
+(Chen/Balzer/Toninho, ECOOP 2022, Theorem 4.3).
 
-Consequence: every type in Phase 1 must be the full architecture's
-type, populated minimally. `ServiceId { uuid, name }` from day
-one. `ServiceRouter` with one entry. `Dispatch` keyed by
-`(ConnectionId, token)`. The cost is near-zero (deterministic UUID
-derivation, HashMap with one entry). Simplifying a type in Phase 1
-guarantees a breaking change when the full architecture arrives.
+No MPST layer. EAct handles multi-session composition bottom-up
+(correct binary sessions + correct actor discipline = correct
+system). If multi-party protocols are ever needed, an MPST layer
+can be added without changing the binary channel substrate.
 
----
+<!-- Plan 9 was bottom-up too: each file server spoke 9P correctly,
+composition emerged from the namespace. No global choreography. -->
 
-## What Is a Pane
+### Three error channels
 
-A pane is:
+| Channel | Mechanism | Formal rule | Audience |
+|---------|-----------|-------------|----------|
+| Protocol | ReplyPort, ServiceLost | CLL ⊕ branching | Other participants |
+| Control | Flow::Stop / Continue | EAct E-Reset | The looper |
+| Crash | panic → catch_unwind | EAct E-Raise | Looper + server |
 
-1. **Organized state** — body content, tag (title + commands),
-   attributes, configuration. Structured through optics.
+The channels are disjoint. No Result in the handler API. Handler
+methods return Flow. EAct has exactly three actor thread outcomes:
+E-Reset (returns value), E-Suspend (installs handler), E-Raise
+(annihilation). There is no fourth.
 
-2. **An interface for views of that state** — the display view
-   (visual projection via the compositor) and the namespace view
-   (filesystem projection at `/pane/`, routed queries via optics,
-   remote access). Both are projections of the same state,
-   structured by the protocol and kept consistent by optic laws.
-   The protocol is not itself a view — it governs how views are
-   accessed, negotiated, and coordinated.
+Protocol errors (channel 1) are within-session CLL branching — the
+error response IS the protocol. The handler continues.
 
-A pane exists whether or not a compositor is running. A headless
-pane has state and appears in the namespace — it simply doesn't
-have the display view open. Display is not the default; it is one
-view among peers, opted into via capability declaration.
+Control (channel 2) is the handler's lifecycle decision — continue
+or stop. EAct E-Reset.
 
-The **compositor** is infrastructure that provides the display view.
-It discovers panes that support display handling and projects them
-onto the screen. It is not the center of the architecture.
+Crash (channel 3) is unrecoverable failure. panic → catch_unwind at
+the looper boundary → Drop fires obligation compensation → server
+notified. EAct E-Raise → zap propagation.
+
+<!-- BeOS had exactly these three: SendReply(error) for protocol,
+QuitRequested() → bool for control, thread death for crash.
+Handler methods returned void. -->
 
 ---
 
-## Protocol and Dispatch
+## Type Vocabulary
 
-### The Protocol trait
+### Channel substrate (pane-session)
 
-Every service relationship in pane — lifecycle, display, clipboard,
-routing, application-defined — is a Protocol. The trait links
-three things that are otherwise maintained by convention:
+pane-session reimplements par's CLL type vocabulary for IPC:
 
 ```rust
-/// Identity of a service in the pane protocol.
+/// Session-typed channel over a Transport.
+pub struct Chan<S, T: Transport> { ... }
+
+// CLL propositions as session types:
+pub struct Send<A, S>;    // ⊗ — output A, continue as S
+pub struct Recv<A, S>;    // ⅋ — input A, continue as S
+pub struct Select<L, R>;  // ⊕ — internal choice
+pub struct Branch<L, R>;  // & — external choice
+pub struct End;           // 1/⊥ — session terminated
+
+// Streaming (adapted from par):
+pub struct Queue<T, S>;   // send N items of T, then continue as S
+pub struct Dequeue<T, S>; // receive items until closed, then S
+
+// Server lifecycle (adapted from par):
+pub struct Server<S>;     // accept connections, each gets session S
+
+// N-ary branching (pane-session extension beyond par):
+#[derive(SessionEnum)]    // generates choose_*/offer() methods
+#[repr(u8)]
+enum Operation {
+    #[session_tag = 0] CheckBalance,
+    #[session_tag = 1] Withdraw,
+}
+
+// Duality (CLL negation — compliance for binary sessions):
+pub trait HasDual { type Dual; }
+// Send<A,S> <-> Recv<A, Dual<S>>, Select <-> Branch, End <-> End
+```
+
+Recursion uses native Rust enum types — no Rec/Var combinators.
+Channel indirection provides the boxing par relies on.
+
+Transport trait abstracts over unix sockets, TCP, TLS, and
+in-memory channels. Serialization via postcard. Crash safety:
+all operations return `Result<_, SessionError>`, never panic
+on peer disconnect.
+
+### Message
+
+```rust
+/// The universal message contract. Every protocol's message type
+/// implements this. What BMessage was — the common currency of
+/// the system — but typed.
 ///
-/// The UUID is the machine identity — a protocol constant,
-/// deterministically derived from the name via UUIDv5.
-/// Survives renames and travels across federation boundaries
-/// where naming conventions may diverge.
-/// The name is the human identity — for pane-fs paths, service
-/// maps, and logs.
-///
-/// # Plan 9
-///
-/// Analogous to qid.path (stable across renames, machine-comparable)
-/// alongside the directory entry name (human-chosen, may vary per
-/// client's mount point). See qid(5).
+/// Clone is required: messages may be filtered, logged, projected
+/// into the namespace, forwarded. Obligation handles are not
+/// Message variants — they are delivered via separate callbacks.
+pub trait Message:
+    Serialize + DeserializeOwned + Clone + Send + 'static {}
+```
+
+`#[derive(Message)]` on protocol enums. The trait is a marker —
+the bounds ARE the contract.
+
+### Protocol and ServiceId
+
+```rust
 pub struct ServiceId {
     pub uuid: Uuid,
     pub name: &'static str,
 }
 
 impl ServiceId {
-    /// Derive a ServiceId from a reverse-DNS name.
-    /// The UUID is deterministically computed via UUIDv5 using
-    /// a fixed PANE_NAMESPACE. Zero ceremony — no manual UUID.
-    /// Not const fn (UUIDv5 requires SHA-1, not const-evaluable
-    /// in the uuid crate). For `const SERVICE_ID` in Protocol
-    /// impls, use the `service_id!` proc-macro which computes the
-    /// UUID at compile time:
-    ///
-    /// ```rust
-    /// const SERVICE_ID: ServiceId = service_id!("com.pane.clipboard");
-    /// // expands to: ServiceId { uuid: Uuid::from_bytes([...]), name: "com.pane.clipboard" }
-    /// ```
-    ///
-    /// This avoids runtime initialization order issues. `new()` is
-    /// available for dynamic ServiceId construction (e.g., tests).
-    pub fn new(name: &'static str) -> Self {
-        ServiceId {
-            uuid: Uuid::new_v5(PANE_NAMESPACE, name.as_bytes()),
-            name,
-        }
-    }
-
-    /// Explicit UUID for services that have been renamed but must
-    /// keep their wire identity.
-    pub fn with_uuid(uuid: Uuid, name: &'static str) -> Self {
-        ServiceId { uuid, name }
-    }
+    /// UUIDv5 from reverse-DNS name. Not const fn (SHA-1).
+    /// Use service_id! proc-macro for const SERVICE_ID.
+    pub fn new(name: &'static str) -> Self { ... }
 }
 
 /// A protocol relationship between a pane and a service.
-/// Links identity, typed messages into a single type-level definition.
-///
-/// EAct: formalizes what a session endpoint IS.
-/// CLL: the protocol type determines the channel's session type.
-/// Plan 9: the typed version of "I have this file in my namespace."
 pub trait Protocol {
-    /// Service identity (UUID + human-readable name).
-    /// The UUID goes on the wire (DeclareInterest).
-    /// The name goes in service maps and pane-fs paths.
     const SERVICE_ID: ServiceId;
-    /// The typed events this protocol produces.
-    /// Serialize + DeserializeOwned because all protocol messages
-    /// cross a process boundary (postcard encoding). Even local-only
-    /// protocols carry the bound — `#[derive(Serialize)]` is trivial,
-    /// and the bound prevents accidentally introducing a protocol
-    /// that works in-process but fails on the wire.
-    type Message: Serialize + DeserializeOwned + Send + 'static;
+    type Message: Message;
 }
 ```
 
-Keep Protocol minimal: SERVICE_ID + Message. Caching, reconnection,
-and priority belong on the service implementation, outside the
-Protocol trait.
+Naming convention: `com.pane.*` for framework services,
+`com.vendor.*` for third-party.
 
-**Naming convention** (codify now, per Be's lesson with
-inconsistent `application/x-vnd.*` signatures): service names
-use reverse-DNS notation. Framework services: `com.pane.*`.
-Third-party: `com.vendor.*` or `org.project.*`. Application-
-local protocols: `com.vendor.app.*`. The convention is part of
-the ServiceId contract, not an afterthought.
+<!-- Plan 9: ServiceId's UUID is analogous to qid.path (stable,
+machine-comparable); the name is the directory entry. -->
 
-### Handles\<P\>: the uniform dispatch trait
+### Handles\<P\>: uniform dispatch
 
 ```rust
 /// A handler that can receive messages from protocol P.
-/// In EAct, σ maps session endpoints (s,p) to handler values —
-/// one entry per active session instance. Under pane's
-/// one-service-per-protocol constraint (duplicate open_service
-/// for the same ServiceId is rejected), each Handles<P> impl
-/// corresponds to one σ entry.
-///
-/// The looper dispatches P::Message to this method via a
-/// monomorphized fn pointer captured at service registration.
+/// In EAct, σ maps session endpoints (s,p) to handler values.
+/// Under pane's one-service-per-protocol constraint, each
+/// Handles<P> impl corresponds to one σ entry.
 pub trait Handles<P: Protocol> {
-    fn receive(&mut self, proxy: &Messenger, msg: P::Message) -> anyhow::Result<Flow>;
+    fn receive(&mut self, proxy: &Messenger, msg: P::Message) -> Flow;
 }
 ```
 
-The type system enforces: if a pane declares interest in a
-protocol, its handler must implement `Handles<P>` for that
-protocol. Registration (`open_service::<P>()` on `PaneBuilder<H>`)
-requires the bound `H: Handles<P>` at compile time.
+`#[pane::protocol_handler(P)]` attribute macro on an impl block
+generates the `Handles<P>::receive` match from named methods.
+Rust's exhaustive match IS the coverage guarantee.
+
+The macro generates two dispatch surfaces:
+1. **Value dispatch** — `Handles<P>::receive` match over `P::Message`
+   variants (Clone-safe values: Changed, LockDenied, ServiceLost).
+2. **Obligation dispatch** — separate typed callbacks for obligation
+   handles (lock_granted receives ClipboardWriteLock, completion_request
+   receives CompletionReplyPort). These bypass the filter chain.
+
+Both dispatch to the same `&mut H`, same looper thread (I6/I7).
+
+### Handler: lifecycle sugar
+
+```rust
+/// Every pane implements this. Lifecycle + messaging.
+/// Internally equivalent to Handles<Lifecycle> via blanket impl.
+pub trait Handler: Send + 'static {
+    fn ready(&mut self, proxy: &Messenger) -> Flow { Flow::Continue }
+    fn close_requested(&mut self, proxy: &Messenger) -> Flow { Flow::Stop }
+    fn disconnected(&mut self, proxy: &Messenger) -> Flow { Flow::Stop }
+    fn pulse(&mut self, proxy: &Messenger) -> Flow { Flow::Continue }
+    fn pane_exited(&mut self, proxy: &Messenger, pane: Id,
+        reason: ExitReason) -> Flow { Flow::Continue }
+    /// Query, not dispatch — returns bool, not Flow. &self for
+    /// deadlock freedom. Side effects must happen before returning
+    /// true (save in close_requested, not here).
+    /// BeOS: BLooper::QuitRequested() → bool.
+    fn quit_requested(&self) -> bool { true }
+    /// Scripting/automation entry point. PropertyInfo describes
+    /// which properties this pane exposes through the namespace.
+    /// PropertyInfo definition deferred to routing/scripting design.
+    fn supported_properties(&self) -> &[PropertyInfo] { &[] }
+
+    /// Obligation callback: incoming request from another pane.
+    /// Payload is type-erased (requester and receiver may have
+    /// different types). ServiceId identifies the protocol the
+    /// sender used — check before downcasting. Reply is an
+    /// obligation — default drops it (sends ReplyFailed).
+    fn request_received(&mut self, proxy: &Messenger,
+        service: ServiceId, msg: Box<dyn Any + Send>,
+        reply: ReplyPort) -> Flow
+    {
+        drop(reply);
+        Flow::Continue
+    }
+}
+
+// Framework-provided blanket:
+impl<H: Handler> Handles<Lifecycle> for H {
+    fn receive(&mut self, proxy: &Messenger, msg: LifecycleMessage) -> Flow {
+        match msg {
+            LifecycleMessage::Ready => self.ready(proxy),
+            LifecycleMessage::CloseRequested => self.close_requested(proxy),
+            LifecycleMessage::Disconnected => self.disconnected(proxy),
+            LifecycleMessage::Pulse => self.pulse(proxy),
+            // ...
+        }
+    }
+}
+```
+
+Handler is the zero-cost on-ramp. Every pane has lifecycle.
+The developer overrides named methods with defaults — no
+attribute macro needed for the common case.
+
+### Flow
+
+```rust
+/// Handler control flow. EAct E-Reset: the handler returns
+/// control to the looper with a lifecycle decision.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Flow {
+    Continue,
+    Stop,
+}
+```
+
+No Result. Errors are the handler's domain (handle internally
+or panic). The looper doesn't receive errors — it receives
+lifecycle decisions.
+
+### Pane and PaneBuilder\<H\>
+
+```rust
+/// A pane — organized state with an interface for views.
+/// Non-generic. Connection identity.
+#[must_use]
+pub struct Pane {
+    id: Id,
+    tag: Tag,
+    connection: Connection,
+    looper_tx: LooperSender,
+}
+
+impl Drop for Pane {
+    fn drop(&mut self) { /* close connection, server cleanup */ }
+}
+
+impl Pane {
+    /// Enter the typed setup phase for service registration.
+    pub fn setup<H: Handler>(self) -> PaneBuilder<H>;
+
+    /// Closure form — no services. Lifecycle messages only.
+    pub fn run(self, f: impl FnMut(&Messenger, LifecycleMessage) -> Flow) -> !;
+
+    /// Struct handler — no services needed.
+    pub fn run_with<H: Handler>(self, handler: H) -> !;
+
+    /// Struct handler with display — no services needed.
+    /// Display is declared in the handshake (Hello's interests
+    /// list), not via DeclareInterest. run_with_display includes
+    /// display in the handshake automatically.
+    pub fn run_with_display<H: Handler + Handles<Display>>(
+        self, handler: H) -> !;
+}
+
+/// Setup phase. Generic over H for Handles<P> bounds.
+/// Consumed by run_with — the builder pattern where the
+/// terminal method both builds and enters the event loop.
+#[must_use]
+pub struct PaneBuilder<H: Handler> {
+    pane: Pane,
+    dispatch_table: Vec<ServiceDispatchEntry>,
+    registered_services: HashSet<ServiceId>,
+    _handler: PhantomData<H>,
+}
+
+impl<H: Handler> PaneBuilder<H> {
+    /// Open a service. Blocks until InterestAccepted/Declined.
+    /// Returns None if the service is unavailable.
+    /// Duplicate ServiceId is rejected (panics).
+    pub fn open_service<P: Protocol>(&mut self) -> Option<ServiceHandle<P>>
+    where H: Handles<P>;
+
+    pub fn run_with(self, handler: H) -> !;
+    pub fn run_with_display(self, handler: H) -> !
+    where H: Handles<Display>;
+}
+
+impl<H: Handler> Drop for PaneBuilder<H> {
+    fn drop(&mut self) {
+        // Revoke accepted interests. Idempotent with
+        // ServiceHandle<P> Drop (both send RevokeInterest).
+    }
+}
+```
+
+<!-- Plan 9: Pane = bare process after rfork. PaneBuilder = namespace
+construction (bind/mount). run_with = exec. The looper = the
+running process. -->
+
+### Dispatch\<H\>: request/reply
+
+```rust
+impl Messenger {
+    /// Send a request, register typed reply callback.
+    /// By analogy with EAct E-Suspend: installs one-shot entry in σ.
+    pub fn send_request<H, R>(
+        &self,
+        target: &Messenger,
+        msg: impl Serialize + Send + 'static,
+        on_reply: impl FnOnce(&mut H, &Messenger, R) -> Flow + Send + 'static,
+        on_failed: impl FnOnce(&mut H, &Messenger) -> Flow + Send + 'static,
+    ) -> CancelHandle
+    where H: Handler + 'static, R: DeserializeOwned + Send + 'static;
+}
+
+/// Drop = no-op (request completes normally).
+/// .cancel(self) = voluntary abort, removes Dispatch entry.
+pub struct CancelHandle { ... }
+```
+
+Dispatch\<H\> is a `HashMap<(ConnectionId, Token), Entry>` —
+the dynamic part of σ. Service dispatch (fn pointers) is the
+static part. Both are looper-internal.
+
+Lifecycle (by analogy with EAct):
+- **Install** (cf. E-Suspend): send_request installs entry
+- **Idle**: entry waits; looper services other sessions
+- **Dispatch** (cf. E-React): reply arrives, entry consumed, callback fires
+- **Failed** (pane-specific): target drops ReplyPort → on_failed fires
+- **Cancelled** (pane-specific): .cancel() removes entry, no callbacks
+- **Abandoned** (pane-specific): handler drops → entry dropped without
+  callbacks. Safe: dropping a receive can only decrease connectivity.
+
+### Obligation handles
+
+Every obligation-carrying type follows the pattern:
+- `#[must_use]` — compiler warns on unused
+- Move-only — no Clone
+- Single success method consumes — `.commit()`, `.reply()`, `.wait()`
+- Drop sends failure terminal
+
+```rust
+ReplyPort            // Drop → ReplyFailed
+CompletionReplyPort  // Drop → failure
+ClipboardWriteLock   // Drop → Revert
+ServiceHandle<P>     // Drop → RevokeInterest (idempotent)
+Pane                 // Drop → close connection
+PaneBuilder<H>       // Drop → revoke accepted interests
+CreateFuture         // Drop → cancel pending creation
+TimerToken           // Drop → cancel timer
+```
+
+Obligation handles are NOT Message variants. They are delivered
+via separate typed callbacks generated by the protocol_handler
+macro. This matches BeOS (obligations were never BMessage
+variants) and is forced by the Serialize bound on Message
+(obligation handles contain LooperSender — not serializable).
 
 ### ServiceHandle\<P\>
 
 ```rust
-/// A live connection to a service. Parameterized by protocol.
-/// Bound to a specific Connection and negotiated version at open
-/// time — service map changes affect new opens, not existing
-/// handles (Plan 9 fid semantics: a fid is bound at open, mount
-/// table changes affect new walks only).
-///
-/// Drop sends RevokeInterest (idempotent — the server tolerates
-/// duplicate RevokeInterest for the same service).
-/// Protocol-specific methods are added via
-/// `impl ServiceHandle<Clipboard> { ... }`.
+/// A live connection to a service. Bound to a specific Connection
+/// and negotiated version at open time — service map changes
+/// affect new opens, not existing handles.
+/// (Plan 9 fid semantics: bound at open, mount table changes
+/// affect new walks only.)
 pub struct ServiceHandle<P: Protocol> {
     service_id: ServiceId,
     connection_id: ConnectionId,
@@ -265,1014 +455,182 @@ impl<P: Protocol> Drop for ServiceHandle<P> {
     }
 }
 
-/// Protocol-specific methods live on the concrete instantiation:
+// Protocol-specific methods on concrete instantiation:
 impl ServiceHandle<Clipboard> {
-    pub fn request_lock(&self) -> Result<()> { ... }
-    pub fn watch(&self, clipboard: &str) -> Result<()> { ... }
+    pub fn request_lock(&self);
+    pub fn watch(&self, clipboard: &str);
 }
 ```
 
-### Two-phase pane lifecycle
-
-Pane construction has two phases before the event loop:
-**identity** (non-generic `Pane`) and **setup** (generic
-`PaneBuilder<H>`). `Pane` represents the pane's connection
-identity (server-assigned ID, tag, connection state). When a
-developer needs compile-time-verified service registration, they
-enter the typed setup phase via `.setup::<H>()`, which returns a
-`PaneBuilder<H>`. The builder is consumed by `run_with` /
-`run_with_display`, entering the event loop. The event loop is
-the steady state — the looper (internal, generic over H) runs
-until the handler returns `Flow::Stop` or `Err`.
-
-This makes the handler type H a setup-time concern, not a
-runtime identity. In EAct terms, the handler store σ is a
-component of the actor populated during initialization, not a
-type parameter of the actor's identity. In Plan 9 terms,
-`Pane` is the bare process (after rfork, before namespace customization);
-`PaneBuilder<H>` is namespace construction (bind/mount);
-`run_with` is exec; the looper is the running process.
-
-Handlers that use no services skip the setup phase entirely.
+### Messenger and ServiceRouter
 
 ```rust
-/// A pane — organized state with an interface for views.
-/// Non-generic. Represents the pane's connection identity.
-///
-/// #[must_use] — must be consumed by run, run_with,
-/// run_with_display, or setup. Drop closes the connection,
-/// triggering server-side cleanup of the pane entry.
-#[must_use = "a Pane must be consumed by run, run_with, run_with_display, or setup"]
-pub struct Pane {
-    id: Id,
-    tag: Tag,
-    connection: Connection,      // internal, not public
-    looper_tx: LooperSender,
-}
+/// Scoped pane handle. The pane ID is baked in.
+/// (Plan 9: like a fid — resolution happens once at open time;
+/// the result is a direct binding, not a name.)
+pub struct Handle { ... }
 
-impl Drop for Pane {
-    fn drop(&mut self) {
-        // Close the connection. The server detects disconnect
-        // and cleans up the pane entry.
-    }
-}
-
-impl Pane {
-    /// Enter the typed setup phase for service registration.
-    /// H is the handler that will process messages — introduced
-    /// here, not at create_pane. Returns a PaneBuilder that
-    /// enforces Handles<P> bounds at compile time.
-    pub fn setup<H: Handler>(self) -> PaneBuilder<H>;
-
-    /// Closure form — simple panes that use no protocol services.
-    /// Receives Message (Clone-safe events) only. Cannot handle
-    /// obligation-carrying protocols (clipboard locks, completion
-    /// requests, incoming requests with ReplyPort).
-    pub fn run(self, f: impl FnMut(&Messenger, Message) -> anyhow::Result<Flow>) -> Result;
-
-    /// Struct handler form — handlers that use no protocol
-    /// services. The looper is generic over H internally (for
-    /// dispatch to Handler and Handles<Display> methods) but H does
-    /// not propagate to the Pane type.
-    pub fn run_with<H: Handler>(self, handler: H) -> Result;
-
-    /// Struct handler with display — no services needed.
-    pub fn run_with_display<H: Handler + Handles<Display>>(self, handler: H) -> Result;
-}
-
-/// Setup phase for a pane that will use protocol services.
-/// Generic over H to enforce Handles<P> bounds at compile time.
-/// Consumed by run_with / run_with_display — the builder
-/// pattern, where the terminal method both builds and enters
-/// the event loop.
-///
-/// EAct: restricts σ construction to a pre-loop phase. EAct
-/// permits dynamic σ growth during execution (E-Suspend adds
-/// entries at any point); PaneBuilder requires service dispatch
-/// routes to be established before the looper starts. The
-/// dynamic part of σ (Dispatch<H> entries from send_request)
-/// still grows after run_with. When run_with is called, service
-/// dispatch routes are complete and the looper begins.
-///
-/// Plan 9: namespace construction (bind/mount) before exec.
-/// The generic parameter lives where it's needed (setup), not
-/// where it's meaningless (runtime identity).
-#[must_use = "a PaneBuilder must be consumed by run_with or run_with_display"]
-pub struct PaneBuilder<H: Handler> {
-    pane: Pane,
-    dispatch_table: Vec<ServiceDispatchEntry>,
-    registered_services: HashSet<ServiceId>,
-    _handler: PhantomData<H>,
-}
-
-impl<H: Handler> PaneBuilder<H> {
-    /// Open a service connection. Resolves the capability via the
-    /// service map, sends DeclareInterest, blocks until
-    /// InterestAccepted/Declined, registers a calloop source,
-    /// returns a typed handle.
-    ///
-    /// Blocking during setup is correct: the setup phase is
-    /// pre-looper and single-threaded. The blocking prohibition
-    /// (I2/I8) applies only to handler methods (post-looper).
-    ///
-    /// Duplicate open_service for the same ServiceId is rejected
-    /// (returns Err). InterestDeclined surfaces as Err — the
-    /// returned ServiceHandle always represents a confirmed
-    /// binding.
-    pub fn open_service<P: Protocol>(&mut self) -> Result<ServiceHandle<P>>
-    where H: Handles<P>;
-
-    /// Consumes the builder and enters the event loop (headless).
-    pub fn run_with(self, handler: H) -> Result;
-
-    /// Consumes the builder and enters the event loop (display).
-    pub fn run_with_display(self, handler: H) -> Result
-    where H: Handles<Display>;
-}
-
-impl<H: Handler> Drop for PaneBuilder<H> {
-    fn drop(&mut self) {
-        // Compensate: revoke all declared interests that were
-        // accepted. Best-effort (let _ = ...). The ServiceHandle<P>
-        // values returned from open_service also send RevokeInterest
-        // in their own Drop — duplicate revocations are idempotent.
-    }
-}
-```
-
-Adding a new service requires only `struct MyService; impl Protocol
-for MyService { ... }` and `impl Handles<MyService> for MyHandler`.
-No new framework types or methods.
-
-### Named methods via attribute macro
-
-The developer writes named functions. A `#[pane::protocol_handler]`
-attribute macro on the `impl` block generates the
-`Handles<P>::receive` match that delegates to them. This is
-BWindow::DispatchMessage translated to Rust — framework-generated
-dispatch calling developer-provided hooks.
-
-(`#[derive(...)]` in Rust applies only to type definitions, not
-impl blocks. This is a procedural attribute macro, not a derive.)
-
-```rust
-#[pane::protocol_handler(Clipboard)]
-impl Editor {
-    fn lock_granted(&mut self, proxy: &Messenger, lock: ClipboardWriteLock) -> Result<Flow> {
-        lock.commit(self.buffer.as_bytes().to_vec(), metadata)?;
-        Ok(Flow::Continue)
-    }
-    fn lock_denied(&mut self, proxy: &Messenger, clipboard: &str, reason: &str) -> Result<Flow> {
-        Ok(Flow::Continue)
-    }
-    fn changed(&mut self, proxy: &Messenger, clipboard: &str, source: Id) -> Result<Flow> {
-        Ok(Flow::Continue)
-    }
-    fn service_lost(&mut self, proxy: &Messenger) -> Result<Flow> {
-        Ok(Flow::Continue)
-    }
-}
-
-// The macro generates:
-impl Handles<Clipboard> for Editor {
-    fn receive(&mut self, proxy: &Messenger, msg: ClipboardMessage) -> anyhow::Result<Flow> {
-        match msg {
-            ClipboardMessage::LockGranted(lock) => self.lock_granted(proxy, lock),
-            ClipboardMessage::LockDenied { clipboard, reason } =>
-                self.lock_denied(proxy, &clipboard, &reason),
-            ClipboardMessage::Changed { clipboard, source } =>
-                self.changed(proxy, &clipboard, source),
-            ClipboardMessage::ServiceLost =>
-                self.service_lost(proxy),
-        }
-    }
-}
-```
-
-The macro must be transparent: `cargo expand` produces a match
-a human could write in 30 seconds. No runtime indirection. The
-macro generates the match arms; Rust's exhaustive match check IS
-the exhaustiveness guarantee. If a handler method is missing for
-a variant, `rustc` emits a non-exhaustive pattern error. The macro
-does not discover variants — it generates code that fails to
-compile if the handler is incomplete. Variant-to-method mapping
-uses `#[handles(VariantName)]` attributes or snake_case convention.
-
-### Framework protocols
-
-Lifecycle, display, and messaging are protocols with the same
-structure. The base `Handler` trait provides named methods for
-lifecycle + messaging (the protocols every pane speaks). Display
-is a separate protocol that panes opt into.
-
-```rust
-/// Lifecycle protocol — every pane. Part of the base protocol
-/// Part of the Control protocol (wire service 0, implicit,
-/// never DeclareInterest'd).
-struct Lifecycle;
-impl Protocol for Lifecycle {
-    const SERVICE_ID: ServiceId = ServiceId::new("com.pane.lifecycle");
-    type Message = LifecycleMessage;
-}
-
-/// Display protocol — panes with a visual surface. Also part of
-/// the base protocol (declared in handshake, not via DeclareInterest).
-struct Display;
-impl Protocol for Display {
-    const SERVICE_ID: ServiceId = ServiceId::new("com.pane.display");
-    type Message = DisplayMessage;
-}
-```
-
-Lifecycle and Display share the **Control** protocol (wire
-service 0, implicit). They are bundled in `ControlMessage` — a
-single enum containing lifecycle, display, and connection-
-management variants (DeclareInterest, ServiceTeardown). This is
-9P's single-connection multiplexing.
-
-The Control protocol is never negotiated — it exists by virtue
-of having a connection. It is the control plane for the session.
-
-**Dispatch path for Control protocol variants:** the looper
-receives `ControlMessage` from wire service 0, pattern-matches
-on the variant, and routes: lifecycle variants dispatch to
-`Handler` methods, display variants dispatch to
-`Handles<Display>::receive` (via the same fn-pointer mechanism
-as other protocols), connection-management variants
-(`DeclareInterest`, `ServiceTeardown`) are handled internally
-by the framework. Display capability is declared in the
-handshake (Hello's interests list), not via DeclareInterest —
-the server allocates surface resources at connection time. The
-developer never sees `ControlMessage` directly.
-
-Services with their own negotiated wire discriminants (clipboard,
-routing) get their session-local u8 from the server during
-DeclareInterest.
-
-The `Handler` trait provides named methods for lifecycle and
-messaging. These are not separate Protocols — they are universal
-capabilities every pane has by virtue of existing. Messaging
-methods (request_received, pane_exited, pulse) are on Handler
-directly because there is no DeclareInterest for messaging:
-
-```rust
-/// Every pane implements this. Lifecycle + messaging.
-/// The headless-complete interface.
-///
-/// Named methods are the developer-facing API. The looper
-/// dispatches lifecycle and messaging events directly to
-/// these methods. Lifecycle and messaging are universal —
-/// every pane speaks them, no DeclareInterest required.
-pub trait Handler: Send + 'static {
-    fn ready(&mut self, proxy: &Messenger) -> anyhow::Result<Flow> { Ok(Flow::Continue) }
-    fn close_requested(&mut self, proxy: &Messenger) -> anyhow::Result<Flow> { Ok(Flow::Stop) }
-    fn disconnected(&mut self, proxy: &Messenger) -> anyhow::Result<Flow> { Ok(Flow::Stop) }
-    fn pulse(&mut self, proxy: &Messenger) -> anyhow::Result<Flow> { Ok(Flow::Continue) }
-    /// Incoming request from another pane. The payload is intentionally
-    /// type-erased: the requester and receiver may have different types
-    /// (different processes, different T). The service_id identifies the
-    /// protocol the sender used — the receiver checks it before
-    /// downcasting (analogous to BMessage's `what` field). Protocol-
-    /// defined requests route through Handles<P> with typed messages
-    /// instead. The reply is an obligation — default drops it (sends
-    /// ReplyFailed).
-    fn request_received(&mut self, proxy: &Messenger, service: ServiceId, msg: Box<dyn Any + Send>, reply: ReplyPort) -> anyhow::Result<Flow> {
-        drop(reply);
-        Ok(Flow::Continue)
-    }
-    // reply_received and reply_failed are NOT on Handler.
-    // Replies route to per-request Dispatch entries (see Request/Reply).
-    fn pane_exited(&mut self, proxy: &Messenger, pane: Id, reason: ExitReason) -> anyhow::Result<Flow> { Ok(Flow::Continue) }
-    fn supported_properties(&self) -> &[PropertyInfo] { &[] }
-    /// &self for deadlock freedom. Side effects must happen
-    /// before returning true (save in close_requested, not here).
-    fn quit_requested(&self) -> bool { true }
-}
-
-Display and Routing are protocols, dispatched through
-`Handles<P>` via the attribute macro — the same mechanism as
-Clipboard and all other services. No special handler traits.
-
-```rust
-/// Display protocol — panes with a visual surface.
-/// Opt-in: the developer implements Handles<Display> via the
-/// attribute macro. run_with_display requires H: Handles<Display>.
-///
-/// Display capability is declared in the handshake (Hello's
-/// interests list), not via DeclareInterest.
-#[pane::protocol_handler(Display)]
-impl Editor {
-    fn display_ready(&mut self, proxy: &Messenger, geom: Geometry) -> Result<Flow> { ... }
-    fn resized(&mut self, proxy: &Messenger, geom: Geometry) -> Result<Flow> { ... }
-    fn activated(&mut self, proxy: &Messenger) -> Result<Flow> { ... }
-    fn deactivated(&mut self, proxy: &Messenger) -> Result<Flow> { ... }
-    fn key(&mut self, proxy: &Messenger, event: KeyEvent) -> Result<Flow> { ... }
-    fn mouse(&mut self, proxy: &Messenger, event: MouseEvent) -> Result<Flow> { ... }
-    fn command_activated(&mut self, proxy: &Messenger) -> Result<Flow> { ... }
-    fn command_dismissed(&mut self, proxy: &Messenger) -> Result<Flow> { ... }
-    fn command_executed(&mut self, proxy: &Messenger, cmd: &str, args: &str) -> Result<Flow> { ... }
-    fn completion_request(&mut self, proxy: &Messenger, input: &str, reply: CompletionReplyPort) -> Result<Flow> { ... }
-}
-
-/// Routing protocol — panes with a namespace projection.
-/// The headless counterpart to Display: Display projects state
-/// visually, Routing projects state as structured data accessible
-/// through pane-fs queries and remote commands.
-///
-/// Declared via DeclareInterest (not handshake — unlike Display,
-/// routing capability is opened mid-session when the handler is
-/// ready to serve queries).
-///
-/// Phase 3 implementation. Protocol defined here for completeness.
-#[pane::protocol_handler(Routing)]
-impl MyHandler {
-    fn route_query(&mut self, proxy: &Messenger, query: RouteQuery, reply: ReplyPort) -> Result<Flow> { ... }
-    fn route_command(&mut self, proxy: &Messenger, cmd: &str, args: &str) -> Result<Flow> { ... }
-}
-```
-
-Handler is the only trait. Display, Routing, Clipboard, and all
-other protocols use `Handles<P>` via the attribute macro. Display
-is the visual projection of pane state; Routing is the namespace
-projection. Both are opt-in capabilities on top of Handler.
-
-### Service protocols
-
-Clipboard, routing, observer, DnD — each defines a Protocol
-and the developer implements Handles\<P\> via the attribute macro.
-The protocol's Message enum defines the variants; the macro
-generates the dispatch; the developer provides named handlers.
-
-```rust
-struct Clipboard;
-impl Protocol for Clipboard {
-    const SERVICE_ID: ServiceId = ServiceId::new("com.pane.clipboard");
-    type Message = ClipboardMessage;
-}
-
-pub enum ClipboardMessage {
-    LockGranted(ClipboardWriteLock),
-    LockDenied { clipboard: String, reason: String },
-    Changed { clipboard: String, source: Id },
-    ServiceLost,
-}
-
-struct Routing;
-impl Protocol for Routing {
-    const SERVICE_ID: ServiceId = ServiceId::new("com.pane.routing");
-    type Message = RoutingMessage;
-}
-```
-
-DnD requires display: `builder.open_service::<DragDrop>()` requires
-`H: Handles<Display> + Handles<DragDrop>`, and the builder must be
-consumed by `run_with_display`.
-
-### Pointer policy (mouse coalescing opt-out)
-
-```rust
-/// Mouse event delivery policy for the display view.
-/// BeOS: B_NO_POINTER_HISTORY / B_FULL_POINTER_HISTORY per-view.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-pub enum PointerPolicy {
-    /// Deliver only the most recent MouseMove per batch.
-    #[default]
-    Coalesce,
-    /// Deliver every MouseMove event. Required for drawing
-    /// applications, gesture recognition, ink input.
-    FullHistory,
-}
+/// Handle + ServiceRouter. Cloneable, Send.
+pub struct Messenger { ... }
 
 impl Messenger {
-    pub fn set_pointer_policy(&self, policy: PointerPolicy) -> Result<()>;
-}
-```
-
-Per-pane, set in `display_ready` or dynamically. Server-side
-filtering — FullHistory tells the server to send all events;
-Coalesce tells it to batch. The server filters, so the wire
-carries only events the pane will use.
-
-### Application-defined protocols
-
-Applications define their own Protocol with a custom Message enum.
-The same `Protocol + Handles<P>` mechanism handles both framework
-and application protocols:
-
-```rust
-struct EditorProtocol;
-impl Protocol for EditorProtocol {
-    const SERVICE_ID: ServiceId = ServiceId::new("com.example.editor");
-    type Message = EditorMessage;
-    // Local only — never DeclareInterest'd, never on the wire.
-    // The UUID exists for identification; routing is looper-local.
+    pub fn set_content(&self, data: &[u8]);
+    pub fn set_pulse_rate(&self, duration: Duration) -> TimerToken;
+    pub fn set_pointer_policy(&self, policy: PointerPolicy);
+    pub fn post_app_message<T: AppPayload>(&self, msg: T);
+    // send_request defined above in Dispatch section
 }
 
-enum EditorMessage {
-    SearchResult(Vec<Match>),
-    SpellCheckComplete { corrections: Vec<Correction> },
-    AutoSaveFinished,
-}
-
-#[pane::protocol_handler(EditorProtocol)]
-impl Editor {
-    fn search_result(&mut self, proxy: &Messenger, matches: Vec<Match>) -> Result<Flow> { ... }
-    fn spell_check_complete(&mut self, proxy: &Messenger, corrections: Vec<Correction>) -> Result<Flow> { ... }
-    fn auto_save_finished(&mut self, proxy: &Messenger) -> Result<Flow> { ... }
-}
-```
-
-Application protocol messages are local to the looper, never cross
-the wire, typed at compile time with exhaustive dispatch via the
-attribute macro.
-
-### Geometry
-
-```rust
-pub struct Geometry {
-    /// Logical position (scale-independent).
-    pub x: f64,
-    pub y: f64,
-    /// Logical size (scale-independent).
-    pub width: f64,
-    pub height: f64,
-    /// Physical = Logical × scale_factor.
-    /// f32: Wayland's wl_output scale is fixed-point that fits in
-    /// f32; f64 would imply false precision. Logical coordinates
-    /// use f64 for sub-pixel precision in layout math.
-    pub scale_factor: f32,
-}
-
-impl Geometry {
-    pub fn physical_size(&self) -> (u32, u32) {
-        ((self.width * self.scale_factor as f64) as u32,
-         (self.height * self.scale_factor as f64) as u32)
-    }
-}
-```
-
-Logical pixels are the canonical unit. The scale_factor is
-provided by the display server for renderers that need physical
-coordinates. Headless panes may have virtual geometry (logical
-dimensions for layout purposes) or no geometry at all (Handler
-has no geometry parameter).
-
-### Flow
-
-```rust
-/// Handler control flow. Replaces Result<bool>.
-/// Errors are orthogonal — methods return Result<Flow>.
-/// Inspired by EAct §5's separation of actor failure (raise/zap)
-/// from session communication: Err = actor failure, Flow = protocol
-/// control.
-///
-/// When a handler returns Flow::Stop, the looper exits, drops the
-/// handler (triggering Drop compensation on all held obligation
-/// handles), then notifies the server.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Flow {
-    Continue,
-    Stop,
-}
-```
-
-### Error types: two domains
-
-Handler methods return `anyhow::Result<Flow>`. The handler
-speaks its own error vocabulary — application-level failures
-(`io::Error`, parse errors, state invariants). The handler
-cannot construct infrastructure errors (`Disconnected`, `Infra`)
-because those variants don't exist in `anyhow::Error`. This
-matches BeOS (handlers returned `void` — no error path at all;
-pane adds `Result` for error propagation but keeps the handler's
-error domain separate) and 9P (handlers produce Rerror strings;
-transport errors are a disjoint concept the handler can't forge).
-
-The looper wraps handler errors at the boundary:
-
-```rust
-match handler.ready(proxy) {
-    Ok(Flow::Continue) => { /* keep dispatching */ }
-    Ok(Flow::Stop) => break Ok(()),
-    Err(e) => break Err(PaneError::Handler(e)),
-}
-```
-
-`PaneError::Disconnected` is constructed only by the looper when
-it detects connection loss — never from a handler return.
-
-### PaneError and Result
-
-```rust
-/// Process-level result type for run methods and main().
-/// Ok(()) = graceful exit (Flow::Stop).
-/// Err(PaneError) = something went wrong.
-///
-/// NOT used in handler signatures — handlers return
-/// anyhow::Result<Flow>. The looper translates handler
-/// errors into PaneError::Handler(e) at the boundary.
-pub type Result<T = ()> = std::result::Result<T, PaneError>;
-
-/// Why a pane stopped running. Private to the process — carries
-/// full error details for logging and diagnostics. Uses anyhow
-/// for ergonomic error wrapping.
-pub enum PaneError {
-    /// Primary connection lost. The handler's disconnected() was
-    /// called and returned Flow::Stop, but the cause was
-    /// connection loss, not voluntary exit.
-    Disconnected,
-    /// Handler returned Err(e) from a method. The looper wraps
-    /// the handler's anyhow::Error into this variant.
-    Handler(anyhow::Error),
-    /// Infrastructure failure: calloop, socket, handshake, framing.
-    Infra(anyhow::Error),
-}
-
-impl From<io::Error> for PaneError {
-    fn from(e: io::Error) -> Self { PaneError::Infra(e.into()) }
-}
-```
-
-`run_with` returns `pane_app::Result`:
-- `Ok(())` — Flow::Stop. The handler chose to exit. Exit code 0.
-- `Err(PaneError::Disconnected)` — primary connection lost. Exit code 1.
-- `Err(PaneError::Handler(e))` — handler error. Exit code 1.
-- `Err(PaneError::Infra(e))` — infrastructure failure. Exit code 2.
-
-Pre-run failures (connect, create_pane, open_service) also produce
-`PaneError` via `From` impls, so `?` works throughout `main()`.
-
-### ExitReason (broadcast)
-
-```rust
-/// Why a pane exited — carried in PaneExited notifications
-/// broadcast to other panes on the Connection. Stripped of error
-/// details: a pane's internal failure reason is not broadcast
-/// to peers.
-pub enum ExitReason {
-    /// Handler returned Flow::Stop voluntarily.
-    Graceful,
-    /// Primary connection lost.
-    Disconnected,
-    /// Handler returned an error.
-    Failed,
-    /// Infrastructure failure (transport, framing).
-    InfraError,
-}
-
-impl From<&PaneError> for ExitReason { ... }
-```
-
-The looper constructs `ExitReason` from the run outcome:
-`Ok(())` → `ExitReason::Graceful`, `Err(e)` → `ExitReason::from(&e)`.
-Error details go to the server log, not to other panes.
-
----
-
-## Message Types
-
-### The split: values vs obligations
-
-Clonable value events and affine obligation-carrying handles must
-not share a type. Conflating them produces Clone panics. The
-separation follows the linear/affine distinction: obligation-
-carrying handles are affine (consumed once, Drop compensates)
-and must not appear in Clone-safe message values. The filter
-chain operates on immutable borrows of Message, which requires
-Clone; obligation handles are !Clone by design.
-
-The public type retains the Be name `Message` (tier 1 faithful —
-this is what BMessage was, minus the obligations that never
-belonged there).
-
-```rust
-/// Value messages — Clone, filter-visible. Pure notifications:
-/// something happened, here are the details. No obligations.
-///
-/// BMessage, corrected: obligations extracted to internal types.
-///
-/// This enum covers the base protocol only (lifecycle + display).
-/// Service events (clipboard, observer, drag-drop) are NOT in this
-/// enum — they dispatch through Handles<P>::receive with their own
-/// per-protocol message types. This keeps Message closed: adding a
-/// new framework service does not modify this enum and does not
-/// break existing exhaustive matches.
-#[derive(Debug, Clone)]
-pub enum Message {
-    // Lifecycle (no geometry — headless-first)
-    Ready,
-    CloseRequested,
-    Disconnected,
-    PaneExited { pane: Id, reason: ExitReason },
-    Pulse,
-
-    // Display (only arrives if Handles<Display> declared)
-    DisplayReady(Geometry),
-    Resize(Geometry),
-    Activated,
-    Deactivated,
-    Key(KeyEvent),
-    Mouse(MouseEvent),
-    CommandActivated,
-    CommandDismissed,
-    CommandExecuted { command: String, args: String },
-}
-```
-
-Service events are delivered through `Handles<P>::receive`, not
-through the `Message` enum. `ClipboardMessage` (including both
-Clone-safe notifications like `Changed` and obligation-carrying
-handles like `LockGranted`) is the protocol's own message type:
-
-```rust
-pub enum ClipboardMessage {
-    LockGranted(ClipboardWriteLock),
-    LockDenied { clipboard: String, reason: String },
-    Changed { clipboard: String, source: Id },
-    ServiceLost,
-}
-```
-
-Filter visibility for service events: filters that need to observe
-service notifications register per-service filter hooks at service
-registration time (e.g., `builder.open_service::<Clipboard>()` installs
-the clipboard filter hook). These hooks are keyed by `ServiceId` and can inspect
-the protocol's Clone-safe message variants. The base filter chain
-(operating on `Message`) never sees service events.
-
-Obligation-carrying messages bypass the filter chain and dispatch
-directly to their handler method. They do not form a public enum —
-they are internal to the looper.
-
-`Request` bypasses filters as a unit — the inner payload is not
-independently filterable. If filters could see it, consuming the
-payload would orphan the ReplyPort, violating the linear discipline.
-
-- `CompletionRequest { input, reply: CompletionReplyPort }`
-- `Request(Box<dyn Any + Send>, ReplyPort)`
-- `ClipboardLockGranted(ClipboardWriteLock)`
-- `Reply { token, payload }` — internal, routes to Dispatch entries
-- `ReplyFailed { token }` — internal, routes to Dispatch entries
-
-Reply and ReplyFailed never surface to the handler. They route
-to per-request Dispatch entries (see Request/Reply below).
-
-Two categories visible to the handler:
-
-1. **Clone-safe** (Message): freely duplicable, filter-visible.
-2. **Obligation-carrying** (ReplyPort, CompletionReplyPort,
-   ClipboardWriteLock): non-Clone due to session obligation.
-   Dropping triggers failure compensation via Drop impl.
-
-`post_app_message` is the type-erased escape hatch for worker-to-
-handler fire-and-forget notifications. Obligation handles
-(ReplyPort, ClipboardWriteLock) are excluded at compile time via
-the `AppPayload` marker trait:
-
-```rust
+/// Marker trait for fire-and-forget messages. Requires Clone
+/// (prevents smuggling obligation handles through post_app_message).
+/// Obligation types (ReplyPort, ClipboardWriteLock) are !Clone
+/// and cannot implement AppPayload.
 pub trait AppPayload: Clone + Send + 'static {}
-
-pub fn post_app_message<T: AppPayload>(&self, msg: T) -> Result<()>;
 ```
 
-`AppPayload` requires `Clone + Send + 'static`. All obligation
-types (ReplyPort, ClipboardWriteLock, CompletionReplyPort) are
-intentionally `!Clone` — they cannot implement `AppPayload` and
-cannot be smuggled through `post_app_message`, even via wrapper structs
-(a `struct Smuggle(ReplyPort)` cannot derive Clone). Orphan rules
-provide a second layer: external crates cannot impl `AppPayload`
-for obligation types. User payloads (strings, structs, enums)
-derive Clone trivially. Non-Clone payloads wrap in `Arc`.
+`set_pulse_rate` returns `TimerToken` — Drop cancels the timer.
 
-A `debug_assert` in the looper dispatch provides defense-in-depth.
-
-**When to use `post_app_message` vs application-defined protocols:**
-Application protocols (via `Handles<P>` + attribute macro) are for
-structured, exhaustively-checked dispatch from worker threads. Use
-them when the message vocabulary is known at compile time.
-`post_app_message` (via `AppPayload`) is for simple fire-and-forget
-notifications that don't warrant a full Protocol definition. When
-in doubt, use a Protocol — exhaustive matching catches more bugs
-than downcast.
+ServiceRouter maps ServiceId → Connection. One entry per service.
 
 ---
 
-## Filter Chain
+## Wire Protocol
 
-Operates on `Message` only. Never sees obligations.
+### Framing
+
+```
+[length: u32][service: u8][payload: postcard]
+```
+
+<!-- Plan 9: 9P uses [size[4] type[1] tag[2] ...] — similar
+structure. The service: u8 discriminant multiplexes protocol
+handlers on one connection, analogous to 9P's type field. -->
+
+Wire service 0 = Control protocol (implicit, not negotiated).
+Other discriminants assigned by the server during DeclareInterest.
+256-slot ceiling per connection. Serialization via postcard.
+A frame exceeding the negotiated max_message_size is a
+connection-level error (not per-service — framing is shared).
+
+### Control protocol
 
 ```rust
-pub trait MessageFilter: Send + 'static {
-    fn filter(&mut self, msg: &Message) -> FilterAction;
-    fn matches(&self, msg: &Message) -> bool { true }
-}
-
-pub enum FilterAction {
-    /// Pass the message through unchanged. The filter chain
-    /// retains ownership and dispatches the original.
-    Pass,
-    /// Replace the message with a transformed version.
-    /// Use case: shortcut filter transforms Key → CommandExecuted.
-    Transform(Message),
-    /// Consume the message — handler never sees it.
-    Consume,
+/// Wire service 0. Postcard-encoded. The first byte of the
+/// payload discriminates the sub-protocol (lifecycle, display,
+/// connection management).
+pub enum ControlMessage {
+    // Lifecycle sub-protocol
+    Lifecycle(LifecycleMessage),
+    // Display sub-protocol (only if declared in handshake)
+    Display(DisplayMessage),
+    // Connection management (framework-internal)
+    DeclareInterest { service: ServiceId, expected_version: u32 },
+    InterestAccepted { service_uuid: Uuid, session_id: u8, version: u32 },
+    InterestDeclined { service_uuid: Uuid, reason: DeclineReason },
+    ServiceTeardown { service: u8, reason: TeardownReason },
+    RevokeInterest { session_id: u8 },
+    Cancel { token: u64 },
 }
 ```
 
-No panic branches. `Message` derives `Clone` naturally.
-`MessageFilter` keeps its Be name (BMessageFilter).
+The looper demuxes: Lifecycle variants → Handler methods (via
+blanket Handles\<Lifecycle\>), Display variants → Handles\<Display\>
+::receive, connection-management variants → framework-internal
+handling. The developer never sees ControlMessage directly.
 
-`filter()` takes `&Message` (immutable borrow). On `Pass`, the
-chain dispatches the original — no ownership transfer needed. On
-`Transform`, the filter provides the replacement. On `Consume`,
-the message is dropped. This eliminates the ambiguity of a design where `Pass` carries
-the message — a filter could silently return a modified message
-via Pass, conflating pass-through with transformation.
-
-Filters that transform should preserve variant semantics —
-Key→CommandExecuted is valid (same domain: user intent);
-Key→CloseRequested is pathological (different domain). The type
-system does not enforce this — it is a convention. Debugging tools
-log pre-filter and post-filter identity for `Transform` actions.
-
-Filters run before handler dispatch. If a filter returns `Consume`,
-the handler method does not fire for that message. If a filter
-returns `Transform(msg)`, the handler receives the transformed
-message. The filter chain is the first stage; handler dispatch is
-the second.
-
-Filters are applied in registration order. `add_filter` appends
-to the chain. Filters can be removed by dropping the returned
-`FilterHandle` (which sends `RemoveFilter` to the looper).
-
-Filter ordering matters: earlier filters see original messages;
-later filters see the results of earlier transformations. If
-filter A transforms Key → CommandExecuted, filter B (registered
-after A) sees CommandExecuted, not the original Key. This is
-correct for composition — a shortcut filter registered first
-transforms key combos, and a command-logging filter registered
-second observes the resulting commands.
-
----
-
-## Protocol
-
-### Headless-first naming
-
-The server may or may not have a display. The protocol is named
-for what it always is, not for one of its modes:
-
-```rust
-/// Messages from a pane to the server.
-pub enum ClientToServer { ... }
-
-/// Messages from the server to a pane.
-pub enum ServerToClient { ... }
-```
+Implicit — never DeclareInterest'd.
 
 ### Capability declaration
 
-Services are identified by globally unique names (reverse-DNS).
-Display is declared in the handshake. Other services are declared
-via `DeclareInterest` in the active phase. The server assigns a
-compact session-local wire discriminant (u8) for each accepted
-service.
-
-**Initial binding (handshake).** Hello lists requested services.
-Welcome returns bindings:
-
-```rust
-pub struct ServiceBinding {
-    pub service: ServiceId,     // UUID + name
-    pub session_id: u8,         // wire discriminant for this connection
-    pub version: u32,           // negotiated version
-}
-
-// In Welcome:
-pub services: Vec<ServiceBinding>,
-```
-
-**Late binding (active phase).** Services opened mid-session:
+Display declared in handshake (Hello's interests list). Other
+services declared via DeclareInterest in active phase. Server
+assigns session-local u8 per accepted service.
 
 ```rust
 // In ClientToServer:
-DeclareInterest {
-    service: ServiceId,         // UUID + name
-    expected_version: u32,
-}
+DeclareInterest { service: ServiceId, expected_version: u32 }
 
 // In ServerToClient:
-InterestAccepted {
-    service_uuid: Uuid,         // echo UUID (client knows the name)
-    session_id: u8,             // wire discriminant assigned by server
-    version: u32,
-}
-InterestDeclined {
-    service_uuid: Uuid,
-    reason: DeclineReason,      // VersionMismatch, ServiceUnknown
-}
+InterestAccepted { service_uuid: Uuid, session_id: u8, version: u32 }
+InterestDeclined { service_uuid: Uuid, reason: DeclineReason }
+// DeclineReason: VersionMismatch, ServiceUnknown
+// No downgrade negotiation — client retries with a different
+// version or accepts unavailability.
 ```
 
-One round-trip per late-binding service. Initial services are
-batched in the handshake (zero additional round-trips). The server
-accepts or declines; `InterestDeclined::ServiceUnknown` for
-services the server doesn't provide.
+RevokeInterest when ServiceHandle drops. Idempotent. In-flight
+messages for revoked services discarded by looper.
 
-The session-local u8 is a per-connection fid (Plan 9 lineage).
-Different connections may assign different u8 values to the same
-service. The 256-slot ceiling is per-connection (no connection
-needs 256 simultaneous services).
-
-DeclareInterest is revoked when the service handle is dropped
-(sends `RevokeInterest`). In-flight messages for the revoked
-service are discarded by the looper. RevokeInterest is best-effort
-(`let _ = ...`) — if the Connection is dead, the server already
-knows.
-
-The SDK provides a short form: `"clipboard"` expands to
-`"com.pane.clipboard"` for framework services.
-
-### Per-service wire messages
-
-Each service gets its own message types, multiplexed over the
-connection with a session-local discriminant:
+### Handshake
 
 ```
-[length: u32][service: u8][payload: ...]
+Client → Server: Hello { version, max_message_size, interests }
+Server → Client: Welcome { version, instance_id, max_message_size, bindings }
 ```
 
-Wire service 0 = the Control protocol (implicit, not negotiated).
-The `ControlMessage` enum contains lifecycle, display, and
-connection-management variants (DeclareInterest, ServiceTeardown).
-The deserializer knows the type because the Control enum is fixed.
+<!-- Plan 9: factotum handled authentication outside the
+application. pane pushes further — the application doesn't even
+see an auth conversation. Identity is a transport property. -->
 
-Other service discriminants are assigned by the server during
-DeclareInterest (initial binding in handshake, or late binding in
-active phase). The mapping `"com.pane.clipboard" → u8:3` is per-
-connection. The `ServiceRouter` maintains this mapping.
-
-Per-service error semantics: a malformed message on service N tears
-down service N's channel, not the connection. The server signals
-teardown via `ServiceTeardown { service: u8, reason }` on the base
-Control protocol (wire service 0). This triggers the service-specific
-`ServiceLost` message via the protocol's `Handles<P>` dispatch. Connection-level errors (framing
-corruption, auth failure) tear down the connection.
+PeerAuth derived from transport: `Kernel { uid, pid }` for unix
+(SO_PEERCRED), `Certificate { subject, issuer }` for TLS. Identity
+is transport-level, not carried in Hello.
 
 ### Request cancellation
 
 ```rust
-// In ClientToServer:
-Cancel { token: u64 }
+Cancel { token: u64 }  // advisory, same semantics as 9P Tflush
 ```
 
-Advisory cancellation of in-flight requests (completions, routing
-queries). The server responds with either the original reply (if
-already computed) or `ReplyFailed { token }`. Same semantics as
-9P's Tflush: the client must handle a reply arriving after
-cancellation.
+### ProtocolAbort
 
-Cancel cancels the *wire request*. With Dispatch entries, handler-side
-cleanup is automatic — the Dispatch entry is removed by CancelHandle.
-No ghost state to clear.
-
-### Enum-based branching (adapted from par)
-
-pane-session replaces binary `Select<L, R>` / `Branch<L, R>`
-nesting with N-ary enum branching via a `SessionEnum` derive macro:
-
-```rust
-#[derive(SessionEnum)]
-#[repr(u8)]
-enum Operation {
-    #[session_tag = 0]
-    CheckBalance,  // continuation: Send<Amount, End>
-    #[session_tag = 1]
-    Withdraw,      // continuation: Recv<Amount, Send<Result<Money, Error>, End>>
-}
-```
-
-The derive generates `choose_*()` methods (sends 1-byte
-discriminant, returns typed continuation) and `offer()` (receives
-tag, returns enum of dual continuations with exhaustive match).
-
-Wire cost: always 1 byte (vs up to N-1 for binary nesting).
-Discriminants are `#[session_tag]`-annotated for wire stability
-across versions. Rust's exhaustive match on the offer side
-guarantees all branches are handled.
-
-### Streaming (Queue pattern, adapted from par)
-
-Session-typed streaming for observer notifications, clipboard
-change streams, filesystem event streams:
-
-```rust
-type StreamSend<T, S>;  // push items, then close → S
-type StreamRecv<T, S>;  // pop items until Closed → Dual<S>
-
-// Wire: 0x00 + postcard(value) = Item, continue streaming
-//       0x01                   = Closed, transition to continuation S
-```
-
-The continuation `S` after `Closed` enables clean shutdown
-protocols (e.g., send UnsubscribeAck after the last item).
-
-Backpressure: stream items are buffered into the ConnectionSource's
-write buffer. If the write buffer hits the high-water mark,
-`push()` returns `Err(Backpressure)` — it does NOT block (that
-would violate I2). The handler decides: drop the item, stop
-producing, or return `Flow::Stop`. OS-level flow control (TCP,
-unix socket buffers) provides additional backpressure beneath.
-
-Streams must be closed (send `Closed` on the wire) before session
-suspension. A resumed session with a desynchronized stream is a
-protocol error.
-
-### Session suspension and resumption (adapted from par)
-
-Server lifecycle for distributed pane:
-
-```
-Connect → Active → Suspend → (token held by client) → Resume → Active → Disconnect
-```
-
-The server issues a serializable session token on suspend. The
-client holds the token across disconnection. On reconnect, the
-client presents the token and the server locates the suspended
-state. Stateful obligations (locks, pending requests) do NOT
-survive suspension — they fail via Drop compensation. The resumed
-session re-declares interests, re-negotiates per-service protocol
-versions (the server may have upgraded), and re-acquires resources.
-
-Session tokens expire server-side (configurable timeout). If the
-server evicts a suspended session (expiry, memory pressure, admin
-action), the client discovers at resume time — the server rejects
-the token. There is no proactive notification (the client may be
-disconnected).
-
-Multi-server suspension is per-Connection, independent. A pane
-connected to three servers may have its compositor Connection
-suspended while clipboard and registry remain active. "Half-
-suspended" is a valid state. Each Connection's suspension is
-independent of the others.
-
-Adapted from par's Server/Proxy/Connection module (Michal Strba,
-https://github.com/faiface/par). In par, scope isolation (no two
-components in the same closure scope) prevents deadlocks. In pane,
-process isolation provides the same guarantee. The Server pattern
-additionally draws from Balzer & Pfenning, "Client-server sessions
-in linear logic" (LICS 2021).
+`Chan<S, T>` Drop sends `[0xFF][0xFF]` on the transport. Peer
+frees session thread immediately. Best-effort (`let _ = ...`).
+Checked at framing layer before postcard deserialization (I11).
 
 ---
 
 ## App and Connections
 
-### App: the developer entry point
-
-App is the process-level entry point — the BApplication pattern.
-It connects to servers, manages service routing, creates panes,
-and owns the calloop event sources. The developer interacts with
-App; the connection infrastructure is internal.
+### App: the entry point
 
 ```rust
 impl App {
-    /// Connect to the primary server (compositor or headless).
-    /// The service map determines which servers to connect to.
-    ///
-    /// BeOS: BApplication(signature). One per process.
-    pub fn connect(signature: &str) -> Result<Self>;
-
-    /// Create a pane on this App's primary server.
-    pub fn create_pane(&self, tag: Tag) -> Result<CreateFuture>;
+    /// Connect to the primary server. Panics if the server
+    /// is unreachable — connection failure is infrastructure
+    /// misconfiguration, not a recoverable application error.
+    pub fn connect(signature: &str) -> App;
+    /// Create a pane. Panics on server rejection.
+    pub fn create_pane(&self, tag: Tag) -> CreateFuture;
 }
 ```
 
-The developer writes `App::connect("com.example.hello")` and gets
-back an App. No `Connection` or `source` parameter — the App
-manages server connections, calloop sources, and service routing
-internally through its `ServiceRouter`.
+Pre-run failures (connect, create_pane) panic because they are
+infrastructure: the service map is wrong, the server is down,
+the handshake was rejected. These are deployment problems, not
+application logic. The supervisor (s6, systemd) restarts the
+process. `open_service` returns `Option` instead of panicking
+because optional services are a legitimate application concern.
 
-### Multi-server by design
+<!-- BeOS: BApplication(signature) called debugger() on init
+failure, or exit(0) if no error output parameter. The
+constructor WAS the infrastructure check. -->
 
-App connects to multiple servers. Each server provides different
-capabilities. No server is a mandatory intermediary — "host as
-contingent server."
+### Multi-server
 
-A typical topology:
-- Compositor on machine B (Display, Input, Layout)
-- Clipboard service on machine C (Clipboard)
-- Registry on machine D (Roster, AppRegistry)
+App connects to multiple servers. Each provides different
+capabilities. No server is a mandatory intermediary.
 
-The App resolves servers from the service map and connects lazily
-when a service is first opened. Each connection is an internal
-calloop source. The developer sees `App`, `Pane`,
-`PaneBuilder<H>` (when services are needed), `Messenger`, and
-`ServiceHandle<P>`.
+Typical topology:
+- Compositor on machine B (Display, Input)
+- Clipboard service on machine C
+- Registry on machine D
 
-### Service discovery
+App resolves servers from the service map and connects lazily.
+Each connection is an internal calloop source. The developer
+sees App, Pane, PaneBuilder\<H\>, Messenger, ServiceHandle\<P\>.
 
-App receives a **service map** from the environment — not from any
-single server. This is the Plan 9 namespace(1) approach:
-declarative configuration, lazy connection.
+### Service map
 
 ```
 # $PANE_SERVICES or /etc/pane/services.toml
@@ -1284,608 +642,242 @@ uri = "tcp://clipboard.internal:9090"
 tls = true
 ```
 
-For headless instances without a compositor, the service map omits
-the compositor entry. The App works — it creates panes, they
-appear in the namespace, they handle protocol messages. They just
-have no display view.
+Precedence: `$PANE_SERVICE_OVERRIDES` > manifest >
+`$PANE_SERVICES` > `/etc/pane/services.toml`.
 
-### Per-connection handshake
+### Per-connection failure isolation
 
-Every server connection starts with the same handshake (uniform,
-like 9P's Tversion):
+Connection going down affects only its capabilities. Other
+connections unaffected. Compositor lost → can't display.
+Clipboard lost → copy/paste returns error. Registry lost →
+discovery fails. The pane continues with remaining capabilities.
 
-```
-Client → Server: Hello { version, max_message_size: u32, interests: Vec<ServiceInterest> }
-Server → Client: Welcome { version, instance_id: String, max_message_size: u32, bindings: Vec<ServiceBinding> }
-```
-
-`instance_id` is a server-assigned string that uniquely identifies
-this server instance. It lets clients detect server restarts (new
-instance_id = old session tokens are dead) and is used in federation
-to distinguish instances.
-
-Hello declares requested services. Welcome returns bindings (name
-→ session-local wire ID + negotiated version). PeerAuth is derived
-from the transport (OS-provided peer credentials for unix, TLS
-certificate for remote) — identity is transport-level, not
-carried in Hello.
-
-```rust
-pub struct ServiceInterest {
-    pub service: ServiceId,     // UUID + name
-    pub expected_version: u32,
-}
-
-pub struct ServiceBinding {
-    pub service: ServiceId,     // UUID + name
-    pub session_id: u8,         // wire discriminant for this connection
-    pub version: u32,           // negotiated version
-}
-```
-
-The compositor's Welcome says `bindings: [{com.pane.display, 0, 1}]`.
-The clipboard server says `bindings: [{com.pane.clipboard, 1, 1}]`.
-A combined local server might bind both on one connection.
-
-### Internal: connection sources
-
-Each server connection is internally a calloop event source
-handling both read (fd-readiness) and write (buffered, flushed on
-write-readiness) with high-water mark backpressure. App routes
-incoming events from all connections to the right pane's looper.
-The looper sees events regardless of which server they came from.
-This is infrastructure — the developer never touches it.
-
-### Remote connections require TLS
-
-Connections to remote servers require TLS. `PeerAuth` is derived
-from the transport: `PeerAuth::Kernel { uid, pid }` for unix
-sockets (via OS-provided peer credentials), `PeerAuth::Certificate
-{ subject, issuer }` for TLS. The Hello message carries no
-identity — authentication is transport-level. `pane_owned_by()`
-checks `PeerAuth`. Plaintext TCP is not supported. Development
-uses `pane dev-certs` tooling for self-signed certificates (see
-resolved question 25).
-
-### Maximum message size
-
-The Hello/Welcome exchange negotiates `max_message_size`. Both
-sides send their maximum; the effective limit is the minimum.
-Default: 16MB. The server rejects frames exceeding this. The
-`length` field in `[length: u32][service: u8][payload]` counts
-the service byte plus payload (total frame = 4-byte length field +
-service byte + payload bytes). The length field does NOT include
-itself.
-
-### Serialization format
-
-All payloads use **postcard** encoding (the same format used by
-pane-session for the handshake). This is the canonical wire format
-for all active-phase messages.
+<!-- Plan 9: Ehangup per-connection. Failure surfaces at the
+use site, not as a global event. -->
 
 ### Cross-connection ordering
 
-Events within a single server connection are FIFO (TCP guarantees
-this). Events across connections are **not causally ordered**. The handler
-imposes causal order through its control flow when needed (e.g.,
-request clipboard contents *after* receiving paste key event).
+Events within a connection are FIFO (TCP). Events across
+connections are not causally ordered. The unified batch
+imposes a total order for dispatch purposes, but cross-
+connection ordering within a batch is implementation-defined
+and must not be relied upon. Handlers that need cross-
+connection causality use send_request callbacks.
 
-The unified batch linearizes events from all sources into a total
-order within each dispatch cycle. This gives sequential consistency
-per-pane but not causal consistency across servers. Events from
-different Connections that appear in the same batch have an arbitrary
-relative order determined by read readiness, not by any happened-
-before relation between the sending servers. The session-type
-formalism is silent on cross-session ordering — it's a property
-of the physical system, not the protocol.
+### Remote connections require TLS
 
-For cross-connection patterns (paste: receive key event from
-compositor, then fetch clipboard from clipboard service), the
-handler uses `send_request` with typed callbacks:
+`PeerAuth::Certificate { subject, issuer }` for TLS.
+Plaintext TCP not supported. `pane dev-certs` for development.
+
+---
+
+## Filter Chain
+
+<!-- BeOS: BMessageFilter on BHandler/BLooper. Filters saw the
+raw BMessage* including embedded reply ports — pane corrects this
+by separating obligations from filterable messages. -->
+
+Filters are typed per-protocol. The `Message` trait requires
+`Clone` (supertrait), which makes it not object-safe — `&dyn
+Message` is ill-formed in Rust. This is by design: filters
+operate on concrete protocol message types, not trait objects.
 
 ```rust
-fn command_executed(&mut self, proxy: &Messenger, cmd: &str, _: &str) -> Result<Flow> {
-    if cmd == "paste" {
-        proxy.send_request::<Self, ClipboardData>(
-            self.clipboard.messenger(),
-            ClipboardRead("text/plain"),
-            |editor, proxy, data| {
-                editor.insert_text(&data.content);
-                proxy.set_content(editor.buffer.as_bytes())?;
-                Ok(Flow::Continue)
-            },
-            |editor, proxy| {
-                editor.show_status("Paste failed");
-                Ok(Flow::Continue)
-            },
-        )?;
-    }
-    Ok(Flow::Continue)
+pub trait MessageFilter<M: Message>: Send + 'static {
+    fn filter(&mut self, msg: &M) -> FilterAction<M>;
+    fn matches(&self, msg: &M) -> bool { true }
+}
+
+pub enum FilterAction<M> {
+    Pass,
+    Transform(M),
+    Consume,
 }
 ```
 
-No ghost state. No manual token correlation. The callback receives
-the typed reply directly. The causal ordering (key event → clipboard
-fetch → insert) is expressed in the callback chain, not in handler
-state fields.
+The base filter chain is `MessageFilter<LifecycleMessage>` —
+every pane has lifecycle events to filter (shortcut transforms,
+exit monitoring, etc.).
 
-The batch provides a *processing* order, not a *causal* order.
-Handlers that need cross-connection causality use `send_request`
-callbacks, not event observation.
+Per-service filter hooks are typed by the service's message
+type: `MessageFilter<ClipboardMessage>`, `MessageFilter<
+DisplayMessage>`, etc. Registered at `open_service` time.
+Keyed by `ServiceId`.
 
-### Failure isolation
+Obligation handles bypass all filters — they are not `Message`
+variants and dispatch directly to their typed callbacks.
 
-A server connection going down affects only the capabilities it
-provides. Other connections are unaffected. The pane continues.
-
-- Compositor connection lost → pane can't display (likely exits)
-- Clipboard connection lost → paste/copy operations return `Err`
-- Registry connection lost → app discovery fails, pane unaffected
-
-This is Plan 9's `Ehangup` applied per-connection. Failure surfaces
-at the use site — when the handler tries to use the lost capability.
-Service-specific `ServiceLost` variants in each protocol's Message enum
-provide async notification for handlers holding stale state.
-
-### Scoped pane handles
-
-Each pane gets a handle that can only send messages about itself.
-No Id in the public API.
-
-```rust
-/// Can only send messages for this pane. The pane ID is baked in.
-/// Plan 9 fid principle: the handle IS the name.
-pub struct Handle { ... }
-```
-
-`Messenger` wraps `Handle` + a `ServiceRouter` that knows which
-Connection to use for which operation. Cloneable, Send. Token
-allocation for `send_request` managed internally — developers don't
-construct raw tokens.
-
-The server MAY enforce per-pane limits on concurrent outstanding
-requests to bound obligation growth from Messenger clones.
-
-### Request/Reply via the Dispatch
-
-Request/reply is modeled as per-request Dispatch entries, not ghost
-state in the handler. Each `send_request` creates a one-shot typed
-dispatch slot in the looper's `Dispatch`.
-
-```rust
-impl Messenger {
-    /// Send a request and register a typed reply callback.
-    ///
-    /// EAct: E-Suspend installs a one-shot handler in σ for
-    /// session type Recv<RequestReplyMessage<R>, End>.
-    /// The entry is consumed on reply (E-React) or failure.
-    ///
-    /// Returns a CancelHandle for optional cancellation.
-    pub fn send_request<H, R>(
-        &self,
-        target: &Messenger,
-        msg: impl Serialize + Send + 'static,
-        on_reply: impl FnOnce(&mut H, &Messenger, R) -> anyhow::Result<Flow> + Send + 'static,
-        on_failed: impl FnOnce(&mut H, &Messenger) -> anyhow::Result<Flow> + Send + 'static,
-    ) -> anyhow::Result<CancelHandle>
-    where H: Handler + 'static, R: DeserializeOwned + Send + 'static;
-}
-
-/// Handle for cancelling an outstanding request.
-/// Drop does nothing — the request completes normally.
-/// .cancel(self) removes the Dispatch entry without firing callbacks.
-/// Inverted from ReplyPort: drop = happy path, cancel = voluntary abort.
-pub struct CancelHandle {
-    /// Which Connection to send Cancel on.
-    connection_id: ConnectionId,
-    /// The request token within that Connection's namespace.
-    token: u64,
-    /// Channel to the looper for Dispatch entry removal.
-    looper_tx: LooperSender,
-}
-
-impl CancelHandle {
-    /// Cancel the request. Consumes self. Late replies silently dropped.
-    pub fn cancel(self) { ... }
-}
-// Drop: intentionally no-op. Uncancelled request completes normally.
-```
-
-No ghost state in the handler. The correlation between request and
-reply is structural — guaranteed by the Dispatch entry, not by manual
-matching. Multiple requests may be outstanding simultaneously,
-including to the same target — each gets an independent Dispatch
-entry with a unique token (S1).
-
-**Callback capture.** Callbacks are `FnOnce + Send + 'static` —
-they cannot capture borrows from the calling scope. This is
-correct: the callback outlives the handler invocation (EAct
-E-Suspend: Dispatch entries persist across idle). The `&mut H` first
-parameter provides handler state at reply time:
-
-```rust
-// Pattern 1: Handler state via &mut H (covers ~90% of cases)
-proxy.send_request::<Self, SearchResults>(
-    &target, query,
-    |editor, proxy, results| {
-        // editor IS &mut Self — full handler access
-        editor.display_results(&results);
-        Ok(Flow::Continue)
-    },
-    |editor, _| { editor.show_status("failed"); Ok(Flow::Continue) },
-)?;
-
-// Pattern 2: Capture owned context from the call site
-let term = query.to_owned();
-proxy.send_request::<Self, SearchResults>(
-    &target, SearchQuery(term.clone()),
-    move |handler, proxy, results| {
-        handler.display_results(&term, results);
-        Ok(Flow::Continue)
-    },
-    |handler, _| { handler.show_status("failed"); Ok(Flow::Continue) },
-)?;
-```
-
-The callback receives `&mut H` (handler state) and the typed
-reply `R` directly. No `Box<dyn Any>` at the handler surface.
-The framework handles the type boundary: for same-process requests,
-a downcast (`Box<dyn Any + Send>` → `R`); for cross-process
-requests, deserialization (postcard → `R`, where `R: DeserializeOwned`).
-Both are internal to the framework — the developer sees typed `R`.
-
-**On disconnect**: `dispatch.fail_connection()` fires `on_failed` for every
-pending entry before `handler.disconnected()` is called. The
-handler gets per-request failure notification.
-
-**On cancellation**: `cancel_handle.cancel()` removes the Dispatch
-entry without firing callbacks. Late-arriving replies are silently
-dropped. Same as 9P's Tflush. Dropping the CancelHandle without
-calling cancel is a no-op — the request completes normally.
-
-**Lifecycle** (by analogy with EAct's E-Suspend/E-React):
-- **Install** (cf. E-Suspend): `send_request` installs entry in σ
-- **Idle** (cf. EAct idle): entry waits; looper services other sessions
-- **Dispatch** (cf. E-React): reply arrives, entry consumed, callback fires
-- **Failed** (pane-specific): target drops ReplyPort → `on_failed` fires
-- **Cancelled** (pane-specific): handler-initiated removal, no callbacks
-- **Abandoned** (pane-specific): handler drops (Flow::Stop, panic) →
-  entry dropped without callbacks. Safe: pending entry is a receive-
-  endpoint; dropping it doesn't block any peer (the structural argument
-  from DLfActRiS §4-5: dropping a receive can only decrease connectivity,
-  never create a cycle).
-
-**What this removes from Handler**: `reply_received(token, payload)`
-and `reply_failed(token)` are gone. Reply dispatch is structural,
-not a handler method. `request_received` stays (the server side
-of request/reply, receiving from other panes).
-
-Tokens are per-Connection (three servers = three namespaces).
-Token allocation is internal to the framework.
+Filters run in registration order. `add_filter` appends.
+`FilterHandle` Drop removes. Earlier filters see originals;
+later filters see transforms.
 
 ---
 
 ## Service Registration
 
-Services are opened during the `PaneBuilder<H>` setup phase,
-before the event loop starts. Opening a service:
-1. Resolves the capability to a Connection (via service map)
-2. Sends `DeclareInterest` on that Connection
-3. Blocks until `InterestAccepted` or `InterestDeclined`
-4. On acceptance: registers a typed calloop source in the looper,
-   captures the monomorphized `Handles<P>::receive` fn pointer
-5. Returns a `ServiceHandle<P>` representing a confirmed binding
+<!-- BeOS: BApplication's constructor connected to app_server
+synchronously, ran the handshake, and blocked until registration
+completed — all before Run() started the message loop. Same
+structural guarantee here. -->
+
+Services opened during PaneBuilder\<H\> setup phase:
+
+1. Resolve capability to a Connection (service map)
+2. Send DeclareInterest (blocking — pre-looper, I2/I8 don't apply)
+3. Wait for InterestAccepted/Declined
+4. On acceptance: capture monomorphized Handles\<P\>::receive fn
+   pointer, register calloop source
+5. Return `Some(ServiceHandle<P>)` or `None` on decline
+
+All open_service calls resolve before run_with starts the looper.
+No race between interest confirmation and dispatch — enforced
+structurally by PaneBuilder consumption.
+
+---
+
+## Dispatch (looper internals)
+
+### The looper
+
+calloop-backed event loop. Dispatches events sequentially on one
+thread (I6). The looper is generic over H internally — the
+generic parameter is encapsulated.
+
+### catch_unwind boundary
 
 ```rust
-// Clipboard registration — PaneBuilder finds the right Connection
-let mut builder = pane.setup::<Editor>();
-let clipboard = builder.open_service::<Clipboard>()?;
-
-// In the handler — same as single-server:
-fn command_executed(&mut self, proxy: &Messenger, cmd: &str, _: &str) -> Result<Flow> {
-    if cmd == "copy" {
-        self.clipboard.request_lock()?;
+match catch_unwind(AssertUnwindSafe(|| {
+    handler.receive(proxy, msg)
+})) {
+    Ok(Flow::Continue) => { /* next event */ }
+    Ok(Flow::Stop) => {
+        drop(handler);
+        exit(0);  // ExitReason::Graceful
     }
-    Ok(Flow::Continue)
+    Err(panic_payload) => {
+        drop(handler);
+        // ExitReason::Failed → PaneExited broadcast
+        exit(101);
+    }
 }
 ```
 
-The developer writes zero additional code for multi-server vs
-single-server. The difference is App configuration (which servers
-to connect to), not handler code.
+AssertUnwindSafe justified: handler is never re-used after
+caught panic. I1 (`panic = unwind`) is load-bearing.
 
-Because all `open_service` calls happen during the setup phase
-(before `run_with` starts the calloop loop), the
-`InterestAccepted`/`Declined` responses for all services are
-resolved before any handler method fires. There is no window
-where a service event arrives before its interest is confirmed.
-This is enforced structurally: `PaneBuilder<H>` is consumed by
-`run_with`, so `open_service` cannot be called after dispatch
-begins.
+`exit()` is `std::process::exit` — a hard exit that does not
+run Drop for stack frames above the looper. This is intentional:
+the handler is explicitly dropped before exit (obligation
+compensation fires), and run_with returns `-> !` so nothing
+meaningful exists above it on the stack.
 
-### Typed ingress, unified batch
+### ExitReason (looper-internal, not in handler API)
 
-Each service's calloop channel carries its own typed event enum.
-At the calloop callback boundary, events convert to the looper's
-internal representation and enter the unified batch. Total ordering
-within the batch is preserved. Coalescing operates within the batch.
-The base filter chain sees `Message` (Clone-safe) variants only.
-Service events dispatch through `Handles<P>` and are not visible
-to the base filter chain. Per-service filter hooks, registered
-at service open time, can observe Clone-safe service events.
-Obligation-carrying messages bypass all filters and remain ordered
-within the batch.
+```rust
+/// Broadcast to other panes via PaneExited. Stripped of
+/// error details — failure reason is private to the process.
+pub enum ExitReason {
+    Graceful,       // Flow::Stop
+    Disconnected,   // primary connection lost
+    Failed,         // caught panic
+    InfraError,     // calloop/socket/framing
+}
+```
 
----
+### Batch processing
 
-## Dispatch
-
-Service event dispatch (routing protocol events to `Handles<P>`
-implementations) is a monomorphized match — no explicit struct,
-the compiler provides what it would add. Request/reply dispatch
-uses `Dispatch<H>`, a HashMap whose entries store typed callbacks
-taking `&mut H` (see Request/Reply via the Dispatch below).
-`Dispatch<H>` is internal to the looper — it never appears in the
-public API.
-
-The looper is generic over `H` internally — it knows the
-handler type for dispatch, but this generic parameter is
-encapsulated. Externally, the developer interacts with
-non-generic `Pane` and `Messenger`. The generic parameter is
-introduced only when needed: either at `pane.setup::<H>()`
-(when services are required) or at `pane.run_with(handler)`
-(when the handler type is inferred from the value).
-
-Service dispatch uses fn pointers captured at registration time
-(the Dispatch pattern). When `builder.open_service::<Clipboard>()`
-is called on a `PaneBuilder<H>` whose `H` implements
-`Handles<Clipboard>`, the registration captures the monomorphized
-`Handles<Clipboard>::receive` as a fn pointer. The attribute
-macro's generated match delegates to the developer's named
-methods. These are called during batch processing, sharing
-`&mut H` with the main dispatch — sequentially, never
-concurrently (I7).
-
-Three paths into the event loop:
-
-- `pane.run(|proxy, msg| ...)` — closure form. Receives `Message`
-  (Clone-safe events) only. Cannot handle obligation-carrying
-  protocols (clipboard locks, completion requests, incoming
-  requests with ReplyPort).
-- `pane.run_with(handler)` — struct handler, no services. The
-  looper is generic over H internally but H is not exposed.
-- `pane.setup::<H>().open_service(...)...run_with(handler)` —
-  struct handler with services. The `PaneBuilder<H>` phase
-  enforces `Handles<P>` bounds, then is consumed.
+Each calloop cycle: collect events from all sources into a
+unified batch. Total ordering within the batch. Coalescing
+within the batch (mouse events, etc.). Base filter chain sees
+Message variants. Service events dispatch through Handles\<P\>.
+Obligation handles dispatch through separate callbacks.
 
 ---
 
-## The Linear Discipline
+## Linear Discipline
 
 ### Typestate handles
 
-Every obligation-carrying type follows the pattern:
+Every obligation-carrying type: `#[must_use]`, move-only,
+single success method consumes, Drop sends failure terminal.
 
-- `#[must_use]` — compiler warns on unused
-- Move-only — no Clone
-- Single success method consumes — `.commit()`, `.reply()`, `.wait()`
-- Drop sends failure terminal — Revert, ReplyFailed, ProtocolAbort, RevokeInterest
-
-Proven on: ReplyPort, CompletionReplyPort, ClipboardWriteLock,
-CreateFuture (Drop cancels the pending pane creation on the
-server), TimerToken (Drop cancels the timer), ServiceHandle<P>
-(Drop sends RevokeInterest), Pane (Drop closes connection),
-PaneBuilder<H> (Drop revokes accepted interests).
-
-Destruction sequence on handler exit: dispatch.fail_connection() (per S4)
-→ handler dropped → service handles (ServiceHandle<Clipboard>, etc.)
-dropped during handler field destruction → Drop sends
-RevokeInterest (best-effort, `let _ = ...`).
-
-### Extended linear discipline
-
-- **Pane**: `#[must_use]`. Drop closes the connection (server-side
-  cleanup). Consumed by `run`, `run_with`, `run_with_display`, or
-  `setup`.
-- **PaneBuilder\<H\>**: `#[must_use]`. Drop compensates any
-  `DeclareInterest` already sent (revokes accepted interests).
-  Consumed by `run_with` or `run_with_display`.
-- **Service handles**: `builder.open_service::<Clipboard>()` returns
-  a `ServiceHandle<Clipboard>` whose Drop sends `RevokeInterest`
-  (idempotent). The service lifecycle is linearly tracked.
-- **Batch processing**: the batch `Vec` is taken (`mem::take`) and
-  drained. Events are consumed by dispatch — no re-buffering.
-- **Filter chain**: `filter()` takes `&Message` (immutable borrow).
-  Returns `FilterAction`: `Pass` (no-op), `Transform(Message)`
-  (replacement), or `Consume` (drop). The chain retains ownership
-  on Pass; only Transform produces a new value.
-- **Connection**: `ConnectionSource` is move-only. Inserting it
-  into calloop consumes it. No aliased access to the fd.
-
-### Where affine falls short
+### Affine gap
 
 Rust is affine (values can be dropped), not linear (values must
-be consumed). The gap is compensated by Drop impls that send
-failure terminals. The invariants:
+be consumed). Drop impls compensate by sending failure terminals.
+
+Residual risks where Drop cannot fire: double panic (abort),
+`std::process::abort()`, SIGKILL, OOM-triggered abort. The
+server detects these via fd hangup (EPOLLHUP on unix, TCP RST
+on remote) and cleans up — the backstop when I1 is violated.
+
+### Destruction sequence
+
+Three triggers, same sequence:
+
+- **Flow::Stop** from any handler callback → ExitReason::Graceful
+- **Primary connection lost** → looper calls disconnected() →
+  if handler returns Flow::Stop → ExitReason::Disconnected
+- **Caught panic** → ExitReason::Failed
+
+The sequence:
+1. dispatch.fail_connection() (per S4) — fires on_failed for
+   Dispatch entries keyed to lost Connection. on_failed callbacks
+   receive `&mut H` and can update handler state, but must NOT
+   call send_request (new entries created during destruction are
+   abandoned per the "Abandoned" lifecycle — cleared without
+   callbacks when the handler drops in step 2).
+2. dispatch.clear() — remaining entries across all Connections
+   dropped without callbacks.
+3. Handler dropped — obligation handles fire Drop compensation
+   (ReplyPort → ReplyFailed, ClipboardWriteLock → Revert,
+   ServiceHandle → RevokeInterest)
+4. Server notified via PaneExited { reason }
+
+### send_and_wait
+
+Synchronous blocking variant of send_request. Must NOT be called
+from a handler method. Enforced at runtime: looper thread-local
+check, panic on violation (I8).
+
+---
+
+## Invariants
+
+### System invariants
 
 - **I1**: `panic = unwind` in all pane binaries (Drop must fire).
-  Residual risks where Drop cannot fire: double panic during
-  unwind (abort), `std::process::abort()`, SIGKILL, OOM-triggered
-  abort. The server detects these via fd hangup (EPOLLHUP on unix
-  sockets, TCP RST on remote) and cleans up the pane entry — this
-  is the backstop when I1 is violated.
-- **I2**: No blocking calls in handler methods (EAct Global Progress
-  — the stronger result requiring handler termination, §4.3)
-- **I3**: Handler callbacks terminate (return Flow)
-- **I4**: Typestate handles: `#[must_use]` + Drop compensation
-- **I5**: Base filters see only Message (Clone-safe, type-enforced);
-  per-service filter hooks see Clone-safe service events
-- **I6**: Sequential single-thread dispatch per pane (BLooper model)
-- **I7**: Service dispatch fn pointers called sequentially within
-  the batch loop, never concurrently, preserving Rust's exclusive-
-  reference invariant on `&mut H`
-- **I8**: No blocking calls (`send_and_wait`) in handler methods.
-  Enforced at runtime: the looper sets a thread-local during
-  dispatch; `send_and_wait` panics if called from the looper
-  thread. Same-Connection cycles (pane A → pane B → pane A
-  through one server) remain a runtime hazard, documented as a
-  mutual-deadlock risk.
+  Backstop: fd hangup detection.
+- **I2**: No blocking calls in handler methods (EAct Global
+  Progress — requires handler termination).
+- **I3**: Handler callbacks terminate (return Flow).
+- **I4**: Typestate handles: `#[must_use]` + Drop compensation.
+- **I5**: Filters see only Clone-safe Message variants.
+  Obligation handles bypass filters.
+- **I6**: Sequential single-thread dispatch per pane.
+- **I7**: Service dispatch fn pointers called sequentially,
+  preserving `&mut H` exclusivity.
+- **I8**: `send_and_wait` panics from looper thread.
+- **I9**: Dispatch cleared before handler drop.
+- **I10**: Chan Drop must not block (best-effort write).
+- **I11**: ProtocolAbort `[0xFF][0xFF]` checked at framing layer
+  before deserialization.
+- **I12**: Unknown service discriminant → connection-level error.
+- **I13**: open_service blocks until InterestAccepted/Declined.
+  ServiceHandle represents a confirmed binding.
 
-- **I9**: Dispatch is cleared (`dispatch.fail_connection()` or `dispatch.clear()`)
-  before the handler is dropped. CancelHandle's inverted Drop
-  (no-op) depends on this ordering — without it, dropped Dispatch
-  entries could reference a destroyed handler during callbacks.
-- **I10**: Chan Drop must not block. The ProtocolAbort write is
-  best-effort (`let _ = ...`). A blocking Drop would violate I2
-  transitively during unwind.
-- **I11**: The ProtocolAbort sentinel `[0xFF][0xFF]` must not be
-  valid postcard encoding for any message type. The sentinel is
-  checked at the framing layer (before postcard deserialization).
-  This is satisfied because postcard uses 0xFF only for the
-  largest varint continuations, never as a two-byte standalone
-  sequence for any type in the protocol vocabulary.
-- **I12**: Unknown service discriminants on the wire must be
-  rejected (connection-level error, not silently dropped). A
-  message with an unrecognized service byte indicates framing
-  corruption or version skew.
-- **I13**: `open_service` blocks until `InterestAccepted` or
-  `InterestDeclined`. The returned `ServiceHandle<P>` represents
-  a confirmed binding. Enforced structurally: `open_service`
-  lives on `PaneBuilder<H>`, which is consumed before the looper
-  starts — no race between interest confirmation and dispatch.
+### Dispatch entry invariants
 
-Dispatch entry invariants (request/reply):
-
-- **S1**: Token uniqueness (AtomicU64, per-Connection namespace)
-- **S2**: Sequential dispatch — Dispatch callbacks share `&mut H`
-  with handler methods, never concurrent (follows from I6/I7)
+- **S1**: Token uniqueness (AtomicU64, per-Connection namespace).
+- **S2**: Sequential dispatch — callbacks share `&mut H`, never
+  concurrent (follows from I6/I7).
 - **S3**: Control-before-events — RegisterRequest processed before
-  any Reply in the same batch
-- **S4**: On individual Connection loss, `dispatch.fail_connection()` fires
-  for entries keyed to that Connection only, before
-  `handler.disconnected()`. On handler destruction, `dispatch.clear()`
-  drops all entries across all Connections without firing callbacks.
-- **S5**: Cancel removes entry without firing callbacks
-- **S6**: `panic = unwind` (follows from I1) — Dispatch HashMap dropped
-  during unwind
-
-### Chan Drop sends ProtocolAbort
-
-`Chan<S, T>` implements `Drop`. If dropped mid-handshake (crash,
-early return, panic unwind), Drop sends a `ProtocolAbort` frame
-(`[0xFF][0xFF]`) on the transport, then closes it. The peer
-receives the abort and frees its session thread immediately —
-no TCP timeout wait. Best-effort: if the transport is already
-dead (broken pipe), Drop silently succeeds (`let _ = ...`).
-
-### Obligation handle lifetime
-
-Obligation handles (ReplyPort, CompletionReplyPort,
-ClipboardWriteLock) are **short-lived**: they should be consumed
-within the handler method invocation that receives them. Storing
-an obligation handle in `self` defers its resolution until handler
-destruction, blocking the requesting pane indefinitely.
-
-This is a convention, not a type-level enforcement. `ReplyPort`
-remains `Send` (worker threads may need to reply). A lint that
-warns on `self.field = reply` assignments is a future enhancement.
-If a handler stores and forgets, the Drop compensation (ReplyFailed)
-fires at handler destruction — the linear discipline works, but
-the requester waits longer than necessary.
-
-### ClipboardWriteLock::commit
-
-```rust
-pub fn commit(self, data: Vec<u8>, metadata: ClipboardMetadata)
-    -> Result<(), CommitError>;
-```
-
-`commit` takes `self` by value — the lock is consumed. No retry.
-`CommitError` variants: `Disconnected` (service gone between lock
-grant and commit), `LockRevoked` (server revoked due to timeout
-or admin action), `ValidationFailed` (malformed data rejected).
-Drop-based Revert fires only if `commit` was never called.
-
-**`send_and_wait`** is the synchronous blocking variant of
-`send_request` — it blocks the calling thread until the reply
-arrives or a timeout expires. It must NOT be called from a handler
-method. Enforcement: `is_looper_thread()` panics on self-deadlock;
-`CURRENT_CONNECTION` panics on cross-Connection deadlock.
-
-**I8 is enforced at runtime (panic in all builds).** The looper
-maintains a thread-local `CURRENT_CONNECTION` id during handler
-dispatch. If `send_and_wait` is called from a handler method, the
-runtime panics. The check cost (one thread-local read) is
-negligible relative to the IPC round-trip.
-
-**Tokens are per-Connection.** A pane connected to three servers
-has three independent token namespaces. `Cancel { token }` is
-routed to the Connection that issued the original request. The
-Messenger embeds the routing context. Token values may collide
-across Connections — this is correct because the namespaces are
-disjoint.
-
-### Termination semantics
-
-**`Flow::Stop` (graceful exit):**
-
-1. The looper stops dispatching further events from the batch
-2. The handler is dropped — Drop impls fire on all held obligation
-   handles (ReplyPort → ReplyFailed, ClipboardWriteLock → Revert)
-3. The server is notified via `PaneExited { reason: Graceful }`
-
-**`Err(e)` (crash):**
-
-1. The looper logs the error
-2. No further events are dispatched
-3. The handler is dropped — same Drop compensation as Flow::Stop
-4. The server is notified via `PaneExited { reason: Error(e) }`
-
-Both paths trigger identical Drop compensation. The distinction
-is in the exit reason reported to the server and to monitoring
-panes (via `pane_exited`). `Flow::Stop` is "I chose to exit."
-`Err` is "something went wrong." This mirrors EAct §5's
-separation of actor failure (raise → zap/supervision) from
-clean session termination, though pane's Drop compensation
-fires identically in both cases (EAct-zap propagates cancellation
-only on failure).
-
-Obligation compensation completes before the server is notified.
-
-### Pane exit notification
-
-When a pane exits, the server broadcasts `PaneExited { pane, reason }`
-to all other panes on the same Connection. No registration API —
-every pane hears about every exit on its Connection. The receiving
-pane's filter chain controls what it acts on:
-
-```rust
-// A filter that only passes PaneExited for a specific pane.
-struct MonitorFilter { target: Id }
-
-impl MessageFilter for MonitorFilter {
-    fn matches(&self, msg: &Message) -> bool {
-        matches!(msg, Message::PaneExited { .. })
-    }
-    fn filter(&mut self, msg: &Message) -> FilterAction {
-        match msg {
-            Message::PaneExited { pane, .. } if *pane == self.target => FilterAction::Pass,
-            Message::PaneExited { .. } => FilterAction::Consume,
-            _ => FilterAction::Pass,
-        }
-    }
-}
-```
-
-The server stays simple (broadcast on Connection), the policy
-lives in the client (filter chain). A pane that cares about one
-specific peer's exit installs a filter. A pane that doesn't care
-about any exits lets the default `pane_exited` handler return
-`Ok(Flow::Continue)` — the events arrive and are ignored.
-
-This avoids a registration API (`monitor(target)`) and the
-server-side bookkeeping it would require. The filter chain is
-the opt-in mechanism.
+  Reply in same batch.
+- **S4**: On Connection loss, fail_connection() fires for entries
+  keyed to that Connection only, before disconnected(). On handler
+  destruction, dispatch.clear() drops entries without callbacks.
+- **S5**: Cancel removes entry without firing callbacks.
+- **S6**: `panic = unwind` (follows from I1).
 
 ---
 
@@ -1894,28 +886,27 @@ the opt-in mechanism.
 ### Minimal headless agent
 
 ```rust
-use anyhow::Result;
 use pane_app::{App, Tag, Handler, Messenger, Flow};
 
 struct StatusAgent;
 
 impl Handler for StatusAgent {
-    fn ready(&mut self, proxy: &Messenger) -> Result<Flow> {
-        proxy.set_content(b"online")?;
-        proxy.set_pulse_rate(Duration::from_secs(60))?;
-        Ok(Flow::Continue)
+    fn ready(&mut self, proxy: &Messenger) -> Flow {
+        proxy.set_content(b"online");
+        proxy.set_pulse_rate(Duration::from_secs(60));
+        Flow::Continue
     }
 
-    fn pulse(&mut self, proxy: &Messenger) -> Result<Flow> {
+    fn pulse(&mut self, proxy: &Messenger) -> Flow {
         let status = check_health();
-        proxy.set_content(status.as_bytes())?;
-        Ok(Flow::Continue)
+        proxy.set_content(status.as_bytes());
+        Flow::Continue
     }
 }
 
-fn main() -> pane_app::Result {
-    let app = App::connect("com.ops.status")?;
-    let pane = app.create_pane(Tag::new("Server Status"))?.wait()?;
+fn main() {
+    let app = App::connect("com.ops.status");
+    let pane = app.create_pane(Tag::new("Server Status")).wait();
     pane.run_with(StatusAgent)
 }
 ```
@@ -1923,9 +914,7 @@ fn main() -> pane_app::Result {
 ### Display editor with clipboard
 
 ```rust
-use anyhow::Result;
-use pane_app::{App, Tag, Handler, Messenger, Flow, ServiceHandle,
-    Clipboard, ClipboardWriteLock, ClipboardMetadata, Sensitivity, Locality};
+use pane_app::*;
 
 struct Editor {
     buffer: String,
@@ -1933,56 +922,71 @@ struct Editor {
 }
 
 impl Handler for Editor {
-    fn ready(&mut self, proxy: &Messenger) -> Result<Flow> {
-        proxy.set_content(self.buffer.as_bytes())?;
-        Ok(Flow::Continue)
+    fn ready(&mut self, proxy: &Messenger) -> Flow {
+        proxy.set_content(self.buffer.as_bytes());
+        Flow::Continue
     }
 
-    fn close_requested(&mut self, _proxy: &Messenger) -> Result<Flow> {
-        Ok(Flow::Stop)
+    fn close_requested(&mut self, _proxy: &Messenger) -> Flow {
+        Flow::Stop
     }
 }
 
 #[pane::protocol_handler(Display)]
 impl Editor {
-    fn key(&mut self, proxy: &Messenger, event: KeyEvent) -> Result<Flow> {
+    fn key(&mut self, proxy: &Messenger, event: KeyEvent) -> Flow {
         self.buffer.push(event.char);
-        proxy.set_content(self.buffer.as_bytes())?;
-        Ok(Flow::Continue)
+        proxy.set_content(self.buffer.as_bytes());
+        Flow::Continue
     }
 
-    fn command_executed(&mut self, proxy: &Messenger, cmd: &str, _: &str) -> Result<Flow> {
+    fn command_executed(&mut self, proxy: &Messenger,
+        cmd: &str, _: &str) -> Flow
+    {
         if cmd == "copy" {
-            self.clipboard.request_lock()?;
+            self.clipboard.request_lock();
         }
-        Ok(Flow::Continue)
+        Flow::Continue
     }
 }
 
+// Obligation callbacks — separate from ClipboardMessage values:
 #[pane::protocol_handler(Clipboard)]
 impl Editor {
-    fn lock_granted(&mut self, _proxy: &Messenger, lock: ClipboardWriteLock) -> Result<Flow> {
+    // Value messages (Clone-safe, filter-visible):
+    fn changed(&mut self, _: &Messenger, _: &str, _: Id) -> Flow {
+        Flow::Continue
+    }
+    fn lock_denied(&mut self, _: &Messenger, _: &str, _: &str) -> Flow {
+        Flow::Continue
+    }
+    fn service_lost(&mut self, _: &Messenger) -> Flow {
+        Flow::Continue
+    }
+
+    // Obligation callback (NOT a ClipboardMessage variant):
+    fn lock_granted(&mut self, _proxy: &Messenger,
+        lock: ClipboardWriteLock) -> Flow
+    {
         lock.commit(self.buffer.as_bytes().to_vec(), ClipboardMetadata {
             content_type: "text/plain".into(),
             sensitivity: Sensitivity::Normal,
             locality: Locality::Any,
-        })?;
-        Ok(Flow::Continue)
+        });
+        Flow::Continue
     }
-    fn lock_denied(&mut self, _: &Messenger, _: &str, _: &str) -> Result<Flow> { Ok(Flow::Continue) }
-    fn changed(&mut self, _: &Messenger, _: &str, _: Id) -> Result<Flow> { Ok(Flow::Continue) }
-    fn service_lost(&mut self, _: &Messenger) -> Result<Flow> { Ok(Flow::Continue) }
 }
 
-fn main() -> pane_app::Result {
-    let app = App::connect("com.pane.editor")?;
+fn main() {
+    let app = App::connect("com.pane.editor");
     let pane = app.create_pane(
         Tag::new("Editor")
             .command(cmd("copy", "Copy").shortcut("Ctrl+C")),
-    )?.wait()?;
+    ).wait();
 
     let mut builder = pane.setup::<Editor>();
-    let clipboard = builder.open_service::<Clipboard>()?;
+    let clipboard = builder.open_service::<Clipboard>()
+        .expect("clipboard service required");
     builder.run_with_display(Editor {
         buffer: String::new(),
         clipboard,
@@ -1990,237 +994,247 @@ fn main() -> pane_app::Result {
 }
 ```
 
-### Closure form (simple case)
+### Closure form
 
 ```rust
-fn main() -> pane_app::Result {
-    let app = App::connect("com.example.hello")?;
-    let pane = app.create_pane(Tag::new("Hello"))?.wait()?;
+fn main() {
+    let app = App::connect("com.example.hello");
+    let pane = app.create_pane(Tag::new("Hello")).wait();
     pane.run(|_proxy, msg| match msg {
-        Message::CloseRequested => Ok(Flow::Stop),
-        _ => Ok(Flow::Continue),
+        LifecycleMessage::CloseRequested => Flow::Stop,
+        _ => Flow::Continue,
     })
 }
 ```
 
-The handler API is identical for local and remote connections.
-Latency differences are observable through timeout behavior and
-Result errors, never through different handler methods or Message
-variants.
+---
+
+## Framework Protocols
+
+All use Protocol + Handles\<P\> + `#[pane::protocol_handler]`.
+
+```rust
+struct Lifecycle;
+impl Protocol for Lifecycle {
+    const SERVICE_ID: ServiceId = service_id!("com.pane.lifecycle");
+    type Message = LifecycleMessage;
+}
+
+struct Display;
+impl Protocol for Display {
+    const SERVICE_ID: ServiceId = service_id!("com.pane.display");
+    type Message = DisplayMessage;
+}
+
+struct Clipboard;
+impl Protocol for Clipboard {
+    const SERVICE_ID: ServiceId = service_id!("com.pane.clipboard");
+    type Message = ClipboardMessage;
+}
+
+struct Routing;
+impl Protocol for Routing {
+    const SERVICE_ID: ServiceId = service_id!("com.pane.routing");
+    type Message = RoutingMessage;
+}
+```
+
+Lifecycle and Display are bundled in the Control protocol (wire
+service 0, implicit — declared in the handshake's interests list,
+not via DeclareInterest). Both have Protocol impls with ServiceIds
+for type-system dispatch, but they share the Control wire channel.
+Other services get negotiated discriminants via DeclareInterest.
+
+---
+
+## Application-Defined Protocols
+
+Applications define their own Protocol with a custom Message enum.
+The same `Protocol + Handles<P>` mechanism handles both framework
+and application protocols:
+
+```rust
+struct ModelProtocol;
+impl Protocol for ModelProtocol {
+    const SERVICE_ID: ServiceId = service_id!("com.example.editor.model");
+    type Message = ModelMessage;
+}
+
+#[derive(Message, Clone, Serialize, Deserialize)]
+enum ModelMessage {
+    Completion { cursor: usize, text: String },
+    DiagnosticReady { path: String, diagnostics: Vec<Diagnostic> },
+    IndexingProgress { done: u32, total: u32 },
+}
+
+#[pane::protocol_handler(ModelProtocol)]
+impl Editor {
+    fn completion(&mut self, proxy: &Messenger, cursor: usize, text: String) -> Flow { ... }
+    fn diagnostic_ready(&mut self, proxy: &Messenger, ...) -> Flow { ... }
+    fn indexing_progress(&mut self, proxy: &Messenger, done: u32, total: u32) -> Flow { ... }
+}
+```
+
+Application protocol messages are local to the looper, never cross
+the wire, typed at compile time with exhaustive dispatch via the
+attribute macro. `post_app_message` is the simpler alternative for
+one-off fire-and-forget notifications that don't warrant a full
+Protocol definition.
+
+---
+
+## Obligation Handle Lifetime
+
+Obligation handles (ReplyPort, CompletionReplyPort,
+ClipboardWriteLock) should be consumed within the callback
+invocation that receives them. Storing an obligation handle in
+`self` defers its resolution until handler destruction, blocking
+the requesting pane indefinitely.
+
+This is a convention, not a type-level enforcement. `ReplyPort`
+remains `Send` (worker threads may need to reply). If a handler
+stores and forgets, Drop compensation (ReplyFailed) fires at
+handler destruction — the linear discipline works, but the
+requester waits longer than necessary.
+
+---
+
+## Streaming and Backpressure
+
+Queue<T, S> / Dequeue<T, S> for session-typed streaming:
+
+```
+Wire: 0x00 + postcard(value) = Item, continue streaming
+      0x01                   = Closed, transition to continuation S
+```
+
+Backpressure: stream items buffer into the ConnectionSource's
+write buffer. If the write buffer hits the high-water mark,
+push() returns Err(Backpressure) — does NOT block (I2). The
+handler decides: drop the item, stop producing, or return
+Flow::Stop. OS-level flow control provides additional backpressure.
+
+Streams must be closed before session suspension. The server
+initiates suspension by sending a suspend signal; the client
+must close open streams before acknowledging. A resumed session
+with a desynchronized stream is a protocol error.
+
+---
+
+## Session Suspension and Resumption
+
+Server issues a serializable session token on suspend. Client
+holds the token across disconnection. On reconnect, client
+presents the token; server locates suspended state. Stateful
+obligations do NOT survive suspension — they fail via Drop
+compensation. The resumed session re-declares interests and
+re-negotiates per-service protocol versions.
+
+Session tokens expire server-side. Multi-server suspension is
+per-Connection, independent.
+
+<!-- Plan 9: analogous to aan(8) — authenticated, anti-replay
+session layer that maintains sessions across network disruption.
+pane's suspension is explicit (not transparent) to avoid masking
+latency changes. -->
+
+---
+
+## Maximum Message Size
+
+Hello/Welcome negotiates `max_message_size`. Both sides send
+their maximum; the effective limit is the minimum. Default: 16MB.
+The server rejects frames exceeding this. The `length` field in
+`[length: u32][service: u8][payload]` counts the service byte
+plus payload. The length field does NOT include itself.
+
+---
+
+## Open Questions
+
+1. **Pane identity across servers.** Who assigns pane Id? Is it
+   global (one Id, presented to all servers) or connection-local?
+   Multi-server topology needs an answer.
+
+2. **Reconnection.** A lost service is currently lost for the
+   pane's lifetime (PaneBuilder is consumed, no mid-session
+   open_service). Explicit reconnection (exit and re-launch) is
+   the current model. Transparent reconnection is deferred.
+
+3. **Same-server service routing.** When two services resolve to
+   the same server, does the App open one connection or two?
+   One connection is more efficient; two connections simplify
+   failure isolation.
+
+---
+
+## Design Principles
+
+### Functoriality
+
+Build the full architecture's types from day one. No simplified
+types that assume structure doesn't exist — a type that omits
+structure creates patterns that can't cleanly accommodate the
+full design.
+
+`ServiceRouter` with one entry, not a bare sender.
+`ServiceId { uuid, name }`, not a bare string.
+`Dispatch` keyed by `(ConnectionId, token)`, not bare token.
+
+<!-- BeOS lesson: string-based app signatures shaped an ecosystem
+built on strcmp(). When structured identity was needed (launch
+daemon, package management), everything was string-comparison
+all the way down. -->
+
+### send_and_wait
+
+Synchronous blocking variant of send_request. Must NOT be called
+from a handler method. Enforced at runtime: looper thread-local
+check, panic on violation (I8). Same-Connection cycles (pane A →
+pane B → pane A through one server) remain a runtime hazard.
+Detection is not implemented — the framework does not track
+cross-pane dependency graphs. Mitigation: timeouts on
+send_and_wait, and documentation of the mutual-deadlock risk.
+
+Tokens are per-Connection (three servers = three namespaces).
+Token allocation is internal to the framework.
 
 ---
 
 ## Resolved Questions
 
-1. **Service trait dispatch**: fn pointers (Dispatch pattern). Zero-cost,
-   handler type known at registration time. Unanimous.
+1. **Handler returns Flow, not Result.** Three error channels are
+   disjoint. Handler owns its error domain. Looper receives lifecycle
+   decisions, not errors.
 
-2. **DeclareInterest placement**: Display in handshake (server
-   allocates surface resources). Services in active phase (opened
-   mid-session via DeclareInterest message).
+2. **Message: Clone.** Obligation handles are not Message variants.
+   Forced by Serialize bound (obligation handles are !Serialize).
+   Matches BeOS (BMessage was pure values; obligations used separate
+   mechanisms).
 
-3. **ClipboardWriteLock::commit()**: Returns `Result<(), CommitError>`
-   where `CommitError` includes `Disconnected` and `LockRevoked`.
-   Non-negotiable. Unanimous.
+3. **par as CLL substrate.** par is complete. pane-session
+   reimplements the type vocabulary for IPC. No crate dependency
+   (runtime models incompatible — par panics, pane returns Result).
 
-4. **Session resumption**: Deferred implementation. The handshake
-   type will need a `Resume` path. On resume, the client receives
-   `ready()` as if new and must re-send all `DeclareInterest`
-   messages. The server MAY optimize by recognizing previously-held
-   interests, but the protocol requires re-declaration. Stateful
-   obligations (locks, pending requests, open streams) do not
-   survive — they fail via Drop compensation. Streams must be
-   closed before suspension. The resume path re-negotiates per-
-   service protocol versions (the server may have upgraded).
-   Obligation-carrying messages must not be buffered across
-   reconnection. Tokens expire server-side; client discovers
-   expiry at resume time (rejection). Multi-server suspension is
-   per-Connection, independent. Reference: Plan 9 aan(8), par
-   Server/Proxy/Connection (Michal Strba).
+4. **EAct, not MPST.** Bottom-up composition (correct binaries +
+   correct actors = correct system). MPST can be added later for
+   multi-party protocols without changing the channel substrate.
 
-5. **Naming**: `Message` (tier 1 faithful). The type is what BMessage
-   was, corrected: obligations extracted to internal types. No
-   divergence entry needed.
+5. **No phases.** The spec describes the full architecture.
+   Implementation order in PLAN.md.
 
-6. **Service disconnect**: Dual mechanism. `commit() -> Result` for
-   synchronous at-call-site detection. `ServiceLost` variant in
-   each protocol's Message enum for async notification, dispatched
-   through `Handles<P>`. Scoped to per-protocol dispatch — no
-   Handler growth per service.
+6. **open_service returns Option.** Service may not be available.
+   None = service unavailable, Some = confirmed binding.
 
-7. **TLS for remote**: Remote connections require TLS.
-   `PeerAuth::Certificate` derived from TLS certificate. Plaintext
-   TCP not supported. No `remote_insecure` escape hatch.
+7. **Native recursion.** No Rec/Var. Par's approach: Rust enum
+   recursion with channel indirection. Queue and Server are the
+   named patterns.
 
-8. **Cancel { token }**: Added to ClientToServer. Advisory
-   cancellation. Server responds with original reply or ReplyFailed.
+8. **PaneBuilder\<H\>.** Pane is non-generic. Setup phase introduces
+   H when services are needed. Consumed by run_with.
 
-9. **Filter modification**: Intentional. `FilterAction` distinguishes
-   `Pass` (unchanged) from `Transform` (rewritten) for debuggability.
-   Variant-changing transforms are pathological and should be logged.
+9. **No special handler traits.** DisplayHandler, RoutingHandler
+   eliminated. All protocols use Handles\<P\>.
 
-10. **AppPayload: Clone + Send + 'static**: Obligation handles are
-    !Clone, preventing smuggling even via wrapper structs. Orphan
-    rules + Clone bound = compile-time enforcement.
-
-11. **Termination**: `Flow::Stop` = graceful. `Err` = crash. Both
-    trigger identical Drop compensation. Distinction is in the exit
-    reason reported to server and monitors.
-
-12. **Chan Drop sends ProtocolAbort** (`[0xFF][0xFF]`). Peer frees
-    session thread immediately on handshake abort.
-
-13. **Request/reply via Dispatch entries**: `send_request<H, R>` creates
-    a one-shot typed dispatch entry in Dispatch. Returns `CancelHandle`
-    (Drop = no-op, `.cancel()` = voluntary abort). Replies route to
-    callback with typed `R`. Multiple outstanding requests per target
-    supported (independent Dispatch entries, unique tokens). No ghost
-    state, no `reply_received` on Handler. `dispatch.fail_connection()` before
-    `disconnected()`. Six invariants (S1-S6).
-
-14. **Routing via Handles\<Routing\>**: The namespace projection
-    counterpart to Display (visual projection). Declared via
-    DeclareInterest. Handles pane-fs queries and remote commands.
-    Phase 3 implementation; protocol defined in the main spec.
-    Uses the same `Handles<P>` + attribute macro mechanism as all
-    other protocols — no special trait.
-
-15. **Geometry**: Logical pixels + scale_factor. `physical_size()`
-    helper. Resolves HiDPI ambiguity.
-
-16. **I8 runtime enforcement**: Thread-local CURRENT_CONNECTION in
-    looper. `send_and_wait` on different Connection: panic in all
-    builds (production deadlock is worse than a crash with backtrace).
-
-17. **Service map precedence**: `$PANE_SERVICE_OVERRIDES` > manifest
-    > `$PANE_SERVICES` > `/etc/pane/services.toml`.
-
-18. **DeclareInterest version**: Single `expected_version` for
-    Phase 1. Range negotiation (min/max) deferred to Phase 2.
-
-    **Service identity**: Globally unique reverse-DNS names
-    (`com.pane.clipboard`) replace hardcoded `SERVICE_ID: u8`.
-    Wire discriminants are session-local, assigned by the server
-    in `InterestAccepted { session_id: u8 }`. Initial services
-    bound in handshake (Hello → Welcome with bindings).
-    Late-binding services via active-phase DeclareInterest.
-
-19. **Control protocol shared by Lifecycle and Display**: Intentional.
-    Same connection, `ControlMessage` enum (wire service 0).
-    Other services get negotiated session-local wire IDs via
-    DeclareInterest.
-
-20. **request_received stays untyped**: `Box<dyn Any + Send>` is
-    intentional — the server side is fundamentally open (unknown
-    senders). Protocol-defined requests route through Handles<P>.
-    Ad-hoc inter-pane requests use request_received.
-
-21. **Message enum is base-protocol only**: Service events route
-    through `Handles<P>::receive` with per-protocol message types,
-    not through the `Message` enum. `Message` covers lifecycle +
-    display (the base protocol). New services do not modify it.
-
-22. **PointerPolicy**: Per-pane `Coalesce` (default) or
-    `FullHistory` for drawing apps. Server-side filtering.
-    Set via `Messenger::set_pointer_policy()`.
-
-23. **Attribute macro exhaustiveness**: `rustc`'s exhaustive match IS
-    the guarantee. The `#[pane::protocol_handler(P)]` macro generates
-    the match; missing handler methods produce non-exhaustive pattern
-    errors at compile time.
-
-24. **Network discovery deferred**: Tier 1 (explicit config) is
-    sufficient for all phases. Future discovery mechanisms (mDNS,
-    rendezvous) are service map producers — they populate the same
-    map, at lowest precedence (explicit config wins). No discovery
-    metadata in map entries reaching the App. The service map is
-    the abstraction boundary.
-
-25. **No `remote_insecure` escape hatch**: Transport enum is
-    `{Unix, Tls}`, no third option. Server refuses plaintext TCP
-    on remote listener. `PeerAuth` enum replaces advisory
-    PeerIdentity for authorization: `Kernel { uid, pid }` (unix,
-    SO_PEERCRED) or `Certificate { subject, issuer }` (TLS).
-    `pane_owned_by()` checks `PeerAuth`, not self-reported strings.
-    Development certificate tooling (`pane dev-certs`) is a product
-    concern — see ops documentation, not this spec.
-
-26. **Two-phase pane lifecycle (Pane / PaneBuilder\<H\>)**: `Pane`
-    is non-generic (connection identity). `PaneBuilder<H>` is the
-    typed setup phase for service registration. Three-agent review
-    (Be, Plan 9, session-type) unanimous: the handler type H is a
-    setup-time concern, not a runtime identity. BeOS's BWindow was
-    not generic over its handler; Plan 9 separates namespace
-    construction from the running process; EAct's handler store σ
-    is a component populated during initialization. `Pane::run_with`
-    and `Pane::run_with_display` provide a direct path for handlers
-    that use no services. `RevokeInterest` is idempotent (handles
-    PaneBuilder Drop + ServiceHandle Drop overlap). Duplicate
-    `open_service` for the same ServiceId is rejected.
-
-## Open Questions
-
-None. The spec is implementation-ready for Phase 1.
-
----
-
-## Phase 1 Structural Invariants
-
-Phase 1 implements Phase 2's data structures populated at N=1.
-No shortcuts that create type signatures or invariants Phase 2
-must break. If Phase 1's simplifications create invariants that
-Phase 2 breaks, Phase 1 was wrong.
-
-| Component | Shortcut to avoid | Correct Phase 1 implementation |
-|---|---|---|
-| Messenger | Bare `mpsc::Sender` | `ServiceRouter` (HashMap, 1 entry) |
-| App | Bare `Connection` field | `HashMap<ServiceId, Connection>` (1 entry) |
-| Dispatch | `HashMap<u64, Entry>` | `HashMap<(ConnectionId, u64), Entry>` |
-| Wire framing | Flat `[length][payload]` | `[length][service][payload]` (service=0); service IDs negotiated per-connection |
-| Message enum | Flat with panic-Clone | Base-protocol only + `#[derive(Clone)]`; service events via `Handles<P>` |
-| PeerAuth | Self-reported identity | `PeerAuth::Kernel { uid, pid }` via SO_PEERCRED |
-| DeclareInterest | Implicit (connect=display) | Explicit capability declaration |
-| ConnectionSource | Pump threads + mpsc | calloop EventSource (read + buffered write) |
-| Protocol trait | None | `Lifecycle`, `Display` types exist |
-| Pane lifecycle | `Pane<H>` or no compile-time check | `Pane` (non-generic) + `PaneBuilder<H>` (setup phase, consumed by `run_with`) |
-| Handles\<P\> | None | Trait exists, `PaneBuilder<H>` enforces bounds, `#[pane::protocol_handler]` attribute macro |
-| Dispatch\<H\> + send_request | `reply_received` on Handler | Dispatch HashMap + CancelHandle |
-| AppPayload | `T: Send + 'static` | `T: AppPayload` (Clone + Send + 'static) |
-| I9 | Not implemented | Dispatch cleared before handler drop |
-| max_message_size | Hardcoded | In Hello/Welcome, enforced |
-| Cancel { token } | Deferred | Wire message + CancelHandle work |
-
-**Governing principle:** Phase 2 adds entries to Phase 1's data
-structures. It does not restructure them. Multi-server is single-
-server with N>1 Connections. The compound-key Dispatch, the
-ServiceRouter with one entry, the calloop EventSource — these
-exist from day one so Phase 2 is additive.
-
----
-
-## Implementation Phases
-
-**Phase 1 — Core.** Single server (N=1), headless, no suspension,
-no streaming. All multi-server data structures present with one
-entry (see Phase 1 Structural Invariants). Validate: Protocol +
-Handles<P> + attribute macro, Pane/PaneBuilder<H> two-phase
-lifecycle, Handler + Handles<Display> (no special trait), Message/obligation split,
-Flow, Dispatch\<H\> for request/reply, calloop ConnectionSource
-(read+write), filter chain, Messenger + ServiceRouter,
-PeerAuth::Kernel, DeclareInterest, wire framing
-[length][service][payload], AppPayload marker, CancelHandle,
-max_message_size, I1-I13 + S1-S6. This is the proof that the
-linear discipline works end-to-end.
-
-**Phase 2 — Distribution.** Add Connections (N>1). TLS +
-PeerAuth::Certificate. Service map full precedence chain.
-Version range negotiation. Validate: ServiceRouter with multiple
-entries, per-Connection failure isolation, cross-Connection
-ordering, multi-server Dispatch (connection_id, token) routing.
-
-**Phase 3 — Lifecycle.** Session suspension/resumption, streaming
-(Queue pattern), Handles<Routing>. These interact — streams must
-close before suspend — so they're designed together.
-
-**Phase 4 — Performance.** Batch coalescing optimizations, write
-buffer tuning, connection pooling. Correctness before performance.
+10. **ExitReason is looper-internal.** Not in the handler API.
+    PaneExited broadcast carries stripped disposition tags.
