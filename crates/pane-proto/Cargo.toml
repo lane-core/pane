@@ -2,7 +2,7 @@
 name = "pane-proto"
 version = "0.1.0"
 edition = "2021"
-description = "Protocol vocabulary for the pane framework. Message, Protocol, Handles<P>, Handler, Flow."
+description = "Protocol vocabulary for pane. Traits and types for handler dispatch, service identity, and state access."
 license = "BSD-3-Clause"
 
 [dependencies]

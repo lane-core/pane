@@ -1,13 +1,12 @@
 [package]
-name = "pane-app"
+name = "pane-fs"
 version = "0.1.0"
 edition = "2021"
-description = "Actor framework for pane. Single-threaded dispatch, request/reply, service registration."
+description = "Filesystem namespace for pane. Projects pane state into /pane/ for scripting and inspection."
 license = "AGPL-3.0-only"
 
 [dependencies]
 pane-proto = { path = "../pane-proto" }
-# pane-session will be added when par-backed channels are built
 
 [dev-dependencies]
 serde = { version = "1", features = ["derive"] }

@@ -1,29 +1,23 @@
-//! Property: optic-backed state access for the namespace projection.
+//! Optic-backed named attributes for namespace projection.
 //!
-//! Each property is a named lens from handler state to a value.
-//! pane-fs reads `/pane/<n>/attrs/<name>` via the getter;
-//! writes via the setter. The optic laws (GetPut, PutGet, PutPut)
+//! Each attribute is a named lens from handler state to a value.
+//! pane-fs reads `/pane/<n>/attrs/<name>` through the getter;
+//! writes through the setter. Optic laws (GetPut, PutGet, PutPut)
 //! guarantee consistency between the namespace view and the
 //! handler's internal state.
-//!
-//! Uses fp-library's profunctor-encoded Lens.
 
 use fp_library::types::optics::{Lens, Getter};
 use fp_library::brands::RcBrand;
 
-/// A named property backed by a Lens into handler state S.
+/// A named read-write attribute backed by a Lens.
 ///
-/// The lens focuses on a value of type A within state S.
-/// GetPut: reading then writing back is identity.
-/// PutGet: writing then reading returns the written value.
-/// PutPut: two writes collapse to the last write.
-pub struct Property<'a, S: 'a, A: 'a> {
+/// Focuses on a value of type A within handler state S.
+pub struct Attribute<'a, S: 'a, A: 'a> {
     pub name: &'static str,
     pub lens: Lens<'a, RcBrand, S, S, A, A>,
 }
 
-impl<'a, S: 'a, A: 'a> Property<'a, S, A> {
-    /// Create a property from a name, getter, and setter.
+impl<'a, S: 'a, A: 'a> Attribute<'a, S, A> {
     pub fn new(
         name: &'static str,
         get: impl Fn(S) -> A + 'a,
@@ -32,13 +26,13 @@ impl<'a, S: 'a, A: 'a> Property<'a, S, A> {
     where
         S: Clone,
     {
-        Property {
+        Attribute {
             name,
             lens: Lens::from_view_set(get, set),
         }
     }
 
-    /// Read the property value from state.
+    /// Read the attribute value from state.
     pub fn view(&self, state: S) -> A {
         self.lens.view(state)
     }
@@ -49,16 +43,16 @@ impl<'a, S: 'a, A: 'a> Property<'a, S, A> {
     }
 }
 
-/// A read-only property backed by a Getter.
-/// For computed/derived values that don't have a setter.
-pub struct ReadOnlyProperty<'a, S: 'a, A: 'a> {
+/// A named read-only attribute backed by a Getter.
+/// For computed or derived values with no setter.
+pub struct ReadOnlyAttribute<'a, S: 'a, A: 'a> {
     pub name: &'static str,
     pub getter: Getter<'a, RcBrand, S, S, A, A>,
 }
 
-impl<'a, S: 'a, A: 'a> ReadOnlyProperty<'a, S, A> {
+impl<'a, S: 'a, A: 'a> ReadOnlyAttribute<'a, S, A> {
     pub fn new(name: &'static str, get: impl Fn(S) -> A + 'a) -> Self {
-        ReadOnlyProperty {
+        ReadOnlyAttribute {
             name,
             getter: Getter::new(get),
         }
@@ -80,8 +74,8 @@ mod tests {
     }
 
     #[test]
-    fn property_get_put() {
-        let cursor = Property::new(
+    fn attribute_get_put() {
+        let cursor = Attribute::new(
             "cursor",
             |s: EditorState| s.cursor,
             |(s, c): (EditorState, usize)| EditorState { cursor: c, ..s },
@@ -92,15 +86,14 @@ mod tests {
             buffer: "hello".into(),
         };
 
-        // GetPut: view then set back is identity
         let val = cursor.view(state.clone());
         let state2 = cursor.set(state.clone(), val);
         assert_eq!(state, state2);
     }
 
     #[test]
-    fn property_put_get() {
-        let cursor = Property::new(
+    fn attribute_put_get() {
+        let cursor = Attribute::new(
             "cursor",
             |s: EditorState| s.cursor,
             |(s, c): (EditorState, usize)| EditorState { cursor: c, ..s },
@@ -111,14 +104,31 @@ mod tests {
             buffer: "hello".into(),
         };
 
-        // PutGet: set then view returns the set value
         let state2 = cursor.set(state, 99);
         assert_eq!(cursor.view(state2), 99);
     }
 
     #[test]
-    fn readonly_property() {
-        let length = ReadOnlyProperty::new(
+    fn attribute_put_put() {
+        let cursor = Attribute::new(
+            "cursor",
+            |s: EditorState| s.cursor,
+            |(s, c): (EditorState, usize)| EditorState { cursor: c, ..s },
+        );
+
+        let state = EditorState {
+            cursor: 42,
+            buffer: "hello".into(),
+        };
+
+        // PutPut: two writes collapse to the last write
+        let state2 = cursor.set(cursor.set(state, 10), 20);
+        assert_eq!(cursor.view(state2), 20);
+    }
+
+    #[test]
+    fn readonly_attribute() {
+        let length = ReadOnlyAttribute::new(
             "buffer_length",
             |s: EditorState| s.buffer.len(),
         );

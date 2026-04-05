@@ -2,8 +2,8 @@
 name = "pane-session"
 version = "0.1.0"
 edition = "2021"
-description = "Par-backed session channels for pane. Transport abstraction, wire framing, handshake."
-license = "BSD-3-Clause"
+description = "Session-typed IPC channels for pane. Bridges par's session types to wire transports."
+license = "AGPL-3.0-only"
 
 [dependencies]
 par = { version = "0.3.10", default-features = false }

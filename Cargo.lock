@@ -288,6 +288,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "pane-fs"
+version = "0.1.0"
+dependencies = [
+ "pane-proto",
+ "serde",
+]
+
+[[package]]
 name = "pane-proto"
 version = "0.1.0"
 dependencies = [
