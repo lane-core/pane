@@ -29,13 +29,15 @@ session type library for Rust. CLL (classical linear logic, Wadler
 "Propositions as Sessions" JFP 2014) governs binary channel
 correctness: Send/Recv duality, branching, streaming. par is
 complete per its author. pane-session uses par as a direct
-dependency — par's types (Send, Recv, etc.) are the phantom
-state parameters on Chan<S, T>. pane-session provides the
-Transport trait and postcard serialization for IPC. Chan
-operations panic on disconnect (par's CLL model — sessions
-complete or are annihilated; the looper's catch_unwind boundary
-is the crash safety mechanism). The session types are par's
-contribution; the IPC adaptation is pane-session's.
+dependency. The handler uses par's native Send::send() and
+Recv::recv() API directly. Bridge threads (spawned via par's
+fork_sync) mediate between par's in-process oneshot channels
+and the Transport trait, serializing with postcard for IPC.
+Par's session types drive the handshake; the active phase uses
+calloop + typed enum dispatch. Sessions panic on disconnect
+(the looper's catch_unwind boundary is the crash safety
+mechanism). Two-phase connect: Phase 1 verifies the transport
+(returns Result), Phase 2 runs the par-driven handshake.
 
 **EAct** (Fowler et al., "Safe Actor Programming with Multiparty
 Session Types") governs how one actor interleaves work across
@@ -77,11 +79,10 @@ argument (§4.2.2, Progress). Global Progress requires handler termination
 (I3) and no blocking in handlers (I2/I8).
 
 Conditional protocol fidelity: if the developer's code type-checks
-against `Chan<S, T>` and consumes every intermediate channel value,
-the resulting protocol follows the structure of S. The consumption
-condition is enforced by `#[must_use]` and Drop-based failure
-compensation (I4), not statically as in Ferrite's CPS encoding
-(Chen/Balzer/Toninho, ECOOP 2022, Theorem 4.3).
+against par's session types and consumes every intermediate
+session endpoint, the resulting protocol follows the declared
+structure. The consumption condition is enforced by par's
+`#[must_use]` and Drop-based failure compensation (I4).
 
 No MPST layer. EAct handles multi-session composition bottom-up
 (correct binary sessions + correct actor discipline = correct
@@ -124,48 +125,34 @@ Handler methods returned void. -->
 
 ### Channel substrate (pane-session)
 
-pane-session uses par's CLL types directly (par is a dependency).
-Chan<S, T> uses par's types as phantom state parameters over a
-Transport trait:
+pane-session uses par directly — the handler calls par's native
+Send::send() and Recv::recv(). Bridge threads (spawned via
+par::Session::fork_sync) serialize between par's oneshot
+channels and the Transport trait using postcard.
 
 ```rust
-/// Session-typed channel over a Transport.
-pub struct Chan<S, T: Transport> { ... }
+// Handshake protocol defined with par's types:
+type ClientHandshake = par::exchange::Send<Hello, par::exchange::Recv<Welcome>>;
+type ServerHandshake = par::Dual<ClientHandshake>;
 
-// CLL propositions as session types:
-pub struct Send<A, S>;    // ⊗ — output A, continue as S
-pub struct Recv<A, S>;    // ⅋ — input A, continue as S
-pub struct Select<L, R>;  // ⊕ — internal choice
-pub struct Branch<L, R>;  // & — external choice
-pub struct End;           // 1/⊥ — session terminated
+// Bridge connects par to a Transport:
+let client = bridge_client_handshake(transport);  // returns par session endpoint
+let client = client.send(hello);                  // par's native send
+let welcome = block_on(client.recv1());           // par's native recv
 
-// Streaming (adapted from par):
-pub struct Queue<T, S>;   // send N items of T, then continue as S
-pub struct Dequeue<T, S>; // receive items until closed, then S
-
-// Server lifecycle (adapted from par):
-pub struct Server<S>;     // accept connections, each gets session S
-
-// N-ary branching (pane-session extension beyond par):
-#[derive(SessionEnum)]    // generates choose_*/offer() methods
-#[repr(u8)]
-enum Operation {
-    #[session_tag = 0] CheckBalance,
-    #[session_tag = 1] Withdraw,
-}
-
-// Duality (CLL negation — compliance for binary sessions):
-pub trait HasDual { type Dual; }
-// Send<A,S> <-> Recv<A, Dual<S>>, Select <-> Branch, End <-> End
+// par provides: Send, Recv (exchange), Enqueue, Dequeue (streaming),
+// Server, Proxy (lifecycle), Session trait (duality), Dual type alias.
+// Branching via Rust enums (par's approach — no Select/Branch types).
+// Recursion via native Rust enum types.
 ```
 
-Recursion uses native Rust enum types — no Rec/Var combinators.
-Channel indirection provides the boxing par relies on.
+Two-phase connect: Phase 1 verifies the transport (returns
+Result — "server not running" caught here). Phase 2 runs the
+par-driven handshake. Transport death mid-handshake panics
+(session aborted — the exceptional case).
 
 Transport trait abstracts over unix sockets, TCP, TLS, and
-in-memory channels. Serialization via postcard. Chan operations
-panic on disconnect — the looper's catch_unwind boundary
-converts panics to ExitReason::Failed for the crash channel.
+in-memory channels. Serialization via postcard.
 
 ### Message
 
@@ -595,9 +582,11 @@ Cancel { token: u64 }  // advisory, same semantics as 9P Tflush
 
 ### ProtocolAbort
 
-`Chan<S, T>` Drop sends `[0xFF][0xFF]` on the transport. Peer
-frees session thread immediately. Best-effort (`let _ = ...`).
-Checked at framing layer before postcard deserialization (I11).
+When a bridge thread's par session endpoint is dropped mid-
+protocol (transport failure during handshake), ProtocolAbort
+`[0xFF][0xFF]` is sent on the transport. Best-effort
+(`let _ = ...`). Checked at framing layer before postcard
+deserialization (I11).
 
 ---
 
@@ -870,7 +859,7 @@ check, panic on violation (I8).
   preserving `&mut H` exclusivity.
 - **I8**: `send_and_wait` panics from looper thread.
 - **I9**: Dispatch cleared before handler drop.
-- **I10**: Chan Drop must not block (best-effort write).
+- **I10**: ProtocolAbort on session drop must not block (best-effort write).
 - **I11**: ProtocolAbort `[0xFF][0xFF]` checked at framing layer
   before deserialization.
 - **I12**: Unknown service discriminant → connection-level error.
@@ -1227,12 +1216,13 @@ Token allocation is internal to the framework.
    Matches BeOS (BMessage was pure values; obligations used separate
    mechanisms).
 
-3. **par as CLL substrate.** par is complete (per Strba). par is a
-   direct dependency of pane-session. Chan<S, T> uses par's types
-   (par::exchange::Send, par::exchange::Recv, etc.) as phantom state
-   parameters over pane-session's Transport trait. par::Dual
-   provides duality checking. Chan panics on disconnect (same model
-   as par).
+3. **par as session substrate.** par is complete (per Strba). par is
+   a direct dependency of pane-session. The handler uses par's
+   native Send::send() and Recv::recv() API. Bridge threads
+   mediate between par's oneshot channels and the Transport.
+   par::Dual provides duality checking. Sessions panic on
+   disconnect (same model as par). Two-phase connect: Phase 1
+   verifies transport (Result), Phase 2 runs par handshake.
 
 4. **EAct, not MPST.** Bottom-up composition (correct binaries +
    correct actors = correct system). MPST can be added later for
