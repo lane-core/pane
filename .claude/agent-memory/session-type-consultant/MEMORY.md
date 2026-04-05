@@ -24,3 +24,4 @@
 - [architecture.md review](project_architecture_next_review.md) -- spec review (now promoted to architecture.md): typed filters resolved object-safety, 2 minor
 - [Three-crate code review](project_three_crate_review.md) -- updated 2026-04-03: 2 moderate (Messenger crate boundary, Chan no Drop), 5 minor, EAct+CLL sound
 - [Handshake disconnect analysis](project_handshake_disconnect_analysis.md) -- panic=correct CLL encoding, error-through-channel violates 3-channel separation, 4 conditions
+- [EAct invariant verification](project_eact_invariant_verification.md) -- I1-I13+S1-S6: 9 satisfied, 2 convention, 8 need looper; Dispatch<H> correctly defunctionalizes sigma

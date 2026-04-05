@@ -14,15 +14,11 @@ docs/
 ├── aesthetic.md                  — visual design language
 ├── pane-fs.md                    — filesystem interface
 ├── pane-compositor.md            — compositor design
-├── archive/optics-design-brief.md — optic layer design (archived: stale vs architecture.md)
-├── archive/scripting-optics-design.md — optics × routing exploration (archived: stale)
 ├── introduction.md               — user-facing intro
 ├── development-methodology.md    — development approach
-├── archive/agent-perspective.md   — agent integration perspective (archived)
 ├── agents.md                     — agent integration
 ├── licensing.md                  — license structure
 ├── workflow.md                   — this file
-├── archive/                      — historical research and past changes
 reference/
 ├── README.md                     — what's here and why
 ├── haiku-book/                   — Haiku Book API reference (MIT, from haiku/haiku)
@@ -55,7 +51,7 @@ The reading list and checklist live with the implementation work (in the plan or
 
 When dispatching agents to implement features with Be lineage, include "read `reference/haiku-book/<path>` first" in the agent prompt so it works from the primary source.
 
-This grounds implementation plans in actual engineering experience rather than assumptions about how Be worked. The research archive in `docs/archive/openspec/changes/spec-tightening/` contains prior consultations that may be relevant.
+This grounds implementation plans in actual engineering experience rather than assumptions about how Be worked.
 
 **When writing or reviewing API documentation:**
 Follow the kit documentation style guide (`docs/kit-documentation-style.md`). Key requirements:
