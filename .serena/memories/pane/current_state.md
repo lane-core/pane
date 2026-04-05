@@ -12,19 +12,18 @@ The project is undergoing a fresh implementation based on the architecture spec 
 - **Nix flake** — NixOS, Darwin, sixos module definitions. Infrastructure carries forward.
 - **Reference material** — Haiku Book (reference/haiku-book/), Plan 9 man pages (reference/plan9/).
 
-## What was struck
+## Current crates (clean slate, 2026-04-04)
 
-Source files emptied, Cargo.toml preserved:
-- **pane-app** — kit crate (Protocol, Handles<P>, Handler, PaneBuilder<H>, Message, Messenger, Dispatch<H>, ServiceHandle<P>, Flow, filter chain). Needs complete reimplementation per architecture spec.
-- **pane-proto** — wire types, handshake. Needs new Protocol trait, ServiceId, ClientToServer/ServerToClient, PeerAuth.
-- **pane-server** — protocol server. Needs Control protocol (wire service 0), DeclareInterest/RevokeInterest, per-connection service binding, ServiceTeardown, PaneExited broadcast, Cancel handling, max_message_size enforcement.
-- **pane-comp** — compositor. Needs new protocol integration.
-- **pane-headless** — headless server binary. Needs new handshake/protocol.
-- **pane-hello** — example app. Direct consumer of pane-app API.
+Three crates, 33 tests passing:
+- **pane-proto** — protocol vocabulary (Message, Protocol, ServiceId with UUID, Handles<P>, Handler, Flow, MessageFilter<M>, Property<S,A> via fp-library). No IO. Depends on fp-library, serde, uuid.
+- **pane-session** — par-backed IPC channels (Chan<S,T> using par's types as phantom state, Transport trait, MemoryTransport, handshake Hello/Welcome, ProtocolAbort on Drop). Depends on par, pane-proto, serde, postcard.
+- **pane-app** — EAct actor framework (Pane, PaneBuilder<H>, Dispatch<H>, Messenger, ServiceHandle<P>, ExitReason). Depends on pane-proto.
+
+All prior crates (pane-optic, pane-notify, pane-server, pane-comp, pane-headless, pane-hello) deleted.
 
 ## What's next
 
-Phase 1 — Core. See PLAN.md for detailed task breakdown. Implementation order: pane-proto → pane-session verification → pane-app → pane-server → pane-headless.
+See PLAN.md. No phases — the spec describes the full architecture.
 
 ## Dev workflow
 

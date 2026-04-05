@@ -8,7 +8,7 @@ Assessed the proposal: par (CLL binary) + pane-session (IPC bridge) + pane-app (
 
 **Heritage fidelity:** BLooper was an actor (one thread, one queue, sequential dispatch). BHandler chain = handler store sigma. BWindow had two channels to app_server (fLink for sync, fMsgPort for async events) — multi-channel composition on a single actor. Framing pane-app as EAct is faithful and illuminating. Be's architecture was correct intuitively; EAct proves why.
 
-**par as substrate:** Keep reimplementation, don't take crate dependency. par panics on disconnect (in-process assumption); pane-session's crash safety (Result not panic) is fundamental. par's type vocabulary (Send/Recv/Select/Branch/End) is sufficient. pane-session needs Queue for active-phase streaming but NOT par's Server type (calloop handles that). SessionEnum (N-ary branching) is pane's genuine contribution beyond par.
+**par as substrate:** par is a direct dependency of pane-session. Chan<S, T> uses par's types (par::exchange::Send, par::exchange::Recv, etc.) as phantom state parameters — PhantomData<S> is zero-size regardless of S's internal structure. par::Dual provides duality checking. Chan panics on disconnect (same model as par). pane-session adds Transport trait and postcard serialization for IPC.
 
 **EAct correspondence:** Handler = actor (tight). Handles<P> + Dispatch<H> = sigma (tight). send_request = E-Suspend, reply dispatch = E-React (tight). Gaps: (1) no E-New equivalent for mid-session service hot-plug, (2) multi-session interleaving argument implicit not explicit in docs, (3) PaneBuilder restricts sigma growth more than EAct allows (intentional, buys compile-time checking). Pane implements *restricted* EAct: static service binding + dynamic request correlation.
 

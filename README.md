@@ -153,34 +153,20 @@ what each component does.
 
 ## Status
 
-The project is in a redesign phase. The architecture spec
-(`docs/architecture.md`) is the source of truth. A prototype
-validated the API vocabulary and subsystem landscape; the
-codebase has been struck for reimplementation against the
-tightened spec.
+The architecture spec (`docs/architecture.md`) is the source of truth.
+Three crates, grounded in published formalisms:
 
-What exists today:
+    pane-proto       Protocol vocabulary: Message, Protocol, ServiceId,
+                     Handles<P>, Handler, Flow, MessageFilter<M>,
+                     Property<S,A> (fp-library optics). No IO.
+    pane-session     Par-backed IPC channels: Chan<S, T> using par's
+                     CLL types directly, Transport trait, handshake
+                     (Hello/Welcome), ProtocolAbort on Drop.
+    pane-app         EAct actor framework: Pane, PaneBuilder<H>,
+                     Dispatch<H>, Messenger, ServiceHandle<P>,
+                     ExitReason.
 
-    pane-session     session type primitives (Chan, Send, Recv, Branch),
-                     transports (unix, tcp, tls, memory, proxy, reconnecting),
-                     calloop integration. ~520 LOC, 40 tests. Orthogonal
-                     to the redesign — carries forward unchanged.
-    pane-optic       optics: Getter/Setter/PartialGetter/PartialSetter,
-                     FieldLens/FieldAffine/FieldTraversal, composition,
-                     optic law tests. carries forward unchanged.
-    pane-notify      filesystem change notification (inotify/fanotify
-                     abstraction). carries forward unchanged.
-    pane-proto       struck — reimplementing per architecture spec
-    pane-app         struck — reimplementing per architecture spec
-    pane-server      struck — reimplementing per architecture spec
-    pane-headless    struck — reimplementing per architecture spec
-    pane-comp        struck — reimplementing per architecture spec
-    pane-hello       struck — reimplementing per architecture spec
-
-What's next: Phase 1 (Core) — Protocol trait, ServiceId,
-Handler + Handles<P> (Display, Clipboard, etc.), Message (base-protocol-
-only), Flow, Dispatch<H>, ConnectionSource, filter chain,
-Messenger + ServiceRouter. See `PLAN.md`.
+See `PLAN.md` for implementation order.
 
 ## Building
 

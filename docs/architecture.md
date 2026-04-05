@@ -28,12 +28,13 @@ pane-app (EAct — Fowler et al.)   actor discipline over multiple sessions
 session type library for Rust. CLL (classical linear logic, Wadler
 "Propositions as Sessions" JFP 2014) governs binary channel
 correctness: Send/Recv duality, branching, streaming. par is
-complete per its author. pane-session reimplements par's type
-vocabulary for IPC (serialization, transport abstraction).
-Chan operations panic on disconnect (par's CLL model — sessions
+complete per its author. pane-session uses par as a direct
+dependency — par's types (Send, Recv, etc.) are the phantom
+state parameters on Chan<S, T>. pane-session provides the
+Transport trait and postcard serialization for IPC. Chan
+operations panic on disconnect (par's CLL model — sessions
 complete or are annihilated; the looper's catch_unwind boundary
-is the crash safety mechanism). The type-level session types
-(Send, Recv, Select, Branch, End, Queue, Server) are par's
+is the crash safety mechanism). The session types are par's
 contribution; the IPC adaptation is pane-session's.
 
 **EAct** (Fowler et al., "Safe Actor Programming with Multiparty
@@ -123,7 +124,9 @@ Handler methods returned void. -->
 
 ### Channel substrate (pane-session)
 
-pane-session reimplements par's CLL type vocabulary for IPC:
+pane-session uses par's CLL types directly (par is a dependency).
+Chan<S, T> uses par's types as phantom state parameters over a
+Transport trait:
 
 ```rust
 /// Session-typed channel over a Transport.
@@ -1224,11 +1227,12 @@ Token allocation is internal to the framework.
    Matches BeOS (BMessage was pure values; obligations used separate
    mechanisms).
 
-3. **par as CLL substrate.** par is complete. pane-session
-   reimplements the type vocabulary for IPC. par is a direct
-   dependency (design-time reference + duality checking); Chan<S,T>
-   uses par's types as phantom state markers over pane-session's
-   Transport trait. Chan panics on disconnect (same model as par).
+3. **par as CLL substrate.** par is complete (per Strba). par is a
+   direct dependency of pane-session. Chan<S, T> uses par's types
+   (par::exchange::Send, par::exchange::Recv, etc.) as phantom state
+   parameters over pane-session's Transport trait. par::Dual
+   provides duality checking. Chan panics on disconnect (same model
+   as par).
 
 4. **EAct, not MPST.** Bottom-up composition (correct binaries +
    correct actors = correct system). MPST can be added later for
