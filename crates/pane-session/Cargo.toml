@@ -1,0 +1,12 @@
+[package]
+name = "pane-session"
+version = "0.1.0"
+edition = "2021"
+description = "Par-backed session channels for pane. Transport abstraction, wire framing, handshake."
+license = "BSD-3-Clause"
+
+[dependencies]
+par = { version = "0.3.10", default-features = false }
+pane-proto = { path = "../pane-proto" }
+serde = { version = "1", features = ["derive"] }
+postcard = { version = "1", features = ["alloc"] }

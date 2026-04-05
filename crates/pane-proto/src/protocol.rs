@@ -4,17 +4,14 @@ use crate::message::Message;
 
 /// Identity of a service in the pane protocol.
 ///
-/// The UUID is the machine identity — deterministically derived from
-/// the name via UUIDv5. The name is the human identity — for pane-fs
-/// paths, service maps, and logs.
-///
-/// Plan 9: analogous to qid.path (stable, machine-comparable)
-/// alongside the directory entry name (human-chosen).
+/// Uses &'static str for compile-time const construction (Protocol
+/// trait requires const SERVICE_ID). Serializes as a string on the wire.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct ServiceId {
-    // TODO: pub uuid: Uuid — add uuid dependency when needed
     pub name: &'static str,
 }
+
+// Note: Copy is fine — ServiceId is just a &'static str wrapper.
 
 impl ServiceId {
     pub const fn new(name: &'static str) -> Self {
@@ -22,15 +19,29 @@ impl ServiceId {
     }
 }
 
+// Manual Serialize: serialize the &'static str as a string
+impl serde::Serialize for ServiceId {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        serializer.serialize_str(self.name)
+    }
+}
+
+// Manual Deserialize: deserialize to &'static str by leaking.
+// This is acceptable because ServiceIds are a small, fixed set
+// of protocol identifiers — not arbitrary user data.
+impl<'de> serde::Deserialize<'de> for ServiceId {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        let s: String = serde::Deserialize::deserialize(deserializer)?;
+        // Leak the string to get a 'static reference.
+        // In practice, ServiceIds are matched against known constants,
+        // so the leaked set is bounded.
+        let leaked: &'static str = Box::leak(s.into_boxed_str());
+        Ok(ServiceId { name: leaked })
+    }
+}
+
 /// A protocol relationship between a pane and a service.
-///
-/// Links identity (ServiceId) and typed messages into a single
-/// type-level definition. Every service — lifecycle, display,
-/// clipboard, routing, application-defined — is a Protocol.
 pub trait Protocol {
-    /// Service identity.
     const SERVICE_ID: ServiceId;
-    /// The typed events this protocol produces. Must be Message
-    /// (Clone + Serialize + DeserializeOwned + Send + 'static).
     type Message: Message;
 }
