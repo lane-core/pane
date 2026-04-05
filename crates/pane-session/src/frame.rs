@@ -183,8 +183,13 @@ mod tests {
 
     // --- I10: ProtocolAbort must not block ---
 
+    /// I10 says ProtocolAbort "must not block." That's a caller-site
+    /// obligation — the framing layer provides a fallible write, and
+    /// the caller does `let _ = codec.write_abort(...)`. This test
+    /// verifies the framing layer propagates the error so the caller
+    /// can discard it.
     #[test]
-    fn abort_write_is_best_effort() {
+    fn abort_write_propagates_error() {
         // A writer that always fails.
         struct FailWriter;
         impl Write for FailWriter {
@@ -427,5 +432,90 @@ mod tests {
             Err(FrameError::Transport(e)) if e.kind() == io::ErrorKind::UnexpectedEof => {}
             other => panic!("expected Transport(UnexpectedEof), got {other:?}"),
         }
+    }
+
+    // --- Boundary and sequencing ---
+
+    #[test]
+    fn service_254_boundary() {
+        // 0xFE is the maximum assignable service discriminant.
+        // 0xFF is reserved for ProtocolAbort. This test verifies
+        // the boundary: 254 works, 255 would be abort.
+        let mut codec = FrameCodec::new(1024);
+        codec.register_service(254);
+
+        let payload = b"boundary";
+        let mut buf = Vec::new();
+        codec.write_frame(&mut buf, 254, payload).unwrap();
+
+        let mut cursor = Cursor::new(buf);
+        let frame = codec.read_frame(&mut cursor).unwrap();
+        assert_eq!(
+            frame,
+            Frame::Message {
+                service: 254,
+                payload: payload.to_vec(),
+            }
+        );
+    }
+
+    #[test]
+    fn payload_containing_0xff_is_not_abort() {
+        // 0xFF in the payload must not trigger abort detection.
+        // Abort is identified solely by the service byte (first
+        // byte after the length prefix), not by payload contents.
+        let codec = FrameCodec::new(1024);
+
+        let payload = vec![0xFF, 0xFF, 0xFF];
+        let mut buf = Vec::new();
+        codec.write_frame(&mut buf, 0, &payload).unwrap();
+
+        let mut cursor = Cursor::new(buf);
+        let frame = codec.read_frame(&mut cursor).unwrap();
+        assert_eq!(
+            frame,
+            Frame::Message {
+                service: 0,
+                payload: vec![0xFF, 0xFF, 0xFF],
+            }
+        );
+    }
+
+    #[test]
+    fn multi_frame_sequencing() {
+        // Two frames written into one buffer must be readable
+        // sequentially — the cursor advances correctly past each
+        // frame boundary.
+        let mut codec = FrameCodec::new(1024);
+        codec.register_service(1);
+        codec.register_service(2);
+
+        let mut buf = Vec::new();
+        codec.write_frame(&mut buf, 1, b"first").unwrap();
+        codec.write_frame(&mut buf, 2, b"second").unwrap();
+
+        let mut cursor = Cursor::new(buf);
+
+        let frame1 = codec.read_frame(&mut cursor).unwrap();
+        assert_eq!(
+            frame1,
+            Frame::Message {
+                service: 1,
+                payload: b"first".to_vec(),
+            }
+        );
+
+        let frame2 = codec.read_frame(&mut cursor).unwrap();
+        assert_eq!(
+            frame2,
+            Frame::Message {
+                service: 2,
+                payload: b"second".to_vec(),
+            }
+        );
+
+        // Cursor should be exhausted — next read hits EOF.
+        let result = codec.read_frame(&mut cursor);
+        assert!(matches!(result, Err(FrameError::Transport(_))));
     }
 }

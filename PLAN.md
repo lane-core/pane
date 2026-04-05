@@ -28,7 +28,7 @@ Single server (N=1), headless, no suspension, no streaming. All multi-server dat
 #### Session layer (pane-session)
 
 - [ ] **Verify Chan<S,T> compatibility** — ensure session-typed channels work with new handshake types
-- [ ] **ProtocolAbort** — Chan Drop sends `[0xFF][0xFF]`, peer frees session thread immediately
+- [ ] **ProtocolAbort** — Chan Drop sends length-prefixed frame with reserved service 0xFF, peer frees session thread immediately
 - [ ] **SessionEnum derive** — N-ary enum branching with `#[session_tag]` wire stability
 
 #### Kit API (pane-app)

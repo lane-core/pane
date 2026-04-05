@@ -364,7 +364,7 @@ ServiceRouter maps ServiceId → Connection. One entry per service.
 ### Framing
 
 ```
-[length: u32][service: u8][payload: postcard]
+[length: u32 LE][service: u8][payload: postcard]
 ```
 
 <!-- Plan 9: 9P uses [size[4] type[1] tag[2] ...] — similar
@@ -451,7 +451,10 @@ Cancel { token: u64 }  // advisory, same semantics as 9P Tflush
 
 When a bridge thread's par session endpoint is dropped mid-
 protocol (transport failure during handshake), ProtocolAbort
-`[0xFF][0xFF]` is sent on the transport. Best-effort
+is sent as a normal length-prefixed frame `[length: u32 = 1]
+[service: 0xFF]`. Service discriminant 0xFF is reserved —
+never assigned by DeclareInterest. The framing layer checks
+service == 0xFF after reading a complete frame. Best-effort
 (`let _ = ...`). Checked at framing layer before postcard
 deserialization (I11).
 
@@ -806,8 +809,8 @@ check, panic on violation (I8).
 - **I8**: `send_and_wait` panics from looper thread.
 - **I9**: Dispatch cleared before handler drop.
 - **I10**: ProtocolAbort on session drop must not block (best-effort write).
-- **I11**: ProtocolAbort `[0xFF][0xFF]` checked at framing layer
-  before deserialization.
+- **I11**: ProtocolAbort uses reserved service discriminant 0xFF,
+  checked at framing layer before deserialization.
 - **I12**: Unknown service discriminant → connection-level error.
 - **I13**: open_service blocks until InterestAccepted/Declined.
   ServiceHandle represents a confirmed binding.
