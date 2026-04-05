@@ -456,20 +456,18 @@ deserialization (I11).
 ```rust
 impl App {
     /// Connect to the primary server. Panics if the server
-    /// is unreachable — connection failure is infrastructure
-    /// misconfiguration, not a recoverable application error.
+    /// is unreachable.
     pub fn connect(signature: &str) -> App;
     /// Create a pane. Panics on server rejection.
     pub fn create_pane(&self, tag: Tag) -> CreateFuture;
 }
 ```
 
-Pre-run failures (connect, create_pane) panic because they are
-infrastructure: the service map is wrong, the server is down,
-the handshake was rejected. These are deployment problems, not
-application logic. The supervisor (s6, systemd) restarts the
-process. `open_service` returns `Option` instead of panicking
-because optional services are a legitimate application concern.
+`connect` and `create_pane` panic on failure — the service map
+is wrong, the server is down, or the handshake was rejected.
+The supervisor (s6, systemd) restarts the process.
+`open_service` returns `Option`: a missing service is a normal
+condition.
 
 <!-- BeOS: BApplication(signature) called debugger() on init
 failure, or exit(0) if no error output parameter. The
@@ -517,11 +515,10 @@ use site, not as a global event. -->
 ### Cross-connection ordering
 
 Events within a connection are FIFO (TCP). Events across
-connections are not causally ordered. The unified batch
-imposes a total order for dispatch purposes, but cross-
-connection ordering within a batch is implementation-defined
-and must not be relied upon. Handlers that need cross-
-connection causality use send_request callbacks.
+connections have no causal order. The unified batch imposes
+a total order for dispatch, but cross-connection ordering
+within a batch is implementation-defined. Handlers that need
+cross-connection causality use send_request callbacks.
 
 ### Remote connections require TLS
 
@@ -536,10 +533,9 @@ Plaintext TCP not supported. `pane dev-certs` for development.
 raw BMessage* including embedded reply ports — pane corrects this
 by separating obligations from filterable messages. -->
 
-Filters are typed per-protocol. The `Message` trait requires
-`Clone` (supertrait), which makes it not object-safe — `&dyn
-Message` is ill-formed in Rust. This is by design: filters
-operate on concrete protocol message types, not trait objects.
+Filters are typed per-protocol. `Message` requires `Clone`,
+which makes it not object-safe — `&dyn Message` is ill-formed
+in Rust. Filters operate on concrete protocol message types.
 
 ```rust
 pub trait MessageFilter<M: Message>: Send + 'static {
@@ -621,14 +617,14 @@ match catch_unwind(AssertUnwindSafe(|| {
 }
 ```
 
-AssertUnwindSafe justified: handler is never re-used after
-caught panic. I1 (`panic = unwind`) is load-bearing.
+AssertUnwindSafe is sound: the handler is dropped after a
+caught panic, never re-used. I1 (`panic = unwind`) is
+load-bearing.
 
-`exit()` is `std::process::exit` — a hard exit that does not
-run Drop for stack frames above the looper. This is intentional:
-the handler is explicitly dropped before exit (obligation
-compensation fires), and run_with returns `-> !` so nothing
-meaningful exists above it on the stack.
+`exit()` is `std::process::exit` — a hard exit that skips Drop
+for stack frames above the looper. The handler is explicitly
+dropped before exit (obligation compensation fires). `run_with`
+returns `-> !`, so nothing meaningful exists above it.
 
 ### ExitReason (looper-internal, not in handler API)
 
@@ -662,8 +658,8 @@ single success method consumes, Drop sends failure terminal.
 
 ### Affine gap
 
-Rust is affine (values can be dropped), not linear (values must
-be consumed). Drop impls compensate by sending failure terminals.
+Rust allows values to be dropped without consuming them. Drop
+impls compensate by sending failure terminals.
 
 Residual risks where Drop cannot fire: double panic (abort),
 `std::process::abort()`, SIGKILL, OOM-triggered abort. The
@@ -682,10 +678,9 @@ Three triggers, same sequence:
 The sequence:
 1. dispatch.fail_connection() (per S4) — fires on_failed for
    Dispatch entries keyed to lost Connection. on_failed callbacks
-   receive `&mut H` and can update handler state, but must NOT
-   call send_request (new entries created during destruction are
-   abandoned per the "Abandoned" lifecycle — cleared without
-   callbacks when the handler drops in step 2).
+   receive `&mut H` and can update handler state. They must not
+   call send_request — entries created during destruction are
+   cleared without callbacks when the handler drops in step 2.
 2. dispatch.clear() — remaining entries across all Connections
    dropped without callbacks.
 3. Handler dropped — obligation handles fire Drop compensation
@@ -707,8 +702,9 @@ check, panic on violation (I8).
 
 - **I1**: `panic = unwind` in all pane binaries (Drop must fire).
   Backstop: fd hangup detection.
-- **I2**: No blocking calls in handler methods. Required for the
-  looper to remain responsive across all session endpoints.
+- **I2**: No blocking calls in handler methods. The looper
+  services all session endpoints on one thread; a blocked
+  handler stalls them all.
 - **I3**: Handler callbacks terminate (return Flow).
 - **I4**: Typestate handles: `#[must_use]` + Drop compensation.
 - **I5**: Filters see only Clone-safe Message variants.
@@ -948,13 +944,12 @@ Protocol definition.
 
 ## Obligation Handle Lifetime
 
-Obligation handles (ReplyPort, CompletionReplyPort,
-ClipboardWriteLock) should be consumed within the callback
-invocation that receives them. Storing an obligation handle in
-`self` defers its resolution until handler destruction, blocking
-the requesting pane indefinitely.
+Consume obligation handles (ReplyPort, CompletionReplyPort,
+ClipboardWriteLock) within the callback that receives them.
+Storing one in `self` defers resolution until handler
+destruction — the requesting pane blocks indefinitely.
 
-This is a convention, not a type-level enforcement. `ReplyPort`
+Convention, not type-level enforcement. `ReplyPort`
 remains `Send` (worker threads may need to reply). If a handler
 stores and forgets, Drop compensation (ReplyFailed) fires at
 handler destruction — the linear discipline works, but the
@@ -1035,10 +1030,9 @@ plus payload. The length field does NOT include itself.
 
 ### Functoriality
 
-Build the full architecture's types from day one. No simplified
-types that assume structure doesn't exist — a type that omits
-structure creates patterns that can't cleanly accommodate the
-full design.
+Types carry the full architecture's structure from the start.
+A type that omits structure forces patterns that break when
+the full design arrives.
 
 `ServiceRouter` with one entry, not a bare sender.
 `ServiceId { uuid, name }`, not a bare string.
@@ -1055,9 +1049,8 @@ Synchronous blocking variant of send_request. Must NOT be called
 from a handler method. Enforced at runtime: looper thread-local
 check, panic on violation (I8). Same-Connection cycles (pane A →
 pane B → pane A through one server) remain a runtime hazard.
-Detection is not implemented — the framework does not track
-cross-pane dependency graphs. Mitigation: timeouts on
-send_and_wait, and documentation of the mutual-deadlock risk.
+The framework does not track cross-pane dependency graphs.
+Timeouts on send_and_wait bound the deadlock window.
 
 Tokens are per-Connection (three servers = three namespaces).
 Token allocation is internal to the framework.
