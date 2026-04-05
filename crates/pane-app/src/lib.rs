@@ -15,6 +15,7 @@ pub mod service_handle;
 pub mod dispatch;
 pub mod pane;
 pub mod builder;
+pub mod looper_core;
 
 pub use exit_reason::ExitReason;
 pub use messenger::Messenger;
