@@ -158,7 +158,7 @@ Three crates, grounded in published formalisms:
 
     pane-proto       Protocol vocabulary: Message, Protocol, ServiceId,
                      Handles<P>, Handler, Flow, MessageFilter<M>,
-                     Property<S,A> (fp-library optics). No IO.
+                     MonadicLens<S,A> (concrete fn-pointer optics). No IO.
     pane-session     Par-backed IPC channels: Chan<S, T> using par's
                      CLL types directly, Transport trait, handshake
                      (Hello/Welcome), ProtocolAbort on Drop.

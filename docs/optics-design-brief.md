@@ -2,7 +2,7 @@
 
 What optics are in pane, how they work, and the rules for code
 that touches them. Read this before working on pane-proto's
-property module, pane-fs, or any handler state projection.
+monadic lens module, pane-fs, or any handler state projection.
 
 Background deliberation: `docs/optics-deliberation.md`.
 
@@ -27,7 +27,7 @@ invisible unless they need it.
 
 ```
 pane-proto    MonadicLens<S,A>         typed, law-verified, read-write + effects
-              ReadOnlyAttribute<S,A>   typed, read-only
+              AttrReader<S>            typed, read-only (Getter-style view fn)
                      |
                      | registration (PaneBuilder phase)
                      v
@@ -40,7 +40,7 @@ pane-fs       AttrSet<S>               type-erased, read + write + parse
               PaneNode (dyn)           fully erased, FUSE-facing
 ```
 
-### Layer 1: Typed optics (`pane-proto/src/property.rs`)
+### Layer 1: Typed optics (`pane-proto/src/monadic_lens.rs`)
 
 ```rust
 pub struct MonadicLens<S, A> {
@@ -51,9 +51,9 @@ pub struct MonadicLens<S, A> {
 }
 ```
 
-Concrete fn-pointer encoding (replaces fp_library dependency).
-View is pure. Set mutates state and returns effects. Parse
-converts text from the ctl file to the typed value A.
+Concrete fn-pointer encoding. View is pure. Set mutates state
+and returns effects. Parse converts text from the ctl file to
+the typed value A.
 
 Law tests: GetPut, PutGet, PutPut on the (view, set) pair,
 ignoring effects (effects are a side channel, not part of the
@@ -61,14 +61,8 @@ lens laws). The laws operate on the full state S, not just the
 focused field — a setter that touches non-focused fields must
 still satisfy GetPut.
 
-`ReadOnlyAttribute` is a Getter: view only, no set. For
-computed or derived values.
-
-The existing `Attribute<'a, S, A>` backed by fp_library is
-superseded by `MonadicLens<S, A>`. Both encode the same laws;
-MonadicLens adds the effect channel and uses concrete fn
-pointers instead of fp_library's branded optics. Migration
-happens in build order step 1.
+Read-only attributes use `AttrReader<S>` with a Getter-style
+view fn. For computed or derived values.
 
 ### Layer 2: Type-erased accessors (`pane-fs/src/attrs.rs`)
 
@@ -106,18 +100,16 @@ only writer.
 
 | Component | Status | Location |
 |-----------|--------|----------|
-| `Attribute<S,A>` with lens laws | Exists | `pane-proto/src/property.rs` |
-| `ReadOnlyAttribute<S,A>` | Exists | `pane-proto/src/property.rs` |
+| `MonadicLens<S,A>` with lens laws | Exists | `pane-proto/src/monadic_lens.rs` |
 | `AttrReader<S>`, `AttrSet<S>` | Exists | `pane-fs/src/attrs.rs` |
 | `PaneEntry<S>` | Exists | `pane-fs/src/namespace.rs` |
 | `AttrSet::to_json(&S)` (bulk read) | Missing | Goes in `pane-fs/src/attrs.rs` |
 | `AttrWriter<S>` (write path) | Missing | Goes in `pane-fs/src/attrs.rs` |
-| `MonadicLens<S,A>` | Missing | Goes in `pane-proto/src/property.rs` |
-| `Effect` enum | Missing | Goes in `pane-proto/src/property.rs` |
-| `AttrSet<S>` (type-erased collection) | Missing | Goes in `pane-proto/src/property.rs` |
-| `AttrAccess` enum | Missing | Goes in `pane-proto/src/property.rs` |
-| `AttrInfo` struct | Missing | Goes in `pane-proto/src/property.rs` |
-| `Scriptable` trait | Missing | Goes in `pane-proto/src/property.rs` |
+| `Effect` enum | Missing | Goes in `pane-proto/src/monadic_lens.rs` |
+| `AttrSet<S>` (type-erased collection) | Missing | Goes in `pane-proto/src/monadic_lens.rs` |
+| `AttrAccess` enum | Missing | Goes in `pane-proto/src/monadic_lens.rs` |
+| `AttrInfo` struct | Missing | Goes in `pane-proto/src/monadic_lens.rs` |
+| `Scriptable` trait | Missing | Goes in `pane-proto/src/monadic_lens.rs` |
 | `supported_attrs()` on Handler | Missing | Goes in `pane-proto/src/handler.rs` |
 | `ctl_fallback()` on Handler | Missing | Goes in `pane-proto/src/handler.rs` |
 | Snapshot synchronization (ArcSwap) | Missing | Goes in `pane-fs/src/namespace.rs` |
@@ -129,7 +121,7 @@ only writer.
 
 ## Types to add
 
-### AttrAccess and AttrInfo (`pane-proto/src/property.rs`)
+### AttrAccess and AttrInfo (`pane-proto/src/monadic_lens.rs`)
 
 ```rust
 /// What operations an attribute supports.
@@ -151,7 +143,7 @@ pub struct AttrInfo {
 }
 ```
 
-### Scriptable trait (`pane-proto/src/property.rs`)
+### Scriptable trait (`pane-proto/src/monadic_lens.rs`)
 
 ```rust
 /// Handler state that declares its scriptable surface.
@@ -713,7 +705,7 @@ concurrency. Testable with arbitrary S and A values.
 Effects are ignored — the laws govern state. See
 `assert_monadic_lens_laws` in §Law testing.
 
-Note: the existing PutPut test in property.rs only asserts
+Note: the existing PutPut test in monadic_lens.rs only asserts
 `view(state2) == 20`, not that the full state equals
 `set(s, 20)`. All three laws must compare the entire state S,
 not just the focused field. A setter with unconditional side

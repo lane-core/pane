@@ -78,7 +78,7 @@ unchanged — they have no protocol dependencies.
 **What it did:** Structured, discoverable access to pane state.
 Recovery of BeOS's `ResolveSpecifier` with optic-backed type safety.
 
-- **PropertyInfo** — static property declarations (name, type,
+- **AttrInfo** — static property declarations (name, type,
   supported operations, specifier forms). The metadata table
   that tooling queries. Replaces Be's `property_info` struct
   with typed enums instead of `u32` bitmasks.
@@ -116,7 +116,7 @@ Recovery of BeOS's `ResolveSpecifier` with optic-backed type safety.
 - The `ValueType` enum as a closed set avoids Be's type confusion
   at wire boundaries.
 
-**Architecture spec status:** PropertyInfo, ScriptableHandler,
+**Architecture spec status:** AttrInfo, ScriptableHandler,
 DynOptic, Specifier, AttrValue are all listed as preserved
 vocabulary. The `#[derive(Scriptable)]` macro was deferred and
 remains deferred.

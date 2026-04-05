@@ -71,10 +71,10 @@ The subtyping lattice: `Iso > Lens > Getter`, `Iso > Prism > Review`.
 A client requesting a Lens that gets offered only a Getter can still work
 (read-only degradation).
 
-**Design decision:** Extend the existing `Attribute` / `ReadOnlyAttribute`
+**Design decision:** Extend the existing `MonadicLens` / `AttrReader`
 distinction into a capability vocabulary for Phase 2 multi-server.
 
-**Concrete types** (in `pane-proto/src/property.rs`):
+**Concrete types** (in `pane-proto/src/monadic_lens.rs`):
 
 ```rust
 /// What operations an attribute supports.
@@ -94,7 +94,7 @@ It maps to Plan 9 permissions: Lens = rw, Getter = r-. And it provides the
 vocabulary for Phase 2 capability negotiation: "I need a Lens" / "I can
 offer a Getter" -> downgrade to read-only.
 
-**Where it lives:** `pane-proto/src/property.rs` (type definition),
+**Where it lives:** `pane-proto/src/monadic_lens.rs` (type definition),
 `pane-fs/src/attrs.rs` (carried on `AttrAccessor`).
 
 **What NOT to do:** Don't put the full optic subtyping lattice (Iso,
@@ -107,25 +107,25 @@ current needs. Extend only when a real use case demands it.
 `set(set(s, a), b) = set(s, b)` — the formal condition under which queued
 writes coalesce to just the last one.
 
-**Design decision:** PutPut is definitional for Lens, so all `Attribute<S,A>`
+**Design decision:** PutPut is definitional for Lens, so all `MonadicLens<S,A>`
 instances satisfy it by construction (they're backed by lawful lenses with
 PutPut tested). Coalescing is always safe for attributes. No marker trait
 needed.
 
 If a future optic type doesn't satisfy PutPut (e.g., an append-only log),
-it should NOT be an `Attribute<S,A>` — it's a different optic (a Setter
+it should NOT be a `MonadicLens<S,A>` — it's a different optic (a Setter
 without the Lens laws). Don't build that type until a concrete use case
 exists.
 
-**What to test:** The existing PutPut test in `property.rs` is sufficient.
-Every new Attribute definition should include the same three law tests
+**What to test:** The existing PutPut test in `monadic_lens.rs` is sufficient.
+Every new MonadicLens definition should include the same three law tests
 (GetPut, PutGet, PutPut).
 
 **Where coalescing happens:** In the looper's batch processing (Phase 4).
 The looper collects events from all calloop sources into a unified batch.
 If two `set` operations target the same attribute within one batch, the
 looper can discard the earlier one. This is safe because PutPut holds for
-all Attributes.
+all monadic lenses.
 
 ---
 
@@ -135,7 +135,7 @@ all Attributes.
 
 ```
 pane-session (par, Transport, Bridge)     -- session world
-pane-proto   (Protocol, Message, Handler, Handles<P>, Attribute)
+pane-proto   (Protocol, Message, Handler, Handles<P>, MonadicLens)
              -- shared vocabulary: session contracts AND optic definitions
 pane-app     (Pane, PaneBuilder<H>, Dispatch<H>, Messenger, ServiceHandle<P>)
              -- actor runtime, consumes session contracts
@@ -144,7 +144,7 @@ pane-fs      (PaneEntry<S>, AttrSet<S>, AttrReader<S>)
 ```
 
 pane-proto is the membrane. Session vocabulary (`Protocol`, `Handles<P>`)
-and optic vocabulary (`Attribute`, `ReadOnlyAttribute`) coexist in the same
+and optic vocabulary (`MonadicLens`, `AttrReader`) coexist in the same
 crate, different modules. This is correct.
 
 ### The looper as mediator
@@ -171,9 +171,9 @@ The looper is not in either world. It is the runtime that sequences them.
 
 ### Rules for implementers
 
-**R1.** Never put an `Attribute<S,A>` inside a `Message` enum variant.
-Attribute contains `Lens<'a, RcBrand, ...>` which is `!Send` and
-`!Serialize`. Send the projected *value*, not the lens.
+**R1.** Never put a `MonadicLens<S,A>` inside a `Message` enum variant.
+MonadicLens contains fn pointers into handler state. Send the projected
+*value*, not the lens.
 
 **R2.** Never send an `AttrValue` over a session channel. AttrValue is a
 String wrapper for the pane-fs text interface. Protocol messages carry typed
@@ -183,7 +183,7 @@ data. Don't conflate filesystem format with wire format.
 and `!Serialize`. The `#[pane::protocol_handler]` macro generates a separate
 dispatch path. Enforced by the type system.
 
-**R4.** `Handles<P>::receive` must not read or write through `Attribute<S,A>`
+**R4.** `Handles<P>::receive` must not read or write through `MonadicLens<S,A>`
 or `AttrSet<S>`. The handler mutates its own fields directly. The optic
 layer reads from a state snapshot that the looper updates *after* dispatch.
 
@@ -225,7 +225,7 @@ par session primitives directly.
 ### What to build
 
 **AttrInfo** — static declaration of scriptable properties (Be's
-`property_info`). Add to `pane-proto/src/property.rs`:
+`property_info`). Add to `pane-proto/src/monadic_lens.rs`:
 
 ```rust
 pub struct AttrInfo {
@@ -471,9 +471,9 @@ language.
 
 A. Marker trait `Coalescable` that attributes opt into.
 B. Runtime flag on AttrAccessor.
-C. All Attributes are coalescable by definition (PutPut is a lens law).
+C. All monadic lenses are coalescable by definition (PutPut is a lens law).
 
 Assessment: C is strongest. PutPut is definitional for Lens. If you have
-an `Attribute<S,A>`, it satisfies PutPut by construction. If something
-doesn't satisfy PutPut, it's not an Attribute — it's a different optic
+a `MonadicLens<S,A>`, it satisfies PutPut by construction. If something
+doesn't satisfy PutPut, it's not a MonadicLens — it's a different optic
 type. Build that type when a use case exists, not before.

@@ -189,9 +189,9 @@ impl Handler for LibreWolfBridge {
             EnrichRequest {
                 target: self.target_pane,
                 properties: vec![
-                    PropertyInfo::new("url", ValueType::String)
+                    AttrInfo::new("url", ValueType::String)
                         .operations(&[OpKind::Get]),
-                    PropertyInfo::new("tabs", ValueType::String)
+                    AttrInfo::new("tabs", ValueType::String)
                         .operations(&[OpKind::Get]),
                 ],
                 commands: vec!["new-tab", "open"],
@@ -748,7 +748,7 @@ spec components:
 | ServiceId (reverse-DNS) | Wayland `app_id` maps directly to service signature |
 | pane-fs namespace | Synthetic panes appear at `/pane/<n>/` with numeric IDs |
 | pane-fs `by-uuid` view | Stable cross-machine reference for synthetic panes |
-| DynOptic + PropertyInfo | Enrichment attributes are DynOptic-backed |
+| DynOptic + AttrInfo | Enrichment attributes are DynOptic-backed |
 | DeclareInterest | Bridge declares `com.pane.enrichment` |
 | PeerAuth::Kernel | Bridge authenticated by uid; same-uid enrichment is default |
 | Dispatch + send_request | Bridge requests enrichment grant from server |

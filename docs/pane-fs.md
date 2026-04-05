@@ -220,7 +220,7 @@ This addresses the round-trip concern: reading 10 individual attribute files req
 - **AND** the result SHALL be equivalent to reading each file in `attrs/` individually
 
 ### Requirement: Pane boundary principle
-pane-fs SHALL NOT expose the internal widget hierarchy of a pane. The scriptable surface of a pane is the set of properties its handler declares via `PropertyInfo`. Internal rendering state (view trees, widget layouts, buffer positions) is opaque.
+pane-fs SHALL NOT expose the internal widget hierarchy of a pane. The scriptable surface of a pane is the set of properties its handler declares via `AttrInfo`. Internal rendering state (view trees, widget layouts, buffer positions) is opaque.
 
 This is a deliberate divergence from BeOS, where `hey` could traverse into any application's view hierarchy (`get Frame of View "statusbar" of Window 0`). BeOS's deep traversal was powerful but fragile — scripts broke when applications rearranged their internal UI.
 

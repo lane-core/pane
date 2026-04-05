@@ -86,7 +86,7 @@ new identifier.
 | `BWindow` | `Pane` | 2 | Architecturally different — universal surface, not window |
 | `BMessageRunner` | `TimerToken` | 2 | Configure-and-attach → method on host (translation rule 2) |
 | `filter_result` | `FilterAction` | 2 | More descriptive enum name |
-| `property_info` | `PropertyInfo` | 1 | Faithful adaptation. Carries operations, specifier forms, value type. |
+| `property_info` | `AttrInfo` | 1 | Faithful adaptation. Carries access level, description, value type. |
 | `BWindow` (display methods) | `Handles<Display>` | 2 | Same `Protocol + Handles<P>` mechanism as all services — display is an opt-in capability, not a special trait |
 | (none) | `Protocol` | — | Novel: typed service relationship (SERVICE_ID + Message). |
 | (none) | `Handles<P>` | — | Novel: per-protocol dispatch trait. |

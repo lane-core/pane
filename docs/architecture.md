@@ -142,15 +142,18 @@ pub trait Handler: Send + 'static {
     fn close_requested(&mut self) -> Flow { Flow::Stop }
     fn disconnected(&mut self) -> Flow { Flow::Stop }
     fn pulse(&mut self) -> Flow { Flow::Continue }
-    fn pane_exited(&mut self, pane: Id, reason: ExitReason) -> Flow { Flow::Continue }
+
+    /// Query, not dispatch — returns bool, not Flow.
+    /// &self for deadlock freedom.
     fn quit_requested(&self) -> bool { true }
-    fn supported_properties(&self) -> &[PropertyInfo] { &[] }
-    fn request_received(&mut self, service: ServiceId,
-        msg: Box<dyn Any + Send>, reply: ReplyPort) -> Flow {
-        drop(reply); Flow::Continue
-    }
 }
 ```
+
+Planned additions (not yet implemented):
+- `pane_exited(pane, reason)` — PaneExited broadcast
+- `supported_attrs() -> &[AttrInfo]` — scriptable attribute surface
+- `request_received(service, msg, reply: ReplyPort)` — request/reply
+- `ctl_fallback(command, args)` — freeform escape for non-optic ctl commands
 
 A blanket impl maps Handler to Handles\<Lifecycle\>. The
 developer overrides named methods. The handler communicates
