@@ -42,7 +42,7 @@ mod tests {
     }
 
     impl Protocol for TestProto {
-        const SERVICE_ID: ServiceId = ServiceId::new("com.test.proto");
+        fn service_id() -> ServiceId { ServiceId::new("com.test.proto") }
         type Message = TestMessage;
     }
 

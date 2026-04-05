@@ -216,7 +216,7 @@ machine-comparable); the name is the directory entry. -->
 /// Under pane's one-service-per-protocol constraint, each
 /// Handles<P> impl corresponds to one σ entry.
 pub trait Handles<P: Protocol> {
-    fn receive(&mut self, proxy: &Messenger, msg: P::Message) -> Flow;
+    fn receive(&mut self, msg: P::Message) -> Flow;
 }
 ```
 
@@ -238,12 +238,18 @@ Both dispatch to the same `&mut H`, same looper thread (I6/I7).
 ```rust
 /// Every pane implements this. Lifecycle + messaging.
 /// Internally equivalent to Handles<Lifecycle> via blanket impl.
+///
+/// The handler communicates with the framework through a Messenger
+/// stored in its own state (typically `self.messenger`), set up
+/// during the PaneBuilder phase — not passed as a dispatch parameter.
+/// This keeps dispatch signatures uniform and avoids threading a
+/// framework reference through every callback.
 pub trait Handler: Send + 'static {
-    fn ready(&mut self, proxy: &Messenger) -> Flow { Flow::Continue }
-    fn close_requested(&mut self, proxy: &Messenger) -> Flow { Flow::Stop }
-    fn disconnected(&mut self, proxy: &Messenger) -> Flow { Flow::Stop }
-    fn pulse(&mut self, proxy: &Messenger) -> Flow { Flow::Continue }
-    fn pane_exited(&mut self, proxy: &Messenger, pane: Id,
+    fn ready(&mut self) -> Flow { Flow::Continue }
+    fn close_requested(&mut self) -> Flow { Flow::Stop }
+    fn disconnected(&mut self) -> Flow { Flow::Stop }
+    fn pulse(&mut self) -> Flow { Flow::Continue }
+    fn pane_exited(&mut self, pane: Id,
         reason: ExitReason) -> Flow { Flow::Continue }
     /// Query, not dispatch — returns bool, not Flow. &self for
     /// deadlock freedom. Side effects must happen before returning
@@ -260,7 +266,7 @@ pub trait Handler: Send + 'static {
     /// different types). ServiceId identifies the protocol the
     /// sender used — check before downcasting. Reply is an
     /// obligation — default drops it (sends ReplyFailed).
-    fn request_received(&mut self, proxy: &Messenger,
+    fn request_received(&mut self,
         service: ServiceId, msg: Box<dyn Any + Send>,
         reply: ReplyPort) -> Flow
     {
@@ -271,12 +277,12 @@ pub trait Handler: Send + 'static {
 
 // Framework-provided blanket:
 impl<H: Handler> Handles<Lifecycle> for H {
-    fn receive(&mut self, proxy: &Messenger, msg: LifecycleMessage) -> Flow {
+    fn receive(&mut self, msg: LifecycleMessage) -> Flow {
         match msg {
-            LifecycleMessage::Ready => self.ready(proxy),
-            LifecycleMessage::CloseRequested => self.close_requested(proxy),
-            LifecycleMessage::Disconnected => self.disconnected(proxy),
-            LifecycleMessage::Pulse => self.pulse(proxy),
+            LifecycleMessage::Ready => self.ready(),
+            LifecycleMessage::CloseRequested => self.close_requested(),
+            LifecycleMessage::Disconnected => self.disconnected(),
+            LifecycleMessage::Pulse => self.pulse(),
             // ...
         }
     }
@@ -749,7 +755,7 @@ generic parameter is encapsulated.
 
 ```rust
 match catch_unwind(AssertUnwindSafe(|| {
-    handler.receive(proxy, msg)
+    handler.receive(msg)
 })) {
     Ok(Flow::Continue) => { /* next event */ }
     Ok(Flow::Stop) => {
@@ -890,18 +896,20 @@ check, panic on violation (I8).
 ```rust
 use pane_app::{App, Tag, Handler, Messenger, Flow};
 
-struct StatusAgent;
+struct StatusAgent {
+    messenger: Messenger,
+}
 
 impl Handler for StatusAgent {
-    fn ready(&mut self, proxy: &Messenger) -> Flow {
-        proxy.set_content(b"online");
-        proxy.set_pulse_rate(Duration::from_secs(60));
+    fn ready(&mut self) -> Flow {
+        self.messenger.set_content(b"online");
+        self.messenger.set_pulse_rate(Duration::from_secs(60));
         Flow::Continue
     }
 
-    fn pulse(&mut self, proxy: &Messenger) -> Flow {
+    fn pulse(&mut self) -> Flow {
         let status = check_health();
-        proxy.set_content(status.as_bytes());
+        self.messenger.set_content(status.as_bytes());
         Flow::Continue
     }
 }
@@ -909,7 +917,9 @@ impl Handler for StatusAgent {
 fn main() {
     let app = App::connect("com.ops.status");
     let pane = app.create_pane(Tag::new("Server Status")).wait();
-    pane.run_with(StatusAgent)
+    let mut builder = pane.setup::<StatusAgent>();
+    let messenger = builder.messenger();
+    builder.run_with(StatusAgent { messenger })
 }
 ```
 
@@ -919,32 +929,31 @@ fn main() {
 use pane_app::*;
 
 struct Editor {
+    messenger: Messenger,
     buffer: String,
     clipboard: ServiceHandle<Clipboard>,
 }
 
 impl Handler for Editor {
-    fn ready(&mut self, proxy: &Messenger) -> Flow {
-        proxy.set_content(self.buffer.as_bytes());
+    fn ready(&mut self) -> Flow {
+        self.messenger.set_content(self.buffer.as_bytes());
         Flow::Continue
     }
 
-    fn close_requested(&mut self, _proxy: &Messenger) -> Flow {
+    fn close_requested(&mut self) -> Flow {
         Flow::Stop
     }
 }
 
 #[pane::protocol_handler(Display)]
 impl Editor {
-    fn key(&mut self, proxy: &Messenger, event: KeyEvent) -> Flow {
+    fn key(&mut self, event: KeyEvent) -> Flow {
         self.buffer.push(event.char);
-        proxy.set_content(self.buffer.as_bytes());
+        self.messenger.set_content(self.buffer.as_bytes());
         Flow::Continue
     }
 
-    fn command_executed(&mut self, proxy: &Messenger,
-        cmd: &str, _: &str) -> Flow
-    {
+    fn command_executed(&mut self, cmd: &str, _: &str) -> Flow {
         if cmd == "copy" {
             self.clipboard.request_lock();
         }
@@ -956,19 +965,18 @@ impl Editor {
 #[pane::protocol_handler(Clipboard)]
 impl Editor {
     // Value messages (Clone-safe, filter-visible):
-    fn changed(&mut self, _: &Messenger, _: &str, _: Id) -> Flow {
+    fn changed(&mut self, _: &str, _: Id) -> Flow {
         Flow::Continue
     }
-    fn lock_denied(&mut self, _: &Messenger, _: &str, _: &str) -> Flow {
+    fn lock_denied(&mut self, _: &str, _: &str) -> Flow {
         Flow::Continue
     }
-    fn service_lost(&mut self, _: &Messenger) -> Flow {
+    fn service_lost(&mut self) -> Flow {
         Flow::Continue
     }
 
     // Obligation callback (NOT a ClipboardMessage variant):
-    fn lock_granted(&mut self, _proxy: &Messenger,
-        lock: ClipboardWriteLock) -> Flow
+    fn lock_granted(&mut self, lock: ClipboardWriteLock) -> Flow
     {
         lock.commit(self.buffer.as_bytes().to_vec(), ClipboardMetadata {
             content_type: "text/plain".into(),
@@ -987,9 +995,11 @@ fn main() {
     ).wait();
 
     let mut builder = pane.setup::<Editor>();
+    let messenger = builder.messenger();
     let clipboard = builder.open_service::<Clipboard>()
         .expect("clipboard service required");
     builder.run_with_display(Editor {
+        messenger,
         buffer: String::new(),
         clipboard,
     })
@@ -1002,7 +1012,7 @@ fn main() {
 fn main() {
     let app = App::connect("com.example.hello");
     let pane = app.create_pane(Tag::new("Hello")).wait();
-    pane.run(|_proxy, msg| match msg {
+    pane.run(|msg| match msg {
         LifecycleMessage::CloseRequested => Flow::Stop,
         _ => Flow::Continue,
     })
@@ -1071,9 +1081,9 @@ enum ModelMessage {
 
 #[pane::protocol_handler(ModelProtocol)]
 impl Editor {
-    fn completion(&mut self, proxy: &Messenger, cursor: usize, text: String) -> Flow { ... }
-    fn diagnostic_ready(&mut self, proxy: &Messenger, ...) -> Flow { ... }
-    fn indexing_progress(&mut self, proxy: &Messenger, done: u32, total: u32) -> Flow { ... }
+    fn completion(&mut self, cursor: usize, text: String) -> Flow { ... }
+    fn diagnostic_ready(&mut self, ...) -> Flow { ... }
+    fn indexing_progress(&mut self, done: u32, total: u32) -> Flow { ... }
 }
 ```
 

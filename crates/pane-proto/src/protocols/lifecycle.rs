@@ -13,7 +13,7 @@ use crate::protocol::{Protocol, ServiceId};
 pub struct Lifecycle;
 
 impl Protocol for Lifecycle {
-    const SERVICE_ID: ServiceId = ServiceId::new("com.pane.lifecycle");
+    fn service_id() -> ServiceId { ServiceId::new("com.pane.lifecycle") }
     type Message = LifecycleMessage;
 }
 

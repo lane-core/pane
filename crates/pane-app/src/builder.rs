@@ -49,7 +49,7 @@ impl<H: Handler> PaneBuilder<H> {
     where
         H: Handles<P>,
     {
-        let id = P::SERVICE_ID;
+        let id = P::service_id();
         assert!(
             self.registered_services.insert(id),
             "duplicate open_service for {:?}", id
@@ -86,7 +86,7 @@ mod tests {
     enum TestServiceMessage { Ping }
 
     impl Protocol for TestService {
-        const SERVICE_ID: ServiceId = ServiceId::new("com.test.service");
+        fn service_id() -> ServiceId { ServiceId::new("com.test.service") }
         type Message = TestServiceMessage;
     }
 
