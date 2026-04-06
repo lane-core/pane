@@ -184,8 +184,16 @@ fn two_pane_echo_roundtrip() {
     pane_b.register_session(b_session);
 
     // -- Request/Reply --
+    // Inner payloads carry a protocol tag byte (S8) before the
+    // postcard-serialized message. The server forwards opaquely.
+    let echo_tag = echo_service_id().tag();
+
     let ping = EchoMessage::Ping("hello".into());
-    let inner = postcard::to_allocvec(&ping).unwrap();
+    let ping_bytes = postcard::to_allocvec(&ping).unwrap();
+    let mut inner = Vec::with_capacity(1 + ping_bytes.len());
+    inner.push(echo_tag);
+    inner.extend_from_slice(&ping_bytes);
+
     pane_a.send_service(
         a_session,
         &ServiceFrame::Request {
@@ -199,16 +207,22 @@ fn two_pane_echo_roundtrip() {
     match recv_frame {
         ServiceFrame::Request { token, payload } => {
             assert_eq!(token, 42);
-            let msg: EchoMessage = postcard::from_bytes(&payload).unwrap();
+            // Strip tag byte before deserializing
+            assert_eq!(payload[0], echo_tag, "protocol tag must match");
+            let msg: EchoMessage = postcard::from_bytes(&payload[1..]).unwrap();
             assert_eq!(msg, EchoMessage::Ping("hello".into()));
 
             let pong = EchoMessage::Pong("hello".into());
-            let reply_bytes = postcard::to_allocvec(&pong).unwrap();
+            let pong_bytes = postcard::to_allocvec(&pong).unwrap();
+            let mut reply_inner = Vec::with_capacity(1 + pong_bytes.len());
+            reply_inner.push(echo_tag);
+            reply_inner.extend_from_slice(&pong_bytes);
+
             pane_b.send_service(
                 b_session,
                 &ServiceFrame::Reply {
                     token,
-                    payload: reply_bytes,
+                    payload: reply_inner,
                 },
             );
         }
@@ -220,7 +234,8 @@ fn two_pane_echo_roundtrip() {
     match recv_frame {
         ServiceFrame::Reply { token, payload } => {
             assert_eq!(token, 42);
-            let msg: EchoMessage = postcard::from_bytes(&payload).unwrap();
+            assert_eq!(payload[0], echo_tag, "protocol tag must match");
+            let msg: EchoMessage = postcard::from_bytes(&payload[1..]).unwrap();
             assert_eq!(msg, EchoMessage::Pong("hello".into()));
         }
         other => panic!("expected Reply, got {other:?}"),
@@ -440,16 +455,21 @@ fn notification_round_trip() {
     pane_a.register_session(a_session);
     pane_b.register_session(b_session);
 
-    // Fire-and-forget notification
+    // Fire-and-forget notification — inner payload carries tag (S8).
+    let echo_tag = echo_service_id().tag();
     let msg = EchoMessage::Ping("broadcast".into());
-    let bytes = postcard::to_allocvec(&msg).unwrap();
-    pane_a.send_service(a_session, &ServiceFrame::Notification { payload: bytes });
+    let msg_bytes = postcard::to_allocvec(&msg).unwrap();
+    let mut inner = Vec::with_capacity(1 + msg_bytes.len());
+    inner.push(echo_tag);
+    inner.extend_from_slice(&msg_bytes);
+    pane_a.send_service(a_session, &ServiceFrame::Notification { payload: inner });
 
     let (recv_session, recv_frame) = pane_b.read_service();
     assert_eq!(recv_session, b_session);
     match recv_frame {
         ServiceFrame::Notification { payload } => {
-            let msg: EchoMessage = postcard::from_bytes(&payload).unwrap();
+            assert_eq!(payload[0], echo_tag, "protocol tag must match");
+            let msg: EchoMessage = postcard::from_bytes(&payload[1..]).unwrap();
             assert_eq!(msg, EchoMessage::Ping("broadcast".into()));
         }
         other => panic!("expected Notification, got {other:?}"),

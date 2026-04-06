@@ -47,6 +47,21 @@ impl ServiceId {
     pub fn with_uuid(uuid: Uuid, name: &'static str) -> Self {
         ServiceId { uuid, name }
     }
+
+    /// 1-byte protocol tag derived from the UUID.
+    ///
+    /// Used as a defense-in-depth check at the type erasure
+    /// boundary in ServiceDispatch. Both sender and receiver
+    /// derive the same tag from the ServiceId established at
+    /// DeclareInterest time. Mismatch means a routing bug
+    /// delivered the wrong protocol's payload.
+    ///
+    /// XOR-fold: not injective (collisions possible across 256
+    /// values), but catches ~255/256 of misroutes with zero
+    /// coordination cost.
+    pub fn tag(&self) -> u8 {
+        self.uuid.as_bytes().iter().fold(0u8, |acc, b| acc ^ b)
+    }
 }
 
 impl serde::Serialize for ServiceId {
@@ -119,6 +134,38 @@ mod tests {
         let a = ServiceId::new("com.pane.lifecycle");
         let b = ServiceId::new("com.pane.clipboard");
         assert_ne!(a.uuid, b.uuid);
+    }
+
+    #[test]
+    fn protocol_tag_deterministic() {
+        let a = ServiceId::new("com.pane.lifecycle");
+        let b = ServiceId::new("com.pane.lifecycle");
+        assert_eq!(a.tag(), b.tag());
+    }
+
+    #[test]
+    fn different_protocols_usually_different_tags() {
+        // XOR-fold is not injective — collisions are possible.
+        // With 16 UUID bytes folded to 1, the probability of two
+        // independent UUIDs colliding is ~1/256. This test uses
+        // a handful of known-different services; if it fails,
+        // the XOR-fold accidentally collided on these inputs,
+        // which is unlikely but technically allowed.
+        let ids: Vec<ServiceId> = vec![
+            ServiceId::new("com.pane.lifecycle"),
+            ServiceId::new("com.pane.clipboard"),
+            ServiceId::new("com.pane.echo"),
+            ServiceId::new("com.test.query"),
+        ];
+        let tags: Vec<u8> = ids.iter().map(|id| id.tag()).collect();
+        // At least some should differ. With 4 independent UUIDs,
+        // the probability of all 4 colliding is ~(1/256)^3 ≈ 0.
+        let unique: std::collections::HashSet<u8> = tags.iter().copied().collect();
+        assert!(
+            unique.len() > 1,
+            "expected distinct tags among different services, got {:?}",
+            tags
+        );
     }
 
     #[test]

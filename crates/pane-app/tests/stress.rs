@@ -129,23 +129,16 @@ fn destruction_sequence_survives_handler_panic() {
 // S8: Cross-protocol payload injection
 // ════════════════════════════════════════════════════════════════
 
-/// S8: Feed protocol A's serialized bytes to protocol B's closure.
-/// Current code panics (expect on deserialize).
+/// S8: Feed gibberish bytes to a protocol's dispatch closure.
+/// With protocol tag checking (S8), the wrong tag byte causes
+/// the frame to be silently dropped — no panic, no corruption.
 ///
-/// Sub-case 1: gibberish payload.
-///
-/// The invariant being checked is that the system fails loudly
-/// (panic, not silent corruption) when type erasure is violated.
-/// The make_service_receiver closure does
-/// `postcard::from_bytes(payload).expect(...)` — so mismatched
-/// types produce a panic.
-///
-/// This is technically correct (the panic is caught by catch_unwind
-/// in the looper), but it's not graceful. A malicious or buggy
-/// peer can crash the handler loop.
+/// Before S8, the closure panicked on deserialization (caught by
+/// catch_unwind in the looper). Now the tag check rejects the
+/// frame before deserialization is attempted.
 #[test]
 #[ignore]
-fn cross_protocol_gibberish_payload_panics() {
+fn cross_protocol_gibberish_payload_dropped_by_tag() {
     use pane_app::service_dispatch::{make_service_receiver, ServiceDispatch};
     use serde::{Deserialize, Serialize};
 
@@ -162,10 +155,13 @@ fn cross_protocol_gibberish_payload_panics() {
         type Message = MsgA;
     }
 
-    struct CrossHandler;
+    struct CrossHandler {
+        received: bool,
+    }
     impl pane_proto::Handler for CrossHandler {}
     impl pane_proto::Handles<ProtoA> for CrossHandler {
         fn receive(&mut self, _msg: MsgA) -> Flow {
+            self.received = true;
             Flow::Continue
         }
     }
@@ -173,45 +169,43 @@ fn cross_protocol_gibberish_payload_panics() {
     let mut dispatch = ServiceDispatch::<CrossHandler>::new();
     dispatch.register(1, make_service_receiver::<CrossHandler, ProtoA>());
 
-    // To dispatch, we need a Messenger — but Messenger::new() is pub(crate).
-    // Instead, we test the ServiceDispatch in isolation using the
-    // dispatch_notification method, which needs a &Messenger.
-    //
-    // We can get a Messenger from a LooperCore through its public
-    // messenger() method. But we need H = CrossHandler for that core.
     let (exit_tx, _) = mpsc::channel();
-    let core = LooperCore::new(CrossHandler, PeerScope(1), exit_tx);
+    let core = LooperCore::new(CrossHandler { received: false }, PeerScope(1), exit_tx);
     let messenger = core.messenger().clone();
 
-    let mut handler = CrossHandler;
+    let mut handler = CrossHandler { received: false };
 
-    // Sub-case 1: gibberish bytes
+    // Gibberish bytes — first byte almost certainly wrong tag.
     let gibberish = vec![0xFF, 0xDE, 0xAD, 0xBE, 0xEF];
     let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
         dispatch.dispatch_notification(1, &mut handler, &messenger, &gibberish);
     }));
 
     assert!(
-        result.is_err(),
-        "gibberish payload must cause a panic (expect on deserialize), \
-         not silent corruption"
+        result.is_ok(),
+        "gibberish payload must be silently dropped by tag check, not panic"
+    );
+    assert!(
+        !handler.received,
+        "handler must not receive a frame with wrong tag"
     );
 }
 
-/// S8 sub-case 2: structurally-compatible-but-wrong-type payload.
-/// Protocol A expects MsgA { field_a: String, field_b: u64 }.
-/// We serialize MsgB { name: String, value: u64 } — same wire
-/// layout via postcard. This may silently succeed (no panic)
-/// because postcard doesn't carry type names, just structure.
+/// S8 sub-case 2: structurally-compatible-but-wrong-type payload
+/// WITHOUT the correct tag byte.
 ///
-/// This documents the type-erasure boundary: the system relies on
-/// the server routing frames to the correct protocol (by session_id).
-/// If routing is correct, type confusion can't happen. If routing
-/// is wrong (bug), the behavior depends on postcard's structural
-/// compatibility.
+/// Before S8, this could silently succeed (postcard structural
+/// compatibility). Now the tag check rejects it before
+/// deserialization because the first byte is a message byte,
+/// not the expected protocol tag.
+///
+/// Also tests the positive case: if someone forges the correct
+/// tag but sends the wrong type's bytes, postcard structural
+/// compatibility still applies. The tag catches routing bugs,
+/// not deliberate type forgery within the same tag space.
 #[test]
 #[ignore]
-fn cross_protocol_structural_match_may_not_panic() {
+fn cross_protocol_structural_match_rejected_without_tag() {
     use pane_app::service_dispatch::{make_service_receiver, ServiceDispatch};
     use serde::{Deserialize, Serialize};
 
@@ -254,30 +248,28 @@ fn cross_protocol_structural_match_may_not_panic() {
 
     let mut handler = CrossHandler2 { received_a: vec![] };
 
-    // Serialize MsgB — structurally compatible with MsgA
+    // Serialize MsgB WITHOUT the tag byte — simulates a routing
+    // bug delivering raw protocol-B bytes to protocol-A's closure.
     let msg_b = MsgB {
         name: "injected".into(),
         value: 42,
     };
     let payload = postcard::to_allocvec(&msg_b).unwrap();
 
-    // This may or may not panic depending on postcard's wire format.
-    // postcard serializes structs as sequential fields, so String + u64
-    // from MsgB should deserialize into MsgA's String + u64 fields.
+    // The tag check rejects this — the first byte is a postcard
+    // field, not ProtoA's tag.
     let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
         dispatch.dispatch_notification(1, &mut handler, &messenger, &payload);
     }));
 
-    if result.is_ok() {
-        // Silent type confusion — postcard treated MsgB bytes as MsgA.
-        // This is expected and documents the type-erasure boundary:
-        // correctness depends on routing, not on wire-level type tags.
-        assert_eq!(handler.received_a.len(), 1);
-        assert_eq!(handler.received_a[0].field_a, "injected");
-        assert_eq!(handler.received_a[0].field_b, 42);
-    }
-    // If it panicked, that's also acceptable — the point is
-    // it didn't silently corrupt memory or produce UB.
+    assert!(
+        result.is_ok(),
+        "untagged payload must be silently dropped, not panic"
+    );
+    assert!(
+        handler.received_a.is_empty(),
+        "handler must not receive a frame without the correct tag"
+    );
 }
 
 // ════════════════════════════════════════════════════════════════
@@ -462,22 +454,23 @@ fn run_handler_panic_exits_failed() {
 // S8 via LooperCore::run(): gibberish service frame
 // ════════════════════════════════════════════════════════════════
 
-/// S8 via run(): Send a gibberish service frame payload through
-/// the LooperCore's run() loop. The dispatch_service path parses
-/// ServiceFrame first; if THAT parse fails, the frame is silently
-/// dropped (DispatchOutcome::Continue). If the outer parse succeeds
-/// but the inner payload is wrong, make_service_receiver panics —
-/// caught by dispatch_service's catch_unwind boundary.
+/// S8 via run(): Send gibberish and wrong-tag service frames through
+/// the LooperCore's run() loop.
 ///
-/// This test sends:
-/// 1. A frame that can't parse as ServiceFrame → dropped (correct)
-/// 2. A valid ServiceFrame::Notification with gibberish inner payload
-///    → catch_unwind catches the deserialization panic, run() returns
-///    ExitReason::Failed (correct)
+/// Case 1: gibberish that can't parse as ServiceFrame → silently dropped.
+/// Case 2: valid ServiceFrame::Notification with gibberish inner payload
+///   → tag check rejects (first byte is wrong tag) → silently dropped.
+/// Case 3: valid ServiceFrame::Notification with correct tag but
+///   gibberish message body → deserialization panics → catch_unwind
+///   catches → ExitReason::Failed.
+///
+/// Before S8, case 2 panicked on deserialization. Now the protocol
+/// tag check drops it before deserialization is attempted.
 #[test]
 #[ignore]
-fn gibberish_service_frame_exits_failed() {
+fn gibberish_service_frame_tag_check_and_panic() {
     use pane_app::service_dispatch::{make_service_receiver, ServiceDispatch};
+    use pane_proto::Protocol;
     use pane_session::bridge::LooperMessage;
     use serde::{Deserialize, Serialize};
 
@@ -531,9 +524,8 @@ fn gibberish_service_frame_exits_failed() {
         })
         .unwrap();
 
-    // Case 2: valid ServiceFrame::Notification with gibberish inner payload.
-    // make_service_receiver panics on inner deserialization.
-    // catch_unwind in dispatch_service catches it → ExitReason::Failed.
+    // Case 2: valid ServiceFrame::Notification with gibberish inner
+    // payload (no tag or wrong tag). The protocol tag check drops it.
     let bad_notification = pane_proto::ServiceFrame::Notification {
         payload: vec![0xFF, 0xDE, 0xAD, 0xBE, 0xEF],
     };
@@ -545,13 +537,28 @@ fn gibberish_service_frame_exits_failed() {
         })
         .unwrap();
 
+    // Case 3: correct tag but gibberish message body.
+    // The tag check passes, but postcard deserialization panics.
+    let correct_tag = TestProto::service_id().tag();
+    let tagged_gibberish = vec![correct_tag, 0xDE, 0xAD, 0xBE, 0xEF];
+    let bad_tagged = pane_proto::ServiceFrame::Notification {
+        payload: tagged_gibberish,
+    };
+    let bad_tagged_bytes = postcard::to_allocvec(&bad_tagged).unwrap();
+    msg_tx
+        .send(LooperMessage::Service {
+            session_id: 3,
+            payload: bad_tagged_bytes,
+        })
+        .unwrap();
+
     drop(msg_tx);
 
     let reason = core.run(msg_rx);
     assert_eq!(
         reason,
         ExitReason::Failed,
-        "gibberish inner payload must trigger catch_unwind → Failed"
+        "correct tag + gibberish body must trigger catch_unwind → Failed"
     );
 
     let events = log.lock().unwrap().clone();

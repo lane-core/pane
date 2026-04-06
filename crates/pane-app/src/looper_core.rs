@@ -826,7 +826,7 @@ mod tests {
     #[test]
     fn run_dispatches_service_notification() {
         use crate::service_dispatch::{make_service_receiver, ServiceDispatch};
-        use pane_proto::ServiceFrame;
+        use pane_proto::{Protocol, ServiceFrame};
         use pane_session::bridge::LooperMessage;
 
         // Test protocol
@@ -876,8 +876,13 @@ mod tests {
         let core =
             LooperCore::with_service_dispatch(handler, PeerScope(1), exit_tx, service_dispatch);
 
-        // Send a service notification on session_id=3
-        let inner = postcard::to_allocvec(&NotifyMsg::Ping("wired".into())).unwrap();
+        // Send a service notification on session_id=3.
+        // Inner payload carries protocol tag byte (S8).
+        let tag = NotifyProto::service_id().tag();
+        let msg_bytes = postcard::to_allocvec(&NotifyMsg::Ping("wired".into())).unwrap();
+        let mut inner = Vec::with_capacity(1 + msg_bytes.len());
+        inner.push(tag);
+        inner.extend_from_slice(&msg_bytes);
         let frame = ServiceFrame::Notification { payload: inner };
         let outer = postcard::to_allocvec(&frame).unwrap();
         msg_tx

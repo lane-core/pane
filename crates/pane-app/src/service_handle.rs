@@ -88,8 +88,12 @@ impl<P: Protocol> ServiceHandle<P> {
         H: Handler + Handles<P> + 'static,
         R: pane_proto::Message,
     {
-        let inner_payload =
-            postcard::to_allocvec(&msg).expect("service message serialization failed");
+        let tag = P::service_id().tag();
+        let msg_bytes = postcard::to_allocvec(&msg).expect("service message serialization failed");
+        let mut inner_payload = Vec::with_capacity(1 + msg_bytes.len());
+        inner_payload.push(tag);
+        inner_payload.extend_from_slice(&msg_bytes);
+
         let token = NEXT_TOKEN.fetch_add(1, Ordering::Relaxed);
         let frame = ServiceFrame::Request {
             token,
@@ -110,8 +114,12 @@ impl<P: Protocol> ServiceHandle<P> {
 
     /// Send a fire-and-forget notification through this service binding.
     pub fn send_notification(&self, msg: P::Message) {
-        let inner_payload =
-            postcard::to_allocvec(&msg).expect("service message serialization failed");
+        let tag = P::service_id().tag();
+        let msg_bytes = postcard::to_allocvec(&msg).expect("service message serialization failed");
+        let mut inner_payload = Vec::with_capacity(1 + msg_bytes.len());
+        inner_payload.push(tag);
+        inner_payload.extend_from_slice(&msg_bytes);
+
         let frame = ServiceFrame::Notification {
             payload: inner_payload,
         };
@@ -244,9 +252,12 @@ mod tests {
         match frame {
             ServiceFrame::Request { token, payload } => {
                 assert!(token > 0, "token should be nonzero");
-                // Decode inner message
-                let msg: TestMsg =
-                    postcard::from_bytes(&payload).expect("inner message deserialization failed");
+                // First byte is the protocol tag
+                let expected_tag = TestProto::service_id().tag();
+                assert_eq!(payload[0], expected_tag, "protocol tag must be first byte");
+                // Decode inner message after the tag
+                let msg: TestMsg = postcard::from_bytes(&payload[1..])
+                    .expect("inner message deserialization failed");
                 assert!(matches!(msg, TestMsg::Ping));
             }
             _ => panic!("expected Request frame"),
@@ -267,8 +278,12 @@ mod tests {
             postcard::from_bytes(&payload).expect("ServiceFrame deserialization failed");
         match frame {
             ServiceFrame::Notification { payload } => {
-                let msg: TestMsg =
-                    postcard::from_bytes(&payload).expect("inner message deserialization failed");
+                // First byte is the protocol tag
+                let expected_tag = TestProto::service_id().tag();
+                assert_eq!(payload[0], expected_tag, "protocol tag must be first byte");
+                // Decode inner message after the tag
+                let msg: TestMsg = postcard::from_bytes(&payload[1..])
+                    .expect("inner message deserialization failed");
                 assert!(matches!(msg, TestMsg::Ping));
             }
             _ => panic!("expected Notification frame"),

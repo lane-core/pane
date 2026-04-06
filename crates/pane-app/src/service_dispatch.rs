@@ -77,16 +77,30 @@ impl<H> ServiceDispatch<H> {
 /// Captures the concrete P::Message type in the closure.
 /// The Handles<P> bound is satisfied at the call site
 /// (PaneBuilder::open_service where H: Handles<P> is in scope).
+///
+/// The closure checks the protocol tag byte (S8) before
+/// deserializing the inner payload. Mismatch means a routing
+/// bug — the frame is dropped, not panicked.
 pub fn make_service_receiver<H, P>() -> ServiceReceiver<H>
 where
     H: Handles<P>,
     P: Protocol,
 {
-    Box::new(|handler: &mut H, _messenger: &Messenger, payload: &[u8]| {
-        let msg: P::Message =
-            postcard::from_bytes(payload).expect("service message deserialization failed");
-        handler.receive(msg)
-    })
+    let expected_tag = P::service_id().tag();
+    Box::new(
+        move |handler: &mut H, _messenger: &Messenger, payload: &[u8]| {
+            // Protocol tag check (S8): verify the payload's tag matches
+            // the protocol registered for this session_id.
+            if payload.is_empty() || payload[0] != expected_tag {
+                // Tag mismatch — routing delivered the wrong protocol's
+                // payload to this closure. Drop the frame.
+                return Flow::Continue;
+            }
+            let msg: P::Message = postcard::from_bytes(&payload[1..])
+                .expect("service message deserialization failed");
+            handler.receive(msg)
+        },
+    )
 }
 
 #[cfg(test)]
@@ -121,6 +135,16 @@ mod tests {
         }
     }
 
+    /// Build a tagged payload: protocol tag byte + postcard-serialized message.
+    fn tagged_payload<P: Protocol>(msg: &P::Message) -> Vec<u8> {
+        let tag = P::service_id().tag();
+        let msg_bytes = postcard::to_allocvec(msg).unwrap();
+        let mut payload = Vec::with_capacity(1 + msg_bytes.len());
+        payload.push(tag);
+        payload.extend_from_slice(&msg_bytes);
+        payload
+    }
+
     #[test]
     fn dispatch_notification_to_handler() {
         let mut dispatch = ServiceDispatch::<TestHandler>::new();
@@ -128,7 +152,7 @@ mod tests {
 
         let mut handler = TestHandler { received: vec![] };
         let messenger = crate::Messenger::new();
-        let payload = postcard::to_allocvec(&TestMsg::Ping("hello".into())).unwrap();
+        let payload = tagged_payload::<TestProto>(&TestMsg::Ping("hello".into()));
 
         let flow = dispatch.dispatch_notification(3, &mut handler, &messenger, &payload);
         assert_eq!(flow, Some(Flow::Continue));
@@ -191,8 +215,8 @@ mod tests {
         };
         let messenger = crate::Messenger::new();
 
-        let ping_bytes = postcard::to_allocvec(&TestMsg::Ping("a".into())).unwrap();
-        let pong_bytes = postcard::to_allocvec(&OtherMsg::Pong(42)).unwrap();
+        let ping_bytes = tagged_payload::<TestProto>(&TestMsg::Ping("a".into()));
+        let pong_bytes = tagged_payload::<OtherProto>(&OtherMsg::Pong(42));
 
         dispatch.dispatch_notification(1, &mut handler, &messenger, &ping_bytes);
         dispatch.dispatch_notification(2, &mut handler, &messenger, &pong_bytes);
@@ -207,5 +231,42 @@ mod tests {
         let mut dispatch = ServiceDispatch::<TestHandler>::new();
         dispatch.register(1, make_service_receiver::<TestHandler, TestProto>());
         dispatch.register(1, make_service_receiver::<TestHandler, TestProto>());
+    }
+
+    #[test]
+    fn wrong_protocol_tag_drops_frame() {
+        let mut dispatch = ServiceDispatch::<TestHandler>::new();
+        dispatch.register(3, make_service_receiver::<TestHandler, TestProto>());
+
+        let mut handler = TestHandler { received: vec![] };
+        let messenger = crate::Messenger::new();
+
+        // Build a payload with the wrong tag byte (flipped).
+        let correct_tag = TestProto::service_id().tag();
+        let wrong_tag = !correct_tag;
+        let msg_bytes = postcard::to_allocvec(&TestMsg::Ping("stealth".into())).unwrap();
+        let mut payload = Vec::with_capacity(1 + msg_bytes.len());
+        payload.push(wrong_tag);
+        payload.extend_from_slice(&msg_bytes);
+
+        let flow = dispatch.dispatch_notification(3, &mut handler, &messenger, &payload);
+        assert_eq!(flow, Some(Flow::Continue));
+        assert!(
+            handler.received.is_empty(),
+            "handler must NOT receive a frame with a wrong protocol tag"
+        );
+    }
+
+    #[test]
+    fn empty_payload_drops_frame() {
+        let mut dispatch = ServiceDispatch::<TestHandler>::new();
+        dispatch.register(3, make_service_receiver::<TestHandler, TestProto>());
+
+        let mut handler = TestHandler { received: vec![] };
+        let messenger = crate::Messenger::new();
+
+        let flow = dispatch.dispatch_notification(3, &mut handler, &messenger, &[]);
+        assert_eq!(flow, Some(Flow::Continue));
+        assert!(handler.received.is_empty());
     }
 }

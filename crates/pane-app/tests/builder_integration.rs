@@ -164,12 +164,14 @@ fn open_service_via_protocol_server() {
     // Send a notification through the wired handle
     handle.send_notification(EchoMessage::Ping("wired".into()));
 
-    // Provider receives it
+    // Provider receives it — inner payload has tag byte (S8).
     let (recv_session, recv_frame) = provider.read_service();
     assert_eq!(recv_session, b_session);
     match recv_frame {
         ServiceFrame::Notification { payload } => {
-            let msg: EchoMessage = postcard::from_bytes(&payload).unwrap();
+            let expected_tag = echo_service_id().tag();
+            assert_eq!(payload[0], expected_tag, "protocol tag must match");
+            let msg: EchoMessage = postcard::from_bytes(&payload[1..]).unwrap();
             assert_eq!(msg, EchoMessage::Ping("wired".into()));
         }
         other => panic!("expected Notification, got {other:?}"),
