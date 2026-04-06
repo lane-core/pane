@@ -13,5 +13,6 @@ pub mod transport;
 pub mod bridge;
 pub mod frame;
 pub mod handshake;
+pub mod peer_cred;
 
 pub use transport::Transport;

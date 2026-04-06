@@ -203,17 +203,10 @@ impl<H: pane_proto::Handler> LooperCore<H> {
     /// and the destruction sequence has completed.
     pub fn run(mut self, rx: mpsc::Receiver<pane_proto::control::ControlMessage>) -> ExitReason {
         use pane_proto::control::ControlMessage;
-        use pane_proto::protocols::lifecycle::LifecycleMessage;
-
-        // Send Ready to the handler.
-        let outcome = self.dispatch_lifecycle(LifecycleMessage::Ready);
-        if let DispatchOutcome::Exit(reason) = outcome {
-            let reason_copy = reason.clone();
-            self.shutdown();
-            return reason_copy;
-        }
 
         // Main loop: read from channel, dispatch.
+        // Ready arrives from the server as ControlMessage::Lifecycle(Ready)
+        // — the looper does not inject it synthetically.
         let exit_reason = loop {
             match rx.recv() {
                 Ok(ControlMessage::Lifecycle(msg)) => {
@@ -687,7 +680,11 @@ mod tests {
             let bytes = postcard::to_allocvec(&decision).unwrap();
             codec.write_frame(&mut st, 0, &bytes).unwrap();
 
-            // Active phase: send CloseRequested
+            // Active phase: send Ready then CloseRequested
+            let msg = ControlMessage::Lifecycle(LifecycleMessage::Ready);
+            let bytes = postcard::to_allocvec(&msg).unwrap();
+            codec.write_frame(&mut st, 0, &bytes).unwrap();
+
             let msg = ControlMessage::Lifecycle(LifecycleMessage::CloseRequested);
             let bytes = postcard::to_allocvec(&msg).unwrap();
             codec.write_frame(&mut st, 0, &bytes).unwrap();
@@ -714,9 +711,9 @@ mod tests {
 
         let exit_reason = core.run(client.rx);
 
-        // Handler received Ready (from run's initial dispatch) and
-        // CloseRequested (from the server's message). CloseRequested
-        // defaults to Flow::Stop, so the looper exits gracefully.
+        // Handler received Ready (from server) and CloseRequested
+        // (from server). CloseRequested defaults to Flow::Stop,
+        // so the looper exits gracefully.
         assert_eq!(exit_reason, ExitReason::Graceful);
 
         let events = log.lock().unwrap().clone();
@@ -773,7 +770,14 @@ mod tests {
             let bytes = postcard::to_allocvec(&decision).unwrap();
             codec.write_frame(&mut st, 0, &bytes).unwrap();
 
-            // Drop immediately — no active-phase messages.
+            // Send Ready, then drop — simulates a server that
+            // crashes after the pane becomes active.
+            use pane_proto::control::ControlMessage;
+            use pane_proto::protocols::lifecycle::LifecycleMessage;
+            let msg = ControlMessage::Lifecycle(LifecycleMessage::Ready);
+            let bytes = postcard::to_allocvec(&msg).unwrap();
+            codec.write_frame(&mut st, 0, &bytes).unwrap();
+
             drop(st);
         });
 

@@ -1,0 +1,16 @@
+[package]
+name = "pane-hello"
+version = "0.1.0"
+edition = "2021"
+description = "Canonical first pane app. Connects to a stub server, receives lifecycle messages, exits."
+license = "AGPL-3.0-only"
+
+[[bin]]
+name = "pane-hello"
+path = "src/main.rs"
+
+[dependencies]
+pane-proto = { path = "../pane-proto" }
+pane-session = { path = "../pane-session" }
+pane-app = { path = "../pane-app" }
+postcard = { version = "1", features = ["alloc"] }
