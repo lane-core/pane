@@ -8,6 +8,7 @@
 //! the result is a direct binding, not a name.
 
 use std::marker::PhantomData;
+use pane_proto::Address;
 
 /// Scoped handle to a pane. The pane ID is baked in.
 /// The handler receives this from the looper and uses it to
@@ -15,13 +16,23 @@ use std::marker::PhantomData;
 #[derive(Clone)]
 pub struct Messenger {
     // TODO: Handle (pane identity) + ServiceRouter
+    self_address: Address,
     _private: PhantomData<()>,
 }
 
 impl Messenger {
-    /// Stub — will be constructed by the looper.
+    /// Stub — will be constructed by the looper with a real address.
     pub(crate) fn new() -> Self {
-        Messenger { _private: PhantomData }
+        Messenger {
+            self_address: Address::local(0),
+            _private: PhantomData,
+        }
+    }
+
+    /// This pane's address. Extractable, sendable to others
+    /// as "here's how to reach me."
+    pub fn address(&self) -> Address {
+        self.self_address
     }
 
     /// Set the pane's body content.
@@ -55,3 +66,33 @@ pub trait AppPayload: Clone + Send + 'static {}
 
 // Blanket impl
 impl<T: Clone + Send + 'static> AppPayload for T {}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn messenger_address_returns_address() {
+        let m = Messenger::new();
+        let addr = m.address();
+        // Stub address is local(0)
+        assert!(addr.is_local());
+        assert_eq!(addr.pane_id, 0);
+    }
+
+    #[test]
+    fn messenger_address_is_copy() {
+        let m = Messenger::new();
+        let a = m.address();
+        let b = a; // Copy
+        let c = a; // still usable
+        assert_eq!(b, c);
+    }
+
+    #[test]
+    fn messenger_clone_preserves_address() {
+        let m = Messenger::new();
+        let m2 = m.clone();
+        assert_eq!(m.address(), m2.address());
+    }
+}

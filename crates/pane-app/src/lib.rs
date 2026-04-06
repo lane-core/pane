@@ -25,6 +25,7 @@ pub use builder::PaneBuilder;
 
 // Re-export pane-proto types for convenience
 pub use pane_proto::{
+    Address,
     Flow, Handler, Handles, Message, Protocol, ServiceId,
     MessageFilter, FilterAction,
 };
