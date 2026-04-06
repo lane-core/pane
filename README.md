@@ -154,17 +154,23 @@ what each component does.
 ## Status
 
 The architecture spec (`docs/architecture.md`) is the source of truth.
-Three crates, grounded in published formalisms:
+Four crates, 95 tests, grounded in published formalisms:
 
     pane-proto       Protocol vocabulary: Message, Protocol, ServiceId,
                      Handles<P>, Handler, Flow, MessageFilter<M>,
-                     MonadicLens<S,A> (concrete fn-pointer optics). No IO.
+                     MonadicLens<S,A> (concrete fn-pointer optics),
+                     obligation handles (ReplyPort, CancelHandle). No IO.
     pane-session     Par-backed IPC channels: Chan<S, T> using par's
                      CLL types directly, Transport trait, handshake
-                     (Hello/Welcome), ProtocolAbort on Drop.
+                     (Hello/Welcome), FrameCodec (wire framing with
+                     reserved 0xFF abort).
     pane-app         EAct actor framework: Pane, PaneBuilder<H>,
-                     Dispatch<H>, Messenger, ServiceHandle<P>,
+                     Dispatch<H>, LooperCore<H> (catch_unwind +
+                     destruction sequence), Messenger, ServiceHandle<P>,
                      ExitReason.
+    pane-fs          Filesystem namespace: AttrReader<S>, AttrSet<S>,
+                     PaneEntry<S>. Projects handler state into /pane/
+                     for scripting and inspection.
 
 See `PLAN.md` for implementation order.
 
