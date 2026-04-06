@@ -21,7 +21,7 @@ use pane_session::handshake::{Hello, Welcome};
 use pane_session::peer_cred;
 use pane_app::looper_core::LooperCore;
 use pane_app::exit_reason::ExitReason;
-use pane_app::dispatch::ConnectionId;
+use pane_app::dispatch::PeerScope;
 
 // -- Handler --
 
@@ -131,7 +131,7 @@ fn main() {
     let (exit_tx, _exit_rx) = mpsc::channel();
     let looper = LooperCore::new(
         HelloHandler,
-        ConnectionId(0),
+        PeerScope(0),
         exit_tx,
     );
 

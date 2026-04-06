@@ -953,7 +953,12 @@ check, panic on violation (I8).
 - **I10**: ProtocolAbort on session drop must not block (best-effort write).
 - **I11**: ProtocolAbort uses reserved service discriminant 0xFF,
   checked at framing layer before deserialization.
-- **I12**: Unknown service discriminant → connection-level error.
+- **I12**: Unknown service discriminant → error. Server-side: permissive
+  codec accepts all discriminants; routing table validates. Client-side:
+  permissive codec on the reader thread (dynamically assigned session_ids
+  from DeclareInterest); looper's ServiceDispatch table validates.
+  Unknown session_ids are soft-dropped (log and continue), not
+  connection-level errors.
 - **I13**: open_service blocks until InterestAccepted/Declined.
   ServiceHandle represents a confirmed binding.
 

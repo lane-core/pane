@@ -186,7 +186,7 @@ impl<H: Handler> PaneBuilder<H> {
     /// then enters the looper main loop. Returns the exit reason.
     pub fn run_with(mut self, handler: H) -> crate::exit_reason::ExitReason {
         use crate::looper_core::{LooperCore, DispatchOutcome};
-        use crate::dispatch::ConnectionId;
+        use crate::dispatch::PeerScope;
 
         let rx = self.rx.take()
             .expect("must call connect() before run_with()");
@@ -200,7 +200,7 @@ impl<H: Handler> PaneBuilder<H> {
 
         let mut core = LooperCore::with_service_dispatch(
             handler,
-            ConnectionId(1),
+            PeerScope(1),
             exit_tx,
             service_dispatch,
         );
@@ -233,8 +233,10 @@ impl<H: Handler> PaneBuilder<H> {
 
 impl<H: Handler> Drop for PaneBuilder<H> {
     fn drop(&mut self) {
-        // Revoke all accepted interests. Idempotent with
-        // ServiceHandle<P> Drop.
+        // ServiceHandle<P> Drop sends RevokeInterest for each
+        // open service. Server's process_disconnect is the backstop
+        // if the connection closes before RevokeInterest is sent.
+        // No additional cleanup needed here.
     }
 }
 

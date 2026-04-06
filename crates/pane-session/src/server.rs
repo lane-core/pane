@@ -124,12 +124,14 @@ impl ServerState {
         id
     }
 
-    fn alloc_session(&mut self, conn: ConnectionId) -> u8 {
+    fn alloc_session(&mut self, conn: ConnectionId) -> Option<u8> {
         let next = self.next_session.entry(conn).or_insert(1);
         let session = *next;
-        assert!(session < 255, "session_id overflow for connection {:?}", conn);
+        if session >= 255 {
+            return None; // session_id space exhausted
+        }
         *next += 1;
-        session
+        Some(session)
     }
 
     fn register_provides(&mut self, conn: ConnectionId, provides: &[ServiceProvision]) {
@@ -141,21 +143,27 @@ impl ServerState {
         }
     }
 
-    /// Handle DeclareInterest. Returns None if no provider available.
+    /// Handle DeclareInterest. Returns Err with a reason on failure.
     fn handle_declare_interest(
         &mut self,
         consumer_conn: ConnectionId,
         service: ServiceId,
         _expected_version: u32,
-    ) -> Option<(ControlMessage, ConnectionId, u8)> {
-        let providers = self.provider_index.get(&service.uuid)?;
-        let &provider_conn = providers.first()?;
+    ) -> Result<(ControlMessage, ConnectionId, u8), pane_proto::control::DeclineReason> {
+        let providers = self.provider_index.get(&service.uuid)
+            .and_then(|p| p.first().copied());
+        let provider_conn = match providers {
+            Some(p) => p,
+            None => return Err(pane_proto::control::DeclineReason::ServiceUnknown),
+        };
         if provider_conn == consumer_conn {
-            return None;
+            return Err(pane_proto::control::DeclineReason::SelfProvide);
         }
 
-        let consumer_session = self.alloc_session(consumer_conn);
-        let provider_session = self.alloc_session(provider_conn);
+        let consumer_session = self.alloc_session(consumer_conn)
+            .ok_or(pane_proto::control::DeclineReason::SessionExhausted)?;
+        let provider_session = self.alloc_session(provider_conn)
+            .ok_or(pane_proto::control::DeclineReason::SessionExhausted)?;
 
         let route = Route {
             consumer_conn,
@@ -179,7 +187,7 @@ impl ServerState {
             version: 1,
         };
 
-        Some((accepted, provider_conn, provider_session))
+        Ok((accepted, provider_conn, provider_session))
     }
 
     /// Remove all state for a connection. Returns peers to notify.
@@ -233,7 +241,7 @@ impl ServerState {
         match msg {
             ControlMessage::DeclareInterest { service, expected_version } => {
                 match self.handle_declare_interest(conn_id, service, expected_version) {
-                    Some((accepted, provider_conn, provider_session)) => {
+                    Ok((accepted, provider_conn, provider_session)) => {
                         // Send InterestAccepted to consumer
                         if let Ok(bytes) = postcard::to_allocvec(&accepted) {
                             if let Some(wh) = self.writers.get(&conn_id) {
@@ -252,10 +260,10 @@ impl ServerState {
                             }
                         }
                     }
-                    None => {
+                    Err(reason) => {
                         let declined = ControlMessage::InterestDeclined {
                             service_uuid: service.uuid,
-                            reason: pane_proto::control::DeclineReason::ServiceUnknown,
+                            reason,
                         };
                         if let Ok(bytes) = postcard::to_allocvec(&declined) {
                             if let Some(wh) = self.writers.get(&conn_id) {
@@ -573,8 +581,8 @@ mod tests {
     fn server_state_alloc_sessions_increment() {
         let mut state = ServerState::new();
         let conn = ConnectionId(1);
-        let s1 = state.alloc_session(conn);
-        let s2 = state.alloc_session(conn);
+        let s1 = state.alloc_session(conn).unwrap();
+        let s2 = state.alloc_session(conn).unwrap();
         assert_eq!(s1, 1);
         assert_eq!(s2, 2);
     }
@@ -630,7 +638,7 @@ mod tests {
             1,
         );
 
-        assert!(result.is_some());
+        assert!(result.is_ok());
         let (accepted, provider_conn, provider_session) = result.unwrap();
 
         assert_eq!(provider_conn, ConnectionId(1));
@@ -647,7 +655,7 @@ mod tests {
     }
 
     #[test]
-    fn server_state_declare_interest_no_provider_returns_none() {
+    fn server_state_declare_interest_no_provider_returns_err() {
         let mut state = ServerState::new();
         let service = ServiceId::new("com.pane.nonexistent");
         state.next_session.insert(ConnectionId(1), 1);
@@ -658,7 +666,7 @@ mod tests {
             1,
         );
 
-        assert!(result.is_none());
+        assert!(matches!(result, Err(pane_proto::control::DeclineReason::ServiceUnknown)));
     }
 
     #[test]
@@ -673,7 +681,7 @@ mod tests {
         state.next_session.insert(ConnectionId(1), 1);
         state.next_session.insert(ConnectionId(2), 1);
 
-        state.handle_declare_interest(ConnectionId(2), service, 1);
+        let _ = state.handle_declare_interest(ConnectionId(2), service, 1);
         assert!(!state.routing_table.is_empty());
 
         let peers = state.remove_connection(ConnectionId(1));
@@ -685,17 +693,19 @@ mod tests {
     }
 
     /// Old gap #3: session_id overflow at 255 boundary.
+    /// Returns None instead of panicking — the server gracefully
+    /// declines with SessionExhausted.
     #[test]
-    #[should_panic(expected = "session_id overflow")]
-    fn alloc_session_panics_at_overflow() {
+    fn alloc_session_returns_none_at_overflow() {
         let mut state = ServerState::new();
         let conn = ConnectionId(1);
-        // Exhaust session_ids 1..254
-        for _ in 1..255 {
-            state.alloc_session(conn);
+        // Exhaust session_ids 1..254 (254 allocations)
+        for i in 1..=254 {
+            let s = state.alloc_session(conn);
+            assert_eq!(s, Some(i), "session {i} should succeed");
         }
-        // 255th allocation should panic (255 is < 255 fails)
-        state.alloc_session(conn);
+        // Next allocation returns None (255 >= 255)
+        assert!(state.alloc_session(conn).is_none());
     }
 
     #[test]
@@ -712,7 +722,7 @@ mod tests {
 
         // Establish a route via DeclareInterest
         let result = state.handle_declare_interest(ConnectionId(2), service, 1);
-        assert!(result.is_some());
+        assert!(result.is_ok());
         assert_eq!(state.routing_table.len(), 2);
 
         let consumer_session = match result.unwrap().0 {

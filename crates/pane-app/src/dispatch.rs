@@ -2,7 +2,7 @@
 //!
 //! Each send_request installs a one-shot callback entry. When
 //! the reply arrives, the entry is consumed and the callback
-//! fires. Keyed by (ConnectionId, Token).
+//! fires. Keyed by (PeerScope, Token).
 //!
 //! Static protocol dispatch (Handles<P> fn pointers) lives in
 //! the service dispatch table on PaneBuilder/looper. Dispatch<H>
@@ -11,9 +11,12 @@
 use std::collections::HashMap;
 use pane_proto::Flow;
 
-/// Connection identity. Stub — will be assigned by the server.
+/// Scopes dispatch entries by peer. Distinct from the server's
+/// ConnectionId — this is looper-internal, the server never sees it.
+/// Named PeerScope (not ConnectionId) to avoid confusion with
+/// pane-session's server-side ConnectionId.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub struct ConnectionId(pub u64);
+pub struct PeerScope(pub u64);
 
 /// Request token. Unique per Connection (AtomicU64).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -30,7 +33,7 @@ pub(crate) struct DispatchEntry<H> {
 /// The dynamic handler store for request/reply.
 /// Internal to the looper — not in the handler API.
 pub struct Dispatch<H> {
-    entries: HashMap<(ConnectionId, Token), DispatchEntry<H>>,
+    entries: HashMap<(PeerScope, Token), DispatchEntry<H>>,
     next_token: u64,
 }
 
@@ -46,7 +49,7 @@ impl<H> Dispatch<H> {
     /// Returns the Token for cancellation.
     pub(crate) fn insert(
         &mut self,
-        connection: ConnectionId,
+        connection: PeerScope,
         entry: DispatchEntry<H>,
     ) -> Token {
         let token = Token(self.next_token);
@@ -59,7 +62,7 @@ impl<H> Dispatch<H> {
     /// Returns None if the token doesn't exist (already consumed/cancelled).
     pub(crate) fn fire_reply(
         &mut self,
-        connection: ConnectionId,
+        connection: PeerScope,
         token: Token,
         handler: &mut H,
         messenger: &crate::Messenger,
@@ -72,7 +75,7 @@ impl<H> Dispatch<H> {
     /// Consume an entry and fire on_failed.
     pub(crate) fn fire_failed(
         &mut self,
-        connection: ConnectionId,
+        connection: PeerScope,
         token: Token,
         handler: &mut H,
         messenger: &crate::Messenger,
@@ -82,7 +85,7 @@ impl<H> Dispatch<H> {
     }
 
     /// Cancel an entry without firing callbacks (S5).
-    pub(crate) fn cancel(&mut self, connection: ConnectionId, token: Token) -> bool {
+    pub(crate) fn cancel(&mut self, connection: PeerScope, token: Token) -> bool {
         self.entries.remove(&(connection, token)).is_some()
     }
 
@@ -90,7 +93,7 @@ impl<H> Dispatch<H> {
     /// Called during destruction sequence step 1.
     pub(crate) fn fail_connection(
         &mut self,
-        connection: ConnectionId,
+        connection: PeerScope,
         handler: &mut H,
         messenger: &crate::Messenger,
     ) {
@@ -136,7 +139,7 @@ mod tests {
         let mut dispatch = Dispatch::new();
         let mut handler = TestHandler { replies: vec![], failures: vec![] };
         let messenger = Messenger::new();
-        let conn = ConnectionId(1);
+        let conn = PeerScope(1);
 
         let token = dispatch.insert(conn, DispatchEntry {
             on_reply: Box::new(|h: &mut TestHandler, _, payload| {
@@ -166,7 +169,7 @@ mod tests {
         let mut dispatch = Dispatch::new();
         let mut handler = TestHandler { replies: vec![], failures: vec![] };
         let messenger = Messenger::new();
-        let conn = ConnectionId(1);
+        let conn = PeerScope(1);
 
         let token = dispatch.insert(conn, DispatchEntry {
             on_reply: Box::new(|_, _, _| Flow::Continue),
@@ -182,7 +185,7 @@ mod tests {
     #[test]
     fn cancel_removes_without_callback() {
         let mut dispatch = Dispatch::new();
-        let conn = ConnectionId(1);
+        let conn = PeerScope(1);
 
         let token = dispatch.insert(conn, DispatchEntry::<TestHandler> {
             on_reply: Box::new(|_, _, _| panic!("should not fire")),
@@ -199,8 +202,8 @@ mod tests {
         let mut handler = TestHandler { replies: vec![], failures: vec![] };
         let messenger = Messenger::new();
 
-        let conn1 = ConnectionId(1);
-        let conn2 = ConnectionId(2);
+        let conn1 = PeerScope(1);
+        let conn2 = PeerScope(2);
 
         dispatch.insert(conn1, DispatchEntry {
             on_reply: Box::new(|_, _, _| Flow::Continue),
@@ -227,7 +230,7 @@ mod tests {
     #[test]
     fn clear_drops_all_without_callbacks() {
         let mut dispatch = Dispatch::<TestHandler>::new();
-        let conn = ConnectionId(1);
+        let conn = PeerScope(1);
 
         dispatch.insert(conn, DispatchEntry {
             on_reply: Box::new(|_, _, _| panic!("should not fire")),
@@ -247,7 +250,7 @@ mod tests {
         let mut dispatch = Dispatch::new();
         let mut handler = TestHandler { replies: vec![], failures: vec![] };
         let messenger = Messenger::new();
-        let conn = ConnectionId(1);
+        let conn = PeerScope(1);
 
         let token = dispatch.insert(conn, DispatchEntry {
             on_reply: Box::new(|h: &mut TestHandler, _, payload| {
@@ -274,7 +277,7 @@ mod tests {
     #[test]
     fn tokens_are_unique_per_connection() {
         let mut dispatch = Dispatch::<TestHandler>::new();
-        let conn = ConnectionId(1);
+        let conn = PeerScope(1);
 
         let t1 = dispatch.insert(conn, DispatchEntry {
             on_reply: Box::new(|_, _, _| Flow::Continue),

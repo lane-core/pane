@@ -73,6 +73,10 @@ pub enum ControlMessage {
 pub enum DeclineReason {
     VersionMismatch,
     ServiceUnknown,
+    /// The requesting pane provides this service itself.
+    SelfProvide,
+    /// No session_ids available (255 limit per connection).
+    SessionExhausted,
 }
 
 /// Why the server is tearing down a service.

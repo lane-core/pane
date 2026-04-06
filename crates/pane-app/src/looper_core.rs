@@ -42,7 +42,7 @@ use std::panic::{catch_unwind, AssertUnwindSafe};
 use std::sync::mpsc;
 
 use pane_proto::Flow;
-use crate::dispatch::{ConnectionId, Dispatch};
+use crate::dispatch::{PeerScope, Dispatch};
 use crate::exit_reason::ExitReason;
 use crate::messenger::Messenger;
 use crate::service_dispatch::ServiceDispatch;
@@ -67,7 +67,7 @@ pub struct LooperCore<H> {
     dispatch: Dispatch<H>,
     service_dispatch: ServiceDispatch<H>,
     messenger: Messenger,
-    primary_connection: ConnectionId,
+    primary_connection: PeerScope,
     exit_tx: mpsc::Sender<ExitReason>,
     exited: bool,
 }
@@ -75,7 +75,7 @@ pub struct LooperCore<H> {
 impl<H: pane_proto::Handler> LooperCore<H> {
     pub fn new(
         handler: H,
-        primary_connection: ConnectionId,
+        primary_connection: PeerScope,
         exit_tx: mpsc::Sender<ExitReason>,
     ) -> Self {
         LooperCore {
@@ -93,7 +93,7 @@ impl<H: pane_proto::Handler> LooperCore<H> {
     /// Used by PaneBuilder::run_with after setup.
     pub fn with_service_dispatch(
         handler: H,
-        primary_connection: ConnectionId,
+        primary_connection: PeerScope,
         exit_tx: mpsc::Sender<ExitReason>,
         service_dispatch: ServiceDispatch<H>,
     ) -> Self {
@@ -354,7 +354,7 @@ impl<H: pane_proto::Handler> LooperCore<H> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::dispatch::{DispatchEntry, ConnectionId};
+    use crate::dispatch::{DispatchEntry, PeerScope};
     use pane_proto::obligation::{ReplyPort, ReplyFailed};
     use std::sync::{Arc, Mutex};
 
@@ -413,7 +413,7 @@ mod tests {
         exit_tx: mpsc::Sender<ExitReason>,
     ) -> LooperCore<TestHandler> {
         let handler = TestHandler::new(log);
-        LooperCore::new(handler, ConnectionId(1), exit_tx)
+        LooperCore::new(handler, PeerScope(1), exit_tx)
     }
 
     // ── Claim: Flow::Continue → next event ─────────────────
@@ -524,7 +524,7 @@ mod tests {
         let mut core = make_core(log.clone(), exit_tx);
 
         // Install a dispatch entry on the primary connection
-        let conn = ConnectionId(1);
+        let conn = PeerScope(1);
         core.dispatch_mut().insert(conn, DispatchEntry {
             on_reply: Box::new(|_h: &mut TestHandler, _, _| Flow::Continue),
             on_failed: Box::new(move |_h: &mut TestHandler, _| {
@@ -535,7 +535,7 @@ mod tests {
 
         // Install an entry on a different connection (should be
         // cleared in step 2, not failed in step 1)
-        let other_conn = ConnectionId(2);
+        let other_conn = PeerScope(2);
         core.dispatch_mut().insert(other_conn, DispatchEntry {
             on_reply: Box::new(|_h: &mut TestHandler, _, _| Flow::Continue),
             on_failed: Box::new(move |_h: &mut TestHandler, _| {
@@ -656,7 +656,7 @@ mod tests {
         // can access private fields, so we split the same way.
         let (log, exit_tx, _exit_rx) = setup();
         let mut core = make_core(log.clone(), exit_tx);
-        let conn = ConnectionId(1);
+        let conn = PeerScope(1);
 
         // E-Suspend: install a dispatch entry whose on_reply
         // callback mutates the handler's log.
@@ -725,7 +725,7 @@ mod tests {
         let mut core = make_core(log.clone(), exit_tx);
 
         // Entry on secondary connection — should survive fail_connection
-        let secondary = ConnectionId(99);
+        let secondary = PeerScope(99);
         core.dispatch_mut().insert(secondary, DispatchEntry {
             on_reply: Box::new(|_h: &mut TestHandler, _, _| Flow::Continue),
             on_failed: Box::new(move |_h: &mut TestHandler, _| {
@@ -795,7 +795,7 @@ mod tests {
 
         let handler = NotifyHandler { log: log.clone() };
         let core = LooperCore::with_service_dispatch(
-            handler, ConnectionId(1), exit_tx, service_dispatch,
+            handler, PeerScope(1), exit_tx, service_dispatch,
         );
 
         // Send a service notification on session_id=3
@@ -890,7 +890,7 @@ mod tests {
 
         // Wire the channel into LooperCore.
         let handler = TestHandler::new(log.clone());
-        let core = LooperCore::new(handler, ConnectionId(1), exit_tx);
+        let core = LooperCore::new(handler, PeerScope(1), exit_tx);
 
         let exit_reason = core.run(client.rx);
 
@@ -975,7 +975,7 @@ mod tests {
         ).expect("client connect failed");
 
         let handler = TestHandler::new(log.clone());
-        let core = LooperCore::new(handler, ConnectionId(1), exit_tx);
+        let core = LooperCore::new(handler, PeerScope(1), exit_tx);
 
         let exit_reason = core.run(client.rx);
 
