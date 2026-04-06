@@ -9,24 +9,22 @@
 //! Design heritage: BeOS BLooper (sequential dispatch, one thread
 //! per actor). Formalized by Fowler et al.'s EAct.
 
-pub mod exit_reason;
-pub mod messenger;
-pub mod service_handle;
-pub mod dispatch;
-pub mod service_dispatch;
-pub mod pane;
 pub mod builder;
+pub mod dispatch;
+pub mod exit_reason;
 pub mod looper_core;
+pub mod messenger;
+pub mod pane;
+pub mod service_dispatch;
+pub mod service_handle;
 
+pub use builder::PaneBuilder;
 pub use exit_reason::ExitReason;
 pub use messenger::Messenger;
-pub use service_handle::ServiceHandle;
 pub use pane::Pane;
-pub use builder::PaneBuilder;
+pub use service_handle::ServiceHandle;
 
 // Re-export pane-proto types for convenience
 pub use pane_proto::{
-    Address,
-    Flow, Handler, Handles, Message, Protocol, ServiceId,
-    MessageFilter, FilterAction,
+    Address, FilterAction, Flow, Handler, Handles, Message, MessageFilter, Protocol, ServiceId,
 };

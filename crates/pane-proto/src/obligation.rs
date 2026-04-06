@@ -95,7 +95,10 @@ pub struct CompletionReplyPort {
 }
 
 impl CompletionReplyPort {
-    pub fn channel() -> (CompletionReplyPort, mpsc::Receiver<Result<(), CompletionFailed>>) {
+    pub fn channel() -> (
+        CompletionReplyPort,
+        mpsc::Receiver<Result<(), CompletionFailed>>,
+    ) {
         let (tx, rx) = mpsc::channel();
         (CompletionReplyPort { tx: Some(tx) }, rx)
     }
@@ -314,7 +317,7 @@ mod tests {
 
         assert!(result.is_err());
         assert_eq!(rx.recv().unwrap(), Ok(42)); // reply arrived
-        // No second message — Drop found tx already taken
+                                                // No second message — Drop found tx already taken
         assert!(rx.try_recv().is_err());
     }
 }

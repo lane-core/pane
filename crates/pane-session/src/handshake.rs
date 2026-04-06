@@ -23,12 +23,13 @@
 //! (Plan 9 Rerror's explicitness) with typed structure (not Be's
 //! bare status_t integer).
 
-use serde::{Serialize, Deserialize};
 use pane_proto::ServiceId;
+use serde::{Deserialize, Serialize};
 
 /// The handshake protocol from the client's perspective.
 /// Send Hello, receive either Welcome (accepted) or Rejection (declined).
-pub type ClientHandshake = par::exchange::Send<Hello, par::exchange::Recv<Result<Welcome, Rejection>>>;
+pub type ClientHandshake =
+    par::exchange::Send<Hello, par::exchange::Recv<Result<Welcome, Rejection>>>;
 
 /// The handshake protocol from the server's perspective (dual).
 pub type ServerHandshake = par::Dual<ClientHandshake>;

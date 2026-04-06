@@ -47,7 +47,9 @@ mod tests {
     #[test]
     fn pane_entry_reads_attrs_from_snapshot() {
         let mut attrs = AttrSet::new();
-        attrs.add(AttrReader::new("status", |s: &StatusState| s.status.clone()));
+        attrs.add(AttrReader::new("status", |s: &StatusState| {
+            s.status.clone()
+        }));
         attrs.add(AttrReader::new("uptime", |s: &StatusState| s.uptime_secs));
 
         let entry = PaneEntry {
@@ -67,7 +69,9 @@ mod tests {
     #[test]
     fn pane_entry_reflects_state_updates() {
         let mut attrs = AttrSet::new();
-        attrs.add(AttrReader::new("status", |s: &StatusState| s.status.clone()));
+        attrs.add(AttrReader::new("status", |s: &StatusState| {
+            s.status.clone()
+        }));
 
         let mut entry = PaneEntry {
             id: 1,

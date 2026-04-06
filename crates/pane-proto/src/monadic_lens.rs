@@ -33,7 +33,10 @@ use std::fmt;
 #[derive(Debug, Clone, PartialEq)]
 pub enum Effect {
     /// Send a notification to a service.
-    Notify { target: &'static str, payload: String },
+    Notify {
+        target: &'static str,
+        payload: String,
+    },
     /// Update the pane's body content.
     SetContent(Vec<u8>),
 }
@@ -81,19 +84,14 @@ pub struct AttrReader<S> {
 }
 
 impl<S: 'static> AttrReader<S> {
-    pub fn new<A: fmt::Display + 'static>(
-        name: &'static str,
-        view: fn(&S) -> A,
-    ) -> Self {
+    pub fn new<A: fmt::Display + 'static>(name: &'static str, view: fn(&S) -> A) -> Self {
         AttrReader {
             name,
             reader: Box::new(move |s| view(s).to_string()),
         }
     }
 
-    pub fn from_monadic_lens<A: fmt::Display + 'static>(
-        lens: &MonadicLens<S, A>,
-    ) -> Self {
+    pub fn from_monadic_lens<A: fmt::Display + 'static>(lens: &MonadicLens<S, A>) -> Self {
         let view = lens.view;
         AttrReader {
             name: lens.name,
@@ -120,9 +118,7 @@ pub enum WriteError {
 }
 
 impl<S: 'static> AttrWriter<S> {
-    pub fn from_monadic_lens<A: 'static>(
-        lens: &MonadicLens<S, A>,
-    ) -> Self {
+    pub fn from_monadic_lens<A: 'static>(lens: &MonadicLens<S, A>) -> Self {
         let parse = lens.parse;
         let set = lens.set;
         AttrWriter {
@@ -147,13 +143,13 @@ pub struct AttrSet<S> {
 
 impl<S: 'static> AttrSet<S> {
     pub fn new() -> Self {
-        AttrSet { readers: vec![], writers: vec![] }
+        AttrSet {
+            readers: vec![],
+            writers: vec![],
+        }
     }
 
-    pub fn register_monadic_lens<A: fmt::Display + 'static>(
-        &mut self,
-        lens: &MonadicLens<S, A>,
-    ) {
+    pub fn register_monadic_lens<A: fmt::Display + 'static>(&mut self, lens: &MonadicLens<S, A>) {
         self.readers.push(AttrReader::from_monadic_lens(lens));
         self.writers.push(AttrWriter::from_monadic_lens(lens));
     }
@@ -163,13 +159,15 @@ impl<S: 'static> AttrSet<S> {
     }
 
     pub fn read(&self, name: &str, state: &S) -> Option<String> {
-        self.readers.iter()
+        self.readers
+            .iter()
             .find(|r| r.name == name)
             .map(|r| r.read(state))
     }
 
     pub fn write(&self, name: &str, state: &mut S, text: &str) -> Result<Vec<Effect>, WriteError> {
-        self.writers.iter()
+        self.writers
+            .iter()
             .find(|w| w.name == name)
             .ok_or_else(|| WriteError::ReadOnly)
             .and_then(|w| w.write(state, text))
@@ -182,11 +180,14 @@ impl<S: 'static> AttrSet<S> {
     /// Bulk read: all attributes from one snapshot as JSON.
     /// Values are strings (Display representation).
     pub fn to_json_str(&self, state: &S) -> String {
-        let mut entries: Vec<String> = self.readers.iter()
+        let mut entries: Vec<String> = self
+            .readers
+            .iter()
             .map(|r| {
                 let val = r.read(state);
                 // Escape the value for JSON string
-                let escaped = val.replace('\\', "\\\\")
+                let escaped = val
+                    .replace('\\', "\\\\")
                     .replace('"', "\\\"")
                     .replace('\n', "\\n");
                 format!("\"{}\":\"{}\"", r.name, escaped)
@@ -224,25 +225,18 @@ pub fn dispatch_ctl<S: 'static>(
     fallback: fn(&mut S, &str, &str) -> CtlResult,
 ) -> CtlResult {
     match attrs.find_writer(cmd) {
-        Some(writer) => {
-            match writer.write(state, args) {
-                Ok(effects) if effects.is_empty() => CtlResult::Pure,
-                Ok(effects) => CtlResult::WithEffects(effects),
-                Err(e) => CtlResult::Err(format!("{:?}", e)),
-            }
-        }
+        Some(writer) => match writer.write(state, args) {
+            Ok(effects) if effects.is_empty() => CtlResult::Pure,
+            Ok(effects) => CtlResult::WithEffects(effects),
+            Err(e) => CtlResult::Err(format!("{:?}", e)),
+        },
         None => fallback(state, cmd, args),
     }
 }
 
 /// Assert all three lens laws on a MonadicLens.
 /// Effects are ignored — the laws govern state.
-pub fn assert_monadic_lens_laws<S, A>(
-    lens: &MonadicLens<S, A>,
-    s: S,
-    a1: A,
-    a2: A,
-)
+pub fn assert_monadic_lens_laws<S, A>(lens: &MonadicLens<S, A>, s: S, a1: A, a2: A)
 where
     S: Clone + PartialEq + fmt::Debug,
     A: Clone + PartialEq + fmt::Debug,
@@ -257,8 +251,10 @@ where
     let mut s_putget = s.clone();
     let _ = (lens.set)(&mut s_putget, a1.clone());
     assert_eq!(
-        (lens.view)(&s_putget), a1,
-        "PutGet violated for lens '{}'", lens.name
+        (lens.view)(&s_putget),
+        a1,
+        "PutGet violated for lens '{}'",
+        lens.name
     );
 
     // PutPut: set(set(s, a1), a2) == set(s, a2)
@@ -306,7 +302,10 @@ mod tests {
         MonadicLens {
             name: "cursor",
             view: |s| s.cursor,
-            set: |s, v| { s.cursor = v; vec![] },
+            set: |s, v| {
+                s.cursor = v;
+                vec![]
+            },
             parse: |text| text.parse::<usize>().map_err(|e| e.to_string()),
         }
     }
@@ -418,11 +417,7 @@ mod tests {
 
     #[test]
     fn claim_2_law_harness_passes_for_lawful_lens() {
-        assert_monadic_lens_laws(
-            &cursor_lens(),
-            EditorState::new(),
-            10, 20,
-        );
+        assert_monadic_lens_laws(&cursor_lens(), EditorState::new(), 10, 20);
     }
 
     #[test]
@@ -432,7 +427,8 @@ mod tests {
         assert_monadic_lens_laws(
             &cursor_lens_dirty_bug(),
             EditorState::new(), // dirty starts false
-            10, 20,
+            10,
+            20,
         );
     }
 
@@ -450,7 +446,7 @@ mod tests {
     #[should_panic(expected = "GetPut violated")]
     fn claim_4_unconditional_side_effects_violate_getput() {
         let s = EditorState::new(); // has selection Some((2,5))
-        // buggy goto clears selection even when cursor doesn't change
+                                    // buggy goto clears selection even when cursor doesn't change
         assert_monadic_lens_laws(&goto_lens_buggy(), s, 10, 20);
     }
 
@@ -531,14 +527,27 @@ mod tests {
         // Values that survive Display → FromStr roundtrip:
         // integers-as-f64 and powers of 2 have exact representations.
         let exact_values: Vec<f64> = vec![
-            0.0, 1.0, -1.0, 2.0, 0.5, 0.25, 0.125,
-            1024.0, -0.0, f64::INFINITY, f64::NEG_INFINITY,
+            0.0,
+            1.0,
+            -1.0,
+            2.0,
+            0.5,
+            0.25,
+            0.125,
+            1024.0,
+            -0.0,
+            f64::INFINITY,
+            f64::NEG_INFINITY,
         ];
         for v in &exact_values {
             let s = v.to_string();
             let parsed: f64 = s.parse().unwrap();
-            assert_eq!(v.to_bits(), parsed.to_bits(),
-                "exact roundtrip failed for {}", v);
+            assert_eq!(
+                v.to_bits(),
+                parsed.to_bits(),
+                "exact roundtrip failed for {}",
+                v
+            );
         }
 
         // NaN: Display prints "NaN", FromStr parses it back, but
@@ -554,7 +563,7 @@ mod tests {
         let lossy_values: Vec<f64> = vec![
             0.1,
             0.2,
-            0.1 + 0.2,  // notoriously != 0.3
+            0.1 + 0.2, // notoriously != 0.3
             1.0_f64 / 3.0,
             std::f64::consts::PI,
             f64::MIN_POSITIVE,
@@ -570,8 +579,12 @@ mod tests {
             // "0.1" → 0.1_f64 → "0.1" works, but
             // "0.10" → 0.1_f64 → "0.1" does not preserve text.
             // This is a text-level PutGet issue, not a value-level one.
-            assert_eq!(v.to_bits(), parsed.to_bits(),
-                "value-level roundtrip unexpectedly failed for {}", v);
+            assert_eq!(
+                v.to_bits(),
+                parsed.to_bits(),
+                "value-level roundtrip unexpectedly failed for {}",
+                v
+            );
 
             // Demonstrate the text-level risk: a user writes "0.10"
             // and reads back "0.1". The VALUE is identical but the
@@ -582,8 +595,10 @@ mod tests {
         let input_text = "0.10";
         let value: f64 = input_text.parse().unwrap();
         let output_text = value.to_string();
-        assert_ne!(input_text, output_text,
-            "text-level roundtrip should differ for trailing-zero input");
+        assert_ne!(
+            input_text, output_text,
+            "text-level roundtrip should differ for trailing-zero input"
+        );
         assert_eq!(output_text, "0.1");
     }
 
@@ -601,10 +616,9 @@ mod tests {
         attrs.register_monadic_lens(&focus);
 
         // Also add a read-only attr
-        attrs.register_reader(AttrReader::new(
-            "buffer_length",
-            |s: &EditorState| s.buffer.len(),
-        ));
+        attrs.register_reader(AttrReader::new("buffer_length", |s: &EditorState| {
+            s.buffer.len()
+        }));
 
         let s = EditorState::new();
         let json = attrs.to_json_str(&s);
@@ -740,7 +754,10 @@ mod tests {
         let lens = cursor_lens();
         let reader = AttrReader::from_monadic_lens(&lens);
 
-        let s = EditorState { cursor: 42, ..EditorState::new() };
+        let s = EditorState {
+            cursor: 42,
+            ..EditorState::new()
+        };
 
         // AttrReader output == Display of MonadicLens view
         let via_reader = reader.read(&s);

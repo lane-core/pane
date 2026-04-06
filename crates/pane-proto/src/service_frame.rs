@@ -26,7 +26,7 @@
 //! (Handles<P> handlers, ReplyPort continuations) live at the
 //! endpoints, not in the frame.
 
-use serde::{Serialize, Deserialize};
+use serde::{Deserialize, Serialize};
 
 /// Wire envelope for service-channel messages (services 1..=254).
 ///

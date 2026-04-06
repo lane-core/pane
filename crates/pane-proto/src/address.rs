@@ -13,8 +13,8 @@
 //! by Rust's ownership — BMessenger could be both because kernel
 //! ports were globally addressable.
 
+use serde::{Deserialize, Serialize};
 use std::fmt;
-use serde::{Serialize, Deserialize};
 
 /// A resolved address for a pane. Lightweight value type.
 /// Copyable, serializable, sendable in protocol messages.
@@ -49,7 +49,10 @@ pub struct Address {
 impl Address {
     /// Address a pane on the local server (server_id = 0).
     pub fn local(pane_id: u64) -> Self {
-        Address { pane_id, server_id: 0 }
+        Address {
+            pane_id,
+            server_id: 0,
+        }
     }
 
     /// Address a pane on a remote server.
@@ -111,8 +114,8 @@ mod tests {
     #[test]
     fn address_is_copy() {
         let a = Address::local(42);
-        let b = a;  // Copy, not move
-        let c = a;  // a is still usable
+        let b = a; // Copy, not move
+        let c = a; // a is still usable
         assert_eq!(b, c);
     }
 

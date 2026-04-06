@@ -71,8 +71,18 @@ impl MemoryTransport {
         let (tx1, rx1) = std::sync::mpsc::channel();
         let (tx2, rx2) = std::sync::mpsc::channel();
         (
-            MemoryTransport { tx: tx1, rx: rx2, read_buf: Vec::new(), read_pos: 0 },
-            MemoryTransport { tx: tx2, rx: rx1, read_buf: Vec::new(), read_pos: 0 },
+            MemoryTransport {
+                tx: tx1,
+                rx: rx2,
+                read_buf: Vec::new(),
+                read_pos: 0,
+            },
+            MemoryTransport {
+                tx: tx2,
+                rx: rx1,
+                read_buf: Vec::new(),
+                read_pos: 0,
+            },
         )
     }
 }
@@ -211,7 +221,8 @@ impl TransportSplit for std::os::unix::net::UnixStream {
     type Reader = std::os::unix::net::UnixStream;
     type Writer = std::os::unix::net::UnixStream;
     fn into_split(self) -> (Self::Reader, Self::Writer) {
-        let writer = self.try_clone()
+        let writer = self
+            .try_clone()
             .expect("UnixStream::try_clone failed during transport split");
         (self, writer)
     }

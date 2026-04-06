@@ -1,14 +1,14 @@
 //! Wire protocol framing for pane sessions.
 //!
-//! Frame format: `[length: u32 LE][service: u8][payload: postcard bytes]`
+//! Frame format: `[length: u32 LE][service: u16 LE][payload: postcard bytes]`
 //!
-//! The length field counts the service byte plus payload — it does not
-//! include the 4-byte length prefix itself. Minimum valid length is 1
-//! (service byte only, empty payload).
+//! The length field counts the service field (2 bytes) plus payload —
+//! it does not include the 4-byte length prefix itself. Minimum valid
+//! length is 2 (service field only, empty payload).
 //!
 //! Service 0 is the control protocol, always known from construction.
-//! Service 0xFF is reserved for ProtocolAbort and cannot be registered
-//! or sent via write_frame.
+//! Service 0xFFFF is reserved for ProtocolAbort and cannot be
+//! registered or sent via write_frame.
 //!
 //! Design heritage: Plan 9 9P framing: [size: u32][type: u8][tag: u16]
 //! (intro(5), reference/plan9/man/5/0intro:91-100) — similar
@@ -27,7 +27,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Frame {
     /// A normal message carrying a service discriminant and payload.
-    Message { service: u8, payload: Vec<u8> },
+    Message { service: u16, payload: Vec<u8> },
     /// ProtocolAbort — the peer is tearing down the connection.
     Abort,
 }
@@ -46,7 +46,7 @@ pub enum FrameError {
     /// Declared length exceeds the negotiated maximum.
     Oversized { declared: u32, limit: u32 },
     /// Service discriminant not registered with the codec.
-    UnknownService(u8),
+    UnknownService(u16),
     /// Underlying transport failed (includes EOF).
     Transport(io::Error),
     /// Declared length is zero — no room for even the service byte.
@@ -62,13 +62,13 @@ impl std::fmt::Display for FrameError {
                 write!(f, "frame too large: {declared} bytes (limit {limit})")
             }
             FrameError::UnknownService(s) => {
-                write!(f, "unknown service discriminant: 0x{s:02X}")
+                write!(f, "unknown service discriminant: 0x{s:04X}")
             }
             FrameError::Transport(e) => write!(f, "transport error: {e}"),
             FrameError::TooShort { declared } => {
                 write!(
                     f,
-                    "frame too short: declared length {declared}, minimum is 1"
+                    "frame too short: declared length {declared}, minimum is 2"
                 )
             }
             FrameError::Poisoned => write!(f, "codec poisoned by prior error"),
@@ -97,13 +97,17 @@ impl From<io::Error> for FrameError {
 /// Length-prefixed frame codec with service validation.
 ///
 /// Tracks which service discriminants are valid for this connection.
-/// Service 0 (control) is always known. Service 0xFF is reserved for
-/// ProtocolAbort and cannot be registered.
+/// Service 0 (control) is always known. Service 0xFFFF is reserved
+/// for ProtocolAbort and cannot be registered.
 pub struct FrameCodec {
     max_message_size: u32,
-    /// Indexed 0..=254. Index i corresponds to service i.
-    /// 0xFF is not representable — it's handled as a special case.
-    known_services: [bool; 255],
+    /// Services registered as valid. In permissive mode this is
+    /// ignored — the `permissive` flag bypasses the check.
+    known_services: std::collections::HashSet<u16>,
+    /// When true, all service discriminants (except 0xFFFF) are
+    /// accepted. Used server-side where session_ids are allocated
+    /// dynamically by DeclareInterest.
+    permissive: bool,
     /// Set on any read error. All subsequent read_frame calls
     /// return Poisoned without touching the stream. AtomicBool
     /// because the codec is shared via Arc between reader and
@@ -118,11 +122,12 @@ impl FrameCodec {
     /// Service 0 (control) is registered from construction.
     /// Client-side: only registered services are accepted.
     pub fn new(max_message_size: u32) -> Self {
-        let mut known_services = [false; 255];
-        known_services[0] = true;
+        let mut known_services = std::collections::HashSet::new();
+        known_services.insert(0);
         FrameCodec {
             max_message_size,
             known_services,
+            permissive: false,
             poisoned: AtomicBool::new(false),
         }
     }
@@ -140,7 +145,8 @@ impl FrameCodec {
     pub fn permissive(max_message_size: u32) -> Self {
         FrameCodec {
             max_message_size,
-            known_services: [true; 255],
+            known_services: std::collections::HashSet::new(),
+            permissive: true,
             poisoned: AtomicBool::new(false),
         }
     }
@@ -157,19 +163,19 @@ impl FrameCodec {
     ///
     /// # Panics
     ///
-    /// Panics if `service` is 0xFF (reserved for ProtocolAbort).
-    pub fn register_service(&mut self, service: u8) {
+    /// Panics if `service` is 0xFFFF (reserved for ProtocolAbort).
+    pub fn register_service(&mut self, service: u16) {
         assert!(
-            service != 0xFF,
-            "service 0xFF is reserved for ProtocolAbort"
+            service != 0xFFFF,
+            "service 0xFFFF is reserved for ProtocolAbort"
         );
-        self.known_services[service as usize] = true;
+        self.known_services.insert(service);
     }
 
     /// Read one frame from the wire.
     ///
     /// Blocks until a complete frame is available or the transport fails.
-    /// Returns `Frame::Abort` if the service byte is 0xFF.
+    /// Returns `Frame::Abort` if the service field is 0xFFFF.
     pub fn read_frame(&self, reader: &mut impl Read) -> Result<Frame, FrameError> {
         if self.poisoned.load(Ordering::Relaxed) {
             return Err(FrameError::Poisoned);
@@ -188,8 +194,8 @@ impl FrameCodec {
         reader.read_exact(&mut len_buf)?;
         let length = u32::from_le_bytes(len_buf);
 
-        // Step 2: validate length
-        if length < 1 {
+        // Step 2: validate length (minimum 2 for the service field)
+        if length < 2 {
             return Err(FrameError::TooShort { declared: length });
         }
         if length > self.max_message_size {
@@ -199,24 +205,24 @@ impl FrameCodec {
             });
         }
 
-        // Step 3: read body (service byte + payload)
+        // Step 3: read body (service u16 LE + payload)
         let mut body = vec![0u8; length as usize];
         reader.read_exact(&mut body)?;
 
-        let service = body[0];
+        let service = u16::from_le_bytes([body[0], body[1]]);
 
         // Step 4: check for abort
-        if service == 0xFF {
+        if service == 0xFFFF {
             return Ok(Frame::Abort);
         }
 
         // Step 5: validate service
-        if !self.known_services[service as usize] {
+        if !self.permissive && !self.known_services.contains(&service) {
             return Err(FrameError::UnknownService(service));
         }
 
         // Step 6: extract payload
-        let payload = body[1..].to_vec();
+        let payload = body[2..].to_vec();
         Ok(Frame::Message { service, payload })
     }
 
@@ -224,21 +230,21 @@ impl FrameCodec {
     ///
     /// # Panics
     ///
-    /// Panics if `service` is 0xFF (reserved for ProtocolAbort).
+    /// Panics if `service` is 0xFFFF (reserved for ProtocolAbort).
     pub fn write_frame(
         &self,
         writer: &mut impl Write,
-        service: u8,
+        service: u16,
         payload: &[u8],
     ) -> io::Result<()> {
         assert!(
-            service != 0xFF,
-            "service 0xFF is reserved for ProtocolAbort"
+            service != 0xFFFF,
+            "service 0xFFFF is reserved for ProtocolAbort"
         );
 
-        let length = 1u32 + payload.len() as u32;
+        let length = 2u32 + payload.len() as u32;
         writer.write_all(&length.to_le_bytes())?;
-        writer.write_all(&[service])?;
+        writer.write_all(&service.to_le_bytes())?;
         writer.write_all(payload)?;
         Ok(())
     }
@@ -246,8 +252,8 @@ impl FrameCodec {
     /// Write a ProtocolAbort frame. Best-effort — does not panic on
     /// write failure.
     pub fn write_abort(&self, writer: &mut impl Write) -> io::Result<()> {
-        writer.write_all(&1u32.to_le_bytes())?;
-        writer.write_all(&[0xFF])?;
+        writer.write_all(&2u32.to_le_bytes())?;
+        writer.write_all(&0xFFFFu16.to_le_bytes())?;
         Ok(())
     }
 }
@@ -287,7 +293,7 @@ mod tests {
         let codec = FrameCodec::new(1024);
         let mut buf = Vec::new();
         codec.write_abort(&mut buf).unwrap();
-        assert_eq!(buf, vec![0x01, 0x00, 0x00, 0x00, 0xFF]);
+        assert_eq!(buf, vec![0x02, 0x00, 0x00, 0x00, 0xFF, 0xFF]);
     }
 
     // --- I11: ProtocolAbort checked at framing layer ---
@@ -295,7 +301,8 @@ mod tests {
     #[test]
     fn read_frame_detects_abort() {
         let codec = FrameCodec::new(1024);
-        let data = vec![0x01, 0x00, 0x00, 0x00, 0xFF];
+        // length=2, service=0xFFFF LE
+        let data = vec![0x02, 0x00, 0x00, 0x00, 0xFF, 0xFF];
         let mut cursor = Cursor::new(data);
         let frame = codec.read_frame(&mut cursor).unwrap();
         assert_eq!(frame, Frame::Abort);
@@ -304,8 +311,8 @@ mod tests {
     #[test]
     fn abort_with_trailing_bytes_still_aborts() {
         let codec = FrameCodec::new(1024);
-        // length=3, service=0xFF, two garbage bytes
-        let data = vec![0x03, 0x00, 0x00, 0x00, 0xFF, 0xAA, 0xBB];
+        // length=4, service=0xFFFF, two garbage bytes
+        let data = vec![0x04, 0x00, 0x00, 0x00, 0xFF, 0xFF, 0xAA, 0xBB];
         let mut cursor = Cursor::new(data);
         let frame = codec.read_frame(&mut cursor).unwrap();
         assert_eq!(frame, Frame::Abort);
@@ -313,17 +320,17 @@ mod tests {
 
     #[test]
     #[should_panic(expected = "reserved for ProtocolAbort")]
-    fn service_0xff_cannot_be_registered() {
+    fn service_0xffff_cannot_be_registered() {
         let mut codec = FrameCodec::new(1024);
-        codec.register_service(0xFF);
+        codec.register_service(0xFFFF);
     }
 
     #[test]
     #[should_panic(expected = "reserved for ProtocolAbort")]
-    fn write_frame_rejects_service_0xff() {
+    fn write_frame_rejects_service_0xffff() {
         let codec = FrameCodec::new(1024);
         let mut buf = Vec::new();
-        codec.write_frame(&mut buf, 0xFF, b"hello").unwrap();
+        codec.write_frame(&mut buf, 0xFFFF, b"hello").unwrap();
     }
 
     // --- I12: Unknown service discriminant ---
@@ -331,8 +338,8 @@ mod tests {
     #[test]
     fn unknown_service_is_connection_error() {
         let codec = FrameCodec::new(1024);
-        // service=7, not registered
-        let data = vec![0x03, 0x00, 0x00, 0x00, 0x07, 0xAA, 0xBB];
+        // service=7 (u16 LE: 0x07,0x00), payload=[0xAA]
+        let data = vec![0x03, 0x00, 0x00, 0x00, 0x07, 0x00, 0xAA];
         let mut cursor = Cursor::new(data);
         let result = codec.read_frame(&mut cursor);
         match result {
@@ -345,8 +352,8 @@ mod tests {
     fn known_service_accepted() {
         let mut codec = FrameCodec::new(1024);
         codec.register_service(5);
-        // service=5, payload=[0x42]
-        let data = vec![0x02, 0x00, 0x00, 0x00, 0x05, 0x42];
+        // service=5 (u16 LE: 0x05,0x00), payload=[0x42]
+        let data = vec![0x03, 0x00, 0x00, 0x00, 0x05, 0x00, 0x42];
         let mut cursor = Cursor::new(data);
         let frame = codec.read_frame(&mut cursor).unwrap();
         assert_eq!(
@@ -361,8 +368,8 @@ mod tests {
     #[test]
     fn control_service_always_known() {
         let codec = FrameCodec::new(1024);
-        // service=0, payload=[0x01, 0x02]
-        let data = vec![0x03, 0x00, 0x00, 0x00, 0x00, 0x01, 0x02];
+        // service=0 (u16 LE: 0x00,0x00), payload=[0x01, 0x02]
+        let data = vec![0x04, 0x00, 0x00, 0x00, 0x00, 0x00, 0x01, 0x02];
         let mut cursor = Cursor::new(data);
         let frame = codec.read_frame(&mut cursor).unwrap();
         assert_eq!(
@@ -380,8 +387,8 @@ mod tests {
         // This test documents that once registered, a service stays known.
         let mut codec = FrameCodec::new(1024);
         codec.register_service(10);
-        // No way to unregister; just verify it stays accepted.
-        let data = vec![0x01, 0x00, 0x00, 0x00, 0x0A];
+        // service=10 (u16 LE: 0x0A,0x00), empty payload
+        let data = vec![0x02, 0x00, 0x00, 0x00, 0x0A, 0x00];
         let mut cursor = Cursor::new(data);
         let frame = codec.read_frame(&mut cursor).unwrap();
         assert_eq!(
@@ -416,9 +423,9 @@ mod tests {
 
     #[test]
     fn frame_at_exact_limit_accepted() {
-        let codec = FrameCodec::new(3);
-        // length=3 (service + 2 payload bytes), limit=3
-        let data = vec![0x03, 0x00, 0x00, 0x00, 0x00, 0xAA, 0xBB];
+        let codec = FrameCodec::new(4);
+        // length=4 (2-byte service + 2 payload bytes), limit=4
+        let data = vec![0x04, 0x00, 0x00, 0x00, 0x00, 0x00, 0xAA, 0xBB];
         let mut cursor = Cursor::new(data);
         let frame = codec.read_frame(&mut cursor).unwrap();
         assert_eq!(
@@ -438,6 +445,19 @@ mod tests {
         let result = codec.read_frame(&mut cursor);
         match result {
             Err(FrameError::TooShort { declared: 0 }) => {}
+            other => panic!("expected TooShort, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn length_one_frame_rejected() {
+        // length=1 is too short for the 2-byte service field
+        let codec = FrameCodec::new(1024);
+        let data = vec![0x01, 0x00, 0x00, 0x00, 0x00];
+        let mut cursor = Cursor::new(data);
+        let result = codec.read_frame(&mut cursor);
+        match result {
+            Err(FrameError::TooShort { declared: 1 }) => {}
             other => panic!("expected TooShort, got {other:?}"),
         }
     }
@@ -500,8 +520,8 @@ mod tests {
     #[test]
     fn eof_during_body_is_transport_error() {
         let codec = FrameCodec::new(1024);
-        // length=10, but only 3 body bytes follow
-        let data = vec![0x0A, 0x00, 0x00, 0x00, 0x00, 0x01, 0x02];
+        // length=10, but only 4 body bytes follow (need 10)
+        let data = vec![0x0A, 0x00, 0x00, 0x00, 0x00, 0x00, 0x01, 0x02];
         let mut cursor = Cursor::new(data);
         let result = codec.read_frame(&mut cursor);
         match result {
@@ -513,33 +533,33 @@ mod tests {
     // --- Boundary and sequencing ---
 
     #[test]
-    fn service_254_boundary() {
-        // 0xFE is the maximum assignable service discriminant.
-        // 0xFF is reserved for ProtocolAbort. This test verifies
-        // the boundary: 254 works, 255 would be abort.
+    fn service_65534_boundary() {
+        // 0xFFFE is the maximum assignable service discriminant.
+        // 0xFFFF is reserved for ProtocolAbort. This test verifies
+        // the boundary: 65534 works, 65535 would be abort.
         let mut codec = FrameCodec::new(1024);
-        codec.register_service(254);
+        codec.register_service(0xFFFE);
 
         let payload = b"boundary";
         let mut buf = Vec::new();
-        codec.write_frame(&mut buf, 254, payload).unwrap();
+        codec.write_frame(&mut buf, 0xFFFE, payload).unwrap();
 
         let mut cursor = Cursor::new(buf);
         let frame = codec.read_frame(&mut cursor).unwrap();
         assert_eq!(
             frame,
             Frame::Message {
-                service: 254,
+                service: 0xFFFE,
                 payload: payload.to_vec(),
             }
         );
     }
 
     #[test]
-    fn payload_containing_0xff_is_not_abort() {
-        // 0xFF in the payload must not trigger abort detection.
-        // Abort is identified solely by the service byte (first
-        // byte after the length prefix), not by payload contents.
+    fn payload_containing_0xffff_is_not_abort() {
+        // 0xFF bytes in the payload must not trigger abort detection.
+        // Abort is identified solely by the service field (first two
+        // bytes after the length prefix), not by payload contents.
         let codec = FrameCodec::new(1024);
 
         let payload = vec![0xFF, 0xFF, 0xFF];

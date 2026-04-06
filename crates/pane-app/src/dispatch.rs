@@ -36,7 +36,7 @@ pub struct Token(pub u64);
 /// Type-erased at storage time; the callbacks capture the
 /// concrete types via closure.
 pub(crate) struct DispatchEntry<H> {
-    pub session_id: u8,
+    pub session_id: u16,
     pub on_reply:
         Box<dyn FnOnce(&mut H, &crate::Messenger, Box<dyn std::any::Any + Send>) -> Flow + Send>,
     pub on_failed: Box<dyn FnOnce(&mut H, &crate::Messenger) -> Flow + Send>,
@@ -59,11 +59,7 @@ impl<H> Dispatch<H> {
 
     /// Install a dispatch entry (E-Suspend analogy).
     /// Returns the Token for cancellation.
-    pub(crate) fn insert(
-        &mut self,
-        connection: PeerScope,
-        entry: DispatchEntry<H>,
-    ) -> Token {
+    pub(crate) fn insert(&mut self, connection: PeerScope, entry: DispatchEntry<H>) -> Token {
         let token = Token(self.next_token);
         self.next_token += 1;
         self.entries.insert((connection, token), entry);
@@ -127,7 +123,7 @@ impl<H> Dispatch<H> {
     /// outstanding requests for that session will never get replies.
     pub(crate) fn fail_session(
         &mut self,
-        session_id: u8,
+        session_id: u16,
         handler: &mut H,
         messenger: &crate::Messenger,
     ) {

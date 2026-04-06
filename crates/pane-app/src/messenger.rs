@@ -7,8 +7,8 @@
 //! Plan 9: like a fid — resolution happens once at open time;
 //! the result is a direct binding, not a name.
 
-use std::marker::PhantomData;
 use pane_proto::Address;
+use std::marker::PhantomData;
 
 /// Scoped handle to a pane. The pane ID is baked in.
 /// The handler receives this from the looper and uses it to
@@ -44,7 +44,9 @@ impl Messenger {
     /// whose Drop cancels the timer.
     pub fn set_pulse_rate(&self, _duration: std::time::Duration) -> TimerToken {
         // TODO: register timer with looper
-        TimerToken { _private: PhantomData }
+        TimerToken {
+            _private: PhantomData,
+        }
     }
 }
 

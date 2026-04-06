@@ -8,13 +8,13 @@ use std::sync::Arc;
 use pane_proto::control::ControlMessage;
 use pane_proto::protocol::ServiceId;
 use pane_proto::service_frame::ServiceFrame;
+use pane_session::bridge::HANDSHAKE_MAX_MESSAGE_SIZE;
 use pane_session::frame::{Frame, FrameCodec};
-use pane_session::handshake::{Hello, Welcome, Rejection, ServiceProvision};
+use pane_session::handshake::{Hello, Rejection, ServiceProvision, Welcome};
 use pane_session::server::ProtocolServer;
 use pane_session::transport::MemoryTransport;
-use pane_session::bridge::HANDSHAKE_MAX_MESSAGE_SIZE;
 
-use serde::{Serialize, Deserialize};
+use serde::{Deserialize, Serialize};
 
 fn echo_service_id() -> ServiceId {
     ServiceId::new("com.pane.echo")
@@ -42,7 +42,10 @@ impl ClientConn {
 
         let frame = codec.read_frame(&mut transport).unwrap();
         let payload = match frame {
-            Frame::Message { service: 0, payload } => payload,
+            Frame::Message {
+                service: 0,
+                payload,
+            } => payload,
             other => panic!("unexpected frame: {other:?}"),
         };
         let decision: Result<Welcome, Rejection> = postcard::from_bytes(&payload).unwrap();
@@ -55,14 +58,18 @@ impl ClientConn {
 
     fn send_control(&mut self, msg: &ControlMessage) {
         let bytes = postcard::to_allocvec(msg).unwrap();
-        self.codec.write_frame(&mut self.transport, 0, &bytes).unwrap();
+        self.codec
+            .write_frame(&mut self.transport, 0, &bytes)
+            .unwrap();
     }
 
     fn read_control(&mut self) -> ControlMessage {
         let frame = self.codec.read_frame(&mut self.transport).unwrap();
         match frame {
-            Frame::Message { service: 0, payload } =>
-                postcard::from_bytes(&payload).unwrap(),
+            Frame::Message {
+                service: 0,
+                payload,
+            } => postcard::from_bytes(&payload).unwrap(),
             other => panic!("expected Control, got {other:?}"),
         }
     }
@@ -79,16 +86,18 @@ impl ClientConn {
         }
     }
 
-    fn register_session(&mut self, session_id: u8) {
+    fn register_session(&mut self, session_id: u16) {
         self.codec.register_service(session_id);
     }
 
-    fn send_service(&mut self, session_id: u8, frame: &ServiceFrame) {
+    fn send_service(&mut self, session_id: u16, frame: &ServiceFrame) {
         let bytes = postcard::to_allocvec(frame).unwrap();
-        self.codec.write_frame(&mut self.transport, session_id, &bytes).unwrap();
+        self.codec
+            .write_frame(&mut self.transport, session_id, &bytes)
+            .unwrap();
     }
 
-    fn read_service(&mut self) -> (u8, ServiceFrame) {
+    fn read_service(&mut self) -> (u16, ServiceFrame) {
         let frame = self.codec.read_frame(&mut self.transport).unwrap();
         match frame {
             Frame::Message { service, payload } if service != 0 => {
@@ -124,12 +133,18 @@ fn two_pane_echo_roundtrip() {
     let (b_client, b_server) = MemoryTransport::pair();
     let accept_b = accept_on_thread(&server, b_server);
 
-    let (mut pane_b, _) = ClientConn::connect(b_client, Hello {
-        version: 1,
-        max_message_size: 16 * 1024 * 1024,
-        interests: vec![],
-        provides: vec![ServiceProvision { service: echo_id, version: 1 }],
-    });
+    let (mut pane_b, _) = ClientConn::connect(
+        b_client,
+        Hello {
+            version: 1,
+            max_message_size: 16 * 1024 * 1024,
+            interests: vec![],
+            provides: vec![ServiceProvision {
+                service: echo_id,
+                version: 1,
+            }],
+        },
+    );
     let conn_b = accept_b.join().unwrap();
     pane_b.expect_ready();
 
@@ -137,12 +152,15 @@ fn two_pane_echo_roundtrip() {
     let (a_client, a_server) = MemoryTransport::pair();
     let accept_a = accept_on_thread(&server, a_server);
 
-    let (mut pane_a, _) = ClientConn::connect(a_client, Hello {
-        version: 1,
-        max_message_size: 16 * 1024 * 1024,
-        interests: vec![],
-        provides: vec![],
-    });
+    let (mut pane_a, _) = ClientConn::connect(
+        a_client,
+        Hello {
+            version: 1,
+            max_message_size: 16 * 1024 * 1024,
+            interests: vec![],
+            provides: vec![],
+        },
+    );
     let conn_a = accept_a.join().unwrap();
     pane_a.expect_ready();
 
@@ -168,7 +186,13 @@ fn two_pane_echo_roundtrip() {
     // -- Request/Reply --
     let ping = EchoMessage::Ping("hello".into());
     let inner = postcard::to_allocvec(&ping).unwrap();
-    pane_a.send_service(a_session, &ServiceFrame::Request { token: 42, payload: inner });
+    pane_a.send_service(
+        a_session,
+        &ServiceFrame::Request {
+            token: 42,
+            payload: inner,
+        },
+    );
 
     let (recv_session, recv_frame) = pane_b.read_service();
     assert_eq!(recv_session, b_session);
@@ -180,7 +204,13 @@ fn two_pane_echo_roundtrip() {
 
             let pong = EchoMessage::Pong("hello".into());
             let reply_bytes = postcard::to_allocvec(&pong).unwrap();
-            pane_b.send_service(b_session, &ServiceFrame::Reply { token, payload: reply_bytes });
+            pane_b.send_service(
+                b_session,
+                &ServiceFrame::Reply {
+                    token,
+                    payload: reply_bytes,
+                },
+            );
         }
         other => panic!("expected Request, got {other:?}"),
     }
@@ -213,24 +243,33 @@ fn connection_drop_delivers_service_teardown_to_peer() {
     // Pane B: provider
     let (b_client, b_server) = MemoryTransport::pair();
     let accept_b = accept_on_thread(&server, b_server);
-    let (mut pane_b, _) = ClientConn::connect(b_client, Hello {
-        version: 1,
-        max_message_size: 16 * 1024 * 1024,
-        interests: vec![],
-        provides: vec![ServiceProvision { service: echo_id, version: 1 }],
-    });
+    let (mut pane_b, _) = ClientConn::connect(
+        b_client,
+        Hello {
+            version: 1,
+            max_message_size: 16 * 1024 * 1024,
+            interests: vec![],
+            provides: vec![ServiceProvision {
+                service: echo_id,
+                version: 1,
+            }],
+        },
+    );
     let conn_b = accept_b.join().unwrap();
     pane_b.expect_ready();
 
     // Pane A: consumer
     let (a_client, a_server) = MemoryTransport::pair();
     let accept_a = accept_on_thread(&server, a_server);
-    let (mut pane_a, _) = ClientConn::connect(a_client, Hello {
-        version: 1,
-        max_message_size: 16 * 1024 * 1024,
-        interests: vec![],
-        provides: vec![],
-    });
+    let (mut pane_a, _) = ClientConn::connect(
+        a_client,
+        Hello {
+            version: 1,
+            max_message_size: 16 * 1024 * 1024,
+            interests: vec![],
+            provides: vec![],
+        },
+    );
     let conn_a = accept_a.join().unwrap();
     pane_a.expect_ready();
 
@@ -256,7 +295,10 @@ fn connection_drop_delivers_service_teardown_to_peer() {
     let msg = pane_b.read_control();
     match msg {
         ControlMessage::ServiceTeardown { reason, .. } => {
-            assert!(matches!(reason, pane_proto::control::TeardownReason::ConnectionLost));
+            assert!(matches!(
+                reason,
+                pane_proto::control::TeardownReason::ConnectionLost
+            ));
         }
         other => panic!("expected ServiceTeardown, got {other:?}"),
     }
@@ -275,12 +317,18 @@ fn self_provide_interest_declined() {
     // Pane A provides echo AND tries to consume echo
     let (a_client, a_server) = MemoryTransport::pair();
     let accept_a = accept_on_thread(&server, a_server);
-    let (mut pane_a, _) = ClientConn::connect(a_client, Hello {
-        version: 1,
-        max_message_size: 16 * 1024 * 1024,
-        interests: vec![],
-        provides: vec![ServiceProvision { service: echo_id, version: 1 }],
-    });
+    let (mut pane_a, _) = ClientConn::connect(
+        a_client,
+        Hello {
+            version: 1,
+            max_message_size: 16 * 1024 * 1024,
+            interests: vec![],
+            provides: vec![ServiceProvision {
+                service: echo_id,
+                version: 1,
+            }],
+        },
+    );
     let conn_a = accept_a.join().unwrap();
     pane_a.expect_ready();
 
@@ -307,12 +355,15 @@ fn declare_interest_no_provider_declined() {
     let (a_client, a_server) = MemoryTransport::pair();
     let accept_a = accept_on_thread(&server, a_server);
 
-    let (mut pane_a, _) = ClientConn::connect(a_client, Hello {
-        version: 1,
-        max_message_size: 16 * 1024 * 1024,
-        interests: vec![],
-        provides: vec![],
-    });
+    let (mut pane_a, _) = ClientConn::connect(
+        a_client,
+        Hello {
+            version: 1,
+            max_message_size: 16 * 1024 * 1024,
+            interests: vec![],
+            provides: vec![],
+        },
+    );
     let conn_a = accept_a.join().unwrap();
     pane_a.expect_ready();
 
@@ -323,7 +374,10 @@ fn declare_interest_no_provider_declined() {
 
     match pane_a.read_control() {
         ControlMessage::InterestDeclined { reason, .. } => {
-            assert!(matches!(reason, pane_proto::control::DeclineReason::ServiceUnknown));
+            assert!(matches!(
+                reason,
+                pane_proto::control::DeclineReason::ServiceUnknown
+            ));
         }
         other => panic!("expected InterestDeclined, got {other:?}"),
     }
@@ -339,23 +393,32 @@ fn notification_round_trip() {
 
     let (b_client, b_server) = MemoryTransport::pair();
     let accept_b = accept_on_thread(&server, b_server);
-    let (mut pane_b, _) = ClientConn::connect(b_client, Hello {
-        version: 1,
-        max_message_size: 16 * 1024 * 1024,
-        interests: vec![],
-        provides: vec![ServiceProvision { service: echo_id, version: 1 }],
-    });
+    let (mut pane_b, _) = ClientConn::connect(
+        b_client,
+        Hello {
+            version: 1,
+            max_message_size: 16 * 1024 * 1024,
+            interests: vec![],
+            provides: vec![ServiceProvision {
+                service: echo_id,
+                version: 1,
+            }],
+        },
+    );
     let conn_b = accept_b.join().unwrap();
     pane_b.expect_ready();
 
     let (a_client, a_server) = MemoryTransport::pair();
     let accept_a = accept_on_thread(&server, a_server);
-    let (mut pane_a, _) = ClientConn::connect(a_client, Hello {
-        version: 1,
-        max_message_size: 16 * 1024 * 1024,
-        interests: vec![],
-        provides: vec![],
-    });
+    let (mut pane_a, _) = ClientConn::connect(
+        a_client,
+        Hello {
+            version: 1,
+            max_message_size: 16 * 1024 * 1024,
+            interests: vec![],
+            provides: vec![],
+        },
+    );
     let conn_a = accept_a.join().unwrap();
     pane_a.expect_ready();
 

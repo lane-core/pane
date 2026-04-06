@@ -22,9 +22,9 @@
 //! negotiation) as enum variants — the type system groups related
 //! messages, an improvement over both flat dispatch tables.
 
-use serde::{Serialize, Deserialize};
-use crate::protocols::lifecycle::LifecycleMessage;
 use crate::protocol::ServiceId;
+use crate::protocols::lifecycle::LifecycleMessage;
+use serde::{Deserialize, Serialize};
 
 /// Wire service 0 envelope. Postcard-encoded.
 ///
@@ -44,7 +44,7 @@ pub enum ControlMessage {
     /// Service negotiation: server accepts.
     InterestAccepted {
         service_uuid: uuid::Uuid,
-        session_id: u8,
+        session_id: u16,
         version: u32,
     },
     /// Service negotiation: server declines.
@@ -54,17 +54,13 @@ pub enum ControlMessage {
     },
     /// Server tears down a service.
     ServiceTeardown {
-        session_id: u8,
+        session_id: u16,
         reason: TeardownReason,
     },
     /// Client revokes interest in a service.
-    RevokeInterest {
-        session_id: u8,
-    },
+    RevokeInterest { session_id: u16 },
     /// Advisory request cancellation (Tflush equivalent).
-    Cancel {
-        token: u64,
-    },
+    Cancel { token: u64 },
 }
 
 /// Why the server declined a service interest.
@@ -75,7 +71,7 @@ pub enum DeclineReason {
     ServiceUnknown,
     /// The requesting pane provides this service itself.
     SelfProvide,
-    /// No session_ids available (255 limit per connection).
+    /// No session_ids available (65534 limit per connection).
     SessionExhausted,
 }
 
@@ -94,7 +90,10 @@ mod tests {
     #[test]
     fn construct_lifecycle() {
         let msg = ControlMessage::Lifecycle(LifecycleMessage::Ready);
-        assert!(matches!(msg, ControlMessage::Lifecycle(LifecycleMessage::Ready)));
+        assert!(matches!(
+            msg,
+            ControlMessage::Lifecycle(LifecycleMessage::Ready)
+        ));
     }
 
     #[test]
@@ -103,7 +102,13 @@ mod tests {
             service: ServiceId::new("com.pane.clipboard"),
             expected_version: 1,
         };
-        assert!(matches!(msg, ControlMessage::DeclareInterest { expected_version: 1, .. }));
+        assert!(matches!(
+            msg,
+            ControlMessage::DeclareInterest {
+                expected_version: 1,
+                ..
+            }
+        ));
     }
 
     #[test]
@@ -113,7 +118,10 @@ mod tests {
             session_id: 3,
             version: 1,
         };
-        assert!(matches!(msg, ControlMessage::InterestAccepted { session_id: 3, .. }));
+        assert!(matches!(
+            msg,
+            ControlMessage::InterestAccepted { session_id: 3, .. }
+        ));
     }
 
     #[test]
@@ -131,13 +139,19 @@ mod tests {
             session_id: 1,
             reason: TeardownReason::ConnectionLost,
         };
-        assert!(matches!(msg, ControlMessage::ServiceTeardown { session_id: 1, .. }));
+        assert!(matches!(
+            msg,
+            ControlMessage::ServiceTeardown { session_id: 1, .. }
+        ));
     }
 
     #[test]
     fn construct_revoke_interest() {
         let msg = ControlMessage::RevokeInterest { session_id: 5 };
-        assert!(matches!(msg, ControlMessage::RevokeInterest { session_id: 5 }));
+        assert!(matches!(
+            msg,
+            ControlMessage::RevokeInterest { session_id: 5 }
+        ));
     }
 
     #[test]
@@ -151,7 +165,10 @@ mod tests {
         let msg = ControlMessage::Lifecycle(LifecycleMessage::Pulse);
         let bytes = postcard::to_allocvec(&msg).expect("serialize");
         let decoded: ControlMessage = postcard::from_bytes(&bytes).expect("deserialize");
-        assert!(matches!(decoded, ControlMessage::Lifecycle(LifecycleMessage::Pulse)));
+        assert!(matches!(
+            decoded,
+            ControlMessage::Lifecycle(LifecycleMessage::Pulse)
+        ));
     }
 
     #[test]
@@ -163,7 +180,10 @@ mod tests {
         let bytes = postcard::to_allocvec(&msg).expect("serialize");
         let decoded: ControlMessage = postcard::from_bytes(&bytes).expect("deserialize");
         match decoded {
-            ControlMessage::DeclareInterest { service, expected_version } => {
+            ControlMessage::DeclareInterest {
+                service,
+                expected_version,
+            } => {
                 // UUID survives roundtrip; name becomes "<unknown>" (wire format)
                 assert_eq!(service.uuid, ServiceId::new("com.pane.display").uuid);
                 assert_eq!(expected_version, 2);
@@ -183,7 +203,11 @@ mod tests {
         let bytes = postcard::to_allocvec(&msg).expect("serialize");
         let decoded: ControlMessage = postcard::from_bytes(&bytes).expect("deserialize");
         match decoded {
-            ControlMessage::InterestAccepted { service_uuid, session_id, version } => {
+            ControlMessage::InterestAccepted {
+                service_uuid,
+                session_id,
+                version,
+            } => {
                 assert_eq!(service_uuid, id);
                 assert_eq!(session_id, 7);
                 assert_eq!(version, 3);

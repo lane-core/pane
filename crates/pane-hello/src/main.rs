@@ -12,13 +12,13 @@
 use std::os::unix::net::UnixListener;
 use std::sync::mpsc;
 
+use pane_app::dispatch::PeerScope;
+use pane_app::exit_reason::ExitReason;
+use pane_app::looper_core::LooperCore;
 use pane_proto::{Flow, Handler};
 use pane_session::bridge;
 use pane_session::handshake::Hello;
 use pane_session::server::ProtocolServer;
-use pane_app::dispatch::PeerScope;
-use pane_app::exit_reason::ExitReason;
-use pane_app::looper_core::LooperCore;
 
 // -- Handler --
 
@@ -34,27 +34,23 @@ impl Handler for HelloHandler {
 // -- Main --
 
 fn main() {
-    let socket_path =
-        std::env::temp_dir().join(format!("pane-hello-{}.sock", std::process::id()));
+    let socket_path = std::env::temp_dir().join(format!("pane-hello-{}.sock", std::process::id()));
     let _ = std::fs::remove_file(&socket_path);
 
-    let listener =
-        UnixListener::bind(&socket_path).expect("failed to bind unix socket");
+    let listener = UnixListener::bind(&socket_path).expect("failed to bind unix socket");
     let server = ProtocolServer::new();
 
     // Accept one connection in background
     let server_thread = std::thread::spawn(move || {
         let (stream, _addr) = listener.accept().expect("accept failed");
         let reader = stream.try_clone().expect("stream clone failed");
-        let conn = server
-            .accept(reader, stream)
-            .expect("server accept failed");
+        let conn = server.accept(reader, stream).expect("server accept failed");
         conn.wait();
     });
 
     // Connect as client
-    let stream = std::os::unix::net::UnixStream::connect(&socket_path)
-        .expect("failed to connect to server");
+    let stream =
+        std::os::unix::net::UnixStream::connect(&socket_path).expect("failed to connect to server");
 
     let client = bridge::connect_and_run(
         Hello {

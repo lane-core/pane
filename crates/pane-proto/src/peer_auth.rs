@@ -38,8 +38,8 @@
 //! local kernel-authenticated session from a certificate-backed
 //! remote session for the same user.
 
+use serde::{Deserialize, Serialize};
 use std::fmt;
-use serde::{Serialize, Deserialize};
 
 /// Identity and provenance of an authenticated peer.
 ///

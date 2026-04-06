@@ -239,7 +239,7 @@ impl<H: pane_proto::Handler> LooperCore<H> {
     /// The looper parses ServiceFrame (per optics agent: token
     /// correlation is framework routing, not per-service concern).
     /// The per-service closure gets only the inner payload bytes.
-    pub(crate) fn dispatch_service(&mut self, session_id: u8, payload: &[u8]) -> DispatchOutcome {
+    pub(crate) fn dispatch_service(&mut self, session_id: u16, payload: &[u8]) -> DispatchOutcome {
         let frame: pane_proto::ServiceFrame = match postcard::from_bytes(payload) {
             Ok(f) => f,
             Err(_) => return DispatchOutcome::Continue, // malformed — drop
@@ -255,12 +255,7 @@ impl<H: pane_proto::Handler> LooperCore<H> {
                 let service_dispatch = &self.service_dispatch;
                 let messenger = &self.messenger;
                 let result = catch_unwind(AssertUnwindSafe(|| {
-                    service_dispatch.dispatch_notification(
-                        session_id,
-                        handler,
-                        messenger,
-                        &inner,
-                    )
+                    service_dispatch.dispatch_notification(session_id, handler, messenger, &inner)
                 }));
                 match result {
                     Ok(Some(flow)) => self.flow_to_outcome(flow),
@@ -338,11 +333,8 @@ impl<H: pane_proto::Handler> LooperCore<H> {
                     // Service torn down — fail all outstanding dispatch
                     // entries for this session so the handler's on_failed
                     // callbacks fire and closures are released (S1 fix).
-                    self.dispatch.fail_session(
-                        session_id,
-                        &mut self.handler,
-                        &self.messenger,
-                    );
+                    self.dispatch
+                        .fail_session(session_id, &mut self.handler, &self.messenger);
                 }
                 Ok(LooperMessage::Control(_other)) => {
                     // Non-lifecycle ControlMessage — framework-internal.

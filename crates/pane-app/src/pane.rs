@@ -16,7 +16,9 @@ pub struct Tag {
 
 impl Tag {
     pub fn new(title: &str) -> Self {
-        Tag { title: title.to_string() }
+        Tag {
+            title: title.to_string(),
+        }
     }
 }
 
@@ -43,10 +45,7 @@ impl Pane {
     /// and headless operation — the real constructor will take a
     /// server connection and receive an assigned id.
     pub fn new(tag: Tag) -> Self {
-        Pane {
-            id: 0,
-            tag,
-        }
+        Pane { id: 0, tag }
     }
 
     /// Enter the typed setup phase for service registration.

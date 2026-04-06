@@ -54,7 +54,7 @@ enum ServerEvent {
     /// A frame arrived on a connection.
     Frame {
         conn_id: ConnectionId,
-        service: u8,
+        service: u16,
         payload: Vec<u8>,
     },
     /// A connection's reader thread exited (transport closed or error).
@@ -73,7 +73,7 @@ struct WriteHandle {
 }
 
 impl WriteHandle {
-    fn write_frame(&self, service: u8, payload: &[u8]) -> std::io::Result<()> {
+    fn write_frame(&self, service: u16, payload: &[u8]) -> std::io::Result<()> {
         let mut w = self.writer.lock().expect("write lock poisoned");
         self.codec.write_frame(&mut *w, service, payload)
     }
@@ -86,9 +86,9 @@ impl WriteHandle {
 #[derive(Debug, Clone)]
 struct Route {
     consumer_conn: ConnectionId,
-    consumer_session: u8,
+    consumer_session: u16,
     provider_conn: ConnectionId,
-    provider_session: u8,
+    provider_session: u16,
 }
 
 /// Server state — owned by the actor thread, no Arc<Mutex<>>.
@@ -99,10 +99,10 @@ struct ServerState {
     provider_index: HashMap<uuid::Uuid, Vec<ConnectionId>>,
 
     /// (ConnectionId, session_id) → Route. Both directions stored.
-    routing_table: HashMap<(ConnectionId, u8), Route>,
+    routing_table: HashMap<(ConnectionId, u16), Route>,
 
     /// Next session_id to allocate per connection.
-    next_session: HashMap<ConnectionId, u8>,
+    next_session: HashMap<ConnectionId, u16>,
 
     /// Write handles per connection.
     writers: HashMap<ConnectionId, WriteHandle>,
@@ -128,11 +128,11 @@ impl ServerState {
         id
     }
 
-    fn alloc_session(&mut self, conn: ConnectionId) -> Option<u8> {
+    fn alloc_session(&mut self, conn: ConnectionId) -> Option<u16> {
         let next = self.next_session.entry(conn).or_insert(1);
         let session = *next;
-        if session == 255 {
-            return None; // 0xFF reserved for ProtocolAbort
+        if session == 0xFFFF {
+            return None; // 0xFFFF reserved for ProtocolAbort
         }
         *next += 1;
         Some(session)
@@ -153,7 +153,7 @@ impl ServerState {
         consumer_conn: ConnectionId,
         service: ServiceId,
         _expected_version: u32,
-    ) -> Result<(ControlMessage, ConnectionId, u8), pane_proto::control::DeclineReason> {
+    ) -> Result<(ControlMessage, ConnectionId, u16), pane_proto::control::DeclineReason> {
         let providers = self
             .provider_index
             .get(&service.uuid)
@@ -195,7 +195,7 @@ impl ServerState {
     }
 
     /// Remove all state for a connection. Returns peers to notify.
-    fn remove_connection(&mut self, conn: ConnectionId) -> Vec<(ConnectionId, u8)> {
+    fn remove_connection(&mut self, conn: ConnectionId) -> Vec<(ConnectionId, u16)> {
         for providers in self.provider_index.values_mut() {
             providers.retain(|&c| c != conn);
         }
@@ -230,7 +230,7 @@ impl ServerState {
 
     // -- Event processing (called on the actor thread) --
 
-    fn process_frame(&mut self, conn_id: ConnectionId, service: u8, payload: Vec<u8>) {
+    fn process_frame(&mut self, conn_id: ConnectionId, service: u16, payload: Vec<u8>) {
         if service == 0 {
             self.process_control(conn_id, payload);
         } else {
@@ -323,7 +323,7 @@ impl ServerState {
         }
     }
 
-    fn process_service(&mut self, conn_id: ConnectionId, service: u8, payload: Vec<u8>) {
+    fn process_service(&mut self, conn_id: ConnectionId, service: u16, payload: Vec<u8>) {
         if let Some(route) = self.routing_table.get(&(conn_id, service)) {
             let (target_conn, target_session) = if route.consumer_conn == conn_id {
                 (route.provider_conn, route.provider_session)
@@ -752,19 +752,18 @@ mod tests {
         assert!(peers.iter().any(|(c, _)| *c == ConnectionId(2)));
     }
 
-    /// Old gap #3: session_id overflow at 255 boundary.
+    /// Session_id overflow at 0xFFFF boundary.
     /// Returns None instead of panicking — the server gracefully
     /// declines with SessionExhausted.
     #[test]
     fn alloc_session_returns_none_at_overflow() {
         let mut state = ServerState::new();
         let conn = ConnectionId(1);
-        // Exhaust session_ids 1..254 (254 allocations)
-        for i in 1..=254 {
-            let s = state.alloc_session(conn);
-            assert_eq!(s, Some(i), "session {i} should succeed");
-        }
-        // Next allocation returns None (255 >= 255)
+        // Set counter near the boundary to avoid allocating 65534 sessions.
+        state.next_session.insert(conn, 0xFFFD);
+        assert_eq!(state.alloc_session(conn), Some(0xFFFD));
+        assert_eq!(state.alloc_session(conn), Some(0xFFFE));
+        // Next allocation returns None (0xFFFF is reserved)
         assert!(state.alloc_session(conn).is_none());
     }
 

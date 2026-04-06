@@ -9,11 +9,11 @@
 
 pub use par;
 
-pub mod transport;
 pub mod bridge;
 pub mod frame;
 pub mod handshake;
 pub mod peer_cred;
 pub mod server;
+pub mod transport;
 
 pub use transport::Transport;

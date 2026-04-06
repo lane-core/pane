@@ -20,16 +20,26 @@ use crate::protocols::lifecycle::{Lifecycle, LifecycleMessage};
 /// impl — the looper dispatches lifecycle through the same fn-pointer
 /// mechanism as all other protocols.
 pub trait Handler: Send + 'static {
-    fn ready(&mut self) -> Flow { Flow::Continue }
-    fn close_requested(&mut self) -> Flow { Flow::Stop }
-    fn disconnected(&mut self) -> Flow { Flow::Stop }
-    fn pulse(&mut self) -> Flow { Flow::Continue }
+    fn ready(&mut self) -> Flow {
+        Flow::Continue
+    }
+    fn close_requested(&mut self) -> Flow {
+        Flow::Stop
+    }
+    fn disconnected(&mut self) -> Flow {
+        Flow::Stop
+    }
+    fn pulse(&mut self) -> Flow {
+        Flow::Continue
+    }
 
     /// Query, not dispatch — returns bool, not Flow. &self for
     /// deadlock freedom. Side effects must happen before returning
     /// true (save in close_requested, not here).
     /// BeOS: BLooper::QuitRequested() → bool.
-    fn quit_requested(&self) -> bool { true }
+    fn quit_requested(&self) -> bool {
+        true
+    }
 }
 
 /// Framework-provided blanket: every Handler automatically implements
@@ -81,10 +91,7 @@ mod tests {
         let mut h = CustomHandler { ready_count: 0 };
 
         // Dispatch through Handles<Lifecycle> — same as calling h.ready()
-        let flow = <CustomHandler as Handles<Lifecycle>>::receive(
-            &mut h,
-            LifecycleMessage::Ready,
-        );
+        let flow = <CustomHandler as Handles<Lifecycle>>::receive(&mut h, LifecycleMessage::Ready);
         assert_eq!(flow, Flow::Continue);
         assert_eq!(h.ready_count, 1);
 

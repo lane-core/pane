@@ -6,14 +6,16 @@
 //! Handles<Lifecycle> impl dispatches through the same mechanism
 //! as all other protocols.
 
-use serde::{Serialize, Deserialize};
 use crate::protocol::{Protocol, ServiceId};
+use serde::{Deserialize, Serialize};
 
 /// Lifecycle protocol definition.
 pub struct Lifecycle;
 
 impl Protocol for Lifecycle {
-    fn service_id() -> ServiceId { ServiceId::new("com.pane.lifecycle") }
+    fn service_id() -> ServiceId {
+        ServiceId::new("com.pane.lifecycle")
+    }
     type Message = LifecycleMessage;
 }
 

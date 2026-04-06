@@ -72,7 +72,9 @@ pub struct AttrSet<S> {
 
 impl<S> AttrSet<S> {
     pub fn new() -> Self {
-        AttrSet { readers: HashMap::new() }
+        AttrSet {
+            readers: HashMap::new(),
+        }
     }
 
     pub fn add(&mut self, reader: AttrReader<S>) {
@@ -91,7 +93,9 @@ impl<S> AttrSet<S> {
 }
 
 impl<S> Default for AttrSet<S> {
-    fn default() -> Self { Self::new() }
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 #[cfg(test)]
@@ -120,7 +124,9 @@ mod tests {
     fn attr_set_serves_multiple_attributes() {
         let mut attrs = AttrSet::new();
         attrs.add(AttrReader::new("cursor", |s: &EditorState| s.cursor));
-        attrs.add(AttrReader::new("buffer_length", |s: &EditorState| s.buffer.len()));
+        attrs.add(AttrReader::new("buffer_length", |s: &EditorState| {
+            s.buffer.len()
+        }));
 
         let state = EditorState {
             cursor: 7,

@@ -18,7 +18,7 @@ use pane_session::bridge::{self, LooperMessage, WriteMessage};
 use pane_session::handshake::ServiceProvision;
 
 use crate::pane::Pane;
-use crate::service_dispatch::{ServiceDispatch, make_service_receiver};
+use crate::service_dispatch::{make_service_receiver, ServiceDispatch};
 use crate::service_handle::ServiceHandle;
 
 /// Setup phase for a pane that will use protocol services.
@@ -70,7 +70,9 @@ impl<H: Handler> PaneBuilder<H> {
         H: Handles<P>,
     {
         let id = P::service_id();
-        let already_serving = self.provided_services.iter()
+        let already_serving = self
+            .provided_services
+            .iter()
             .any(|p| p.service.uuid == id.uuid);
         assert!(!already_serving, "duplicate serve for {:?}", id);
 
@@ -125,12 +127,17 @@ impl<H: Handler> PaneBuilder<H> {
         let id = P::service_id();
         assert!(
             self.registered_services.insert(id),
-            "duplicate open_service for {:?}", id
+            "duplicate open_service for {:?}",
+            id
         );
 
-        let rx = self.rx.as_ref()
+        let rx = self
+            .rx
+            .as_ref()
             .expect("must call connect() before open_service()");
-        let write_tx = self.write_tx.as_ref()
+        let write_tx = self
+            .write_tx
+            .as_ref()
             .expect("must call connect() before open_service()");
 
         // Send DeclareInterest on the control channel (service 0)
@@ -138,8 +145,7 @@ impl<H: Handler> PaneBuilder<H> {
             service: id,
             expected_version: 1,
         };
-        let bytes = postcard::to_allocvec(&declare)
-            .expect("DeclareInterest serialization failed");
+        let bytes = postcard::to_allocvec(&declare).expect("DeclareInterest serialization failed");
         if write_tx.send((0, bytes)).is_err() {
             return None; // write channel closed
         }
@@ -151,23 +157,18 @@ impl<H: Handler> PaneBuilder<H> {
             match rx.recv() {
                 Ok(LooperMessage::Control(
                     pane_proto::control::ControlMessage::InterestAccepted {
-                        service_uuid, session_id, ..
+                        service_uuid,
+                        session_id,
+                        ..
                     },
                 )) if service_uuid == id.uuid => {
                     // Register typed dispatch fn for this session_id
-                    self.service_dispatch.register(
-                        session_id,
-                        make_service_receiver::<H, P>(),
-                    );
-                    return Some(ServiceHandle::with_channel(
-                        session_id,
-                        write_tx.clone(),
-                    ));
+                    self.service_dispatch
+                        .register(session_id, make_service_receiver::<H, P>());
+                    return Some(ServiceHandle::with_channel(session_id, write_tx.clone()));
                 }
                 Ok(LooperMessage::Control(
-                    pane_proto::control::ControlMessage::InterestDeclined {
-                        service_uuid, ..
-                    },
+                    pane_proto::control::ControlMessage::InterestDeclined { service_uuid, .. },
                 )) if service_uuid == id.uuid => {
                     return None;
                 }
@@ -185,35 +186,32 @@ impl<H: Handler> PaneBuilder<H> {
     /// Drains buffered messages (received during open_service),
     /// then enters the looper main loop. Returns the exit reason.
     pub fn run_with(mut self, handler: H) -> crate::exit_reason::ExitReason {
-        use crate::looper_core::{LooperCore, DispatchOutcome};
         use crate::dispatch::PeerScope;
+        use crate::looper_core::{DispatchOutcome, LooperCore};
 
-        let rx = self.rx.take()
+        let rx = self
+            .rx
+            .take()
             .expect("must call connect() before run_with()");
-        let service_dispatch = std::mem::replace(
-            &mut self.service_dispatch,
-            ServiceDispatch::new(),
-        );
+        let service_dispatch =
+            std::mem::replace(&mut self.service_dispatch, ServiceDispatch::new());
         let buffered = std::mem::take(&mut self.buffered_messages);
 
         let (exit_tx, _exit_rx) = std::sync::mpsc::channel();
 
-        let mut core = LooperCore::with_service_dispatch(
-            handler,
-            PeerScope(1),
-            exit_tx,
-            service_dispatch,
-        );
+        let mut core =
+            LooperCore::with_service_dispatch(handler, PeerScope(1), exit_tx, service_dispatch);
 
         // Drain buffered messages from setup phase
         for msg in buffered {
             let outcome = match msg {
-                LooperMessage::Control(
-                    pane_proto::control::ControlMessage::Lifecycle(lm),
-                ) => core.dispatch_lifecycle(lm),
-                LooperMessage::Service { session_id, payload } => {
-                    core.dispatch_service(session_id, &payload)
+                LooperMessage::Control(pane_proto::control::ControlMessage::Lifecycle(lm)) => {
+                    core.dispatch_lifecycle(lm)
                 }
+                LooperMessage::Service {
+                    session_id,
+                    payload,
+                } => core.dispatch_service(session_id, &payload),
                 LooperMessage::Control(_) => {
                     // Non-lifecycle control messages during setup —
                     // framework-internal, skip.
@@ -244,25 +242,33 @@ impl<H: Handler> Drop for PaneBuilder<H> {
 mod tests {
     use super::*;
     use pane_proto::protocols::lifecycle::LifecycleMessage;
-    use serde::{Serialize, Deserialize};
+    use serde::{Deserialize, Serialize};
 
     // A test protocol
     struct TestService;
     #[derive(Debug, Clone, Serialize, Deserialize)]
-    enum TestServiceMessage { Ping }
+    enum TestServiceMessage {
+        Ping,
+    }
 
     impl Protocol for TestService {
-        fn service_id() -> ServiceId { ServiceId::new("com.test.service") }
+        fn service_id() -> ServiceId {
+            ServiceId::new("com.test.service")
+        }
         type Message = TestServiceMessage;
     }
 
     // A second test protocol for multi-service tests
     struct OtherService;
     #[derive(Debug, Clone, Serialize, Deserialize)]
-    enum OtherServiceMessage { Pong }
+    enum OtherServiceMessage {
+        Pong,
+    }
 
     impl Protocol for OtherService {
-        fn service_id() -> ServiceId { ServiceId::new("com.test.other") }
+        fn service_id() -> ServiceId {
+            ServiceId::new("com.test.other")
+        }
         type Message = OtherServiceMessage;
     }
 

@@ -19,9 +19,9 @@
 //! deserialize (inside the closure). See session-type consultant's
 //! wiring soundness analysis.
 
-use std::collections::HashMap;
-use pane_proto::{Flow, Handles, Protocol};
 use crate::Messenger;
+use pane_proto::{Flow, Handles, Protocol};
+use std::collections::HashMap;
 
 /// Type-erased service notification receiver.
 /// Deserializes inner payload as P::Message and calls
@@ -31,26 +31,31 @@ pub type ServiceReceiver<H> = Box<dyn Fn(&mut H, &Messenger, &[u8]) -> Flow + Se
 /// Static dispatch table for service frames.
 /// Frozen before the looper runs — no dynamic registration.
 pub struct ServiceDispatch<H> {
-    receivers: HashMap<u8, ServiceReceiver<H>>,
+    receivers: HashMap<u16, ServiceReceiver<H>>,
 }
 
 impl<H> ServiceDispatch<H> {
     pub fn new() -> Self {
-        ServiceDispatch { receivers: HashMap::new() }
+        ServiceDispatch {
+            receivers: HashMap::new(),
+        }
     }
 
     /// Register a dispatch entry for a session_id.
     /// Called by PaneBuilder during setup.
-    pub fn register(&mut self, session_id: u8, receiver: ServiceReceiver<H>) {
+    pub fn register(&mut self, session_id: u16, receiver: ServiceReceiver<H>) {
         let prev = self.receivers.insert(session_id, receiver);
-        assert!(prev.is_none(), "duplicate session_id {session_id} in service dispatch");
+        assert!(
+            prev.is_none(),
+            "duplicate session_id {session_id} in service dispatch"
+        );
     }
 
     /// Dispatch a Notification payload to the handler for this session_id.
     /// Returns None if the session_id is not registered (unknown service frame).
     pub fn dispatch_notification(
         &self,
-        session_id: u8,
+        session_id: u16,
         handler: &mut H,
         messenger: &Messenger,
         payload: &[u8],
@@ -78,8 +83,8 @@ where
     P: Protocol,
 {
     Box::new(|handler: &mut H, _messenger: &Messenger, payload: &[u8]| {
-        let msg: P::Message = postcard::from_bytes(payload)
-            .expect("service message deserialization failed");
+        let msg: P::Message =
+            postcard::from_bytes(payload).expect("service message deserialization failed");
         handler.receive(msg)
     })
 }
@@ -88,18 +93,24 @@ where
 mod tests {
     use super::*;
     use pane_proto::{Flow, Handler, Handles, Protocol, ServiceId};
-    use serde::{Serialize, Deserialize};
+    use serde::{Deserialize, Serialize};
 
     struct TestProto;
     #[derive(Debug, Clone, Serialize, Deserialize)]
-    enum TestMsg { Ping(String) }
+    enum TestMsg {
+        Ping(String),
+    }
 
     impl Protocol for TestProto {
-        fn service_id() -> ServiceId { ServiceId::new("com.test.dispatch") }
+        fn service_id() -> ServiceId {
+            ServiceId::new("com.test.dispatch")
+        }
         type Message = TestMsg;
     }
 
-    struct TestHandler { received: Vec<String> }
+    struct TestHandler {
+        received: Vec<String>,
+    }
     impl Handler for TestHandler {}
     impl Handles<TestProto> for TestHandler {
         fn receive(&mut self, msg: TestMsg) -> Flow {
@@ -138,9 +149,13 @@ mod tests {
     fn multiple_protocols_dispatch_independently() {
         struct OtherProto;
         #[derive(Debug, Clone, Serialize, Deserialize)]
-        enum OtherMsg { Pong(u32) }
+        enum OtherMsg {
+            Pong(u32),
+        }
         impl Protocol for OtherProto {
-            fn service_id() -> ServiceId { ServiceId::new("com.test.other.dispatch") }
+            fn service_id() -> ServiceId {
+                ServiceId::new("com.test.other.dispatch")
+            }
             type Message = OtherMsg;
         }
 
@@ -151,13 +166,17 @@ mod tests {
         impl Handler for MultiHandler {}
         impl Handles<TestProto> for MultiHandler {
             fn receive(&mut self, msg: TestMsg) -> Flow {
-                match msg { TestMsg::Ping(s) => self.pings.push(s) }
+                match msg {
+                    TestMsg::Ping(s) => self.pings.push(s),
+                }
                 Flow::Continue
             }
         }
         impl Handles<OtherProto> for MultiHandler {
             fn receive(&mut self, msg: OtherMsg) -> Flow {
-                match msg { OtherMsg::Pong(n) => self.pongs.push(n) }
+                match msg {
+                    OtherMsg::Pong(n) => self.pongs.push(n),
+                }
                 Flow::Continue
             }
         }
@@ -166,7 +185,10 @@ mod tests {
         dispatch.register(1, make_service_receiver::<MultiHandler, TestProto>());
         dispatch.register(2, make_service_receiver::<MultiHandler, OtherProto>());
 
-        let mut handler = MultiHandler { pings: vec![], pongs: vec![] };
+        let mut handler = MultiHandler {
+            pings: vec![],
+            pongs: vec![],
+        };
         let messenger = crate::Messenger::new();
 
         let ping_bytes = postcard::to_allocvec(&TestMsg::Ping("a".into())).unwrap();

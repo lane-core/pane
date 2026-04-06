@@ -3,18 +3,18 @@
 
 use std::sync::Arc;
 
+use pane_app::pane::{Pane, Tag};
 use pane_proto::control::ControlMessage;
 use pane_proto::protocol::ServiceId;
 use pane_proto::service_frame::ServiceFrame;
 use pane_proto::{Flow, Handler, Handles, Protocol};
+use pane_session::bridge::HANDSHAKE_MAX_MESSAGE_SIZE;
 use pane_session::frame::{Frame, FrameCodec};
-use pane_session::handshake::{Hello, Welcome, Rejection, ServiceProvision};
+use pane_session::handshake::{Hello, Rejection, ServiceProvision, Welcome};
 use pane_session::server::ProtocolServer;
 use pane_session::transport::MemoryTransport;
-use pane_session::bridge::HANDSHAKE_MAX_MESSAGE_SIZE;
-use pane_app::pane::{Pane, Tag};
 
-use serde::{Serialize, Deserialize};
+use serde::{Deserialize, Serialize};
 
 fn echo_service_id() -> ServiceId {
     ServiceId::new("com.pane.echo")
@@ -23,10 +23,15 @@ fn echo_service_id() -> ServiceId {
 struct EchoService;
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-enum EchoMessage { Ping(String), Pong(String) }
+enum EchoMessage {
+    Ping(String),
+    Pong(String),
+}
 
 impl Protocol for EchoService {
-    fn service_id() -> ServiceId { echo_service_id() }
+    fn service_id() -> ServiceId {
+        echo_service_id()
+    }
     type Message = EchoMessage;
 }
 
@@ -51,7 +56,10 @@ impl ClientConn {
         codec.write_frame(&mut transport, 0, &bytes).unwrap();
         let frame = codec.read_frame(&mut transport).unwrap();
         let payload = match frame {
-            Frame::Message { service: 0, payload } => payload,
+            Frame::Message {
+                service: 0,
+                payload,
+            } => payload,
             other => panic!("unexpected frame: {other:?}"),
         };
         let decision: Result<Welcome, Rejection> = postcard::from_bytes(&payload).unwrap();
@@ -64,8 +72,10 @@ impl ClientConn {
     fn read_control(&mut self) -> ControlMessage {
         let frame = self.codec.read_frame(&mut self.transport).unwrap();
         match frame {
-            Frame::Message { service: 0, payload } =>
-                postcard::from_bytes(&payload).unwrap(),
+            Frame::Message {
+                service: 0,
+                payload,
+            } => postcard::from_bytes(&payload).unwrap(),
             other => panic!("expected Control, got {other:?}"),
         }
     }
@@ -79,11 +89,11 @@ impl ClientConn {
         }
     }
 
-    fn register_session(&mut self, session_id: u8) {
+    fn register_session(&mut self, session_id: u16) {
         self.codec.register_service(session_id);
     }
 
-    fn read_service(&mut self) -> (u8, ServiceFrame) {
+    fn read_service(&mut self) -> (u16, ServiceFrame) {
         let frame = self.codec.read_frame(&mut self.transport).unwrap();
         match frame {
             Frame::Message { service, payload } if service != 0 => {
@@ -113,12 +123,18 @@ fn open_service_via_protocol_server() {
     // Provider: manual ClientConn
     let (b_client, b_server) = MemoryTransport::pair();
     let accept_b = accept_on_thread(&server, b_server);
-    let (mut provider, _) = ClientConn::connect(b_client, Hello {
-        version: 1,
-        max_message_size: 16 * 1024 * 1024,
-        interests: vec![],
-        provides: vec![ServiceProvision { service: echo_service_id(), version: 1 }],
-    });
+    let (mut provider, _) = ClientConn::connect(
+        b_client,
+        Hello {
+            version: 1,
+            max_message_size: 16 * 1024 * 1024,
+            interests: vec![],
+            provides: vec![ServiceProvision {
+                service: echo_service_id(),
+                version: 1,
+            }],
+        },
+    );
     let conn_b = accept_b.join().unwrap();
     provider.expect_ready();
 
@@ -180,7 +196,10 @@ fn open_service_declined_returns_none() {
     let conn_a = accept_a.join().unwrap();
 
     let handle = builder.open_service::<EchoService>();
-    assert!(handle.is_none(), "open_service should return None when declined");
+    assert!(
+        handle.is_none(),
+        "open_service should return None when declined"
+    );
 
     drop(builder);
     conn_a.wait();
@@ -196,12 +215,18 @@ fn revoke_interest_end_to_end() {
     // Provider
     let (b_client, b_server) = MemoryTransport::pair();
     let accept_b = accept_on_thread(&server, b_server);
-    let (mut provider, _) = ClientConn::connect(b_client, Hello {
-        version: 1,
-        max_message_size: 16 * 1024 * 1024,
-        interests: vec![],
-        provides: vec![ServiceProvision { service: echo_service_id(), version: 1 }],
-    });
+    let (mut provider, _) = ClientConn::connect(
+        b_client,
+        Hello {
+            version: 1,
+            max_message_size: 16 * 1024 * 1024,
+            interests: vec![],
+            provides: vec![ServiceProvision {
+                service: echo_service_id(),
+                version: 1,
+            }],
+        },
+    );
     let conn_b = accept_b.join().unwrap();
     provider.expect_ready();
 
@@ -232,7 +257,10 @@ fn revoke_interest_end_to_end() {
     let msg = provider.read_control();
     match msg {
         ControlMessage::ServiceTeardown { reason, .. } => {
-            assert!(matches!(reason, pane_proto::control::TeardownReason::ServiceRevoked));
+            assert!(matches!(
+                reason,
+                pane_proto::control::TeardownReason::ServiceRevoked
+            ));
         }
         other => panic!("expected ServiceTeardown after RevokeInterest, got {other:?}"),
     }
@@ -256,12 +284,18 @@ fn ready_buffered_during_open_service_delivered_by_run_with() {
     // Provider
     let (b_client, b_server) = MemoryTransport::pair();
     let accept_b = accept_on_thread(&server, b_server);
-    let (mut provider, _) = ClientConn::connect(b_client, Hello {
-        version: 1,
-        max_message_size: 16 * 1024 * 1024,
-        interests: vec![],
-        provides: vec![ServiceProvision { service: echo_service_id(), version: 1 }],
-    });
+    let (mut provider, _) = ClientConn::connect(
+        b_client,
+        Hello {
+            version: 1,
+            max_message_size: 16 * 1024 * 1024,
+            interests: vec![],
+            provides: vec![ServiceProvision {
+                service: echo_service_id(),
+                version: 1,
+            }],
+        },
+    );
     let conn_b = accept_b.join().unwrap();
     provider.expect_ready();
 
@@ -286,7 +320,10 @@ fn ready_buffered_during_open_service_delivered_by_run_with() {
     let log = Arc::new(Mutex::new(Vec::new()));
     // Handler returns Flow::Stop on ready() — the assertion IS that
     // ready() fires (from the buffered Ready), causing a clean exit.
-    let handler = ReadyTracker { log: log.clone(), _handle: handle };
+    let handler = ReadyTracker {
+        log: log.clone(),
+        _handle: handle,
+    };
 
     let reason = builder.run_with(handler);
 
@@ -295,8 +332,11 @@ fn ready_buffered_during_open_service_delivered_by_run_with() {
     assert_eq!(reason, pane_app::exit_reason::ExitReason::Graceful);
 
     let events = log.lock().unwrap();
-    assert!(events.contains(&"ready".to_string()),
-        "handler.ready() must fire from buffered Ready. Got: {:?}", *events);
+    assert!(
+        events.contains(&"ready".to_string()),
+        "handler.ready() must fire from buffered Ready. Got: {:?}",
+        *events
+    );
 
     drop(provider);
     conn_b.wait();
@@ -329,41 +369,62 @@ fn multiple_open_service_sequential() {
 
     struct PingService;
     #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-    enum PingMsg { Ping }
+    enum PingMsg {
+        Ping,
+    }
     impl Protocol for PingService {
-        fn service_id() -> ServiceId { ServiceId::new("com.test.ping") }
+        fn service_id() -> ServiceId {
+            ServiceId::new("com.test.ping")
+        }
         type Message = PingMsg;
     }
 
     struct PongService;
     #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-    enum PongMsg { Pong }
+    enum PongMsg {
+        Pong,
+    }
     impl Protocol for PongService {
-        fn service_id() -> ServiceId { ServiceId::new("com.test.pong") }
+        fn service_id() -> ServiceId {
+            ServiceId::new("com.test.pong")
+        }
         type Message = PongMsg;
     }
 
     struct MultiHandler;
     impl Handler for MultiHandler {}
     impl Handles<PingService> for MultiHandler {
-        fn receive(&mut self, _msg: PingMsg) -> Flow { Flow::Continue }
+        fn receive(&mut self, _msg: PingMsg) -> Flow {
+            Flow::Continue
+        }
     }
     impl Handles<PongService> for MultiHandler {
-        fn receive(&mut self, _msg: PongMsg) -> Flow { Flow::Continue }
+        fn receive(&mut self, _msg: PongMsg) -> Flow {
+            Flow::Continue
+        }
     }
 
     // Provider offers both services
     let (b_client, b_server) = MemoryTransport::pair();
     let accept_b = accept_on_thread(&server, b_server);
-    let (mut provider, _) = ClientConn::connect(b_client, Hello {
-        version: 1,
-        max_message_size: 16 * 1024 * 1024,
-        interests: vec![],
-        provides: vec![
-            ServiceProvision { service: PingService::service_id(), version: 1 },
-            ServiceProvision { service: PongService::service_id(), version: 1 },
-        ],
-    });
+    let (mut provider, _) = ClientConn::connect(
+        b_client,
+        Hello {
+            version: 1,
+            max_message_size: 16 * 1024 * 1024,
+            interests: vec![],
+            provides: vec![
+                ServiceProvision {
+                    service: PingService::service_id(),
+                    version: 1,
+                },
+                ServiceProvision {
+                    service: PongService::service_id(),
+                    version: 1,
+                },
+            ],
+        },
+    );
     let _conn_b = accept_b.join().unwrap();
     provider.expect_ready();
 
@@ -396,8 +457,11 @@ fn multiple_open_service_sequential() {
     }
 
     // Session IDs should differ
-    assert_ne!(ping.session_id(), pong.session_id(),
-        "different services must get different session_ids");
+    assert_ne!(
+        ping.session_id(),
+        pong.session_id(),
+        "different services must get different session_ids"
+    );
 
     // Both should be nonzero
     assert_ne!(ping.session_id(), 0);

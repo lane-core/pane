@@ -28,7 +28,10 @@ pub trait MessageFilter<M: Message>: Send + 'static {
     /// Pre-filter: does this filter care about this message?
     /// Default: yes. Override for efficiency (skip the filter
     /// for messages it won't touch).
-    fn matches(&self, msg: &M) -> bool { let _ = msg; true }
+    fn matches(&self, msg: &M) -> bool {
+        let _ = msg;
+        true
+    }
 }
 
 /// What the filter decides.
@@ -75,10 +78,7 @@ mod tests {
     #[test]
     fn filter_passes_non_matching_message() {
         let mut f = ConsumeDisconnected;
-        assert_eq!(
-            f.filter(&LifecycleMessage::Ready),
-            FilterAction::Pass,
-        );
+        assert_eq!(f.filter(&LifecycleMessage::Ready), FilterAction::Pass,);
     }
 
     #[test]

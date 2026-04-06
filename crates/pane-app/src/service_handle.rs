@@ -14,11 +14,11 @@
 //! semantics (stable after open) with typed protocol constraint
 //! (Handles<P> at compile time, which BMessenger lacked).
 
+use crate::Messenger;
+use pane_proto::obligation::CancelHandle;
+use pane_proto::{Address, Flow, Handler, Handles, Protocol, ServiceFrame};
 use std::marker::PhantomData;
 use std::sync::atomic::{AtomicU64, Ordering};
-use pane_proto::{Address, Flow, Handler, Handles, Protocol, ServiceFrame};
-use pane_proto::obligation::CancelHandle;
-use crate::Messenger;
 
 /// Monotonic token counter for request/reply correlation.
 /// Global — tokens are unique across all ServiceHandles in a process.
@@ -42,9 +42,9 @@ static NEXT_TOKEN: AtomicU64 = AtomicU64::new(1);
 /// (Handles<P> at compile time, which BMessenger lacked).
 #[must_use = "dropping a ServiceHandle revokes the service interest"]
 pub struct ServiceHandle<P: Protocol> {
-    session_id: u8,
+    session_id: u16,
     /// Channel to the connection's write half. Carries (service_id, payload).
-    write_tx: Option<std::sync::mpsc::Sender<(u8, Vec<u8>)>>,
+    write_tx: Option<std::sync::mpsc::Sender<(u16, Vec<u8>)>>,
     _protocol: PhantomData<P>,
 }
 
@@ -61,8 +61,8 @@ impl<P: Protocol> ServiceHandle<P> {
 
     /// Full constructor with a write channel and assigned session_id.
     pub(crate) fn with_channel(
-        session_id: u8,
-        write_tx: std::sync::mpsc::Sender<(u8, Vec<u8>)>,
+        session_id: u16,
+        write_tx: std::sync::mpsc::Sender<(u16, Vec<u8>)>,
     ) -> Self {
         ServiceHandle {
             session_id,
@@ -88,12 +88,15 @@ impl<P: Protocol> ServiceHandle<P> {
         H: Handler + Handles<P> + 'static,
         R: pane_proto::Message,
     {
-        let inner_payload = postcard::to_allocvec(&msg)
-            .expect("service message serialization failed");
+        let inner_payload =
+            postcard::to_allocvec(&msg).expect("service message serialization failed");
         let token = NEXT_TOKEN.fetch_add(1, Ordering::Relaxed);
-        let frame = ServiceFrame::Request { token, payload: inner_payload };
-        let outer_payload = postcard::to_allocvec(&frame)
-            .expect("service frame serialization failed");
+        let frame = ServiceFrame::Request {
+            token,
+            payload: inner_payload,
+        };
+        let outer_payload =
+            postcard::to_allocvec(&frame).expect("service frame serialization failed");
 
         if let Some(ref tx) = self.write_tx {
             let _ = tx.send((self.session_id, outer_payload));
@@ -107,11 +110,13 @@ impl<P: Protocol> ServiceHandle<P> {
 
     /// Send a fire-and-forget notification through this service binding.
     pub fn send_notification(&self, msg: P::Message) {
-        let inner_payload = postcard::to_allocvec(&msg)
-            .expect("service message serialization failed");
-        let frame = ServiceFrame::Notification { payload: inner_payload };
-        let outer_payload = postcard::to_allocvec(&frame)
-            .expect("service frame serialization failed");
+        let inner_payload =
+            postcard::to_allocvec(&msg).expect("service message serialization failed");
+        let frame = ServiceFrame::Notification {
+            payload: inner_payload,
+        };
+        let outer_payload =
+            postcard::to_allocvec(&frame).expect("service frame serialization failed");
 
         if let Some(ref tx) = self.write_tx {
             let _ = tx.send((self.session_id, outer_payload));
@@ -125,7 +130,7 @@ impl<P: Protocol> ServiceHandle<P> {
     }
 
     /// The session_id assigned by the server for this service binding.
-    pub fn session_id(&self) -> u8 {
+    pub fn session_id(&self) -> u16 {
         self.session_id
     }
 }
@@ -149,7 +154,7 @@ impl<P: Protocol> Drop for ServiceHandle<P> {
 mod tests {
     use super::*;
     use pane_proto::protocol::ServiceId;
-    use serde::{Serialize, Deserialize};
+    use serde::{Deserialize, Serialize};
 
     // -- Test protocol for exercising type bounds --
 
@@ -161,7 +166,9 @@ mod tests {
     }
 
     impl Protocol for TestProto {
-        fn service_id() -> ServiceId { ServiceId::new("com.test.service_handle") }
+        fn service_id() -> ServiceId {
+            ServiceId::new("com.test.service_handle")
+        }
         type Message = TestMsg;
     }
 
@@ -198,12 +205,8 @@ mod tests {
         let handle = ServiceHandle::<TestProto>::new();
         let cancel = handle.send_request::<TestHandler, TestReply>(
             TestMsg::Ping,
-            |_handler: &mut TestHandler, _messenger: &Messenger, _reply: TestReply| {
-                Flow::Continue
-            },
-            |_handler: &mut TestHandler, _messenger: &Messenger| {
-                Flow::Continue
-            },
+            |_handler: &mut TestHandler, _messenger: &Messenger, _reply: TestReply| Flow::Continue,
+            |_handler: &mut TestHandler, _messenger: &Messenger| Flow::Continue,
         );
         // CancelHandle is usable — cancel the no-op stub
         cancel.cancel();
@@ -236,14 +239,14 @@ mod tests {
         assert_eq!(service_id, 5);
 
         // Decode the outer ServiceFrame
-        let frame: ServiceFrame = postcard::from_bytes(&payload)
-            .expect("ServiceFrame deserialization failed");
+        let frame: ServiceFrame =
+            postcard::from_bytes(&payload).expect("ServiceFrame deserialization failed");
         match frame {
             ServiceFrame::Request { token, payload } => {
                 assert!(token > 0, "token should be nonzero");
                 // Decode inner message
-                let msg: TestMsg = postcard::from_bytes(&payload)
-                    .expect("inner message deserialization failed");
+                let msg: TestMsg =
+                    postcard::from_bytes(&payload).expect("inner message deserialization failed");
                 assert!(matches!(msg, TestMsg::Ping));
             }
             _ => panic!("expected Request frame"),
@@ -260,12 +263,12 @@ mod tests {
         let (service_id, payload) = rx.recv().expect("expected frame on channel");
         assert_eq!(service_id, 3);
 
-        let frame: ServiceFrame = postcard::from_bytes(&payload)
-            .expect("ServiceFrame deserialization failed");
+        let frame: ServiceFrame =
+            postcard::from_bytes(&payload).expect("ServiceFrame deserialization failed");
         match frame {
             ServiceFrame::Notification { payload } => {
-                let msg: TestMsg = postcard::from_bytes(&payload)
-                    .expect("inner message deserialization failed");
+                let msg: TestMsg =
+                    postcard::from_bytes(&payload).expect("inner message deserialization failed");
                 assert!(matches!(msg, TestMsg::Ping));
             }
             _ => panic!("expected Notification frame"),

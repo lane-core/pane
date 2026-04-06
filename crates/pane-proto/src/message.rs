@@ -6,7 +6,7 @@
 //! namespace. Obligation handles are NOT Message types — they are
 //! delivered via separate callbacks.
 
-use serde::{Serialize, de::DeserializeOwned};
+use serde::{de::DeserializeOwned, Serialize};
 
 /// The universal message contract.
 ///
