@@ -40,6 +40,8 @@ Single server (N=1), headless, no suspension, no streaming. All multi-server dat
 - [x] **Transport** — `Read + Write + Send + 'static` blanket trait, `MemoryTransport::pair()` byte-level (5 tests)
 - [x] **Bridge** — two-phase connect (verify_transport + par handshake via FrameCodec), `connect_and_run`/`accept_and_run` with reader loop (7 tests)
 - [x] **FrameCodec** — `[length: u32 LE][service: u8][payload]`, reserved 0xFF abort, known_services bitset, max_message_size enforcement + set_max_message_size (20 tests)
+- [x] **ProtocolServer** — single-threaded actor, provider index from Hello.provides, DeclareInterest handler, frame routing with session_id rewriting, connection drop cleanup with ServiceTeardown (8 unit + 3 integration tests)
+- [x] **peer_cred** — SO_PEERCRED (Linux) / getpeereid + LOCAL_PEERPID (macOS) → PeerAuth (1 test)
 - [ ] **Verify Chan<S,T> compatibility** — ensure session-typed channels work with new handshake types
 - [ ] **SessionEnum derive** — N-ary enum branching with `#[session_tag]` wire stability
 
@@ -50,11 +52,12 @@ Single server (N=1), headless, no suspension, no streaming. All multi-server dat
 - [x] **PaneBuilder\<H\>** — two-phase lifecycle, open_service stub, duplicate rejection (3 tests)
 - [x] **Pane** — non-generic connection identity (stub)
 - [x] **Messenger** — scoped handle with Address, `address()` accessor (3 tests)
-- [x] **ServiceHandle\<P\>** — stub with Drop RevokeInterest, protocol-scoped `send_request<H,R>()`, `target_address()` (3 tests)
+- [x] **ServiceHandle\<P\>** — Drop RevokeInterest, protocol-scoped `send_request<H,R>()` with real serialization, `send_notification()`, `with_channel()` constructor, `target_address()` (6 tests)
 - [x] **ExitReason** — Graceful/Disconnected/Failed/InfraError
 - [ ] **Messenger full impl** — `set_content`, `set_pulse_rate`, `post_app_message` (send_request moved to ServiceHandle)
 - [ ] **ConnectionSource** — calloop EventSource for a single Connection (read + buffered write) — **bumped priority: enables real Messenger/ServiceHandle routing**
-- [ ] **Service registration** — `PaneBuilder::open_service::<P>()` with real DeclareInterest exchange
+- [ ] **Service registration wiring** — `PaneBuilder::open_service::<P>()` and `serve::<P>()` talking to real ProtocolServer (types exist, stubs need wiring)
+- [ ] **ActivePhase\<T\>** — explicit shift operator (ω_X) carrying negotiated state (max_message_size, PeerAuth, known_services)
 - [ ] **Looper** — calloop-backed, per-protocol typed channels, unified batch, coalescing
 - [ ] **AppPayload** — `Clone + Send + 'static` marker trait
 
@@ -153,10 +156,11 @@ Orthogonal to protocol phases — can proceed in parallel once Phase 1 server ex
 
 | Crate | Role | Status |
 |-------|------|--------|
-| pane-proto | Protocol vocabulary, no IO | Active (77 tests) |
-| pane-session | Session-typed IPC, transport, framing | Active (31 tests) |
-| pane-app | Actor framework, dispatch, looper | Active (30 tests) |
+| pane-proto | Protocol vocabulary, no IO | Active (88 tests) |
+| pane-session | Session-typed IPC, transport, framing, server | Active (40 tests) |
+| pane-app | Actor framework, dispatch, looper | Active (33 tests + 3 integration) |
 | pane-fs | Filesystem namespace | Active (5 tests) |
+| pane-hello | First running pane app (binary) | Active (0 tests, manual verification) |
 | pane-notify | Filesystem notification abstraction | Preserved from prototype |
 
 ## Design documents
