@@ -13,6 +13,7 @@ pub mod exit_reason;
 pub mod messenger;
 pub mod service_handle;
 pub mod dispatch;
+pub mod service_dispatch;
 pub mod pane;
 pub mod builder;
 pub mod looper_core;
