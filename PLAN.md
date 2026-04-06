@@ -159,9 +159,9 @@ Orthogonal to protocol phases — can proceed in parallel once Phase 1 server ex
 
 | Crate | Role | Status |
 |-------|------|--------|
-| pane-proto | Protocol vocabulary, no IO | Active (88 tests) |
-| pane-session | Session-typed IPC, transport, framing, server | Active (44 tests) |
-| pane-app | Actor framework, dispatch, looper | Active (43 tests + 5 integration) |
+| pane-proto | Protocol vocabulary, no IO | Active (86 tests) |
+| pane-session | Session-typed IPC, transport, framing, server | Active (45 tests) |
+| pane-app | Actor framework, dispatch, looper | Active (43 tests + 10 integration) |
 | pane-fs | Filesystem namespace | Active (5 tests) |
 | pane-hello | First running pane app (binary) | Active (0 tests, manual verification) |
 | pane-notify | Filesystem notification abstraction | Preserved from prototype |

@@ -8,9 +8,10 @@
 //! ControlMessage directly — it's plumbing between the bridge
 //! thread and the looper's dispatch table.
 //!
-//! Only Lifecycle is handled in the vertical slice. The remaining
-//! variants (service negotiation, cancel) are defined for wire
-//! format stability and will be connected as those subsystems land.
+//! Lifecycle dispatches to Handler methods. DeclareInterest,
+//! InterestAccepted/Declined, RevokeInterest, and ServiceTeardown
+//! are handled by the server and PaneBuilder. Cancel is defined
+//! for wire format stability and will be connected later.
 //!
 //! Design heritage: Plan 9 9P used a type byte to discriminate
 //! message kinds (Tversion=100, Tread=116, etc.) in a flat

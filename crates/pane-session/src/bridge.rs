@@ -15,9 +15,10 @@
 //! The bridge thread serializes (postcard + FrameCodec) between
 //! par's channels and the transport.
 //!
-//! After the handshake succeeds, the bridge thread transitions to
-//! an active-phase reader loop, feeding ControlMessages to the
-//! looper through an mpsc channel.
+//! After the handshake succeeds, the bridge thread splits the
+//! transport and spawns a reader loop (feeding LooperMessages to
+//! the looper) and a writer loop (draining outbound frames from
+//! ServiceHandle/PaneBuilder). Two threads per connection.
 //!
 //! Design heritage: BeOS split connection into find_port (returned
 //! port_id, negative on error; headers/os/kernel/OS.h:134) and the

@@ -1,29 +1,9 @@
 # Code Style & Conventions
 
-## Rust
-- Standard `cargo fmt` formatting
-- Clippy with `-D warnings`
-- Derive order: `Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize` (as applicable)
-- `pub(crate)` for internal APIs, `#[doc(hidden)] pub` for test-support types
-- Comments explain *why*, not *what*
-- No unnecessary abstractions — three similar lines better than premature abstraction
-- Error handling from the start (Result types, not panics)
-- Session types use crash-safe `SessionError::Disconnected`, never panic on drop
+**Source of truth: `STYLEGUIDE.md` at the project root.**
 
-## Architecture Patterns
-- Per-pane threading (BeOS BLooper model)
-- Two-phase connection: Phase 1 verifies transport (Result), Phase 2 runs par handshake. Active phase uses per-service typed messages.
-- Message is base-protocol-only (lifecycle + display). Clone-safe. Service events dispatch through Handles<P>.
-- Messenger wraps scoped Handle + ServiceRouter. Cloneable Send handle.
-- Handler (lifecycle) + Handles<P> (Display, Clipboard, Routing, and all other protocols)
-- Protocol trait links ServiceId + Message type. Protocol::Message requires Serialize + DeserializeOwned.
-- FilterChain applies in registration order, any filter can consume or transform
-- ExitReason (looper-internal): Graceful / Disconnected / Failed / InfraError
-- Handler methods return Flow (not Result). Three error channels: Protocol (ReplyPort), Control (Flow), Crash (panic → catch_unwind).
+All code style, formatting, commenting, heritage annotation, and technical writing conventions are defined there. This memory exists as a pointer — do not duplicate content here.
 
-## Writing Style
-- Agent identities in docs/examples use generic human names (ada, bob, ralph) — not dotted names (agent.reviewer). Dotted names are invalid unix usernames.
-
-## Testing
-- proptest for roundtrip serialization tests
-- Tests run on macOS against in-memory channels
+Sub-memories in `style_and_conventions/` that predate STYLEGUIDE.md have been merged into it:
+- `heritage_annotations.md` → STYLEGUIDE.md § Heritage Annotations
+- `agent_naming.md` → STYLEGUIDE.md § Agent Identity in Examples

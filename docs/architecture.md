@@ -317,18 +317,24 @@ variants) and is forced by the Serialize bound on Message
 /// affect new walks only.)
 pub struct ServiceHandle<P: Protocol> {
     service_id: ServiceId,
-    connection_id: ConnectionId,
     session_id: u8,
-    looper_tx: LooperSender,
+    write_tx: Option<Sender<(u8, Vec<u8>)>>,
     _protocol: PhantomData<P>,
 }
 
 impl<P: Protocol> Drop for ServiceHandle<P> {
     fn drop(&mut self) {
-        let _ = self.looper_tx.send(LooperMessage::RevokeInterest {
-            connection_id: self.connection_id,
-            session_id: self.session_id,
-        });
+        // Send RevokeInterest directly to the wire via write_tx,
+        // bypassing the looper. The writer thread frames it as a
+        // control message (service 0) to the server.
+        if let Some(ref tx) = self.write_tx {
+            let msg = ControlMessage::RevokeInterest {
+                session_id: self.session_id,
+            };
+            if let Ok(bytes) = postcard::to_allocvec(&msg) {
+                let _ = tx.send((0, bytes));
+            }
+        }
     }
 }
 
@@ -405,7 +411,7 @@ pub enum ControlMessage {
     DeclareInterest { service: ServiceId, expected_version: u32 },
     InterestAccepted { service_uuid: Uuid, session_id: u8, version: u32 },
     InterestDeclined { service_uuid: Uuid, reason: DeclineReason },
-    ServiceTeardown { service: u8, reason: TeardownReason },
+    ServiceTeardown { session_id: u8, reason: TeardownReason },
     RevokeInterest { session_id: u8 },
     Cancel { token: u64 },
 }
