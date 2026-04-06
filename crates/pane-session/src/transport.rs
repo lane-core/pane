@@ -162,6 +162,30 @@ impl std::io::Write for MemoryWriter {
     }
 }
 
+/// A transport that can be split into independent read/write halves.
+///
+/// Required by connect_and_run: the read half goes to the reader
+/// thread, the write half goes to the writer thread. The split
+/// happens after the handshake, inside the bridge.
+///
+/// Design heritage: Plan 9's mount(2) used a single fd for both
+/// directions — the kernel serialized internally. pane splits
+/// explicitly because Rust's ownership model requires it for
+/// safe concurrent read/write from separate threads.
+pub trait TransportSplit: std::io::Read + std::io::Write + Send + 'static {
+    type Reader: std::io::Read + Send + 'static;
+    type Writer: std::io::Write + Send + 'static;
+    fn into_split(self) -> (Self::Reader, Self::Writer);
+}
+
+impl TransportSplit for MemoryTransport {
+    type Reader = MemoryReader;
+    type Writer = MemoryWriter;
+    fn into_split(self) -> (MemoryReader, MemoryWriter) {
+        self.split()
+    }
+}
+
 impl std::io::Write for MemoryTransport {
     fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
         if buf.is_empty() {
@@ -176,6 +200,20 @@ impl std::io::Write for MemoryTransport {
     fn flush(&mut self) -> std::io::Result<()> {
         // No buffering — writes go through immediately.
         Ok(())
+    }
+}
+
+/// UnixStream splits via try_clone — both halves share the same
+/// underlying fd, but each has its own buffered position. Safe for
+/// concurrent read/write from separate threads.
+#[cfg(unix)]
+impl TransportSplit for std::os::unix::net::UnixStream {
+    type Reader = std::os::unix::net::UnixStream;
+    type Writer = std::os::unix::net::UnixStream;
+    fn into_split(self) -> (Self::Reader, Self::Writer) {
+        let writer = self.try_clone()
+            .expect("UnixStream::try_clone failed during transport split");
+        (self, writer)
     }
 }
 
@@ -228,6 +266,22 @@ mod tests {
         let mut buf = [0u8; 6];
         b.read_exact(&mut buf).unwrap();
         assert_eq!(&buf, b" world");
+    }
+
+    #[test]
+    fn memory_transport_split_is_transport_split() {
+        use super::TransportSplit;
+        let (a, mut b) = MemoryTransport::pair();
+        let (mut reader, mut writer) = a.into_split();
+        // Writer can write to b's reader
+        writer.write_all(b"hello").unwrap();
+        let mut buf = [0u8; 5];
+        b.read_exact(&mut buf).unwrap();
+        assert_eq!(&buf, b"hello");
+        // b can write to our reader
+        b.write_all(b"world").unwrap();
+        reader.read_exact(&mut buf).unwrap();
+        assert_eq!(&buf, b"world");
     }
 
     #[test]

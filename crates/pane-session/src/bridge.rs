@@ -34,6 +34,28 @@ use crate::handshake::{Hello, Welcome, Rejection, ClientHandshake, ServerHandsha
 use crate::frame::{Frame, FrameCodec};
 use pane_proto::control::ControlMessage;
 
+/// Unified message type from the reader thread to the looper.
+/// Single channel preserves causal ordering between control and
+/// service frames (round 1 consensus: BLooper had one port).
+///
+/// Design heritage: BeOS BLooper had one port, one queue — a single
+/// message stream with interleaved types, dispatched sequentially
+/// (src/kits/app/Looper.cpp:1162, MessageFromPort). Plan 9 devmnt
+/// similarly used one fd per mount for all message types (devmnt.c:803).
+/// A single LooperMessage enum over one mpsc channel preserves
+/// this causal ordering invariant.
+#[derive(Debug)]
+pub enum LooperMessage {
+    /// Control channel (service 0): lifecycle, service negotiation.
+    Control(ControlMessage),
+    /// Service frame: session_id + raw payload (ServiceFrame bytes).
+    /// The looper parses ServiceFrame and routes by variant.
+    Service { session_id: u8, payload: Vec<u8> },
+}
+
+/// Write-side message: (service_id, payload bytes).
+pub type WriteMessage = (u8, Vec<u8>);
+
 /// Default max_message_size for the handshake phase.
 /// Renegotiated during the handshake — the Welcome carries the
 /// agreed value for the active phase.
@@ -136,26 +158,25 @@ pub fn connect_server(
     Ok(bridge_server_handshake(transport))
 }
 
-/// Connect as client, perform handshake, and start the reader loop.
+/// Connect as client, perform handshake, and start reader + writer loops.
 ///
-/// On success, returns the Welcome and a Receiver that delivers
-/// ControlMessages from the server. The reader thread runs in the
-/// background; it exits (closing the channel) when the transport
-/// fails or the peer sends ProtocolAbort.
+/// On success, returns the Welcome, a Receiver that delivers
+/// LooperMessages from the server, and a write channel for outbound
+/// framing (ServiceHandle/PaneBuilder). The transport is split:
+/// read half stays in the reader thread, write half in the writer
+/// thread.
 ///
-/// The write half of the transport is returned for the caller to
-/// use for outbound framing (Messenger/ServiceHandle). The socket
-/// is split: read half stays in the reader thread, write half
-/// returned here.
+/// Design heritage: Plan 9's mount(2) used a single fd; the kernel
+/// split internally. pane splits explicitly for Rust ownership.
 pub fn connect_and_run(
     hello: Hello,
-    transport: impl Transport,
-) -> Result<ClientReader, ConnectError> {
+    transport: impl crate::transport::TransportSplit,
+) -> Result<ClientConnection, ConnectError> {
     let transport = verify_transport(transport)?;
 
-    // The bridge thread performs the par handshake, then transitions
-    // to the active-phase reader loop. We get the result back via
-    // a oneshot-like mpsc channel.
+    // The bridge thread performs the handshake (on the unsplit
+    // transport), then splits and spawns reader + writer threads.
+    // We get the result back via a oneshot-like mpsc channel.
     let (result_tx, result_rx) = std::sync::mpsc::channel();
 
     std::thread::spawn(move || {
@@ -196,10 +217,16 @@ pub fn accept_and_run(
 }
 
 /// Result of a successful client connection.
+///
+/// Holds both the read channel (for the looper) and the write
+/// channel (for ServiceHandle/PaneBuilder). The bridge spawns
+/// a reader thread and a writer thread; the caller interacts
+/// only through channels.
 #[derive(Debug)]
-pub struct ClientReader {
+pub struct ClientConnection {
     pub welcome: Welcome,
-    pub rx: std::sync::mpsc::Receiver<ControlMessage>,
+    pub rx: std::sync::mpsc::Receiver<LooperMessage>,
+    pub write_tx: std::sync::mpsc::Sender<WriteMessage>,
 }
 
 /// Result of a successful server-side accept.
@@ -207,18 +234,20 @@ pub struct ClientReader {
 pub struct ServerReader {
     pub hello: Hello,
     pub welcome: Welcome,
-    pub rx: std::sync::mpsc::Receiver<ControlMessage>,
+    pub rx: std::sync::mpsc::Receiver<LooperMessage>,
 }
 
-/// Client bridge thread: handshake via FrameCodec, then reader loop.
+/// Client bridge thread: handshake on unsplit transport, then split
+/// into reader + writer threads for the active phase.
 fn run_client_bridge(
-    mut transport: impl Transport,
+    mut transport: impl crate::transport::TransportSplit,
     hello: Hello,
-    result_tx: std::sync::mpsc::Sender<Result<ClientReader, ConnectError>>,
+    result_tx: std::sync::mpsc::Sender<Result<ClientConnection, ConnectError>>,
 ) {
-    let mut codec = FrameCodec::new(HANDSHAKE_MAX_MESSAGE_SIZE);
+    let codec = FrameCodec::new(HANDSHAKE_MAX_MESSAGE_SIZE);
 
-    // Write Hello as a framed Control message.
+    // -- Handshake: write Hello, read Welcome (before split) --
+
     let bytes = match postcard::to_allocvec(&hello) {
         Ok(b) => b,
         Err(e) => {
@@ -233,7 +262,6 @@ fn run_client_bridge(
         return;
     }
 
-    // Read the server's decision.
     let frame = match codec.read_frame(&mut transport) {
         Ok(f) => f,
         Err(e) => {
@@ -277,28 +305,34 @@ fn run_client_bridge(
         }
     };
 
-    // Handshake succeeded. Update codec with negotiated parameters.
-    codec.set_max_message_size(welcome.max_message_size);
+    // -- Active phase: split transport, spawn writer thread --
 
-    // Register service bindings from Welcome.
-    for binding in &welcome.bindings {
-        codec.register_service(binding.session_id);
-    }
+    let max_msg = welcome.max_message_size;
+    let (mut reader, mut writer) = transport.into_split();
 
-    // Set up the control message channel.
+    // Writer thread: owns write half + its own codec.
+    let (write_tx, write_rx) = std::sync::mpsc::channel();
+    let writer_codec = FrameCodec::new(max_msg);
+    std::thread::spawn(move || {
+        writer_loop(&mut writer, &writer_codec, write_rx);
+    });
+
+    // Reader: permissive codec for dynamically assigned session_ids
+    // from DeclareInterest.
+    let reader_codec = FrameCodec::permissive(max_msg);
     let (msg_tx, msg_rx) = std::sync::mpsc::channel();
 
-    // Signal success before entering the read loop — the caller
-    // can start using the Receiver immediately.
-    if result_tx.send(Ok(ClientReader {
+    // Signal success before entering the read loop.
+    if result_tx.send(Ok(ClientConnection {
         welcome: welcome.clone(),
         rx: msg_rx,
+        write_tx,
     })).is_err() {
         return; // Caller dropped
     }
 
-    // Active-phase reader loop.
-    reader_loop(&mut transport, &codec, msg_tx);
+    // This thread becomes the reader loop.
+    reader_loop(&mut reader, &reader_codec, msg_tx);
 }
 
 /// Server bridge thread: read Hello, decide, send response, then reader loop.
@@ -307,7 +341,7 @@ fn run_server_bridge(
     decide: impl FnOnce(Hello) -> Result<Welcome, Rejection>,
     result_tx: std::sync::mpsc::Sender<Result<ServerReader, ConnectError>>,
 ) {
-    let mut codec = FrameCodec::new(HANDSHAKE_MAX_MESSAGE_SIZE);
+    let codec = FrameCodec::new(HANDSHAKE_MAX_MESSAGE_SIZE);
 
     // Read Hello from a framed Control message.
     let frame = match codec.read_frame(&mut transport) {
@@ -376,12 +410,9 @@ fn run_server_bridge(
         }
     };
 
-    // Handshake succeeded. Update codec with negotiated parameters.
-    codec.set_max_message_size(welcome.max_message_size);
-
-    for binding in &welcome.bindings {
-        codec.register_service(binding.session_id);
-    }
+    // Handshake succeeded. Permissive codec for the reader loop
+    // (same rationale as client side).
+    let reader_codec = FrameCodec::permissive(welcome.max_message_size);
 
     let (msg_tx, msg_rx) = std::sync::mpsc::channel();
 
@@ -393,11 +424,30 @@ fn run_server_bridge(
         return;
     }
 
-    reader_loop(&mut transport, &codec, msg_tx);
+    reader_loop(&mut transport, &reader_codec, msg_tx);
+}
+
+/// Writer thread: drains the write channel and frames each message
+/// onto the transport. Exits when the channel closes or a write fails.
+///
+/// Deadlock-free by construction: the writer thread only blocks on
+/// mpsc::recv (memory-to-memory) and write (transport). It never
+/// acquires locks or reads from the transport. DAG topology per
+/// DLfActRiS Theorem 5.4.
+fn writer_loop(
+    writer: &mut impl std::io::Write,
+    codec: &FrameCodec,
+    write_rx: std::sync::mpsc::Receiver<WriteMessage>,
+) {
+    while let Ok((service, payload)) = write_rx.recv() {
+        if codec.write_frame(writer, service, &payload).is_err() {
+            break;
+        }
+    }
 }
 
 /// Active-phase reader loop. Reads frames, demuxes by service,
-/// and forwards Control messages to the looper.
+/// and forwards messages to the looper as LooperMessage variants.
 ///
 /// Exits when:
 /// - The transport fails (peer disconnected, broken pipe)
@@ -406,7 +456,7 @@ fn run_server_bridge(
 fn reader_loop(
     transport: &mut impl std::io::Read,
     codec: &FrameCodec,
-    msg_tx: std::sync::mpsc::Sender<ControlMessage>,
+    msg_tx: std::sync::mpsc::Sender<LooperMessage>,
 ) {
     loop {
         match codec.read_frame(transport) {
@@ -419,15 +469,17 @@ fn reader_loop(
                         break;
                     }
                 };
-                if msg_tx.send(msg).is_err() {
+                if msg_tx.send(LooperMessage::Control(msg)).is_err() {
                     // Looper dropped its receiver — shut down.
                     break;
                 }
             }
-            Ok(Frame::Message { service: _, payload: _ }) => {
-                // Service-specific message — forward with service tag.
-                // Vertical slice: no services registered, this won't
-                // happen. Future: route to per-service channels.
+            Ok(Frame::Message { service, payload }) => {
+                // Service frame — forward with session_id tag.
+                // Looper parses ServiceFrame and routes by variant.
+                if msg_tx.send(LooperMessage::Service { session_id: service, payload }).is_err() {
+                    break;
+                }
             }
             Ok(Frame::Abort) => {
                 // Peer sent ProtocolAbort.
@@ -444,8 +496,100 @@ fn reader_loop(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::transport::MemoryTransport;
+    use crate::transport::{MemoryTransport, TransportSplit};
     use crate::handshake::{Rejection, RejectReason};
+
+    #[test]
+    fn writer_loop_forwards_frames() {
+        let (mut client, server) = MemoryTransport::pair();
+        let (write_tx, write_rx) = std::sync::mpsc::channel();
+
+        let writer_codec = FrameCodec::new(1024);
+
+        // Spawn writer loop on the server-side write half
+        let (_, mut s_writer) = server.into_split();
+        std::thread::spawn(move || {
+            writer_loop(&mut s_writer, &writer_codec, write_rx);
+        });
+
+        // Send a frame through the channel
+        let payload = postcard::to_allocvec(&ControlMessage::Lifecycle(
+            pane_proto::protocols::lifecycle::LifecycleMessage::Ready,
+        )).unwrap();
+        write_tx.send((0u8, payload.clone())).unwrap();
+
+        // Read it from the other end
+        let reader_codec = FrameCodec::permissive(1024);
+        let frame = reader_codec.read_frame(&mut client).unwrap();
+        match frame {
+            Frame::Message { service: 0, payload: received } => {
+                assert_eq!(received, payload);
+            }
+            other => panic!("expected Control frame, got {other:?}"),
+        }
+
+        // Drop sender to terminate writer loop
+        drop(write_tx);
+    }
+
+    #[test]
+    fn connect_and_run_returns_write_channel() {
+        use pane_proto::protocols::lifecycle::LifecycleMessage;
+
+        let (ct, mut st) = MemoryTransport::pair();
+
+        let server_handle = std::thread::spawn(move || {
+            let codec = FrameCodec::new(HANDSHAKE_MAX_MESSAGE_SIZE);
+
+            // Read Hello
+            let frame = codec.read_frame(&mut st).unwrap();
+            let payload = match frame {
+                Frame::Message { service: 0, payload } => payload,
+                _ => panic!("expected Control frame"),
+            };
+            let _hello: Hello = postcard::from_bytes(&payload).unwrap();
+
+            // Send Welcome
+            let decision: Result<Welcome, Rejection> = Ok(Welcome {
+                version: 1,
+                instance_id: "write-test-server".into(),
+                max_message_size: 16 * 1024 * 1024,
+                bindings: vec![],
+            });
+            let bytes = postcard::to_allocvec(&decision).unwrap();
+            codec.write_frame(&mut st, 0, &bytes).unwrap();
+
+            // Active phase: read what the client sends via write_tx
+            let reader_codec = FrameCodec::permissive(16 * 1024 * 1024);
+            let frame = reader_codec.read_frame(&mut st).unwrap();
+            match frame {
+                Frame::Message { service: 0, payload } => {
+                    let msg: ControlMessage = postcard::from_bytes(&payload).unwrap();
+                    assert!(matches!(msg, ControlMessage::Lifecycle(LifecycleMessage::Ready)));
+                }
+                other => panic!("expected Control frame, got {other:?}"),
+            }
+
+            drop(st);
+        });
+
+        let client = connect_and_run(
+            Hello {
+                version: 1,
+                max_message_size: 16 * 1024 * 1024,
+                interests: vec![],
+                provides: vec![],
+            },
+            ct,
+        ).expect("client connect failed");
+
+        // Write through the write channel
+        let msg = ControlMessage::Lifecycle(LifecycleMessage::Ready);
+        let bytes = postcard::to_allocvec(&msg).unwrap();
+        client.write_tx.send((0, bytes)).unwrap();
+
+        server_handle.join().unwrap();
+    }
 
     #[test]
     fn two_phase_handshake_roundtrip() {
@@ -562,9 +706,9 @@ mod tests {
 
         assert_eq!(client.welcome.instance_id, "test-server");
 
-        // Read the Ready message
+        // Read the Ready message (wrapped in LooperMessage)
         let msg = client.rx.recv().expect("expected Ready");
-        assert!(matches!(msg, ControlMessage::Lifecycle(LifecycleMessage::Ready)));
+        assert!(matches!(msg, LooperMessage::Control(ControlMessage::Lifecycle(LifecycleMessage::Ready))));
 
         // Channel closes after server drops transport
         server_handle.join().unwrap();
@@ -652,12 +796,12 @@ mod tests {
 
         assert_eq!(client.welcome.instance_id, "msg-server");
 
-        // Read the two lifecycle messages
+        // Read the two lifecycle messages (wrapped in LooperMessage)
         let msg1 = client.rx.recv().expect("expected Ready");
-        assert!(matches!(msg1, ControlMessage::Lifecycle(LifecycleMessage::Ready)));
+        assert!(matches!(msg1, LooperMessage::Control(ControlMessage::Lifecycle(LifecycleMessage::Ready))));
 
         let msg2 = client.rx.recv().expect("expected CloseRequested");
-        assert!(matches!(msg2, ControlMessage::Lifecycle(LifecycleMessage::CloseRequested)));
+        assert!(matches!(msg2, LooperMessage::Control(ControlMessage::Lifecycle(LifecycleMessage::CloseRequested))));
 
         // Channel closes after server drops
         server_handle.join().unwrap();
