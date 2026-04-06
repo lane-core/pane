@@ -39,6 +39,16 @@ impl Drop for Pane {
 }
 
 impl Pane {
+    /// Create a pane with a given tag. Stub constructor for testing
+    /// and headless operation — the real constructor will take a
+    /// server connection and receive an assigned id.
+    pub fn new(tag: Tag) -> Self {
+        Pane {
+            id: 0,
+            tag,
+        }
+    }
+
     /// Enter the typed setup phase for service registration.
     pub fn setup<H: Handler>(self) -> PaneBuilder<H> {
         PaneBuilder::new(self)
