@@ -6,20 +6,26 @@
 //!   Phase 2 (handshake + active): panics on broken connection.
 //!     A verified transport that dies mid-session is exceptional.
 
-/// Error during transport connection (Phase 1).
+use crate::handshake::Rejection;
+
+/// Connection failure — either transport-level or protocol-level.
+///
+/// Transport errors surface in Phase 1 (server not reachable).
+/// Rejections surface in Phase 2 (server explicitly declined
+/// the handshake after receiving Hello).
 #[derive(Debug)]
 pub enum ConnectError {
-    /// Server not reachable (connection refused, socket not found).
-    Unreachable(std::io::Error),
-    /// Server rejected the connection.
-    Rejected(String),
+    /// Transport unreachable (network, socket, etc.).
+    Transport(std::io::Error),
+    /// Server explicitly rejected the handshake.
+    Rejected(Rejection),
 }
 
 impl std::fmt::Display for ConnectError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            ConnectError::Unreachable(e) => write!(f, "server unreachable: {e}"),
-            ConnectError::Rejected(r) => write!(f, "connection rejected: {r}"),
+            ConnectError::Transport(e) => write!(f, "transport error: {e}"),
+            ConnectError::Rejected(r) => write!(f, "connection rejected: {:?}", r.reason),
         }
     }
 }

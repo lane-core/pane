@@ -11,8 +11,10 @@
 //!   - MonadicLens<S,A> (optic-backed state access)
 //!   - PeerAuth + AuthSource (transport-level peer identity)
 //!   - Address (resolved pane address for routing)
+//!   - ControlMessage (wire service 0 envelope)
 
 pub mod address;
+pub mod control;
 pub mod message;
 pub mod protocol;
 pub mod flow;
@@ -25,6 +27,7 @@ pub mod obligation;
 pub mod peer_auth;
 
 pub use address::Address;
+pub use control::{ControlMessage, DeclineReason, TeardownReason};
 pub use flow::Flow;
 pub use handles::Handles;
 pub use handler::Handler;

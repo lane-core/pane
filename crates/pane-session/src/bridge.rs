@@ -22,7 +22,7 @@
 use par::exchange::{Send, Recv};
 use par::Session;
 use crate::transport::{Transport, ConnectError};
-use crate::handshake::{Hello, Welcome, ClientHandshake, ServerHandshake};
+use crate::handshake::{Hello, Welcome, Rejection, ClientHandshake, ServerHandshake};
 
 /// Phase 1: verify a transport is alive.
 ///
@@ -54,10 +54,10 @@ pub fn bridge_client_handshake(mut transport: impl Transport + 'static) -> Clien
             transport.send_raw(&bytes);
 
             let bytes = transport.recv_raw();
-            let welcome: Welcome = postcard::from_bytes(&bytes)
-                .expect("bridge: Welcome deserialization failed");
+            let decision: Result<Welcome, Rejection> = postcard::from_bytes(&bytes)
+                .expect("bridge: handshake response deserialization failed");
 
-            server.send1(welcome);
+            server.send1(decision);
         });
     })
 }
@@ -72,11 +72,11 @@ pub fn bridge_server_handshake(mut transport: impl Transport + 'static) -> Serve
 
             let client = client.send(hello);
 
-            let (welcome, _): (Welcome, _) =
+            let (decision, _): (Result<Welcome, Rejection>, _) =
                 futures::executor::block_on(client.recv());
 
-            let bytes = postcard::to_allocvec(&welcome)
-                .expect("bridge: Welcome serialization failed");
+            let bytes = postcard::to_allocvec(&decision)
+                .expect("bridge: handshake response serialization failed");
             transport.send_raw(&bytes);
         });
     })
@@ -102,6 +102,7 @@ pub fn connect_server(
 mod tests {
     use super::*;
     use crate::transport::MemoryTransport;
+    use crate::handshake::{Rejection, RejectReason};
 
     #[test]
     fn two_phase_handshake_roundtrip() {
@@ -119,15 +120,43 @@ mod tests {
         let (hello, server) = futures::executor::block_on(server.recv());
         assert_eq!(hello.version, 1);
 
-        server.send1(Welcome {
+        server.send1(Ok(Welcome {
             version: 1,
-            instance_id: "test-server".into(),
+            instance_id: "ada-server".into(),
             max_message_size: 16 * 1024 * 1024,
             bindings: vec![],
+        }));
+
+        let decision = futures::executor::block_on(client.recv1());
+        let welcome = decision.expect("expected welcome, got rejection");
+        assert_eq!(welcome.instance_id, "ada-server");
+    }
+
+    #[test]
+    fn handshake_rejection_roundtrip() {
+        let (ct, st) = MemoryTransport::pair();
+
+        let client = connect_client(ct).expect("client connect failed");
+        let server = connect_server(st).expect("server connect failed");
+
+        let client = client.send(Hello {
+            version: 99,
+            max_message_size: 16 * 1024 * 1024,
+            interests: vec![],
         });
 
-        let welcome = futures::executor::block_on(client.recv1());
-        assert_eq!(welcome.instance_id, "test-server");
+        let (hello, server) = futures::executor::block_on(server.recv());
+        assert_eq!(hello.version, 99);
+
+        server.send1(Err(Rejection {
+            reason: RejectReason::VersionMismatch,
+            message: Some("server requires version 1".into()),
+        }));
+
+        let decision = futures::executor::block_on(client.recv1());
+        let rejection = decision.expect_err("expected rejection, got welcome");
+        assert!(matches!(rejection.reason, RejectReason::VersionMismatch));
+        assert_eq!(rejection.message.as_deref(), Some("server requires version 1"));
     }
 
     #[test]
