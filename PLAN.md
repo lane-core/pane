@@ -56,7 +56,10 @@ Single server (N=1), headless, no suspension, no streaming. All multi-server dat
 - [x] **ExitReason** — Graceful/Disconnected/Failed/InfraError
 - [ ] **Messenger full impl** — `set_content`, `set_pulse_rate`, `post_app_message` (send_request moved to ServiceHandle)
 - [ ] **ConnectionSource** — calloop EventSource for a single Connection (read + buffered write) — **bumped priority: enables real Messenger/ServiceHandle routing**
-- [ ] **Service registration wiring** — `PaneBuilder::open_service::<P>()` and `serve::<P>()` talking to real ProtocolServer (types exist, stubs need wiring)
+- [x] **Service registration wiring** — `PaneBuilder::connect()` + `open_service::<P>()` sends DeclareInterest through real ProtocolServer, `ServiceHandle::Drop` sends RevokeInterest, `LooperCore` dispatches service frames through `ServiceDispatch<H>` (12 new tests)
+- [ ] **Eager Hello.interests** — move initial service interests into Hello, resolved during handshake via Welcome.bindings (four-agent recommendation, deferred from service registration wiring)
+- [ ] **Provider-side Request dispatch** — `dispatch_service` ServiceFrame::Request needs typed message + ReplyPort delivery
+- [ ] **Consumer-side Reply/Failed routing** — `dispatch_service` Reply/Failed route through Dispatch<H> by token
 - [ ] **ActivePhase\<T\>** — explicit shift operator (ω_X) carrying negotiated state (max_message_size, PeerAuth, known_services)
 - [ ] **Looper** — calloop-backed, per-protocol typed channels, unified batch, coalescing
 - [ ] **AppPayload** — `Clone + Send + 'static` marker trait
@@ -101,7 +104,7 @@ From architecture spec I1–I13 and S1–S6. Status from formal-verifier audit (
 - [x] **I10** (ProtocolAbort non-blocking) — partial: framing layer provides fallible write
 - [x] **I11** (ProtocolAbort at framing layer) — tested: reserved 0xFF, all paths covered
 - [x] **I12** (unknown discriminant → connection error) — tested: monotonic known_services
-- [ ] **I13** (open_service blocks until accepted) — open_service is a stub
+- [x] **I13** (open_service blocks until accepted) — PaneBuilder::open_service blocks on mpsc channel for InterestAccepted/Declined, buffers unrelated messages
 - [x] **S1** (token uniqueness) — tested: consecutive inserts differ
 - [ ] **S2** (sequential dispatch) — follows from I6
 - [ ] **S3** (control-before-events in batch) — no batch processing
@@ -157,8 +160,8 @@ Orthogonal to protocol phases — can proceed in parallel once Phase 1 server ex
 | Crate | Role | Status |
 |-------|------|--------|
 | pane-proto | Protocol vocabulary, no IO | Active (88 tests) |
-| pane-session | Session-typed IPC, transport, framing, server | Active (40 tests) |
-| pane-app | Actor framework, dispatch, looper | Active (33 tests + 3 integration) |
+| pane-session | Session-typed IPC, transport, framing, server | Active (44 tests) |
+| pane-app | Actor framework, dispatch, looper | Active (43 tests + 5 integration) |
 | pane-fs | Filesystem namespace | Active (5 tests) |
 | pane-hello | First running pane app (binary) | Active (0 tests, manual verification) |
 | pane-notify | Filesystem notification abstraction | Preserved from prototype |

@@ -76,7 +76,7 @@ connections by dispatching their events sequentially.
 ### Sessions (pane-session)
 
 ```rust
-type ClientHandshake = par::exchange::Send<Hello, par::exchange::Recv<Welcome>>;
+type ClientHandshake = par::exchange::Send<Hello, par::exchange::Recv<Result<Welcome, Rejection>>>;
 type ServerHandshake = par::Dual<ClientHandshake>;
 
 let client = bridge_client_handshake(transport);
@@ -1089,7 +1089,7 @@ fn main() {
 fn main() {
     let app = App::connect("com.example.hello");
     let pane = app.create_pane(Tag::new("Hello")).wait();
-    pane.run(|msg| match msg {
+    pane.run(|_messenger, msg| match msg {
         LifecycleMessage::CloseRequested => Flow::Stop,
         _ => Flow::Continue,
     })
