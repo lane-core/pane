@@ -243,6 +243,35 @@ mod tests {
     }
 
     #[test]
+    fn fire_failed_delivers_failure_to_handler() {
+        let mut dispatch = Dispatch::new();
+        let mut handler = TestHandler { replies: vec![], failures: vec![] };
+        let messenger = Messenger::new();
+        let conn = ConnectionId(1);
+
+        let token = dispatch.insert(conn, DispatchEntry {
+            on_reply: Box::new(|h: &mut TestHandler, _, payload| {
+                let msg = payload.downcast::<String>().unwrap();
+                h.replies.push(*msg);
+                Flow::Continue
+            }),
+            on_failed: Box::new(|h: &mut TestHandler, _| {
+                h.failures.push("single_failed".into());
+                Flow::Continue
+            }),
+        });
+
+        assert_eq!(dispatch.len(), 1);
+
+        // fire_failed — not fire_reply, not fail_connection
+        let flow = dispatch.fire_failed(conn, token, &mut handler, &messenger);
+        assert_eq!(flow, Some(Flow::Continue));
+        assert_eq!(handler.failures, vec!["single_failed"]); // on_failed fired
+        assert!(handler.replies.is_empty()); // on_reply did NOT fire
+        assert_eq!(dispatch.len(), 0); // entry consumed
+    }
+
+    #[test]
     fn tokens_are_unique_per_connection() {
         let mut dispatch = Dispatch::<TestHandler>::new();
         let conn = ConnectionId(1);

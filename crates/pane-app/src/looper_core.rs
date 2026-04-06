@@ -473,6 +473,60 @@ mod tests {
             "exit signal must include Disconnected. Got: {:?}", reasons);
     }
 
+    // ── Claim: E-Suspend → E-React end-to-end ──────────────
+
+    #[test]
+    fn e_suspend_e_react_end_to_end() {
+        // The EAct core loop: E-Suspend installs a one-shot reply
+        // entry → looper returns to idle → reply arrives → entry
+        // consumed → on_reply fires on &mut H.
+        //
+        // The real looper splits the borrow between &mut Dispatch
+        // and &mut H when calling fire_reply. Tests in this module
+        // can access private fields, so we split the same way.
+        let (log, exit_tx, _exit_rx) = setup();
+        let mut core = make_core(log.clone(), exit_tx);
+        let conn = ConnectionId(1);
+
+        // E-Suspend: install a dispatch entry whose on_reply
+        // callback mutates the handler's log.
+        let token = core.dispatch.insert(conn, DispatchEntry {
+            on_reply: Box::new(|h: &mut TestHandler, _, payload| {
+                let msg = payload.downcast::<String>().unwrap();
+                h.log.lock().unwrap().push(format!("on_reply:{}", msg));
+                Flow::Continue
+            }),
+            on_failed: Box::new(|h: &mut TestHandler, _| {
+                h.log.lock().unwrap().push("on_failed_BUG".into());
+                Flow::Continue
+            }),
+        });
+        assert_eq!(core.dispatch.len(), 1, "E-Suspend: entry installed");
+
+        // E-React: split the borrow to call fire_reply with both
+        // &mut Dispatch and &mut H, mirroring the real looper.
+        let messenger = core.messenger.clone();
+        let flow = core.dispatch.fire_reply(
+            conn, token,
+            &mut core.handler,
+            &messenger,
+            Box::new("hello".to_string()),
+        );
+
+        // on_reply callback fired and modified handler state.
+        assert_eq!(flow, Some(Flow::Continue));
+        let events = log.lock().unwrap().clone();
+        assert!(events.contains(&"on_reply:hello".to_string()),
+            "E-React: on_reply must fire and modify handler state. Got: {:?}", events);
+
+        // Entry consumed (one-shot).
+        assert_eq!(core.dispatch.len(), 0, "entry consumed after fire_reply");
+
+        // on_failed did NOT fire.
+        assert!(!events.contains(&"on_failed_BUG".to_string()),
+            "on_failed must not fire on successful reply. Got: {:?}", events);
+    }
+
     // ── Claim: dispatching after destruction is not allowed ─
 
     #[test]
