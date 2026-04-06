@@ -128,7 +128,16 @@ impl<P: Protocol> ServiceHandle<P> {
 
 impl<P: Protocol> Drop for ServiceHandle<P> {
     fn drop(&mut self) {
-        // TODO: send RevokeInterest via write_tx on the Control channel
+        if let Some(ref tx) = self.write_tx {
+            let msg = pane_proto::control::ControlMessage::RevokeInterest {
+                session_id: self.session_id,
+            };
+            if let Ok(bytes) = postcard::to_allocvec(&msg) {
+                // Best-effort: if the channel is closed, the server
+                // will clean up via process_disconnect anyway.
+                let _ = tx.send((0, bytes));
+            }
+        }
     }
 }
 
@@ -268,6 +277,32 @@ mod tests {
             |_: &mut TestHandler, _, _: TestReply| Flow::Continue,
             |_: &mut TestHandler, _| Flow::Continue,
         );
+    }
+
+    #[test]
+    fn drop_sends_revoke_interest() {
+        let (tx, rx) = std::sync::mpsc::channel();
+        let handle = ServiceHandle::<TestProto>::with_channel(5, tx);
+
+        drop(handle);
+
+        let (service, payload) = rx.recv().expect("expected RevokeInterest frame");
+        assert_eq!(service, 0, "RevokeInterest goes on control channel");
+        let msg: pane_proto::control::ControlMessage =
+            postcard::from_bytes(&payload).expect("deserialize");
+        match msg {
+            pane_proto::control::ControlMessage::RevokeInterest { session_id } => {
+                assert_eq!(session_id, 5);
+            }
+            other => panic!("expected RevokeInterest, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn drop_stub_handle_no_panic() {
+        // A stub handle (no write channel) should not panic on drop.
+        let handle = ServiceHandle::<TestProto>::new();
+        drop(handle); // no-op, no panic
     }
 
     #[test]

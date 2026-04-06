@@ -265,6 +265,28 @@ impl ServerState {
                     }
                 }
             }
+            ControlMessage::RevokeInterest { session_id } => {
+                // Remove the route for this session on this connection.
+                if let Some(route) = self.routing_table.remove(&(conn_id, session_id)) {
+                    let (peer_conn, peer_session) = if route.consumer_conn == conn_id {
+                        (route.provider_conn, route.provider_session)
+                    } else {
+                        (route.consumer_conn, route.consumer_session)
+                    };
+                    self.routing_table.remove(&(peer_conn, peer_session));
+                    // Notify the peer of teardown.
+                    let teardown = ControlMessage::ServiceTeardown {
+                        session_id: peer_session,
+                        reason: pane_proto::control::TeardownReason::ServiceRevoked,
+                    };
+                    if let Ok(bytes) = postcard::to_allocvec(&teardown) {
+                        if let Some(wh) = self.writers.get(&peer_conn) {
+                            let _ = wh.write_frame(0, &bytes);
+                        }
+                    }
+                }
+                // Unknown session_id = no-op (defensive, per session-type analysis)
+            }
             ControlMessage::Cancel { token: _ } => {
                 // TODO: forward to provider side
             }
@@ -647,6 +669,43 @@ mod tests {
             || state.provider_index.get(&service.uuid).unwrap().is_empty());
         assert!(state.routing_table.is_empty());
         assert!(peers.iter().any(|(c, _)| *c == ConnectionId(2)));
+    }
+
+    #[test]
+    fn server_state_revoke_interest_cleans_route() {
+        let mut state = ServerState::new();
+        let service = ServiceId::new("com.pane.echo");
+
+        state.register_provides(ConnectionId(1), &[ServiceProvision {
+            service,
+            version: 1,
+        }]);
+        state.next_session.insert(ConnectionId(1), 1);
+        state.next_session.insert(ConnectionId(2), 1);
+
+        // Establish a route via DeclareInterest
+        let result = state.handle_declare_interest(ConnectionId(2), service, 1);
+        assert!(result.is_some());
+        assert_eq!(state.routing_table.len(), 2);
+
+        let consumer_session = match result.unwrap().0 {
+            ControlMessage::InterestAccepted { session_id, .. } => session_id,
+            _ => panic!("expected InterestAccepted"),
+        };
+
+        // Simulate process_control receiving RevokeInterest
+        // (extracted from process_control for unit test)
+        let route = state.routing_table.remove(&(ConnectionId(2), consumer_session));
+        assert!(route.is_some(), "consumer route should exist");
+        let route = route.unwrap();
+        let (peer_conn, peer_session) = if route.consumer_conn == ConnectionId(2) {
+            (route.provider_conn, route.provider_session)
+        } else {
+            (route.consumer_conn, route.consumer_session)
+        };
+        state.routing_table.remove(&(peer_conn, peer_session));
+
+        assert!(state.routing_table.is_empty(), "all routes should be removed");
     }
 
     #[test]
