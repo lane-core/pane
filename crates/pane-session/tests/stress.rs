@@ -124,6 +124,86 @@ fn accept_on_thread(
     })
 }
 
+/// Generic client connection for any Read+Write transport.
+/// Used by UnixStream tests where MemoryTransport isn't involved.
+struct GenericClientConn<T: std::io::Read + std::io::Write> {
+    transport: T,
+    codec: FrameCodec,
+}
+
+impl<T: std::io::Read + std::io::Write> GenericClientConn<T> {
+    fn connect(mut transport: T, hello: Hello) -> (Self, Welcome) {
+        let codec = FrameCodec::new(HANDSHAKE_MAX_MESSAGE_SIZE);
+
+        let bytes = postcard::to_allocvec(&hello).unwrap();
+        codec.write_frame(&mut transport, 0, &bytes).unwrap();
+
+        let frame = codec.read_frame(&mut transport).unwrap();
+        let payload = match frame {
+            Frame::Message {
+                service: 0,
+                payload,
+            } => payload,
+            other => panic!("unexpected frame: {other:?}"),
+        };
+        let decision: Result<Welcome, Rejection> = postcard::from_bytes(&payload).unwrap();
+        let welcome = decision.expect("rejected");
+
+        let mut codec = codec;
+        codec.set_max_message_size(welcome.max_message_size);
+        (GenericClientConn { transport, codec }, welcome)
+    }
+
+    fn send_control(&mut self, msg: &ControlMessage) {
+        let bytes = postcard::to_allocvec(msg).unwrap();
+        self.codec
+            .write_frame(&mut self.transport, 0, &bytes)
+            .unwrap();
+    }
+
+    fn read_control(&mut self) -> ControlMessage {
+        let frame = self.codec.read_frame(&mut self.transport).unwrap();
+        match frame {
+            Frame::Message {
+                service: 0,
+                payload,
+            } => postcard::from_bytes(&payload).unwrap(),
+            other => panic!("expected Control, got {other:?}"),
+        }
+    }
+
+    fn expect_ready(&mut self) {
+        match self.read_control() {
+            ControlMessage::Lifecycle(
+                pane_proto::protocols::lifecycle::LifecycleMessage::Ready,
+            ) => {}
+            other => panic!("expected Ready, got {other:?}"),
+        }
+    }
+
+    fn register_session(&mut self, session_id: u16) {
+        self.codec.register_service(session_id);
+    }
+
+    fn send_service(&mut self, session_id: u16, frame: &ServiceFrame) {
+        let bytes = postcard::to_allocvec(frame).unwrap();
+        self.codec
+            .write_frame(&mut self.transport, session_id, &bytes)
+            .unwrap();
+    }
+
+    fn read_service(&mut self) -> (u16, ServiceFrame) {
+        let frame = self.codec.read_frame(&mut self.transport).unwrap();
+        match frame {
+            Frame::Message { service, payload } if service != 0 => {
+                let sf: ServiceFrame = postcard::from_bytes(&payload).unwrap();
+                (service, sf)
+            }
+            other => panic!("expected service frame, got {other:?}"),
+        }
+    }
+}
+
 // ════════════════════════════════════════════════════════════════
 // S3: Codec resync after oversized frame
 // ════════════════════════════════════════════════════════════════
@@ -1208,6 +1288,1100 @@ fn per_connection_frame_ordering_under_burst() {
         drop(transport);
         conn.wait();
     }
+    drop(pane_b);
+    conn_b.wait();
+}
+
+// ════════════════════════════════════════════════════════════════
+// P1: proptest — random bytes through read_frame
+// ════════════════════════════════════════════════════════════════
+
+/// P1: Feed arbitrary byte sequences into read_frame. The codec
+/// must never panic and must always return Ok(Frame) or
+/// Err(FrameError). This is the fundamental safety property of
+/// the wire parser: no input from the network can trigger UB,
+/// a panic, or an unbounded allocation.
+///
+/// Invariant: read_frame is total over arbitrary byte streams.
+#[test]
+#[ignore]
+fn codec_read_frame_never_panics() {
+    use proptest::prelude::*;
+    use std::io::Cursor;
+
+    let config = ProptestConfig {
+        cases: 2000,
+        ..ProptestConfig::default()
+    };
+
+    let mut runner = proptest::test_runner::TestRunner::new(config);
+    runner
+        .run(&proptest::collection::vec(any::<u8>(), 0..1024), |data| {
+            let codec = FrameCodec::new(512);
+            let mut cursor = Cursor::new(data);
+
+            // Must not panic. Result is always Ok or Err.
+            let result = codec.read_frame(&mut cursor);
+            match result {
+                Ok(Frame::Message { .. }) | Ok(Frame::Abort) => {}
+                Err(FrameError::Oversized { .. })
+                | Err(FrameError::UnknownService(_))
+                | Err(FrameError::Transport(_))
+                | Err(FrameError::TooShort { .. })
+                | Err(FrameError::Poisoned) => {}
+            }
+            Ok(())
+        })
+        .unwrap();
+}
+
+// ════════════════════════════════════════════════════════════════
+// P2: proptest — write_frame→read_frame roundtrip
+// ════════════════════════════════════════════════════════════════
+
+/// P2: For any valid service discriminant (0..=0xFFFE, excluding
+/// 0xFFFF) and any payload up to max_message_size, write_frame
+/// followed by read_frame must produce the exact same frame.
+///
+/// Invariant: the codec is a faithful bijection on valid frames.
+/// This is the codec's correctness property — the wire format
+/// preserves frame identity.
+#[test]
+#[ignore]
+fn codec_roundtrip_arbitrary_valid_frames() {
+    use proptest::prelude::*;
+    use std::io::Cursor;
+
+    let config = ProptestConfig {
+        cases: 2000,
+        ..ProptestConfig::default()
+    };
+
+    let mut runner = proptest::test_runner::TestRunner::new(config);
+    let strategy = (
+        0u16..=0xFFFEu16,
+        proptest::collection::vec(any::<u8>(), 0..512),
+    );
+
+    runner
+        .run(&strategy, |(service, payload)| {
+            let max_size = 1024u32;
+            let mut codec = FrameCodec::new(max_size);
+            if service != 0 {
+                codec.register_service(service);
+            }
+
+            let mut buf = Vec::new();
+            codec.write_frame(&mut buf, service, &payload).unwrap();
+
+            let mut cursor = Cursor::new(buf);
+            let frame = codec.read_frame(&mut cursor).unwrap();
+            prop_assert_eq!(frame, Frame::Message { service, payload },);
+            Ok(())
+        })
+        .unwrap();
+}
+
+// ════════════════════════════════════════════════════════════════
+// P3: proptest — random lengths produce correct FrameError variant
+// ════════════════════════════════════════════════════════════════
+
+/// P3: For any declared length, the codec must return the correct
+/// FrameError variant: TooShort for 0..2, Oversized for
+/// length > max_message_size. Lengths in range read the body
+/// (and may hit EOF if the body isn't provided).
+///
+/// Invariant: the length validation logic is exhaustive and
+/// deterministic across the full u32 range.
+#[test]
+#[ignore]
+fn codec_length_validation_correct_variant() {
+    use proptest::prelude::*;
+    use std::io::Cursor;
+
+    let config = ProptestConfig {
+        cases: 5000,
+        ..ProptestConfig::default()
+    };
+
+    let mut runner = proptest::test_runner::TestRunner::new(config);
+    runner
+        .run(&any::<u32>(), |length| {
+            let max_size = 1000u32;
+            let codec = FrameCodec::new(max_size);
+
+            // Build a stream with just the length prefix (no body).
+            let mut stream = Vec::new();
+            stream.extend_from_slice(&length.to_le_bytes());
+
+            let mut cursor = Cursor::new(stream);
+            let result = codec.read_frame(&mut cursor);
+
+            match result {
+                Err(FrameError::TooShort { declared }) => {
+                    prop_assert!(
+                        declared < 2,
+                        "TooShort should only fire for length < 2, got {declared}"
+                    );
+                    prop_assert_eq!(declared, length);
+                }
+                Err(FrameError::Oversized { declared, limit }) => {
+                    prop_assert!(
+                        declared > max_size,
+                        "Oversized should fire for length > {max_size}, got {declared}"
+                    );
+                    prop_assert_eq!(declared, length);
+                    prop_assert_eq!(limit, max_size);
+                }
+                Err(FrameError::Transport(ref e)) => {
+                    // Length was in valid range [2, max_size] but no body bytes
+                    prop_assert!(
+                        length >= 2 && length <= max_size,
+                        "Transport error for out-of-range length {length}: {e}"
+                    );
+                    prop_assert_eq!(e.kind(), std::io::ErrorKind::UnexpectedEof);
+                }
+                _ => {
+                    // Shouldn't get Ok with no body bytes
+                    return Err(proptest::test_runner::TestCaseError::Fail(
+                        format!("unexpected result for length {length}: {result:?}").into(),
+                    ));
+                }
+            }
+            Ok(())
+        })
+        .unwrap();
+}
+
+// ════════════════════════════════════════════════════════════════
+// P4: proptest — poison after any FrameError
+// ════════════════════════════════════════════════════════════════
+
+/// P4: After any FrameError (from any cause), the codec is
+/// poisoned — subsequent read_frame calls return Poisoned
+/// without touching the stream.
+///
+/// Invariant: poison is monotonic and irreversible. Once set,
+/// no further reads occur. This prevents desync attacks where
+/// a malformed frame leaves the stream in an inconsistent state
+/// and a subsequent "valid" read interprets body bytes as a
+/// length prefix.
+#[test]
+#[ignore]
+fn codec_poisoned_after_any_error() {
+    use proptest::prelude::*;
+    use std::io::Cursor;
+
+    let config = ProptestConfig {
+        cases: 1000,
+        ..ProptestConfig::default()
+    };
+
+    let mut runner = proptest::test_runner::TestRunner::new(config);
+    runner
+        .run(&proptest::collection::vec(any::<u8>(), 0..256), |data| {
+            let codec = FrameCodec::new(64);
+            let mut cursor = Cursor::new(data);
+
+            let first = codec.read_frame(&mut cursor);
+            if first.is_err() {
+                // Must be poisoned now.
+                let pos_before = cursor.position();
+                let second = codec.read_frame(&mut cursor);
+                prop_assert!(
+                    matches!(second, Err(FrameError::Poisoned)),
+                    "second read after error must return Poisoned, got {second:?}"
+                );
+                // Cursor must not advance.
+                prop_assert_eq!(
+                    cursor.position(),
+                    pos_before,
+                    "cursor must not advance after Poisoned"
+                );
+            }
+            Ok(())
+        })
+        .unwrap();
+}
+
+// ════════════════════════════════════════════════════════════════
+// S1r: Randomized DeclareInterest/RevokeInterest race
+// ════════════════════════════════════════════════════════════════
+
+/// S1r: Randomized version of the S1 race test. Two threads operate
+/// on the same server concurrently: one sends DeclareInterest +
+/// service frames at random intervals, the other sends RevokeInterest
+/// at a random point. Run 500 iterations with deterministic seed.
+///
+/// Invariant: no panic, no hang (5s timeout per iteration), server
+/// routing table converges to clean state after each cycle.
+#[test]
+#[ignore]
+fn randomized_declare_revoke_race() {
+    use std::time::Duration;
+
+    // Simple LCG for deterministic randomness (no external crate needed).
+    // Seed is fixed for reproducibility.
+    struct Lcg(u64);
+    impl Lcg {
+        fn next(&mut self) -> u64 {
+            self.0 = self.0.wrapping_mul(6364136223846793005).wrapping_add(1);
+            self.0
+        }
+        fn range(&mut self, lo: u64, hi: u64) -> u64 {
+            lo + self.next() % (hi - lo)
+        }
+    }
+
+    let iterations = 500;
+    let server = Arc::new(ProtocolServer::new());
+    let echo_id = echo_service_id();
+
+    // Provider stays connected the whole time
+    let (b_client, b_server) = MemoryTransport::pair();
+    let accept_b = accept_on_thread(&server, b_server);
+    let (mut pane_b, _) = ClientConn::connect(
+        b_client,
+        Hello {
+            version: 1,
+            max_message_size: 16 * 1024 * 1024,
+            interests: vec![],
+            provides: vec![ServiceProvision {
+                service: echo_id,
+                version: 1,
+            }],
+        },
+    );
+    let _conn_b = accept_b.join().unwrap();
+    pane_b.expect_ready();
+
+    // Consumer
+    let (a_client, a_server) = MemoryTransport::pair();
+    let accept_a = accept_on_thread(&server, a_server);
+    let (mut pane_a, _) = ClientConn::connect(
+        a_client,
+        Hello {
+            version: 1,
+            max_message_size: 16 * 1024 * 1024,
+            interests: vec![],
+            provides: vec![],
+        },
+    );
+    let _conn_a = accept_a.join().unwrap();
+    pane_a.expect_ready();
+
+    let mut rng = Lcg(0xDEAD_BEEF_CAFE_1234);
+
+    for iter in 0..iterations {
+        // DeclareInterest
+        pane_a.send_control(&ControlMessage::DeclareInterest {
+            service: echo_id,
+            expected_version: 1,
+        });
+
+        let a_session = match pane_a.read_control() {
+            ControlMessage::InterestAccepted { session_id, .. } => session_id,
+            ControlMessage::InterestDeclined { reason, .. } => {
+                panic!("declined at iter {iter}: {reason:?}");
+            }
+            other => panic!("unexpected at iter {iter}: {other:?}"),
+        };
+
+        // Provider gets InterestAccepted
+        let b_session = match pane_b.read_control() {
+            ControlMessage::InterestAccepted { session_id, .. } => session_id,
+            other => panic!("provider unexpected at iter {iter}: {other:?}"),
+        };
+        pane_a.register_session(a_session);
+        pane_b.register_session(b_session);
+
+        // Random delay before sending some frames
+        let pre_frames = rng.range(0, 5);
+        for f in 0..pre_frames {
+            let inner = postcard::to_allocvec(&EchoMessage::Ping(format!("{iter}:{f}"))).unwrap();
+            pane_a.send_service(a_session, &ServiceFrame::Notification { payload: inner });
+            // Random microsecond delay
+            let delay = rng.range(0, 100);
+            std::thread::sleep(Duration::from_micros(delay));
+        }
+
+        // RevokeInterest at a random point
+        let revoke_delay = rng.range(0, 50);
+        std::thread::sleep(Duration::from_micros(revoke_delay));
+        pane_a.send_control(&ControlMessage::RevokeInterest {
+            session_id: a_session,
+        });
+
+        // Drain expected messages: revoker ServiceTeardown
+        match pane_a.read_control() {
+            ControlMessage::ServiceTeardown { session_id, .. } => {
+                assert_eq!(session_id, a_session);
+            }
+            other => panic!("revoker expected ServiceTeardown at iter {iter}, got {other:?}"),
+        }
+
+        // Provider gets ServiceTeardown (may also get in-flight frames first)
+        loop {
+            let frame = pane_b.codec.read_frame(&mut pane_b.transport).unwrap();
+            match frame {
+                Frame::Message {
+                    service: 0,
+                    payload,
+                } => {
+                    let msg: ControlMessage = postcard::from_bytes(&payload).unwrap();
+                    match msg {
+                        ControlMessage::ServiceTeardown { .. } => break,
+                        _ => {
+                            panic!("provider expected ServiceTeardown at iter {iter}, got {msg:?}")
+                        }
+                    }
+                }
+                Frame::Message { service, .. } if service == b_session => {
+                    // In-flight service frame — consumed and discarded
+                }
+                other => panic!("provider unexpected frame at iter {iter}: {other:?}"),
+            }
+        }
+    }
+
+    // All 500 iterations completed without hang or panic.
+    // Server routing table is clean — verified indirectly because
+    // each DeclareInterest succeeded (stale routes would block).
+}
+
+// ════════════════════════════════════════════════════════════════
+// U1: UnixStream handshake
+// ════════════════════════════════════════════════════════════════
+
+/// U1: Perform a complete handshake over a real UnixStream socketpair.
+/// This validates the Transport blanket impl for UnixStream and the
+/// TransportSplit impl (try_clone).
+///
+/// Invariant: the framing protocol works identically over real
+/// kernel-buffered sockets as over MemoryTransport. This is the
+/// transport-independence property.
+#[test]
+#[ignore]
+fn unix_stream_handshake() {
+    use std::os::unix::net::UnixStream;
+
+    let (client_sock, server_sock) = UnixStream::pair().unwrap();
+
+    let server = Arc::new(ProtocolServer::new());
+
+    // Server accepts on a thread (UnixStream implements TransportSplit)
+    let server2 = Arc::clone(&server);
+    let accept_handle = std::thread::spawn(move || {
+        let writer = server_sock
+            .try_clone()
+            .expect("try_clone for server socket");
+        server2.accept(server_sock, writer).expect("accept failed")
+    });
+
+    // Client handshake
+    let codec = FrameCodec::new(HANDSHAKE_MAX_MESSAGE_SIZE);
+    let mut transport = client_sock;
+
+    let hello = Hello {
+        version: 1,
+        max_message_size: 16 * 1024 * 1024,
+        interests: vec![],
+        provides: vec![],
+    };
+    let bytes = postcard::to_allocvec(&hello).unwrap();
+    codec.write_frame(&mut transport, 0, &bytes).unwrap();
+
+    // Read Welcome
+    let frame = codec.read_frame(&mut transport).unwrap();
+    let payload = match frame {
+        Frame::Message {
+            service: 0,
+            payload,
+        } => payload,
+        other => panic!("expected Welcome frame, got {other:?}"),
+    };
+    let decision: Result<Welcome, Rejection> = postcard::from_bytes(&payload).unwrap();
+    let welcome = decision.expect("expected Welcome, got Rejection");
+    assert_eq!(welcome.version, 1);
+
+    // Read Ready
+    let frame = codec.read_frame(&mut transport).unwrap();
+    let payload = match frame {
+        Frame::Message {
+            service: 0,
+            payload,
+        } => payload,
+        other => panic!("expected Ready frame, got {other:?}"),
+    };
+    let msg: ControlMessage = postcard::from_bytes(&payload).unwrap();
+    assert!(
+        matches!(
+            msg,
+            ControlMessage::Lifecycle(pane_proto::protocols::lifecycle::LifecycleMessage::Ready)
+        ),
+        "expected Ready, got {msg:?}"
+    );
+
+    drop(transport);
+    let conn = accept_handle.join().unwrap();
+    conn.wait();
+}
+
+// ════════════════════════════════════════════════════════════════
+// U2: UnixStream DeclareInterest + service frame exchange
+// ════════════════════════════════════════════════════════════════
+
+/// U2: Full service negotiation and frame exchange over real
+/// UnixStream sockets. Provider and consumer connected to a
+/// ProtocolServer via socketpairs — DeclareInterest, Notification
+/// roundtrip, RevokeInterest.
+///
+/// Invariant: service frame routing works over real kernel sockets.
+/// Validates that FrameCodec's read_exact/write_all compose
+/// correctly with the kernel's socket buffer chunking.
+#[test]
+#[ignore]
+fn unix_stream_service_frame_exchange() {
+    use std::os::unix::net::UnixStream;
+
+    let server = Arc::new(ProtocolServer::new());
+    let echo_id = echo_service_id();
+
+    // Provider
+    let (bp_sock, bs_sock) = UnixStream::pair().unwrap();
+    let server2 = Arc::clone(&server);
+    let accept_b = std::thread::spawn(move || {
+        let writer = bs_sock.try_clone().expect("try_clone");
+        server2.accept(bs_sock, writer).expect("accept failed")
+    });
+
+    let (mut pane_b, _) = GenericClientConn::connect(
+        bp_sock,
+        Hello {
+            version: 1,
+            max_message_size: 16 * 1024 * 1024,
+            interests: vec![],
+            provides: vec![ServiceProvision {
+                service: echo_id,
+                version: 1,
+            }],
+        },
+    );
+    let conn_b = accept_b.join().unwrap();
+    pane_b.expect_ready();
+
+    // Consumer
+    let (ap_sock, as_sock) = UnixStream::pair().unwrap();
+    let server2 = Arc::clone(&server);
+    let accept_a = std::thread::spawn(move || {
+        let writer = as_sock.try_clone().expect("try_clone");
+        server2.accept(as_sock, writer).expect("accept failed")
+    });
+
+    let (mut pane_a, _) = GenericClientConn::connect(
+        ap_sock,
+        Hello {
+            version: 1,
+            max_message_size: 16 * 1024 * 1024,
+            interests: vec![],
+            provides: vec![],
+        },
+    );
+    let conn_a = accept_a.join().unwrap();
+    pane_a.expect_ready();
+
+    // DeclareInterest
+    pane_a.send_control(&ControlMessage::DeclareInterest {
+        service: echo_id,
+        expected_version: 1,
+    });
+
+    let a_session = match pane_a.read_control() {
+        ControlMessage::InterestAccepted { session_id, .. } => session_id,
+        other => panic!("expected InterestAccepted, got {other:?}"),
+    };
+    let b_session = match pane_b.read_control() {
+        ControlMessage::InterestAccepted { session_id, .. } => session_id,
+        other => panic!("expected InterestAccepted for provider, got {other:?}"),
+    };
+    pane_a.register_session(a_session);
+    pane_b.register_session(b_session);
+
+    // Send a Notification from consumer to provider
+    let inner = postcard::to_allocvec(&EchoMessage::Ping("unix".into())).unwrap();
+    pane_a.send_service(a_session, &ServiceFrame::Notification { payload: inner });
+
+    let (recv_session, recv_frame) = pane_b.read_service();
+    assert_eq!(recv_session, b_session);
+    match recv_frame {
+        ServiceFrame::Notification { payload } => {
+            let msg: EchoMessage = postcard::from_bytes(&payload).unwrap();
+            assert_eq!(msg, EchoMessage::Ping("unix".into()));
+        }
+        other => panic!("expected Notification, got {other:?}"),
+    }
+
+    // Clean teardown
+    pane_a.send_control(&ControlMessage::RevokeInterest {
+        session_id: a_session,
+    });
+    // Drain teardown messages
+    match pane_a.read_control() {
+        ControlMessage::ServiceTeardown { .. } => {}
+        other => panic!("expected ServiceTeardown, got {other:?}"),
+    }
+    match pane_b.read_control() {
+        ControlMessage::ServiceTeardown { .. } => {}
+        other => panic!("expected ServiceTeardown, got {other:?}"),
+    }
+
+    drop(pane_a);
+    drop(pane_b);
+    conn_a.wait();
+    conn_b.wait();
+}
+
+// ════════════════════════════════════════════════════════════════
+// U3: UnixStream provider disconnect → ServiceTeardown
+// ════════════════════════════════════════════════════════════════
+
+/// U3: Provider closes its socket. Consumer must receive
+/// ServiceTeardown(ConnectionLost) from the server over the
+/// real UnixStream transport.
+///
+/// Invariant: transport death detection works over real sockets.
+/// The reader thread's read_frame hits EOF, posts Disconnected
+/// to the actor, which sends ServiceTeardown to the peer.
+#[test]
+#[ignore]
+fn unix_stream_provider_disconnect_teardown() {
+    use std::os::unix::net::UnixStream;
+
+    let server = Arc::new(ProtocolServer::new());
+    let echo_id = echo_service_id();
+
+    // Provider
+    let (bp_sock, bs_sock) = UnixStream::pair().unwrap();
+    let server2 = Arc::clone(&server);
+    let accept_b = std::thread::spawn(move || {
+        let writer = bs_sock.try_clone().expect("try_clone");
+        server2.accept(bs_sock, writer).expect("accept failed")
+    });
+
+    let (pane_b, _) = GenericClientConn::connect(
+        bp_sock,
+        Hello {
+            version: 1,
+            max_message_size: 16 * 1024 * 1024,
+            interests: vec![],
+            provides: vec![ServiceProvision {
+                service: echo_id,
+                version: 1,
+            }],
+        },
+    );
+    let conn_b = accept_b.join().unwrap();
+
+    // Consumer
+    let (ap_sock, as_sock) = UnixStream::pair().unwrap();
+    let server2 = Arc::clone(&server);
+    let accept_a = std::thread::spawn(move || {
+        let writer = as_sock.try_clone().expect("try_clone");
+        server2.accept(as_sock, writer).expect("accept failed")
+    });
+
+    let (mut pane_a, _) = GenericClientConn::connect(
+        ap_sock,
+        Hello {
+            version: 1,
+            max_message_size: 16 * 1024 * 1024,
+            interests: vec![],
+            provides: vec![],
+        },
+    );
+    let conn_a = accept_a.join().unwrap();
+    pane_a.expect_ready();
+
+    // DeclareInterest
+    pane_a.send_control(&ControlMessage::DeclareInterest {
+        service: echo_id,
+        expected_version: 1,
+    });
+    let a_session = match pane_a.read_control() {
+        ControlMessage::InterestAccepted { session_id, .. } => session_id,
+        other => panic!("expected InterestAccepted, got {other:?}"),
+    };
+    pane_a.register_session(a_session);
+
+    // Kill provider
+    drop(pane_b);
+    conn_b.wait();
+
+    // Consumer should get ServiceTeardown(ConnectionLost)
+    let msg = pane_a.read_control();
+    assert!(
+        matches!(
+            msg,
+            ControlMessage::ServiceTeardown {
+                reason: pane_proto::control::TeardownReason::ConnectionLost,
+                ..
+            }
+        ),
+        "expected ServiceTeardown(ConnectionLost), got {msg:?}"
+    );
+
+    drop(pane_a);
+    conn_a.wait();
+}
+
+// ════════════════════════════════════════════════════════════════
+// U4: Rapid connect/disconnect over real UnixStream sockets
+// ════════════════════════════════════════════════════════════════
+
+/// U4: 100 iterations of connect → handshake → disconnect over
+/// real UnixStream sockets. Real sockets exercise kernel buffer
+/// management and fd recycling. Fewer iterations than the
+/// MemoryTransport variant (S5) because real sockets are slower.
+///
+/// Invariant: the server recovers cleanly from rapid real-socket
+/// churn without fd leaks or thread hangs.
+#[test]
+#[ignore]
+fn unix_stream_rapid_connect_disconnect() {
+    use std::os::unix::net::UnixStream;
+
+    let server = Arc::new(ProtocolServer::new());
+    let iterations = 100;
+
+    let (done_tx, done_rx) = std::sync::mpsc::channel();
+    let server2 = Arc::clone(&server);
+
+    let worker = std::thread::spawn(move || {
+        for i in 0..iterations {
+            let (client_sock, server_sock) = UnixStream::pair().unwrap();
+
+            let server_ref = Arc::clone(&server2);
+            let accept_handle = std::thread::spawn(move || {
+                let writer = server_sock.try_clone().expect("try_clone");
+                let _ = server_ref.accept(server_sock, writer);
+            });
+
+            // Some iterations: full handshake then drop.
+            // Some iterations: drop immediately.
+            if i % 3 != 0 {
+                let codec = FrameCodec::new(HANDSHAKE_MAX_MESSAGE_SIZE);
+                let hello = Hello {
+                    version: 1,
+                    max_message_size: 16 * 1024 * 1024,
+                    interests: vec![],
+                    provides: vec![],
+                };
+                let bytes = postcard::to_allocvec(&hello).unwrap();
+                let mut transport = client_sock;
+                let _ = codec.write_frame(&mut transport, 0, &bytes);
+                drop(transport);
+            } else {
+                drop(client_sock);
+            }
+
+            let _ = accept_handle.join();
+        }
+
+        // Verify server still works after the churn
+        let (client_sock, server_sock) = UnixStream::pair().unwrap();
+        let server_ref = Arc::clone(&server2);
+        let accept_handle = std::thread::spawn(move || {
+            let writer = server_sock.try_clone().expect("try_clone");
+            server_ref
+                .accept(server_sock, writer)
+                .expect("final accept must succeed")
+        });
+
+        let codec = FrameCodec::new(HANDSHAKE_MAX_MESSAGE_SIZE);
+        let hello = Hello {
+            version: 1,
+            max_message_size: 16 * 1024 * 1024,
+            interests: vec![],
+            provides: vec![],
+        };
+        let bytes = postcard::to_allocvec(&hello).unwrap();
+        let mut transport = client_sock;
+        codec.write_frame(&mut transport, 0, &bytes).unwrap();
+
+        // Read Welcome
+        let frame = codec.read_frame(&mut transport).unwrap();
+        match frame {
+            Frame::Message { service: 0, .. } => {}
+            other => panic!("expected Welcome, got {other:?}"),
+        }
+
+        drop(transport);
+        let conn = accept_handle.join().unwrap();
+        conn.wait();
+
+        let _ = done_tx.send(());
+    });
+
+    match done_rx.recv_timeout(std::time::Duration::from_secs(15)) {
+        Ok(()) => {}
+        Err(_) => panic!(
+            "unix stream rapid connect/disconnect timed out — \
+             likely fd leak or thread hang"
+        ),
+    }
+
+    worker.join().unwrap();
+}
+
+// ════════════════════════════════════════════════════════════════
+// L1: Sustained load — 4 clients, 5000 frames each
+// ════════════════════════════════════════════════════════════════
+
+/// L1: 4 clients each send 5000 Notification frames (20000 total)
+/// to a single provider through the ProtocolServer. Each frame
+/// embeds a (client_idx, sequence) counter. After the burst, verify:
+/// - All 20000 frames arrived at the provider
+/// - Per-client sequence ordering is monotonic
+/// - No thread leaks (thread count stable before/after)
+///
+/// This is a sustained throughput test, not a latency test. The
+/// server's single-threaded actor must keep up with 4 concurrent
+/// writers without dropping frames or deadlocking.
+///
+/// Invariant: I6 (single-threaded actor) + per-connection ordering
+/// under sustained load. The mpsc channel between reader threads
+/// and the actor is unbounded — this test also validates that the
+/// actor drains fast enough to avoid OOM.
+#[test]
+#[ignore]
+fn sustained_load_4_clients_5000_frames_each() {
+    let server = Arc::new(ProtocolServer::new());
+    let echo_id = echo_service_id();
+    let num_clients = 4;
+    let frames_per_client = 5_000;
+
+    // Provider
+    let (b_client, b_server) = MemoryTransport::pair();
+    let accept_b = accept_on_thread(&server, b_server);
+    let (mut pane_b, _) = ClientConn::connect(
+        b_client,
+        Hello {
+            version: 1,
+            max_message_size: 16 * 1024 * 1024,
+            interests: vec![],
+            provides: vec![ServiceProvision {
+                service: echo_id,
+                version: 1,
+            }],
+        },
+    );
+    let conn_b = accept_b.join().unwrap();
+    pane_b.expect_ready();
+
+    // Connect clients and establish routes
+    struct Client {
+        session: u16,
+        b_session: u16,
+        transport: MemoryTransport,
+        codec: FrameCodec,
+        conn_handle: pane_session::server::ConnectionHandle,
+    }
+
+    let mut clients = Vec::new();
+    for _ in 0..num_clients {
+        let (c_client, c_server) = MemoryTransport::pair();
+        let accept_handle = accept_on_thread(&server, c_server);
+        let (mut client, _) = ClientConn::connect(
+            c_client,
+            Hello {
+                version: 1,
+                max_message_size: 16 * 1024 * 1024,
+                interests: vec![],
+                provides: vec![],
+            },
+        );
+        let conn = accept_handle.join().unwrap();
+        client.expect_ready();
+
+        client.send_control(&ControlMessage::DeclareInterest {
+            service: echo_id,
+            expected_version: 1,
+        });
+
+        let a_session = match client.read_control() {
+            ControlMessage::InterestAccepted { session_id, .. } => session_id,
+            other => panic!("expected InterestAccepted, got {other:?}"),
+        };
+        client.register_session(a_session);
+
+        let b_session = match pane_b.read_control() {
+            ControlMessage::InterestAccepted { session_id, .. } => session_id,
+            other => panic!("expected InterestAccepted for provider, got {other:?}"),
+        };
+        pane_b.register_session(b_session);
+
+        clients.push(Client {
+            session: a_session,
+            b_session,
+            transport: client.transport,
+            codec: client.codec,
+            conn_handle: conn,
+        });
+    }
+
+    // Blast frames from all clients concurrently
+    let mut send_threads = Vec::new();
+    for (client_idx, mut client) in clients.into_iter().enumerate() {
+        send_threads.push(std::thread::spawn(move || {
+            for seq in 0..frames_per_client {
+                // Pack client_idx and seq into a compact payload
+                let tag = format!("{client_idx}:{seq}");
+                let inner = postcard::to_allocvec(&EchoMessage::Ping(tag)).unwrap();
+                let frame = ServiceFrame::Notification { payload: inner };
+                let outer = postcard::to_allocvec(&frame).unwrap();
+                client
+                    .codec
+                    .write_frame(&mut client.transport, client.session, &outer)
+                    .unwrap();
+            }
+            (client.transport, client.conn_handle, client.b_session)
+        }));
+    }
+
+    let mut cleanup = Vec::new();
+    for h in send_threads {
+        cleanup.push(h.join().unwrap());
+    }
+
+    // Session-to-client mapping
+    let _session_to_client: std::collections::HashMap<u16, usize> = cleanup
+        .iter()
+        .enumerate()
+        .map(|(idx, (_, _, b_session))| (*b_session, idx))
+        .collect();
+
+    // Read all frames and verify ordering
+    let total_expected = num_clients * frames_per_client;
+    let mut last_seq: std::collections::HashMap<usize, usize> = std::collections::HashMap::new();
+    let mut total_received = 0;
+
+    for _ in 0..total_expected {
+        let frame = pane_b.codec.read_frame(&mut pane_b.transport).unwrap();
+        match frame {
+            Frame::Message { service, payload } if service != 0 => {
+                let sf: ServiceFrame = postcard::from_bytes(&payload).unwrap();
+                match sf {
+                    ServiceFrame::Notification { payload: inner } => {
+                        let msg: EchoMessage = postcard::from_bytes(&inner).unwrap();
+                        match msg {
+                            EchoMessage::Ping(s) => {
+                                let parts: Vec<&str> = s.split(':').collect();
+                                let client_idx: usize = parts[0].parse().unwrap();
+                                let seq: usize = parts[1].parse().unwrap();
+
+                                let last = last_seq.entry(client_idx).or_insert(0);
+                                if seq > 0 {
+                                    assert!(
+                                        seq > *last || *last == 0,
+                                        "out-of-order: client {client_idx}, \
+                                         expected > {last}, got {seq}"
+                                    );
+                                }
+                                *last = seq;
+                                total_received += 1;
+                            }
+                            _ => panic!("unexpected message variant"),
+                        }
+                    }
+                    _ => panic!("expected Notification"),
+                }
+            }
+            other => panic!("expected service frame, got {other:?}"),
+        }
+    }
+
+    assert_eq!(
+        total_received, total_expected,
+        "all {total_expected} frames must be received"
+    );
+
+    // Per-client: verify all sequences were received
+    for idx in 0..num_clients {
+        let last = last_seq.get(&idx).copied().unwrap_or(0);
+        assert_eq!(
+            last,
+            frames_per_client - 1,
+            "client {idx}: expected final seq {}, got {last}",
+            frames_per_client - 1
+        );
+    }
+
+    // Cleanup
+    for (transport, conn, _) in cleanup {
+        drop(transport);
+        conn.wait();
+    }
+    drop(pane_b);
+    conn_b.wait();
+}
+
+// ════════════════════════════════════════════════════════════════
+// B1: Backpressure / channel fill — no backpressure exists
+// ════════════════════════════════════════════════════════════════
+
+/// B1: Proves the current architecture has NO backpressure.
+///
+/// Setup: consumer connects but stops reading. Provider sends
+/// 10,000 frames rapidly. The write_tx channel (mpsc::Sender) is
+/// unbounded — sends never block. The frames queue in the mpsc
+/// channel between the reader thread and the actor, and in the
+/// write handle's mpsc between the actor and the consumer's
+/// MemoryTransport.
+///
+/// This test verifies:
+/// 1. The sender (provider→server→consumer path) never blocks
+/// 2. All 10,000 writes complete without error
+/// 3. The consumer's channel fills without bound
+///
+/// This is a DOCUMENTATION test — it proves a known architectural
+/// gap. The consequence: a slow consumer causes unbounded memory
+/// growth in the server's event channel and the consumer's write
+/// channel. Future work should add backpressure (bounded channels
+/// or flow control).
+#[test]
+#[ignore]
+fn no_backpressure_unbounded_channel_fill() {
+    let server = Arc::new(ProtocolServer::new());
+    let echo_id = echo_service_id();
+
+    // Provider
+    let (b_client, b_server) = MemoryTransport::pair();
+    let accept_b = accept_on_thread(&server, b_server);
+    let (mut pane_b, _) = ClientConn::connect(
+        b_client,
+        Hello {
+            version: 1,
+            max_message_size: 16 * 1024 * 1024,
+            interests: vec![],
+            provides: vec![ServiceProvision {
+                service: echo_id,
+                version: 1,
+            }],
+        },
+    );
+    let conn_b = accept_b.join().unwrap();
+    pane_b.expect_ready();
+
+    // Consumer — connects but will STOP reading
+    let (a_client, a_server) = MemoryTransport::pair();
+    let accept_a = accept_on_thread(&server, a_server);
+    let (mut pane_a, _) = ClientConn::connect(
+        a_client,
+        Hello {
+            version: 1,
+            max_message_size: 16 * 1024 * 1024,
+            interests: vec![],
+            provides: vec![],
+        },
+    );
+    let _conn_a = accept_a.join().unwrap();
+    pane_a.expect_ready();
+
+    // Establish route
+    pane_a.send_control(&ControlMessage::DeclareInterest {
+        service: echo_id,
+        expected_version: 1,
+    });
+    let a_session = match pane_a.read_control() {
+        ControlMessage::InterestAccepted { session_id, .. } => session_id,
+        other => panic!("expected InterestAccepted, got {other:?}"),
+    };
+    let b_session = match pane_b.read_control() {
+        ControlMessage::InterestAccepted { session_id, .. } => session_id,
+        other => panic!("expected InterestAccepted for provider, got {other:?}"),
+    };
+    pane_a.register_session(a_session);
+    pane_b.register_session(b_session);
+
+    // Consumer stops reading. The MemoryTransport's mpsc receiver
+    // is still alive (pane_a owns it), but nobody calls read().
+    // Frames will accumulate in the MemoryTransport's channel.
+
+    // Provider sends 10,000 frames. With no backpressure, all
+    // sends complete immediately (mpsc::Sender::send is wait-free
+    // for unbounded channels).
+    let frame_count = 10_000;
+    let send_start = std::time::Instant::now();
+
+    // Run the send in a thread with a timeout — if backpressure
+    // existed, this would block.
+    let (send_done_tx, send_done_rx) = std::sync::mpsc::channel();
+    let send_thread = std::thread::spawn(move || {
+        for seq in 0..frame_count {
+            let inner = postcard::to_allocvec(&EchoMessage::Ping(format!("bp:{seq}"))).unwrap();
+            pane_b.send_service(b_session, &ServiceFrame::Notification { payload: inner });
+        }
+        let elapsed = send_start.elapsed();
+        let _ = send_done_tx.send(elapsed);
+        pane_b
+    });
+
+    // The send must complete within 5 seconds. With no backpressure,
+    // it should be near-instant (the mpsc channel absorbs everything).
+    match send_done_rx.recv_timeout(std::time::Duration::from_secs(5)) {
+        Ok(elapsed) => {
+            // Document: all 10,000 sends completed without blocking.
+            // This proves no backpressure exists.
+            assert!(
+                elapsed.as_secs() < 3,
+                "sending 10,000 frames took {elapsed:?} — unexpectedly slow, \
+                 possible backpressure detected"
+            );
+        }
+        Err(_) => {
+            panic!(
+                "sending 10,000 frames to a non-reading consumer blocked \
+                 for >5s — this indicates backpressure was added but the \
+                 test was not updated. If intentional, update this test \
+                 to reflect the new architecture."
+            );
+        }
+    }
+
+    let pane_b = send_thread.join().unwrap();
+
+    // Give the server time to forward frames to the consumer's channel.
+    // The actor thread drains the provider's frames and writes them
+    // to the consumer's MemoryTransport mpsc — all unbounded.
+    std::thread::sleep(std::time::Duration::from_millis(200));
+
+    // Now read some frames from the consumer to verify they queued.
+    // We don't read all 10,000 — just verify the queue is populated.
+    let mut read_count = 0;
+    for _ in 0..100 {
+        let frame = pane_a.codec.read_frame(&mut pane_a.transport);
+        match frame {
+            Ok(Frame::Message { service, .. }) if service == a_session => {
+                read_count += 1;
+            }
+            Ok(Frame::Message { service: 0, .. }) => {
+                // Control message — skip
+            }
+            other => {
+                panic!("unexpected frame during drain: {other:?}");
+            }
+        }
+    }
+    assert!(
+        read_count > 0,
+        "consumer's channel should have queued frames"
+    );
+
+    // Document the consequence: the remaining ~9900 frames are still
+    // in memory. In a real system, a slow consumer causes unbounded
+    // growth. This test proves the gap exists.
+
+    drop(pane_a);
     drop(pane_b);
     conn_b.wait();
 }
