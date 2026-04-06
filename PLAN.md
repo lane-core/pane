@@ -188,8 +188,29 @@ Before beginning work each session:
 
 After completing work each session:
 
-1. Update this file — mark completed items, add discovered work
-2. Update `pane/current_state` in serena if the project state changed substantially
-3. Run `cargo test` — confirm all tests pass
-4. If any substantial refactor occurred: verify stale doc review was done
-5. Commit this file with the session's final commit
+### Verify
+
+1. `cargo test --workspace` — all regular tests pass
+2. `cargo test --workspace -- --ignored` — all stress tests pass (stress tests can go stale after production changes — run them, don't assume)
+3. `cargo clippy --workspace` — no new warnings introduced. Pre-existing warnings are tracked in TODO.md; new ones are either fixed or added to the tracker with rationale.
+4. `cargo run -p pane-hello` — the canonical app still runs
+
+### Update
+
+5. **PLAN.md** — mark completed items, add discovered work, update test counts in the crate table
+6. **TODO.md** — triage: mark resolved items, add any discovered during the session (flaky tests, cleanup tasks, deferred items)
+7. **serena `pane/current_state`** — update if project state changed substantially. Include current test counts, new types/traits, architectural decisions.
+8. If any structural change occurred (new traits, wire format changes, type refactors): verify that code documentation is consistent with STYLEGUIDE.md — especially heritage citations, cross-references between intentionally-distinct types, and module-level docs.
+
+### Handoff
+
+9. **Handoff memo** — print to screen (for relay to next session). Include: commit summary with short descriptions, design decisions with rationale, what's next (specific tasks with enough context to start), known issues, build commands.
+10. **Commit** PLAN.md and TODO.md updates as the session's final commit.
+
+### Process
+
+11. **Process adjustment discussion** — review whether the session revealed workflow issues, roundtable misjudgments, or missing process steps. Capture as serena feedback memories or CLAUDE.md updates. Examples from past sessions:
+    - Roundtable "accept as-is" verdicts that should have been "fix now"
+    - Stress test gaps that weren't caught until Lane asked
+    - Agent workflow steps that were skipped or needed refinement
+    - Corrections to agent analysis (e.g., I2/backpressure misapplication)
