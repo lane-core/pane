@@ -60,7 +60,7 @@ BeOS proved empirically that message-passing discipline produces robust systems.
 
 ### Session types as formalization
 
-Session types formalize exactly this discipline. What BMessage enforced by convention, session types enforce at compile time. The conversation structure — what is sent, in what order, by whom — is verified before the program runs. Deadlock freedom follows from the underlying proof theory (session types), not from testing. Pane stands on both: the empirical proof that message-passing discipline works, and the theoretical framework that lets the compiler verify it. Fowler, Lindley, Wadler, and Tunnell Hill's "Mixing Metaphors" (ECOOP 2019) provides a third leg: formal proof that an event-loop-based actor servicing multiple sessions is deadlock-free across those sessions — validating the architectural pattern BeOS's app_server proved empirically. See also Fowler's PhD thesis (2020) for the EAct calculus that par implements.
+Session types formalize exactly this discipline. What BMessage enforced by convention, session types enforce at compile time. The conversation structure — what is sent, in what order, by whom — is verified before the program runs. Deadlock freedom follows from the underlying proof theory (session types), not from testing. Pane stands on both: the empirical proof that message-passing discipline works, and the theoretical framework that lets the compiler verify it. Fowler and Hu's "Speak Now: Safe Actor Programming with Multiparty Session Types" provides the EAct calculus — formal proof that an event-loop-based actor servicing multiple sessions is deadlock-free across those sessions, validating the architectural pattern BeOS's app_server proved empirically. Par implements this calculus.
 
 The concrete session-typed handshake in pane is defined by `ClientHandshake` and `ServerHandshake` type aliases in pane-proto, composing `Send`/`Recv`/`Branch`/`End` primitives from par, via pane-session. `ServerHandshake` is the dual of `ClientHandshake`, computed automatically — the compiler enforces that both sides agree on the conversation structure.
 
@@ -261,5 +261,5 @@ Agents communicate through the same graduated model as humans, and they build: p
 - **Optics**: Profunctor optics as composable state access with asymmetric read/write paths. Lens laws as correctness criteria.
 - **NeXTSTEP**: Developer productivity as design philosophy.
 - **Imai, Yoshida, Yuen (2017/2019)**: Session-OCaml — practical combination of session types with lenses.
-- **Fowler et al. (POPL 2019)**: Exceptional Asynchronous Session Types.
+- **Fowler, Hu**: "Speak Now: Safe Actor Programming with Multiparty Session Types." The EAct calculus — event-loop actors with multiparty session types. Par implements this.
 - **Lagaillardie et al. (ECOOP 2022)**: MultiCrusty — the affine/linear gap in practice.
