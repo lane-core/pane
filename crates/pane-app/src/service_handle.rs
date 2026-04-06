@@ -44,7 +44,7 @@ static NEXT_TOKEN: AtomicU64 = AtomicU64::new(1);
 pub struct ServiceHandle<P: Protocol> {
     session_id: u16,
     /// Channel to the connection's write half. Carries (service_id, payload).
-    write_tx: Option<std::sync::mpsc::Sender<(u16, Vec<u8>)>>,
+    write_tx: Option<std::sync::mpsc::SyncSender<(u16, Vec<u8>)>>,
     _protocol: PhantomData<P>,
 }
 
@@ -62,7 +62,7 @@ impl<P: Protocol> ServiceHandle<P> {
     /// Full constructor with a write channel and assigned session_id.
     pub(crate) fn with_channel(
         session_id: u16,
-        write_tx: std::sync::mpsc::Sender<(u16, Vec<u8>)>,
+        write_tx: std::sync::mpsc::SyncSender<(u16, Vec<u8>)>,
     ) -> Self {
         ServiceHandle {
             session_id,
@@ -150,9 +150,10 @@ impl<P: Protocol> Drop for ServiceHandle<P> {
                 session_id: self.session_id,
             };
             if let Ok(bytes) = postcard::to_allocvec(&msg) {
-                // Best-effort: if the channel is closed, the server
-                // will clean up via process_disconnect anyway.
-                let _ = tx.send((0, bytes));
+                // Best-effort, non-blocking: don't stall destruction
+                // if the write channel is full. The server will clean
+                // up via process_disconnect anyway.
+                let _ = tx.try_send((0, bytes));
             }
         }
     }
@@ -234,7 +235,7 @@ mod tests {
 
     #[test]
     fn send_request_serializes_to_channel() {
-        let (tx, rx) = std::sync::mpsc::channel();
+        let (tx, rx) = std::sync::mpsc::sync_channel(16);
         let handle = ServiceHandle::<TestProto>::with_channel(5, tx);
 
         let _cancel = handle.send_request::<TestHandler, TestReply>(
@@ -266,7 +267,7 @@ mod tests {
 
     #[test]
     fn send_notification_serializes_to_channel() {
-        let (tx, rx) = std::sync::mpsc::channel();
+        let (tx, rx) = std::sync::mpsc::sync_channel(16);
         let handle = ServiceHandle::<TestProto>::with_channel(3, tx);
 
         handle.send_notification(TestMsg::Ping);
@@ -303,7 +304,7 @@ mod tests {
 
     #[test]
     fn drop_sends_revoke_interest() {
-        let (tx, rx) = std::sync::mpsc::channel();
+        let (tx, rx) = std::sync::mpsc::sync_channel(16);
         let handle = ServiceHandle::<TestProto>::with_channel(5, tx);
 
         drop(handle);
@@ -329,7 +330,7 @@ mod tests {
 
     #[test]
     fn session_id_returns_assigned_value() {
-        let (tx, _rx) = std::sync::mpsc::channel();
+        let (tx, _rx) = std::sync::mpsc::sync_channel(16);
         let handle = ServiceHandle::<TestProto>::with_channel(42, tx);
         assert_eq!(handle.session_id(), 42);
     }

@@ -57,6 +57,18 @@ pub enum LooperMessage {
 /// Write-side message: (service_id, payload bytes).
 pub type WriteMessage = (u16, Vec<u8>);
 
+/// Write channel capacity (bounded backpressure).
+///
+/// When the channel is full, the sender (handler) blocks until the
+/// writer thread drains frames to the transport. Per-pane threading
+/// isolates the stall — other panes are unaffected.
+///
+/// Design heritage: BeOS BLooper used B_LOOPER_PORT_DEFAULT_CAPACITY
+/// of 200 (src/kits/app/Looper.cpp). Plan 9's devmnt MAXRPC was 32.
+/// 128 is a middle ground — enough for burst absorption, small enough
+/// to cap memory under sustained overload.
+pub const WRITE_CHANNEL_CAPACITY: usize = 128;
+
 /// Default max_message_size for the handshake phase.
 /// Renegotiated during the handshake — the Welcome carries the
 /// agreed value for the active phase.
@@ -231,7 +243,7 @@ pub fn accept_and_run(
 pub struct ClientConnection {
     pub welcome: Welcome,
     pub rx: std::sync::mpsc::Receiver<LooperMessage>,
-    pub write_tx: std::sync::mpsc::Sender<WriteMessage>,
+    pub write_tx: std::sync::mpsc::SyncSender<WriteMessage>,
 }
 
 /// Result of a successful server-side accept.
@@ -324,7 +336,9 @@ fn run_client_bridge(
     let (mut reader, mut writer) = transport.into_split();
 
     // Writer thread: owns write half + its own codec.
-    let (write_tx, write_rx) = std::sync::mpsc::channel();
+    // Bounded channel provides backpressure — when full, the sender
+    // (handler) blocks until the writer drains to the transport.
+    let (write_tx, write_rx) = std::sync::mpsc::sync_channel(WRITE_CHANNEL_CAPACITY);
     let writer_codec = FrameCodec::new(max_msg);
     std::thread::spawn(move || {
         writer_loop(&mut writer, &writer_codec, write_rx);

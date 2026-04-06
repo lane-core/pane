@@ -33,7 +33,7 @@ pub struct PaneBuilder<H: Handler> {
     /// Looper message receiver from the reader thread.
     rx: Option<std::sync::mpsc::Receiver<LooperMessage>>,
     /// Write channel to the writer thread.
-    write_tx: Option<std::sync::mpsc::Sender<WriteMessage>>,
+    write_tx: Option<std::sync::mpsc::SyncSender<WriteMessage>>,
     /// Messages received during open_service that aren't responses
     /// to our DeclareInterest. Drained by run_with before entering
     /// the main loop.
