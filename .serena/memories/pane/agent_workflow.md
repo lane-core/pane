@@ -31,11 +31,13 @@ When a design recommendation includes Rust attributes (`#[non_exhaustive]`, `#[m
 
 ## Step 3: pane-architect implements
 
-Writes Rust code faithful to project foundations. Runs task completion checklist.
+Writes Rust code faithful to project foundations. One task per dispatch, review between — not bulk. Runs task completion checklist.
 
-## Step 4: formal-verifier validates
+## Step 4: formal-verifier validates and writes tests
 
-Audits implementation against architecture spec invariants (I1-I13, S1-S6).
+Audits implementation against architecture spec invariants (I1-I13, S1-S6). **Writes tests for every gap found** — the verifier is the subject matter expert on what invariants need testing.
+
+If a test cannot be written because the protocol or design is incomplete, **escalate the design question to Lane** before proceeding. Do not skip the test, write a workaround, or defer it to a report. The inability to test an invariant is a design signal, not a test infrastructure problem.
 
 **Must include a doc drift report:** grep the old type/API syntax across `docs/` and `.serena/memories/`, report every hit with file:line. This turns manual scavenger hunts into checklists. The formal-verifier flagging "docs are stale" without enumerating locations is insufficient — Step 5 needs a concrete list to work from.
 
@@ -54,3 +56,5 @@ After validation passes:
 - Follow-up rounds can use a targeted subset of agents
 - Design agents run in parallel; steps 3-5 run sequentially
 - Step 5 is not optional — stale memory is a bug
+- pane-architect: one task per dispatch, review between dispatches
+- formal-verifier: writes tests, escalates design gaps — does not defer them
