@@ -120,6 +120,7 @@ fn main() {
             version: 1,
             max_message_size: 16 * 1024 * 1024,
             interests: vec![],
+            provides: vec![],
         },
         stream,
     ).expect("handshake failed");

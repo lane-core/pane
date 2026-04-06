@@ -13,18 +13,22 @@ use std::collections::HashSet;
 use std::marker::PhantomData;
 
 use pane_proto::{Flow, Handler, Handles, Protocol, ServiceId};
+use pane_session::handshake::ServiceProvision;
 
 use crate::pane::Pane;
 use crate::service_handle::ServiceHandle;
 
 /// Setup phase for a pane that will use protocol services.
 ///
-/// open_service enforces Handles<P> bounds at compile time.
-/// Consumed by run_with — can't open services after dispatch begins.
+/// open_service enforces Handles<P> bounds at compile time for
+/// consuming services. serve enforces Handles<P> bounds for
+/// providing services. Consumed by run_with — can't open or
+/// serve after dispatch begins.
 #[must_use = "a PaneBuilder must be consumed by run_with"]
 pub struct PaneBuilder<H: Handler> {
     pane: Pane,
     registered_services: HashSet<ServiceId>,
+    provided_services: Vec<ServiceProvision>,
     _handler: PhantomData<H>,
 }
 
@@ -33,8 +37,37 @@ impl<H: Handler> PaneBuilder<H> {
         PaneBuilder {
             pane,
             registered_services: HashSet::new(),
+            provided_services: Vec::new(),
             _handler: PhantomData,
         }
+    }
+
+    /// Advertise that this pane provides protocol P for others.
+    ///
+    /// Requires H: Handles<P> — compile-time proof the handler
+    /// implements the protocol. Populates Hello.provides for the
+    /// handshake.
+    ///
+    /// Panics on duplicate serve for the same ServiceId.
+    pub fn serve<P: Protocol>(&mut self)
+    where
+        H: Handles<P>,
+    {
+        let id = P::service_id();
+        let already_serving = self.provided_services.iter()
+            .any(|p| p.service.uuid == id.uuid);
+        assert!(!already_serving, "duplicate serve for {:?}", id);
+
+        self.provided_services.push(ServiceProvision {
+            service: id,
+            version: 1, // TODO: Protocol::VERSION when versioning lands
+        });
+    }
+
+    /// The list of ServiceProvisions this builder has accumulated.
+    /// Used to populate Hello.provides during connection.
+    pub fn provided_services(&self) -> &[ServiceProvision] {
+        &self.provided_services
     }
 
     /// Open a service. Blocks until InterestAccepted/Declined.
@@ -89,11 +122,26 @@ mod tests {
         type Message = TestServiceMessage;
     }
 
-    // A handler that implements Handles<TestService>
+    // A second test protocol for multi-service tests
+    struct OtherService;
+    #[derive(Debug, Clone, Serialize, Deserialize)]
+    enum OtherServiceMessage { Pong }
+
+    impl Protocol for OtherService {
+        fn service_id() -> ServiceId { ServiceId::new("com.test.other") }
+        type Message = OtherServiceMessage;
+    }
+
+    // A handler that implements Handles<TestService> and Handles<OtherService>
     struct TestHandler;
     impl Handler for TestHandler {}
     impl Handles<TestService> for TestHandler {
         fn receive(&mut self, _msg: TestServiceMessage) -> Flow {
+            Flow::Continue
+        }
+    }
+    impl Handles<OtherService> for TestHandler {
+        fn receive(&mut self, _msg: OtherServiceMessage) -> Flow {
             Flow::Continue
         }
     }
@@ -126,5 +174,37 @@ mod tests {
         impl Handler for NoServiceHandler {}
         // builder.open_service::<TestService>() would not compile for NoServiceHandler
         // because NoServiceHandler does not implement Handles<TestService>.
+    }
+
+    #[test]
+    fn serve_populates_provided_services() {
+        let pane = Pane { id: 1, tag: crate::pane::Tag::new("test") };
+        let mut builder = pane.setup::<TestHandler>();
+        builder.serve::<TestService>();
+
+        let provisions = builder.provided_services();
+        assert_eq!(provisions.len(), 1);
+        assert_eq!(provisions[0].service.uuid, TestService::service_id().uuid);
+        assert_eq!(provisions[0].version, 1);
+    }
+
+    #[test]
+    fn serve_multiple_protocols() {
+        let pane = Pane { id: 1, tag: crate::pane::Tag::new("test") };
+        let mut builder = pane.setup::<TestHandler>();
+        builder.serve::<TestService>();
+        builder.serve::<OtherService>();
+
+        let provisions = builder.provided_services();
+        assert_eq!(provisions.len(), 2);
+    }
+
+    #[test]
+    #[should_panic(expected = "duplicate serve")]
+    fn duplicate_serve_panics() {
+        let pane = Pane { id: 1, tag: crate::pane::Tag::new("test") };
+        let mut builder = pane.setup::<TestHandler>();
+        builder.serve::<TestService>();
+        builder.serve::<TestService>(); // panics
     }
 }

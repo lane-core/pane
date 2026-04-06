@@ -25,6 +25,7 @@ pub mod filter;
 pub mod monadic_lens;
 pub mod obligation;
 pub mod peer_auth;
+pub mod service_frame;
 
 pub use address::Address;
 pub use control::{ControlMessage, DeclineReason, TeardownReason};
@@ -35,3 +36,4 @@ pub use message::Message;
 pub use protocol::{Protocol, ServiceId};
 pub use filter::{MessageFilter, FilterAction};
 pub use peer_auth::{PeerAuth, AuthSource};
+pub use service_frame::ServiceFrame;
