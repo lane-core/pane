@@ -39,20 +39,21 @@ Single server (N=1), headless, no suspension, no streaming. All multi-server dat
 
 - [x] **Transport** — `Read + Write + Send + 'static` blanket trait, `MemoryTransport::pair()` byte-level (5 tests)
 - [x] **Bridge** — two-phase connect (verify_transport + par handshake via FrameCodec), `connect_and_run`/`accept_and_run` with reader loop (7 tests)
-- [x] **FrameCodec** — `[length: u32 LE][service: u8][payload]`, reserved 0xFF abort, known_services bitset, max_message_size enforcement + set_max_message_size (20 tests)
+- [x] **FrameCodec** — `[length: u32 LE][service: u16 LE][payload]`, reserved 0xFFFF abort, HashSet-based known_services, max_message_size enforcement, self-poison on any read error (S3), protocol tag byte in service payloads (S8) (21 tests + 4 proptest)
 - [x] **ProtocolServer** — single-threaded actor, provider index from Hello.provides, DeclareInterest handler, frame routing with session_id rewriting, connection drop cleanup with ServiceTeardown (8 unit + 3 integration tests)
-- [x] **peer_cred** — SO_PEERCRED (Linux) / getpeereid + LOCAL_PEERPID (macOS) → PeerAuth (1 test)
+- [x] **peer_cred** — SO_PEERCRED via rustix (Linux) / getpeereid + LOCAL_PEERPID (macOS) → PeerAuth (1 test)
 - [ ] **Verify Chan<S,T> compatibility** — ensure session-typed channels work with new handshake types
 - [ ] **SessionEnum derive** — N-ary enum branching with `#[session_tag]` wire stability
 
 #### Kit API (pane-app)
 
-- [x] **Dispatch\<H\>** — per-request typed dispatch entries, token uniqueness, fail_connection, cancel (6 tests)
+- [x] **RequestProtocol** — supertrait of Protocol with `type Reply: Message`; `HandlesRequest<P>` trait for request handlers with `ReplyPort<P::Reply>` (6 tests)
+- [x] **Dispatch\<H\>** — per-request typed dispatch entries, token uniqueness, fail_connection, fail_session (S1 fix), cancel (6 tests)
 - [x] **LooperCore\<H\>** — catch_unwind boundary, destruction sequence, `dispatch_lifecycle`, `run()` with channel-driven main loop (14 tests, including 2 vertical slice integration tests)
 - [x] **PaneBuilder\<H\>** — two-phase lifecycle, open_service stub, duplicate rejection (3 tests)
 - [x] **Pane** — non-generic connection identity (stub)
 - [x] **Messenger** — scoped handle with Address, `address()` accessor (3 tests)
-- [x] **ServiceHandle\<P\>** — Drop RevokeInterest, protocol-scoped `send_request<H,R>()` with real serialization, `send_notification()`, `with_channel()` constructor, `target_address()` (6 tests)
+- [x] **ServiceHandle\<P\>** — Drop RevokeInterest, protocol-scoped `send_request<H,R>()` with real serialization + protocol tag, `send_notification()` with protocol tag, `with_channel()` constructor, `target_address()`, `wire_reply_port<T>` constructor for wire-backed ReplyPort (8 tests)
 - [x] **ExitReason** — Graceful/Disconnected/Failed/InfraError
 - [ ] **Messenger full impl** — `set_content`, `set_pulse_rate`, `post_app_message` (send_request moved to ServiceHandle)
 - [ ] **ConnectionSource** — calloop EventSource for a single Connection (read + buffered write) — **bumped priority: enables real Messenger/ServiceHandle routing**
@@ -159,9 +160,9 @@ Orthogonal to protocol phases — can proceed in parallel once Phase 1 server ex
 
 | Crate | Role | Status |
 |-------|------|--------|
-| pane-proto | Protocol vocabulary, no IO | Active (86 tests) |
-| pane-session | Session-typed IPC, transport, framing, server | Active (45 tests) |
-| pane-app | Actor framework, dispatch, looper | Active (43 tests + 10 integration) |
+| pane-proto | Protocol vocabulary, no IO | Active (98 tests) |
+| pane-session | Session-typed IPC, transport, framing, server | Active (46 tests + 21 stress) |
+| pane-app | Actor framework, dispatch, looper | Active (47 tests + 7 stress + 12 integration) |
 | pane-fs | Filesystem namespace | Active (5 tests) |
 | pane-hello | First running pane app (binary) | Active (0 tests, manual verification) |
 | pane-notify | Filesystem notification abstraction | Preserved from prototype |
