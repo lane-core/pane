@@ -203,6 +203,8 @@ name = "pane-app"
 version = "0.1.0"
 dependencies = [
  "pane-proto",
+ "pane-session",
+ "postcard",
  "serde",
 ]
 

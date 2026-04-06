@@ -179,6 +179,74 @@ impl<H: pane_proto::Handler> LooperCore<H> {
         // self is consumed — handler and dispatch are dropped
         drop(self);
     }
+
+    /// Dispatch a lifecycle message through the Handler's blanket
+    /// Handles<Lifecycle> impl, wrapped in catch_unwind.
+    pub fn dispatch_lifecycle(
+        &mut self,
+        msg: pane_proto::protocols::lifecycle::LifecycleMessage,
+    ) -> DispatchOutcome {
+        self.dispatch(|handler| {
+            <H as pane_proto::Handles<pane_proto::protocols::lifecycle::Lifecycle>>::receive(
+                handler, msg,
+            )
+        })
+    }
+
+    /// Run the looper, reading ControlMessages from the channel.
+    ///
+    /// Sends Ready to the handler, then enters the main dispatch
+    /// loop. Blocks until Flow::Stop, a handler panic, or the
+    /// channel closes (reader thread exited / transport died).
+    ///
+    /// Consumes self — after run returns, the handler is dropped
+    /// and the destruction sequence has completed.
+    pub fn run(mut self, rx: mpsc::Receiver<pane_proto::control::ControlMessage>) -> ExitReason {
+        use pane_proto::control::ControlMessage;
+        use pane_proto::protocols::lifecycle::LifecycleMessage;
+
+        // Send Ready to the handler.
+        let outcome = self.dispatch_lifecycle(LifecycleMessage::Ready);
+        if let DispatchOutcome::Exit(reason) = outcome {
+            let reason_copy = reason.clone();
+            self.shutdown();
+            return reason_copy;
+        }
+
+        // Main loop: read from channel, dispatch.
+        let exit_reason = loop {
+            match rx.recv() {
+                Ok(ControlMessage::Lifecycle(msg)) => {
+                    let outcome = self.dispatch_lifecycle(msg);
+                    if let DispatchOutcome::Exit(reason) = outcome {
+                        break reason;
+                    }
+                }
+                Ok(_other) => {
+                    // Non-lifecycle ControlMessage — framework-internal.
+                    // Vertical slice: no services registered, ignore.
+                }
+                Err(_) => {
+                    // Channel closed — reader thread exited (disconnect).
+                    let outcome = self.connection_lost();
+                    match outcome {
+                        DispatchOutcome::Exit(reason) => break reason,
+                        DispatchOutcome::Continue => {
+                            // Handler chose to continue after disconnect,
+                            // but the channel is closed — nothing to read.
+                            // Force shutdown with Disconnected.
+                            self.run_destruction(ExitReason::Disconnected);
+                            break ExitReason::Disconnected;
+                        }
+                    }
+                }
+            }
+        };
+
+        let reason_copy = exit_reason.clone();
+        self.shutdown();
+        reason_copy
+    }
 }
 
 #[cfg(test)]
@@ -574,5 +642,170 @@ mod tests {
 
         // But the entry was cleared in step 2
         assert!(core.dispatch_mut().is_empty());
+    }
+
+    // ── Vertical slice: IO → bridge → LooperCore ──────────────
+
+    #[test]
+    fn vertical_slice_transport_to_looper() {
+        // End-to-end: MemoryTransport → FrameCodec → bridge reader
+        // thread → mpsc → LooperCore::run() → Handler lifecycle.
+        //
+        // This is the proof that the vertical slice works: bytes on
+        // a transport become lifecycle calls on a handler.
+        use pane_session::transport::MemoryTransport;
+        use pane_session::bridge::{connect_and_run, HANDSHAKE_MAX_MESSAGE_SIZE};
+        use pane_session::frame::FrameCodec;
+        use pane_session::handshake::{Hello, Welcome, Rejection};
+        use pane_proto::control::ControlMessage;
+        use pane_proto::protocols::lifecycle::LifecycleMessage;
+
+        let log = Arc::new(Mutex::new(Vec::new()));
+        let (exit_tx, exit_rx) = mpsc::channel();
+
+        let (ct, mut st) = MemoryTransport::pair();
+
+        // Server side: handshake + send lifecycle messages via FrameCodec.
+        let server_handle = std::thread::spawn(move || {
+            let codec = FrameCodec::new(HANDSHAKE_MAX_MESSAGE_SIZE);
+
+            // Read Hello
+            let frame = codec.read_frame(&mut st).unwrap();
+            let payload = match frame {
+                pane_session::frame::Frame::Message { service: 0, payload } => payload,
+                _ => panic!("expected Control frame"),
+            };
+            let _hello: Hello = postcard::from_bytes(&payload).unwrap();
+
+            // Send Welcome
+            let decision: Result<Welcome, Rejection> = Ok(Welcome {
+                version: 1,
+                instance_id: "vertical-slice-server".into(),
+                max_message_size: 16 * 1024 * 1024,
+                bindings: vec![],
+            });
+            let bytes = postcard::to_allocvec(&decision).unwrap();
+            codec.write_frame(&mut st, 0, &bytes).unwrap();
+
+            // Active phase: send CloseRequested
+            let msg = ControlMessage::Lifecycle(LifecycleMessage::CloseRequested);
+            let bytes = postcard::to_allocvec(&msg).unwrap();
+            codec.write_frame(&mut st, 0, &bytes).unwrap();
+
+            // Drop transport to close the connection.
+            drop(st);
+        });
+
+        // Client side: connect, get reader channel, run looper.
+        let client = connect_and_run(
+            Hello {
+                version: 1,
+                max_message_size: 16 * 1024 * 1024,
+                interests: vec![],
+            },
+            ct,
+        ).expect("client connect failed");
+
+        assert_eq!(client.welcome.instance_id, "vertical-slice-server");
+
+        // Wire the channel into LooperCore.
+        let handler = TestHandler::new(log.clone());
+        let core = LooperCore::new(handler, ConnectionId(1), exit_tx);
+
+        let exit_reason = core.run(client.rx);
+
+        // Handler received Ready (from run's initial dispatch) and
+        // CloseRequested (from the server's message). CloseRequested
+        // defaults to Flow::Stop, so the looper exits gracefully.
+        assert_eq!(exit_reason, ExitReason::Graceful);
+
+        let events = log.lock().unwrap().clone();
+        assert!(events.contains(&"ready".to_string()),
+            "handler must receive Ready. Got: {:?}", events);
+        // handler_dropped fires during shutdown
+        assert!(events.contains(&"handler_dropped".to_string()),
+            "handler must be dropped during shutdown. Got: {:?}", events);
+
+        // Exit signal sent
+        // Drain — may have Graceful from run_destruction + possibly others
+        let mut reasons = vec![];
+        while let Ok(r) = exit_rx.try_recv() {
+            reasons.push(r);
+        }
+        assert!(reasons.contains(&ExitReason::Graceful),
+            "exit signal must include Graceful. Got: {:?}", reasons);
+
+        server_handle.join().unwrap();
+    }
+
+    #[test]
+    fn vertical_slice_disconnect_during_run() {
+        // Server drops transport without sending CloseRequested.
+        // The reader thread sees EOF, closes the channel, and the
+        // looper calls handler.disconnected() → Disconnected exit.
+        use pane_session::transport::MemoryTransport;
+        use pane_session::bridge::{connect_and_run, HANDSHAKE_MAX_MESSAGE_SIZE};
+        use pane_session::frame::FrameCodec;
+        use pane_session::handshake::{Hello, Welcome, Rejection};
+
+        let log = Arc::new(Mutex::new(Vec::new()));
+        let (exit_tx, exit_rx) = mpsc::channel();
+
+        let (ct, mut st) = MemoryTransport::pair();
+
+        // Server: handshake, then immediately drop.
+        let server_handle = std::thread::spawn(move || {
+            let codec = FrameCodec::new(HANDSHAKE_MAX_MESSAGE_SIZE);
+
+            let frame = codec.read_frame(&mut st).unwrap();
+            let payload = match frame {
+                pane_session::frame::Frame::Message { service: 0, payload } => payload,
+                _ => panic!("expected Control frame"),
+            };
+            let _hello: Hello = postcard::from_bytes(&payload).unwrap();
+
+            let decision: Result<Welcome, Rejection> = Ok(Welcome {
+                version: 1,
+                instance_id: "drop-server".into(),
+                max_message_size: 16 * 1024 * 1024,
+                bindings: vec![],
+            });
+            let bytes = postcard::to_allocvec(&decision).unwrap();
+            codec.write_frame(&mut st, 0, &bytes).unwrap();
+
+            // Drop immediately — no active-phase messages.
+            drop(st);
+        });
+
+        let client = connect_and_run(
+            Hello {
+                version: 1,
+                max_message_size: 16 * 1024 * 1024,
+                interests: vec![],
+            },
+            ct,
+        ).expect("client connect failed");
+
+        let handler = TestHandler::new(log.clone());
+        let core = LooperCore::new(handler, ConnectionId(1), exit_tx);
+
+        let exit_reason = core.run(client.rx);
+
+        assert_eq!(exit_reason, ExitReason::Disconnected);
+
+        let events = log.lock().unwrap().clone();
+        assert!(events.contains(&"ready".to_string()),
+            "handler must receive Ready. Got: {:?}", events);
+        assert!(events.contains(&"disconnected".to_string()),
+            "handler must receive disconnected. Got: {:?}", events);
+
+        server_handle.join().unwrap();
+
+        let mut reasons = vec![];
+        while let Ok(r) = exit_rx.try_recv() {
+            reasons.push(r);
+        }
+        assert!(reasons.contains(&ExitReason::Disconnected),
+            "exit signal must include Disconnected. Got: {:?}", reasons);
     }
 }

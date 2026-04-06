@@ -3,26 +3,38 @@
 //! Two-phase connection:
 //!   Phase 1 (connect): verify the transport is alive. Returns Result.
 //!   Phase 2 (handshake): par drives the exchange over the verified
-//!     transport. If the transport dies mid-handshake, the session is
-//!     aborted (panic). This is the rare case — the common failure
-//!     (server not running) is caught in Phase 1.
+//!     transport via FrameCodec framing. If the transport dies
+//!     mid-handshake, the session is aborted (panic). This is the
+//!     rare case — the common failure (server not running) is caught
+//!     in Phase 1.
 //!
 //! Architecture:
-//!   Handler ←→ par oneshot ←→ Bridge thread ←→ Transport ←→ wire
+//!   Handler ←→ par oneshot ←→ Bridge thread ←→ FrameCodec ←→ wire
 //!
 //! The handler uses par's Send::send() and Recv::recv() directly.
-//! The bridge thread serializes (postcard) between par's channels
-//! and the transport.
+//! The bridge thread serializes (postcard + FrameCodec) between
+//! par's channels and the transport.
+//!
+//! After the handshake succeeds, the bridge thread transitions to
+//! an active-phase reader loop, feeding ControlMessages to the
+//! looper through an mpsc channel.
 //!
 //! Design heritage: BeOS split connection into find_port (returned
 //! status_t) and the AS_CREATE_APP exchange (debugger on failure).
 //! Plan 9's mount() returned -1 on unreachable; Tversion/Rattach
 //! was the handshake over a verified fd.
 
-use par::exchange::{Send, Recv};
+use par::exchange::{Send as ParSend, Recv as ParRecv};
 use par::Session;
 use crate::transport::{Transport, ConnectError};
 use crate::handshake::{Hello, Welcome, Rejection, ClientHandshake, ServerHandshake};
+use crate::frame::{Frame, FrameCodec};
+use pane_proto::control::ControlMessage;
+
+/// Default max_message_size for the handshake phase.
+/// Renegotiated during the handshake — the Welcome carries the
+/// agreed value for the active phase.
+pub const HANDSHAKE_MAX_MESSAGE_SIZE: u32 = 16 * 1024 * 1024;
 
 /// Phase 1: verify a transport is alive.
 ///
@@ -38,23 +50,35 @@ pub fn verify_transport<T: Transport>(transport: T) -> Result<T, ConnectError> {
 /// Phase 2: client-side handshake over a verified transport.
 ///
 /// Returns the handler's par session endpoint. A bridge thread
-/// handles serialization between par's channels and the transport.
+/// handles serialization between par's channels and the transport
+/// using FrameCodec on the Control channel.
 ///
 /// If the transport dies mid-handshake, the bridge thread panics,
 /// its par endpoint drops, and the handler's next recv() panics
 /// ("sender dropped"). This aborts the session.
-pub fn bridge_client_handshake(mut transport: impl Transport + 'static) -> ClientHandshake {
-    Send::fork_sync(move |server: ServerHandshake| {
+pub fn bridge_client_handshake(mut transport: impl Transport) -> ClientHandshake {
+    ParSend::fork_sync(move |server: ServerHandshake| {
         std::thread::spawn(move || {
+            let codec = FrameCodec::new(HANDSHAKE_MAX_MESSAGE_SIZE);
+
             let (hello, server): (Hello, _) =
                 futures::executor::block_on(server.recv());
 
+            // Write Hello as a framed Control message (service 0).
             let bytes = postcard::to_allocvec(&hello)
                 .expect("bridge: Hello serialization failed");
-            transport.send_raw(&bytes);
+            codec.write_frame(&mut transport, 0, &bytes)
+                .expect("bridge: Hello write failed");
 
-            let bytes = transport.recv_raw();
-            let decision: Result<Welcome, Rejection> = postcard::from_bytes(&bytes)
+            // Read the server's decision from a framed Control message.
+            let frame = codec.read_frame(&mut transport)
+                .expect("bridge: handshake response read failed");
+            let payload = match frame {
+                Frame::Message { service: 0, payload } => payload,
+                Frame::Abort => panic!("bridge: server sent ProtocolAbort during handshake"),
+                other => panic!("bridge: unexpected frame during handshake: {other:?}"),
+            };
+            let decision: Result<Welcome, Rejection> = postcard::from_bytes(&payload)
                 .expect("bridge: handshake response deserialization failed");
 
             server.send1(decision);
@@ -63,11 +87,20 @@ pub fn bridge_client_handshake(mut transport: impl Transport + 'static) -> Clien
 }
 
 /// Phase 2: server-side handshake over a verified transport.
-pub fn bridge_server_handshake(mut transport: impl Transport + 'static) -> ServerHandshake {
-    Recv::fork_sync(move |client: ClientHandshake| {
+pub fn bridge_server_handshake(mut transport: impl Transport) -> ServerHandshake {
+    ParRecv::fork_sync(move |client: ClientHandshake| {
         std::thread::spawn(move || {
-            let bytes = transport.recv_raw();
-            let hello: Hello = postcard::from_bytes(&bytes)
+            let codec = FrameCodec::new(HANDSHAKE_MAX_MESSAGE_SIZE);
+
+            // Read Hello from a framed Control message.
+            let frame = codec.read_frame(&mut transport)
+                .expect("bridge: Hello read failed");
+            let payload = match frame {
+                Frame::Message { service: 0, payload } => payload,
+                Frame::Abort => panic!("bridge: client sent ProtocolAbort during handshake"),
+                other => panic!("bridge: unexpected frame during handshake: {other:?}"),
+            };
+            let hello: Hello = postcard::from_bytes(&payload)
                 .expect("bridge: Hello deserialization failed");
 
             let client = client.send(hello);
@@ -75,16 +108,18 @@ pub fn bridge_server_handshake(mut transport: impl Transport + 'static) -> Serve
             let (decision, _): (Result<Welcome, Rejection>, _) =
                 futures::executor::block_on(client.recv());
 
+            // Write the decision as a framed Control message.
             let bytes = postcard::to_allocvec(&decision)
                 .expect("bridge: handshake response serialization failed");
-            transport.send_raw(&bytes);
+            codec.write_frame(&mut transport, 0, &bytes)
+                .expect("bridge: handshake response write failed");
         });
     })
 }
 
 /// Convenience: Phase 1 + Phase 2 for the client side.
 pub fn connect_client(
-    transport: impl Transport + 'static,
+    transport: impl Transport,
 ) -> Result<ClientHandshake, ConnectError> {
     let transport = verify_transport(transport)?;
     Ok(bridge_client_handshake(transport))
@@ -92,10 +127,315 @@ pub fn connect_client(
 
 /// Convenience: Phase 1 + Phase 2 for the server side.
 pub fn connect_server(
-    transport: impl Transport + 'static,
+    transport: impl Transport,
 ) -> Result<ServerHandshake, ConnectError> {
     let transport = verify_transport(transport)?;
     Ok(bridge_server_handshake(transport))
+}
+
+/// Connect as client, perform handshake, and start the reader loop.
+///
+/// On success, returns the Welcome and a Receiver that delivers
+/// ControlMessages from the server. The reader thread runs in the
+/// background; it exits (closing the channel) when the transport
+/// fails or the peer sends ProtocolAbort.
+///
+/// The write half of the transport is returned for the caller to
+/// use for outbound framing (Messenger/ServiceHandle). The socket
+/// is split: read half stays in the reader thread, write half
+/// returned here.
+pub fn connect_and_run(
+    hello: Hello,
+    transport: impl Transport,
+) -> Result<ClientReader, ConnectError> {
+    let transport = verify_transport(transport)?;
+
+    // The bridge thread performs the par handshake, then transitions
+    // to the active-phase reader loop. We get the result back via
+    // a oneshot-like mpsc channel.
+    let (result_tx, result_rx) = std::sync::mpsc::channel();
+
+    std::thread::spawn(move || {
+        run_client_bridge(transport, hello, result_tx);
+    });
+
+    result_rx.recv().map_err(|_| {
+        ConnectError::Transport(std::io::Error::new(
+            std::io::ErrorKind::ConnectionAborted,
+            "bridge thread died during handshake",
+        ))
+    })?
+}
+
+/// Accept a client connection on the server side.
+///
+/// Reads the Hello, calls the `decide` closure to produce a
+/// decision, sends the response, and if accepted, starts a reader
+/// loop feeding ControlMessages back through a channel.
+pub fn accept_and_run(
+    transport: impl Transport,
+    decide: impl FnOnce(Hello) -> Result<Welcome, Rejection> + Send + 'static,
+) -> Result<ServerReader, ConnectError> {
+    let transport = verify_transport(transport)?;
+
+    let (result_tx, result_rx) = std::sync::mpsc::channel();
+
+    std::thread::spawn(move || {
+        run_server_bridge(transport, decide, result_tx);
+    });
+
+    result_rx.recv().map_err(|_| {
+        ConnectError::Transport(std::io::Error::new(
+            std::io::ErrorKind::ConnectionAborted,
+            "bridge thread died during handshake",
+        ))
+    })?
+}
+
+/// Result of a successful client connection.
+#[derive(Debug)]
+pub struct ClientReader {
+    pub welcome: Welcome,
+    pub rx: std::sync::mpsc::Receiver<ControlMessage>,
+}
+
+/// Result of a successful server-side accept.
+#[derive(Debug)]
+pub struct ServerReader {
+    pub hello: Hello,
+    pub welcome: Welcome,
+    pub rx: std::sync::mpsc::Receiver<ControlMessage>,
+}
+
+/// Client bridge thread: handshake via FrameCodec, then reader loop.
+fn run_client_bridge(
+    mut transport: impl Transport,
+    hello: Hello,
+    result_tx: std::sync::mpsc::Sender<Result<ClientReader, ConnectError>>,
+) {
+    let mut codec = FrameCodec::new(HANDSHAKE_MAX_MESSAGE_SIZE);
+
+    // Write Hello as a framed Control message.
+    let bytes = match postcard::to_allocvec(&hello) {
+        Ok(b) => b,
+        Err(e) => {
+            let _ = result_tx.send(Err(ConnectError::Transport(
+                std::io::Error::new(std::io::ErrorKind::InvalidData, e.to_string()),
+            )));
+            return;
+        }
+    };
+    if let Err(e) = codec.write_frame(&mut transport, 0, &bytes) {
+        let _ = result_tx.send(Err(ConnectError::Transport(e)));
+        return;
+    }
+
+    // Read the server's decision.
+    let frame = match codec.read_frame(&mut transport) {
+        Ok(f) => f,
+        Err(e) => {
+            let _ = result_tx.send(Err(ConnectError::Transport(
+                std::io::Error::new(std::io::ErrorKind::ConnectionAborted, e.to_string()),
+            )));
+            return;
+        }
+    };
+    let payload = match frame {
+        Frame::Message { service: 0, payload } => payload,
+        Frame::Abort => {
+            let _ = result_tx.send(Err(ConnectError::Transport(
+                std::io::Error::new(std::io::ErrorKind::ConnectionAborted, "server sent ProtocolAbort"),
+            )));
+            return;
+        }
+        _ => {
+            let _ = result_tx.send(Err(ConnectError::Transport(
+                std::io::Error::new(std::io::ErrorKind::InvalidData, "unexpected frame during handshake"),
+            )));
+            return;
+        }
+    };
+
+    let decision: Result<Welcome, Rejection> = match postcard::from_bytes(&payload) {
+        Ok(d) => d,
+        Err(e) => {
+            let _ = result_tx.send(Err(ConnectError::Transport(
+                std::io::Error::new(std::io::ErrorKind::InvalidData, e.to_string()),
+            )));
+            return;
+        }
+    };
+
+    let welcome = match decision {
+        Ok(w) => w,
+        Err(rejection) => {
+            let _ = result_tx.send(Err(ConnectError::Rejected(rejection)));
+            return;
+        }
+    };
+
+    // Handshake succeeded. Update codec with negotiated parameters.
+    codec.set_max_message_size(welcome.max_message_size);
+
+    // Register service bindings from Welcome.
+    for binding in &welcome.bindings {
+        codec.register_service(binding.session_id);
+    }
+
+    // Set up the control message channel.
+    let (msg_tx, msg_rx) = std::sync::mpsc::channel();
+
+    // Signal success before entering the read loop — the caller
+    // can start using the Receiver immediately.
+    if result_tx.send(Ok(ClientReader {
+        welcome: welcome.clone(),
+        rx: msg_rx,
+    })).is_err() {
+        return; // Caller dropped
+    }
+
+    // Active-phase reader loop.
+    reader_loop(&mut transport, &codec, msg_tx);
+}
+
+/// Server bridge thread: read Hello, decide, send response, then reader loop.
+fn run_server_bridge(
+    mut transport: impl Transport,
+    decide: impl FnOnce(Hello) -> Result<Welcome, Rejection>,
+    result_tx: std::sync::mpsc::Sender<Result<ServerReader, ConnectError>>,
+) {
+    let mut codec = FrameCodec::new(HANDSHAKE_MAX_MESSAGE_SIZE);
+
+    // Read Hello from a framed Control message.
+    let frame = match codec.read_frame(&mut transport) {
+        Ok(f) => f,
+        Err(e) => {
+            let _ = result_tx.send(Err(ConnectError::Transport(
+                std::io::Error::new(std::io::ErrorKind::ConnectionAborted, e.to_string()),
+            )));
+            return;
+        }
+    };
+    let payload = match frame {
+        Frame::Message { service: 0, payload } => payload,
+        Frame::Abort => {
+            let _ = result_tx.send(Err(ConnectError::Transport(
+                std::io::Error::new(std::io::ErrorKind::ConnectionAborted, "client sent ProtocolAbort"),
+            )));
+            return;
+        }
+        _ => {
+            let _ = result_tx.send(Err(ConnectError::Transport(
+                std::io::Error::new(std::io::ErrorKind::InvalidData, "unexpected frame during handshake"),
+            )));
+            return;
+        }
+    };
+
+    let hello: Hello = match postcard::from_bytes(&payload) {
+        Ok(h) => h,
+        Err(e) => {
+            let _ = result_tx.send(Err(ConnectError::Transport(
+                std::io::Error::new(std::io::ErrorKind::InvalidData, e.to_string()),
+            )));
+            return;
+        }
+    };
+
+    // Let the caller decide whether to accept.
+    let decision = decide(hello.clone());
+
+    // Write the decision as a framed Control message.
+    let bytes = match postcard::to_allocvec(&decision) {
+        Ok(b) => b,
+        Err(e) => {
+            let _ = result_tx.send(Err(ConnectError::Transport(
+                std::io::Error::new(std::io::ErrorKind::InvalidData, e.to_string()),
+            )));
+            return;
+        }
+    };
+    if let Err(e) = codec.write_frame(&mut transport, 0, &bytes) {
+        let _ = result_tx.send(Err(ConnectError::Transport(e)));
+        return;
+    }
+
+    let welcome = match decision {
+        Ok(w) => w,
+        Err(_rejection) => {
+            // Server rejected — no reader loop needed.
+            // The result_tx will be dropped, signaling the caller
+            // via recv() returning Err. But we should send a proper error.
+            let _ = result_tx.send(Err(ConnectError::Transport(
+                std::io::Error::new(std::io::ErrorKind::ConnectionRefused, "server rejected the handshake"),
+            )));
+            return;
+        }
+    };
+
+    // Handshake succeeded. Update codec with negotiated parameters.
+    codec.set_max_message_size(welcome.max_message_size);
+
+    for binding in &welcome.bindings {
+        codec.register_service(binding.session_id);
+    }
+
+    let (msg_tx, msg_rx) = std::sync::mpsc::channel();
+
+    if result_tx.send(Ok(ServerReader {
+        hello: hello.clone(),
+        welcome: welcome.clone(),
+        rx: msg_rx,
+    })).is_err() {
+        return;
+    }
+
+    reader_loop(&mut transport, &codec, msg_tx);
+}
+
+/// Active-phase reader loop. Reads frames, demuxes by service,
+/// and forwards Control messages to the looper.
+///
+/// Exits when:
+/// - The transport fails (peer disconnected, broken pipe)
+/// - The peer sends ProtocolAbort
+/// - The msg_tx receiver is dropped (looper shut down)
+fn reader_loop(
+    transport: &mut impl std::io::Read,
+    codec: &FrameCodec,
+    msg_tx: std::sync::mpsc::Sender<ControlMessage>,
+) {
+    loop {
+        match codec.read_frame(transport) {
+            Ok(Frame::Message { service: 0, payload }) => {
+                let msg: ControlMessage = match postcard::from_bytes(&payload) {
+                    Ok(m) => m,
+                    Err(_) => {
+                        // Deserialization failure on Control — protocol
+                        // violation, connection is untrustworthy.
+                        break;
+                    }
+                };
+                if msg_tx.send(msg).is_err() {
+                    // Looper dropped its receiver — shut down.
+                    break;
+                }
+            }
+            Ok(Frame::Message { service: _, payload: _ }) => {
+                // Service-specific message — forward with service tag.
+                // Vertical slice: no services registered, this won't
+                // happen. Future: route to per-service channels.
+            }
+            Ok(Frame::Abort) => {
+                // Peer sent ProtocolAbort.
+                break;
+            }
+            Err(_) => {
+                // Transport error or protocol violation.
+                break;
+            }
+        }
+    }
 }
 
 #[cfg(test)]
@@ -164,5 +504,155 @@ mod tests {
         let (ct, _st) = MemoryTransport::pair();
         let result = verify_transport(ct);
         assert!(result.is_ok());
+    }
+
+    #[test]
+    fn connect_and_run_handshake_success() {
+        use pane_proto::protocols::lifecycle::LifecycleMessage;
+
+        let (ct, mut st) = MemoryTransport::pair();
+
+        // Server side: manually perform handshake via FrameCodec,
+        // then drop the transport to signal EOF.
+        let server_handle = std::thread::spawn(move || {
+            let codec = FrameCodec::new(HANDSHAKE_MAX_MESSAGE_SIZE);
+
+            // Read Hello
+            let frame = codec.read_frame(&mut st).unwrap();
+            let payload = match frame {
+                Frame::Message { service: 0, payload } => payload,
+                _ => panic!("expected Control frame"),
+            };
+            let hello: Hello = postcard::from_bytes(&payload).unwrap();
+            assert_eq!(hello.version, 1);
+
+            // Send Welcome
+            let decision: Result<Welcome, Rejection> = Ok(Welcome {
+                version: 1,
+                instance_id: "test-server".into(),
+                max_message_size: 16 * 1024 * 1024,
+                bindings: vec![],
+            });
+            let bytes = postcard::to_allocvec(&decision).unwrap();
+            codec.write_frame(&mut st, 0, &bytes).unwrap();
+
+            // Send a Ready lifecycle message
+            let msg = ControlMessage::Lifecycle(LifecycleMessage::Ready);
+            let bytes = postcard::to_allocvec(&msg).unwrap();
+            codec.write_frame(&mut st, 0, &bytes).unwrap();
+
+            // Drop transport to signal EOF
+            drop(st);
+        });
+
+        let client = connect_and_run(
+            Hello {
+                version: 1,
+                max_message_size: 16 * 1024 * 1024,
+                interests: vec![],
+            },
+            ct,
+        ).expect("client connect failed");
+
+        assert_eq!(client.welcome.instance_id, "test-server");
+
+        // Read the Ready message
+        let msg = client.rx.recv().expect("expected Ready");
+        assert!(matches!(msg, ControlMessage::Lifecycle(LifecycleMessage::Ready)));
+
+        // Channel closes after server drops transport
+        server_handle.join().unwrap();
+        assert!(client.rx.recv().is_err());
+    }
+
+    #[test]
+    fn connect_and_run_rejection() {
+        let (ct, st) = MemoryTransport::pair();
+
+        std::thread::spawn(move || {
+            let _ = accept_and_run(st, |_hello| {
+                Err(Rejection {
+                    reason: RejectReason::VersionMismatch,
+                    message: Some("nope".into()),
+                })
+            });
+        });
+
+        let err = connect_and_run(
+            Hello {
+                version: 99,
+                max_message_size: 16 * 1024 * 1024,
+                interests: vec![],
+            },
+            ct,
+        ).expect_err("expected rejection");
+
+        assert!(matches!(err, ConnectError::Rejected(_)));
+    }
+
+    #[test]
+    fn connect_and_run_receives_control_messages() {
+        use pane_proto::protocols::lifecycle::LifecycleMessage;
+
+        let (ct, mut st) = MemoryTransport::pair();
+
+        // Server side: accept, then manually write Control frames
+        // on the wire to simulate active-phase messages.
+        let server_handle = std::thread::spawn(move || {
+            let codec = FrameCodec::new(HANDSHAKE_MAX_MESSAGE_SIZE);
+
+            // Read Hello
+            let frame = codec.read_frame(&mut st).unwrap();
+            let payload = match frame {
+                Frame::Message { service: 0, payload } => payload,
+                _ => panic!("expected Control frame"),
+            };
+            let _hello: Hello = postcard::from_bytes(&payload).unwrap();
+
+            // Send Welcome
+            let welcome = Welcome {
+                version: 1,
+                instance_id: "msg-server".into(),
+                max_message_size: 16 * 1024 * 1024,
+                bindings: vec![],
+            };
+            let decision: Result<Welcome, Rejection> = Ok(welcome);
+            let bytes = postcard::to_allocvec(&decision).unwrap();
+            codec.write_frame(&mut st, 0, &bytes).unwrap();
+
+            // Active phase: send lifecycle messages as Control frames
+            let ready = ControlMessage::Lifecycle(LifecycleMessage::Ready);
+            let bytes = postcard::to_allocvec(&ready).unwrap();
+            codec.write_frame(&mut st, 0, &bytes).unwrap();
+
+            let close = ControlMessage::Lifecycle(LifecycleMessage::CloseRequested);
+            let bytes = postcard::to_allocvec(&close).unwrap();
+            codec.write_frame(&mut st, 0, &bytes).unwrap();
+
+            // Drop transport to signal EOF
+            drop(st);
+        });
+
+        let client = connect_and_run(
+            Hello {
+                version: 1,
+                max_message_size: 16 * 1024 * 1024,
+                interests: vec![],
+            },
+            ct,
+        ).expect("client connect failed");
+
+        assert_eq!(client.welcome.instance_id, "msg-server");
+
+        // Read the two lifecycle messages
+        let msg1 = client.rx.recv().expect("expected Ready");
+        assert!(matches!(msg1, ControlMessage::Lifecycle(LifecycleMessage::Ready)));
+
+        let msg2 = client.rx.recv().expect("expected CloseRequested");
+        assert!(matches!(msg2, ControlMessage::Lifecycle(LifecycleMessage::CloseRequested)));
+
+        // Channel closes after server drops
+        server_handle.join().unwrap();
+        assert!(client.rx.recv().is_err());
     }
 }

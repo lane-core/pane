@@ -7,7 +7,8 @@ license = "AGPL-3.0-only"
 
 [dependencies]
 pane-proto = { path = "../pane-proto" }
-# pane-session will be added when par-backed channels are built
+pane-session = { path = "../pane-session" }
 
 [dev-dependencies]
 serde = { version = "1", features = ["derive"] }
+postcard = { version = "1", features = ["alloc"] }

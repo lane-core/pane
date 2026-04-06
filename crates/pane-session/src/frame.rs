@@ -95,6 +95,14 @@ impl FrameCodec {
         }
     }
 
+    /// Update the maximum message size after negotiation.
+    ///
+    /// Called after handshake when the Welcome carries the agreed
+    /// max_message_size.
+    pub fn set_max_message_size(&mut self, max: u32) {
+        self.max_message_size = max;
+    }
+
     /// Register a service discriminant as valid for this connection.
     ///
     /// # Panics
