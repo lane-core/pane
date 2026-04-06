@@ -93,9 +93,14 @@ impl<P: Protocol> ServiceHandle<P> {
         let entry = DispatchEntry {
             session_id,
             on_reply: Box::new(move |h, m, payload| {
-                let reply = *payload
-                    .downcast::<R>()
-                    .expect("reply type mismatch — handler H and reply R diverged");
+                // The looper passes reply_bytes as Box<Vec<u8>>.
+                // Deserialize to the concrete reply type R here,
+                // where R is known from the send_request call site.
+                let bytes = *payload
+                    .downcast::<Vec<u8>>()
+                    .expect("fire_reply must pass Box<Vec<u8>>");
+                let reply: R = postcard::from_bytes(&bytes)
+                    .expect("reply deserialization failed");
                 on_reply(h, m, reply)
             }),
             on_failed: Box::new(on_failed),

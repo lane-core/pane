@@ -9,14 +9,16 @@
 //! handles the dynamic request/reply correlation.
 //!
 //! Design heritage: Plan 9's devmnt tracked outstanding request
-//! tags and matched replies by tag
-//! (reference/plan9/src/sys/src/9/port/devmnt.c:803).
+//! tags and matched replies via mountmux
+//! (reference/plan9/src/sys/src/9/port/devmnt.c, mountmux()).
+//! devmnt.c:803 gates readers onto the mount point one at a time.
 //!
-//! Theoretical basis: EAct's handler store σ maps request tokens
-//! to reply continuations (Fowler/Hu, "Speak Now: Safe Actor
-//! Programming with Multiparty Session Types," §3.2). insert is
-//! E-Suspend (register callback), fire_reply is E-React (consume
-//! and invoke).
+//! Theoretical basis: EAct's handler store σ maps (session, role)
+//! to handler closures (Fowler/Hu, "Speak Now: Safe Actor
+//! Programming with Multiparty Session Types," §3.3 Operational
+//! Semantics). pane reinterprets this as token→continuation:
+//! insert is E-Suspend (register callback), fire_reply is E-React
+//! (consume and invoke).
 
 use pane_proto::Flow;
 use std::collections::HashMap;

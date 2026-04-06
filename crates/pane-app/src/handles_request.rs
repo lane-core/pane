@@ -7,8 +7,9 @@
 //!
 //! Design heritage: BeOS `BHandler::MessageReceived` handled both
 //! notifications and requests in a single method. Forgetting to
-//! reply was a common bug (`src/kits/app/Messenger.cpp:289`,
-//! synchronous `SendMessage` blocks on `receive_port`). pane
+//! reply was a common bug (`src/kits/app/Messenger.cpp:201-215`,
+//! synchronous `SendMessage` blocks on reply port via
+//! `handle_reply` in `src/kits/app/Message.cpp:114-141`). pane
 //! splits the dispatch surface: `Handles<P>` for notifications,
 //! `HandlesRequest<P>` for requests. The `ReplyPort` obligation
 //! makes forgotten replies a compile-time warning and runtime
@@ -20,7 +21,7 @@
 //! Plan 9's separation: 9P message vocabulary (`fcall.h`) lived
 //! in libc, while dispatch infrastructure (lib9p's `Srv`) lived
 //! in the server framework library
-//! (`reference/plan9/man/2/9p-file2chan`).
+//! (`reference/plan9/man/2/9p`).
 //!
 //! Theoretical basis: notifications are Cartesian copatterns
 //! (duplicable/discardable values). Requests are linear
@@ -119,7 +120,7 @@ mod tests {
         }
     }
 
-    fn make_ctx(dispatch: &mut Dispatch<RequestHandler>) -> DispatchCtx<RequestHandler> {
+    fn make_ctx(dispatch: &mut Dispatch<RequestHandler>) -> DispatchCtx<'_, RequestHandler> {
         DispatchCtx::new(dispatch, PeerScope(1))
     }
 
