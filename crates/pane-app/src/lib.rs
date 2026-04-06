@@ -26,5 +26,6 @@ pub use service_handle::{wire_reply_port, ServiceHandle};
 
 // Re-export pane-proto types for convenience
 pub use pane_proto::{
-    Address, FilterAction, Flow, Handler, Handles, Message, MessageFilter, Protocol, ServiceId,
+    Address, FilterAction, Flow, Handler, Handles, HandlesRequest, Message, MessageFilter,
+    Protocol, RequestProtocol, ServiceId,
 };

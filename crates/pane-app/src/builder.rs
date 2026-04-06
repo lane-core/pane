@@ -13,12 +13,12 @@
 use std::collections::HashSet;
 use std::marker::PhantomData;
 
-use pane_proto::{Handler, Handles, Protocol, ServiceId};
+use pane_proto::{Handler, Handles, HandlesRequest, Protocol, RequestProtocol, ServiceId};
 use pane_session::bridge::{self, LooperMessage, WriteMessage};
 use pane_session::handshake::ServiceProvision;
 
 use crate::pane::Pane;
-use crate::service_dispatch::{make_service_receiver, ServiceDispatch};
+use crate::service_dispatch::{make_request_receiver, make_service_receiver, ServiceDispatch};
 use crate::service_handle::ServiceHandle;
 
 /// Setup phase for a pane that will use protocol services.
@@ -113,17 +113,17 @@ impl<H: Handler> PaneBuilder<H> {
         Ok(())
     }
 
-    /// Open a service. Blocks until InterestAccepted/Declined.
-    /// Returns None if the service is unavailable.
-    /// Panics on duplicate ServiceId.
+    /// Negotiate a service subscription: send DeclareInterest, block
+    /// for InterestAccepted/Declined, and return the assigned
+    /// session_id + write channel on success. Handles duplicate
+    /// rejection, blocking loop, and message buffering.
     ///
-    /// The H: Handles<P> bound is checked HERE — this is where
-    /// the compile-time verification that the handler can receive
-    /// messages from protocol P happens.
-    pub fn open_service<P: Protocol>(&mut self) -> Option<ServiceHandle<P>>
-    where
-        H: Handles<P>,
-    {
+    /// Private helper factored from open_service — the caller is
+    /// responsible for registering dispatch receivers after this
+    /// returns.
+    fn open_service_inner<P: Protocol>(
+        &mut self,
+    ) -> Option<(u16, std::sync::mpsc::SyncSender<WriteMessage>)> {
         let id = P::service_id();
         assert!(
             self.registered_services.insert(id),
@@ -162,10 +162,7 @@ impl<H: Handler> PaneBuilder<H> {
                         ..
                     },
                 )) if service_uuid == id.uuid => {
-                    // Register typed dispatch fn for this session_id
-                    self.service_dispatch
-                        .register(session_id, make_service_receiver::<H, P>());
-                    return Some(ServiceHandle::with_channel(session_id, write_tx.clone()));
+                    return Some((session_id, write_tx.clone()));
                 }
                 Ok(LooperMessage::Control(
                     pane_proto::control::ControlMessage::InterestDeclined { service_uuid, .. },
@@ -181,6 +178,45 @@ impl<H: Handler> PaneBuilder<H> {
         }
     }
 
+    /// Open a notification-only service. Blocks until
+    /// InterestAccepted/Declined. Returns None if the service
+    /// is unavailable. Panics on duplicate ServiceId.
+    ///
+    /// The H: Handles<P> bound is checked HERE — this is where
+    /// the compile-time verification that the handler can receive
+    /// messages from protocol P happens.
+    pub fn open_service<P: Protocol>(&mut self) -> Option<ServiceHandle<P>>
+    where
+        H: Handles<P>,
+    {
+        let (session_id, write_tx) = self.open_service_inner::<P>()?;
+        self.service_dispatch
+            .register(session_id, make_service_receiver::<H, P>());
+        Some(ServiceHandle::with_channel(session_id, write_tx))
+    }
+
+    /// Open a service that supports both notifications and requests.
+    /// Blocks until InterestAccepted/Declined. Returns None if the
+    /// service is unavailable. Panics on duplicate ServiceId.
+    ///
+    /// Registers both a notification receiver (Handles<P>) and a
+    /// request receiver (HandlesRequest<P>) for the session_id.
+    /// request_receivers keys are always a subset of receivers keys
+    /// when registered through this method.
+    pub fn open_service_with_requests<P: RequestProtocol>(&mut self) -> Option<ServiceHandle<P>>
+    where
+        H: Handles<P> + HandlesRequest<P>,
+    {
+        let (session_id, write_tx) = self.open_service_inner::<P>()?;
+        self.service_dispatch
+            .register(session_id, make_service_receiver::<H, P>());
+        self.service_dispatch.register_request(
+            session_id,
+            make_request_receiver::<H, P>(write_tx.clone(), session_id),
+        );
+        Some(ServiceHandle::with_channel(session_id, write_tx))
+    }
+
     /// Consume the builder and enter the event loop.
     ///
     /// Drains buffered messages (received during open_service),
@@ -193,8 +229,7 @@ impl<H: Handler> PaneBuilder<H> {
             .rx
             .take()
             .expect("must call connect() before run_with()");
-        let service_dispatch =
-            std::mem::replace(&mut self.service_dispatch, ServiceDispatch::new());
+        let service_dispatch = std::mem::take(&mut self.service_dispatch);
         let buffered = std::mem::take(&mut self.buffered_messages);
 
         let (exit_tx, _exit_rx) = std::sync::mpsc::channel();
