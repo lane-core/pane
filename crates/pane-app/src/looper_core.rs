@@ -41,11 +41,11 @@
 use std::panic::{catch_unwind, AssertUnwindSafe};
 use std::sync::mpsc;
 
-use pane_proto::Flow;
-use crate::dispatch::{PeerScope, Dispatch};
+use crate::dispatch::{Dispatch, PeerScope};
 use crate::exit_reason::ExitReason;
 use crate::messenger::Messenger;
 use crate::service_dispatch::ServiceDispatch;
+use pane_proto::Flow;
 
 /// Outcome of a single dispatch cycle.
 #[derive(Debug, PartialEq, Eq)]
@@ -129,10 +129,7 @@ impl<H: pane_proto::Handler> LooperCore<H> {
     /// After Exit, the LooperCore must be shut down — the handler
     /// may be in an inconsistent state (panic case) or has
     /// requested termination (stop case).
-    pub fn dispatch(
-        &mut self,
-        callback: impl FnOnce(&mut H) -> Flow,
-    ) -> DispatchOutcome {
+    pub fn dispatch(&mut self, callback: impl FnOnce(&mut H) -> Flow) -> DispatchOutcome {
         if self.exited {
             return DispatchOutcome::Exit(ExitReason::Failed);
         }
@@ -142,9 +139,7 @@ impl<H: pane_proto::Handler> LooperCore<H> {
         // sound because we never re-use the handler after a
         // caught panic — shutdown() consumes it.
         let handler = &mut self.handler;
-        let result = catch_unwind(AssertUnwindSafe(|| {
-            callback(handler)
-        }));
+        let result = catch_unwind(AssertUnwindSafe(|| callback(handler)));
 
         match result {
             Ok(Flow::Continue) => DispatchOutcome::Continue,
@@ -204,11 +199,8 @@ impl<H: pane_proto::Handler> LooperCore<H> {
         self.exited = true;
 
         // Step 1: fail pending requests on the primary connection (S4)
-        self.dispatch.fail_connection(
-            self.primary_connection,
-            &mut self.handler,
-            &self.messenger,
-        );
+        self.dispatch
+            .fail_connection(self.primary_connection, &mut self.handler, &self.messenger);
 
         // Step 2: clear remaining entries across all connections
         self.dispatch.clear();
@@ -255,19 +247,41 @@ impl<H: pane_proto::Handler> LooperCore<H> {
 
         match frame {
             pane_proto::ServiceFrame::Notification { payload: inner } => {
-                let result = self.service_dispatch.dispatch_notification(
-                    session_id, &mut self.handler, &self.messenger, &inner,
-                );
+                // catch_unwind: the service receiver closure calls
+                // postcard::from_bytes(..).expect(..) which panics on
+                // malformed inner payloads. Without this boundary, the
+                // panic propagates out of run(), crashing the looper.
+                let handler = &mut self.handler;
+                let service_dispatch = &self.service_dispatch;
+                let messenger = &self.messenger;
+                let result = catch_unwind(AssertUnwindSafe(|| {
+                    service_dispatch.dispatch_notification(
+                        session_id,
+                        handler,
+                        messenger,
+                        &inner,
+                    )
+                }));
                 match result {
-                    Some(flow) => self.flow_to_outcome(flow),
-                    None => DispatchOutcome::Continue, // unknown session_id
+                    Ok(Some(flow)) => self.flow_to_outcome(flow),
+                    Ok(None) => DispatchOutcome::Continue, // unknown session_id
+                    Err(_) => {
+                        self.run_destruction(ExitReason::Failed);
+                        DispatchOutcome::Exit(ExitReason::Failed)
+                    }
                 }
             }
-            pane_proto::ServiceFrame::Request { token: _, payload: _ } => {
+            pane_proto::ServiceFrame::Request {
+                token: _,
+                payload: _,
+            } => {
                 // TODO: provider-side request handling
                 DispatchOutcome::Continue
             }
-            pane_proto::ServiceFrame::Reply { token: _, payload: _ } => {
+            pane_proto::ServiceFrame::Reply {
+                token: _,
+                payload: _,
+            } => {
                 // TODO: consumer-side reply routing via Dispatch<H>
                 DispatchOutcome::Continue
             }
@@ -303,8 +317,8 @@ impl<H: pane_proto::Handler> LooperCore<H> {
     /// Consumes self — after run returns, the handler is dropped
     /// and the destruction sequence has completed.
     pub fn run(mut self, rx: mpsc::Receiver<pane_session::bridge::LooperMessage>) -> ExitReason {
-        use pane_session::bridge::LooperMessage;
         use pane_proto::control::ControlMessage;
+        use pane_session::bridge::LooperMessage;
 
         // Main loop: read from channel, dispatch.
         // Ready arrives from the server as ControlMessage::Lifecycle(Ready)
@@ -322,7 +336,10 @@ impl<H: pane_proto::Handler> LooperCore<H> {
                     // Service negotiation messages handled by PaneBuilder
                     // during setup.
                 }
-                Ok(LooperMessage::Service { session_id, payload }) => {
+                Ok(LooperMessage::Service {
+                    session_id,
+                    payload,
+                }) => {
                     let outcome = self.dispatch_service(session_id, &payload);
                     if let DispatchOutcome::Exit(reason) = outcome {
                         break reason;
@@ -355,7 +372,7 @@ impl<H: pane_proto::Handler> LooperCore<H> {
 mod tests {
     use super::*;
     use crate::dispatch::{DispatchEntry, PeerScope};
-    use pane_proto::obligation::{ReplyPort, ReplyFailed};
+    use pane_proto::obligation::{ReplyFailed, ReplyPort};
     use std::sync::{Arc, Mutex};
 
     // ── Test handler ───────────────────────────────────────
@@ -402,7 +419,11 @@ mod tests {
         }
     }
 
-    fn setup() -> (Arc<Mutex<Vec<String>>>, mpsc::Sender<ExitReason>, mpsc::Receiver<ExitReason>) {
+    fn setup() -> (
+        Arc<Mutex<Vec<String>>>,
+        mpsc::Sender<ExitReason>,
+        mpsc::Receiver<ExitReason>,
+    ) {
         let log = Arc::new(Mutex::new(Vec::new()));
         let (exit_tx, exit_rx) = mpsc::channel();
         (log, exit_tx, exit_rx)
@@ -505,10 +526,15 @@ mod tests {
             Flow::Continue
         });
 
-        assert_eq!(outcome2, DispatchOutcome::Exit(ExitReason::Failed),
-            "post-exit dispatch must return Exit immediately");
-        assert!(!ran.load(std::sync::atomic::Ordering::SeqCst),
-            "callback must not run after exit");
+        assert_eq!(
+            outcome2,
+            DispatchOutcome::Exit(ExitReason::Failed),
+            "post-exit dispatch must return Exit immediately"
+        );
+        assert!(
+            !ran.load(std::sync::atomic::Ordering::SeqCst),
+            "callback must not run after exit"
+        );
     }
 
     // ── Claim: destruction sequence ordering ───────────────
@@ -525,25 +551,31 @@ mod tests {
 
         // Install a dispatch entry on the primary connection
         let conn = PeerScope(1);
-        core.dispatch_mut().insert(conn, DispatchEntry {
-            on_reply: Box::new(|_h: &mut TestHandler, _, _| Flow::Continue),
-            on_failed: Box::new(move |_h: &mut TestHandler, _| {
-                log2.lock().unwrap().push("on_failed".into());
-                Flow::Continue
-            }),
-        });
+        core.dispatch_mut().insert(
+            conn,
+            DispatchEntry {
+                on_reply: Box::new(|_h: &mut TestHandler, _, _| Flow::Continue),
+                on_failed: Box::new(move |_h: &mut TestHandler, _| {
+                    log2.lock().unwrap().push("on_failed".into());
+                    Flow::Continue
+                }),
+            },
+        );
 
         // Install an entry on a different connection (should be
         // cleared in step 2, not failed in step 1)
         let other_conn = PeerScope(2);
-        core.dispatch_mut().insert(other_conn, DispatchEntry {
-            on_reply: Box::new(|_h: &mut TestHandler, _, _| Flow::Continue),
-            on_failed: Box::new(move |_h: &mut TestHandler, _| {
-                // This should NOT fire — clear() drops without callbacks
-                log3.lock().unwrap().push("other_on_failed_BUG".into());
-                Flow::Continue
-            }),
-        });
+        core.dispatch_mut().insert(
+            other_conn,
+            DispatchEntry {
+                on_reply: Box::new(|_h: &mut TestHandler, _, _| Flow::Continue),
+                on_failed: Box::new(move |_h: &mut TestHandler, _| {
+                    // This should NOT fire — clear() drops without callbacks
+                    log3.lock().unwrap().push("other_on_failed_BUG".into());
+                    Flow::Continue
+                }),
+            },
+        );
 
         // Trigger Flow::Stop → destruction sequence
         let outcome = core.dispatch(|_h| Flow::Stop);
@@ -555,22 +587,34 @@ mod tests {
         let events = log.lock().unwrap().clone();
 
         // Step 1: on_failed fired for primary connection entry
-        assert!(events.contains(&"on_failed".to_string()),
-            "S4: fail_connection must fire on_failed. Got: {:?}", events);
+        assert!(
+            events.contains(&"on_failed".to_string()),
+            "S4: fail_connection must fire on_failed. Got: {:?}",
+            events
+        );
 
         // Step 2: other connection's on_failed must NOT have fired
-        assert!(!events.contains(&"other_on_failed_BUG".to_string()),
-            "clear() must drop without callbacks. Got: {:?}", events);
+        assert!(
+            !events.contains(&"other_on_failed_BUG".to_string()),
+            "clear() must drop without callbacks. Got: {:?}",
+            events
+        );
 
         // Step 3: handler dropped
-        assert!(events.contains(&"handler_dropped".to_string()),
-            "handler must be dropped. Got: {:?}", events);
+        assert!(
+            events.contains(&"handler_dropped".to_string()),
+            "handler must be dropped. Got: {:?}",
+            events
+        );
 
         // Ordering: on_failed before handler_dropped
         let failed_pos = events.iter().position(|e| e == "on_failed").unwrap();
         let dropped_pos = events.iter().position(|e| e == "handler_dropped").unwrap();
-        assert!(failed_pos < dropped_pos,
-            "fail_connection must run before handler drop. Got: {:?}", events);
+        assert!(
+            failed_pos < dropped_pos,
+            "fail_connection must run before handler drop. Got: {:?}",
+            events
+        );
 
         // Step 4: exit signal sent
         assert_eq!(exit_rx.recv().unwrap(), ExitReason::Graceful);
@@ -597,8 +641,11 @@ mod tests {
         // which drops the ReplyPort.
         core.shutdown();
 
-        assert_eq!(rx.recv().unwrap(), Err(ReplyFailed),
-            "ReplyPort Drop must send ReplyFailed during destruction");
+        assert_eq!(
+            rx.recv().unwrap(),
+            Err(ReplyFailed),
+            "ReplyPort Drop must send ReplyFailed during destruction"
+        );
     }
 
     // ── Claim: panic + obligation handle = compensated ─────
@@ -639,8 +686,11 @@ mod tests {
         while let Ok(r) = exit_rx.try_recv() {
             reasons.push(r);
         }
-        assert!(reasons.contains(&ExitReason::Disconnected),
-            "exit signal must include Disconnected. Got: {:?}", reasons);
+        assert!(
+            reasons.contains(&ExitReason::Disconnected),
+            "exit signal must include Disconnected. Got: {:?}",
+            reasons
+        );
     }
 
     // ── Claim: E-Suspend → E-React end-to-end ──────────────
@@ -660,24 +710,28 @@ mod tests {
 
         // E-Suspend: install a dispatch entry whose on_reply
         // callback mutates the handler's log.
-        let token = core.dispatch.insert(conn, DispatchEntry {
-            on_reply: Box::new(|h: &mut TestHandler, _, payload| {
-                let msg = payload.downcast::<String>().unwrap();
-                h.log.lock().unwrap().push(format!("on_reply:{}", msg));
-                Flow::Continue
-            }),
-            on_failed: Box::new(|h: &mut TestHandler, _| {
-                h.log.lock().unwrap().push("on_failed_BUG".into());
-                Flow::Continue
-            }),
-        });
+        let token = core.dispatch.insert(
+            conn,
+            DispatchEntry {
+                on_reply: Box::new(|h: &mut TestHandler, _, payload| {
+                    let msg = payload.downcast::<String>().unwrap();
+                    h.log.lock().unwrap().push(format!("on_reply:{}", msg));
+                    Flow::Continue
+                }),
+                on_failed: Box::new(|h: &mut TestHandler, _| {
+                    h.log.lock().unwrap().push("on_failed_BUG".into());
+                    Flow::Continue
+                }),
+            },
+        );
         assert_eq!(core.dispatch.len(), 1, "E-Suspend: entry installed");
 
         // E-React: split the borrow to call fire_reply with both
         // &mut Dispatch and &mut H, mirroring the real looper.
         let messenger = core.messenger.clone();
         let flow = core.dispatch.fire_reply(
-            conn, token,
+            conn,
+            token,
             &mut core.handler,
             &messenger,
             Box::new("hello".to_string()),
@@ -686,15 +740,21 @@ mod tests {
         // on_reply callback fired and modified handler state.
         assert_eq!(flow, Some(Flow::Continue));
         let events = log.lock().unwrap().clone();
-        assert!(events.contains(&"on_reply:hello".to_string()),
-            "E-React: on_reply must fire and modify handler state. Got: {:?}", events);
+        assert!(
+            events.contains(&"on_reply:hello".to_string()),
+            "E-React: on_reply must fire and modify handler state. Got: {:?}",
+            events
+        );
 
         // Entry consumed (one-shot).
         assert_eq!(core.dispatch.len(), 0, "entry consumed after fire_reply");
 
         // on_failed did NOT fire.
-        assert!(!events.contains(&"on_failed_BUG".to_string()),
-            "on_failed must not fire on successful reply. Got: {:?}", events);
+        assert!(
+            !events.contains(&"on_failed_BUG".to_string()),
+            "on_failed must not fire on successful reply. Got: {:?}",
+            events
+        );
     }
 
     // ── Claim: dispatching after destruction is not allowed ─
@@ -726,21 +786,27 @@ mod tests {
 
         // Entry on secondary connection — should survive fail_connection
         let secondary = PeerScope(99);
-        core.dispatch_mut().insert(secondary, DispatchEntry {
-            on_reply: Box::new(|_h: &mut TestHandler, _, _| Flow::Continue),
-            on_failed: Box::new(move |_h: &mut TestHandler, _| {
-                log2.lock().unwrap().push("secondary_failed".into());
-                Flow::Continue
-            }),
-        });
+        core.dispatch_mut().insert(
+            secondary,
+            DispatchEntry {
+                on_reply: Box::new(|_h: &mut TestHandler, _, _| Flow::Continue),
+                on_failed: Box::new(move |_h: &mut TestHandler, _| {
+                    log2.lock().unwrap().push("secondary_failed".into());
+                    Flow::Continue
+                }),
+            },
+        );
 
         // Trigger destruction — fail_connection only hits primary (1)
         core.dispatch(|_h| Flow::Stop);
 
         // Secondary's on_failed must not have fired (step 1 is scoped)
         let events = log.lock().unwrap().clone();
-        assert!(!events.contains(&"secondary_failed".into()),
-            "fail_connection must be scoped to primary. Got: {:?}", events);
+        assert!(
+            !events.contains(&"secondary_failed".into()),
+            "fail_connection must be scoped to primary. Got: {:?}",
+            events
+        );
 
         // But the entry was cleared in step 2
         assert!(core.dispatch_mut().is_empty());
@@ -750,14 +816,16 @@ mod tests {
 
     #[test]
     fn run_dispatches_service_notification() {
-        use pane_session::bridge::LooperMessage;
+        use crate::service_dispatch::{make_service_receiver, ServiceDispatch};
         use pane_proto::ServiceFrame;
-        use crate::service_dispatch::{ServiceDispatch, make_service_receiver};
+        use pane_session::bridge::LooperMessage;
 
         // Test protocol
         struct NotifyProto;
         #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
-        enum NotifyMsg { Ping(String) }
+        enum NotifyMsg {
+            Ping(String),
+        }
         impl pane_proto::Protocol for NotifyProto {
             fn service_id() -> pane_proto::ServiceId {
                 pane_proto::ServiceId::new("com.test.notify")
@@ -769,7 +837,9 @@ mod tests {
             log: Arc<Mutex<Vec<String>>>,
         }
         impl pane_proto::Handler for NotifyHandler {
-            fn close_requested(&mut self) -> Flow { Flow::Stop }
+            fn close_requested(&mut self) -> Flow {
+                Flow::Stop
+            }
         }
         impl pane_proto::Handles<NotifyProto> for NotifyHandler {
             fn receive(&mut self, msg: NotifyMsg) -> Flow {
@@ -794,29 +864,38 @@ mod tests {
         service_dispatch.register(3, make_service_receiver::<NotifyHandler, NotifyProto>());
 
         let handler = NotifyHandler { log: log.clone() };
-        let core = LooperCore::with_service_dispatch(
-            handler, PeerScope(1), exit_tx, service_dispatch,
-        );
+        let core =
+            LooperCore::with_service_dispatch(handler, PeerScope(1), exit_tx, service_dispatch);
 
         // Send a service notification on session_id=3
         let inner = postcard::to_allocvec(&NotifyMsg::Ping("wired".into())).unwrap();
         let frame = ServiceFrame::Notification { payload: inner };
         let outer = postcard::to_allocvec(&frame).unwrap();
-        msg_tx.send(LooperMessage::Service { session_id: 3, payload: outer }).unwrap();
+        msg_tx
+            .send(LooperMessage::Service {
+                session_id: 3,
+                payload: outer,
+            })
+            .unwrap();
 
         // Send CloseRequested to stop the loop
-        msg_tx.send(LooperMessage::Control(
-            pane_proto::control::ControlMessage::Lifecycle(
-                pane_proto::protocols::lifecycle::LifecycleMessage::CloseRequested,
-            ),
-        )).unwrap();
+        msg_tx
+            .send(LooperMessage::Control(
+                pane_proto::control::ControlMessage::Lifecycle(
+                    pane_proto::protocols::lifecycle::LifecycleMessage::CloseRequested,
+                ),
+            ))
+            .unwrap();
 
         let reason = core.run(msg_rx);
         assert_eq!(reason, ExitReason::Graceful);
 
         let events = log.lock().unwrap().clone();
-        assert!(events.contains(&"wired".to_string()),
-            "handler must receive service notification. Got: {:?}", events);
+        assert!(
+            events.contains(&"wired".to_string()),
+            "handler must receive service notification. Got: {:?}",
+            events
+        );
     }
 
     // ── Vertical slice: IO → bridge → LooperCore ──────────────
@@ -828,12 +907,12 @@ mod tests {
         //
         // This is the proof that the vertical slice works: bytes on
         // a transport become lifecycle calls on a handler.
-        use pane_session::transport::MemoryTransport;
-        use pane_session::bridge::{connect_and_run, HANDSHAKE_MAX_MESSAGE_SIZE};
-        use pane_session::frame::FrameCodec;
-        use pane_session::handshake::{Hello, Welcome, Rejection};
         use pane_proto::control::ControlMessage;
         use pane_proto::protocols::lifecycle::LifecycleMessage;
+        use pane_session::bridge::{connect_and_run, HANDSHAKE_MAX_MESSAGE_SIZE};
+        use pane_session::frame::FrameCodec;
+        use pane_session::handshake::{Hello, Rejection, Welcome};
+        use pane_session::transport::MemoryTransport;
 
         let log = Arc::new(Mutex::new(Vec::new()));
         let (exit_tx, exit_rx) = mpsc::channel();
@@ -847,7 +926,10 @@ mod tests {
             // Read Hello
             let frame = codec.read_frame(&mut st).unwrap();
             let payload = match frame {
-                pane_session::frame::Frame::Message { service: 0, payload } => payload,
+                pane_session::frame::Frame::Message {
+                    service: 0,
+                    payload,
+                } => payload,
                 _ => panic!("expected Control frame"),
             };
             let _hello: Hello = postcard::from_bytes(&payload).unwrap();
@@ -884,7 +966,8 @@ mod tests {
                 provides: vec![],
             },
             ct,
-        ).expect("client connect failed");
+        )
+        .expect("client connect failed");
 
         assert_eq!(client.welcome.instance_id, "vertical-slice-server");
 
@@ -900,11 +983,17 @@ mod tests {
         assert_eq!(exit_reason, ExitReason::Graceful);
 
         let events = log.lock().unwrap().clone();
-        assert!(events.contains(&"ready".to_string()),
-            "handler must receive Ready. Got: {:?}", events);
+        assert!(
+            events.contains(&"ready".to_string()),
+            "handler must receive Ready. Got: {:?}",
+            events
+        );
         // handler_dropped fires during shutdown
-        assert!(events.contains(&"handler_dropped".to_string()),
-            "handler must be dropped during shutdown. Got: {:?}", events);
+        assert!(
+            events.contains(&"handler_dropped".to_string()),
+            "handler must be dropped during shutdown. Got: {:?}",
+            events
+        );
 
         // Exit signal sent
         // Drain — may have Graceful from run_destruction + possibly others
@@ -912,8 +1001,11 @@ mod tests {
         while let Ok(r) = exit_rx.try_recv() {
             reasons.push(r);
         }
-        assert!(reasons.contains(&ExitReason::Graceful),
-            "exit signal must include Graceful. Got: {:?}", reasons);
+        assert!(
+            reasons.contains(&ExitReason::Graceful),
+            "exit signal must include Graceful. Got: {:?}",
+            reasons
+        );
 
         server_handle.join().unwrap();
     }
@@ -923,10 +1015,10 @@ mod tests {
         // Server drops transport without sending CloseRequested.
         // The reader thread sees EOF, closes the channel, and the
         // looper calls handler.disconnected() → Disconnected exit.
-        use pane_session::transport::MemoryTransport;
         use pane_session::bridge::{connect_and_run, HANDSHAKE_MAX_MESSAGE_SIZE};
         use pane_session::frame::FrameCodec;
-        use pane_session::handshake::{Hello, Welcome, Rejection};
+        use pane_session::handshake::{Hello, Rejection, Welcome};
+        use pane_session::transport::MemoryTransport;
 
         let log = Arc::new(Mutex::new(Vec::new()));
         let (exit_tx, exit_rx) = mpsc::channel();
@@ -939,7 +1031,10 @@ mod tests {
 
             let frame = codec.read_frame(&mut st).unwrap();
             let payload = match frame {
-                pane_session::frame::Frame::Message { service: 0, payload } => payload,
+                pane_session::frame::Frame::Message {
+                    service: 0,
+                    payload,
+                } => payload,
                 _ => panic!("expected Control frame"),
             };
             let _hello: Hello = postcard::from_bytes(&payload).unwrap();
@@ -972,7 +1067,8 @@ mod tests {
                 provides: vec![],
             },
             ct,
-        ).expect("client connect failed");
+        )
+        .expect("client connect failed");
 
         let handler = TestHandler::new(log.clone());
         let core = LooperCore::new(handler, PeerScope(1), exit_tx);
@@ -982,10 +1078,16 @@ mod tests {
         assert_eq!(exit_reason, ExitReason::Disconnected);
 
         let events = log.lock().unwrap().clone();
-        assert!(events.contains(&"ready".to_string()),
-            "handler must receive Ready. Got: {:?}", events);
-        assert!(events.contains(&"disconnected".to_string()),
-            "handler must receive disconnected. Got: {:?}", events);
+        assert!(
+            events.contains(&"ready".to_string()),
+            "handler must receive Ready. Got: {:?}",
+            events
+        );
+        assert!(
+            events.contains(&"disconnected".to_string()),
+            "handler must receive disconnected. Got: {:?}",
+            events
+        );
 
         server_handle.join().unwrap();
 
@@ -993,7 +1095,10 @@ mod tests {
         while let Ok(r) = exit_rx.try_recv() {
             reasons.push(r);
         }
-        assert!(reasons.contains(&ExitReason::Disconnected),
-            "exit signal must include Disconnected. Got: {:?}", reasons);
+        assert!(
+            reasons.contains(&ExitReason::Disconnected),
+            "exit signal must include Disconnected. Got: {:?}",
+            reasons
+        );
     }
 }
