@@ -83,9 +83,28 @@ pub trait Protocol {
     type Message: Message;
 }
 
+/// A protocol that supports request/reply interactions.
+///
+/// Extends Protocol with a Reply type. Only protocols that impl
+/// this supertrait can have requests sent via `send_request`.
+/// Notification-only protocols impl only Protocol.
+///
+/// Design heritage: BeOS BMessage supported both fire-and-forget
+/// (`BLooper::PostMessage`, `BMessenger::SendMessage` with no
+/// reply — `src/kits/app/Looper.cpp:274`, `src/kits/app/Messenger.cpp:201`)
+/// and request/reply (`BMessenger::SendMessage` with reply handler
+/// or synchronous reply — `src/kits/app/Messenger.cpp:231`).
+/// The distinction was at the call site. pane makes the protocol's
+/// reply capability a type-level fact: `RequestProtocol` declares it,
+/// `send_request` requires it.
+pub trait RequestProtocol: Protocol {
+    type Reply: Message;
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use serde::{Deserialize, Serialize};
 
     #[test]
     fn service_id_deterministic() {
@@ -110,5 +129,72 @@ mod tests {
         // UUID survives; name becomes "<unknown>" (wire doesn't carry name)
         assert_eq!(original.uuid, deserialized.uuid);
         assert_eq!(deserialized.name, "<unknown>");
+    }
+
+    // ── RequestProtocol ────────────────────────────────────
+
+    #[derive(Debug, Clone, Serialize, Deserialize)]
+    enum QueryMessage {
+        Lookup(String),
+    }
+
+    #[derive(Debug, Clone, Serialize, Deserialize)]
+    enum QueryReply {
+        Found(String),
+        NotFound,
+    }
+
+    struct QueryProto;
+
+    impl Protocol for QueryProto {
+        fn service_id() -> ServiceId {
+            ServiceId::new("com.test.query")
+        }
+        type Message = QueryMessage;
+    }
+
+    impl RequestProtocol for QueryProto {
+        type Reply = QueryReply;
+    }
+
+    #[test]
+    fn request_protocol_extends_protocol() {
+        // RequestProtocol is a superset — service_id and Message
+        // are inherited from Protocol.
+        assert_eq!(QueryProto::service_id().name, "com.test.query");
+
+        // Reply type is accessible through the supertrait.
+        fn assert_reply_is_message<P: RequestProtocol>()
+        where
+            P::Reply: crate::message::Message,
+        {
+        }
+        assert_reply_is_message::<QueryProto>();
+    }
+
+    #[test]
+    fn notification_only_protocol_does_not_impl_request() {
+        // A protocol without RequestProtocol cannot be used
+        // where RequestProtocol is required. This is a compile-time
+        // property — the test documents the distinction.
+        struct NotifyOnly;
+
+        #[derive(Debug, Clone, Serialize, Deserialize)]
+        struct Tick;
+
+        impl Protocol for NotifyOnly {
+            fn service_id() -> ServiceId {
+                ServiceId::new("com.test.notify")
+            }
+            type Message = Tick;
+        }
+
+        // NotifyOnly is a valid Protocol...
+        fn accepts_protocol<P: Protocol>() {}
+        accepts_protocol::<NotifyOnly>();
+
+        // ...but uncommenting the following would fail to compile:
+        //   fn accepts_request<P: RequestProtocol>() {}
+        //   accepts_request::<NotifyOnly>(); // ERROR: NotifyOnly doesn't impl RequestProtocol
     }
 }
