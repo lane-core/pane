@@ -45,6 +45,7 @@ use pane_proto::Flow;
 use crate::dispatch::{ConnectionId, Dispatch};
 use crate::exit_reason::ExitReason;
 use crate::messenger::Messenger;
+use crate::service_dispatch::ServiceDispatch;
 
 /// Outcome of a single dispatch cycle.
 #[derive(Debug, PartialEq, Eq)]
@@ -64,6 +65,7 @@ pub enum DispatchOutcome {
 pub struct LooperCore<H> {
     handler: H,
     dispatch: Dispatch<H>,
+    service_dispatch: ServiceDispatch<H>,
     messenger: Messenger,
     primary_connection: ConnectionId,
     exit_tx: mpsc::Sender<ExitReason>,
@@ -79,6 +81,26 @@ impl<H: pane_proto::Handler> LooperCore<H> {
         LooperCore {
             handler,
             dispatch: Dispatch::new(),
+            service_dispatch: ServiceDispatch::new(),
+            messenger: Messenger::new(),
+            primary_connection,
+            exit_tx,
+            exited: false,
+        }
+    }
+
+    /// Constructor with a pre-populated service dispatch table.
+    /// Used by PaneBuilder::run_with after setup.
+    pub fn with_service_dispatch(
+        handler: H,
+        primary_connection: ConnectionId,
+        exit_tx: mpsc::Sender<ExitReason>,
+        service_dispatch: ServiceDispatch<H>,
+    ) -> Self {
+        LooperCore {
+            handler,
+            dispatch: Dispatch::new(),
+            service_dispatch,
             messenger: Messenger::new(),
             primary_connection,
             exit_tx,
@@ -217,7 +239,62 @@ impl<H: pane_proto::Handler> LooperCore<H> {
         })
     }
 
-    /// Run the looper, reading ControlMessages from the channel.
+    /// Dispatch a service frame. Parses ServiceFrame, routes by variant.
+    ///
+    /// Notification -> service dispatch table (static, typed).
+    /// Request/Reply/Failed -> Dispatch<H> (dynamic, token-keyed).
+    ///
+    /// The looper parses ServiceFrame (per optics agent: token
+    /// correlation is framework routing, not per-service concern).
+    /// The per-service closure gets only the inner payload bytes.
+    pub(crate) fn dispatch_service(&mut self, session_id: u8, payload: &[u8]) -> DispatchOutcome {
+        let frame: pane_proto::ServiceFrame = match postcard::from_bytes(payload) {
+            Ok(f) => f,
+            Err(_) => return DispatchOutcome::Continue, // malformed — drop
+        };
+
+        match frame {
+            pane_proto::ServiceFrame::Notification { payload: inner } => {
+                let result = self.service_dispatch.dispatch_notification(
+                    session_id, &mut self.handler, &self.messenger, &inner,
+                );
+                match result {
+                    Some(flow) => self.flow_to_outcome(flow),
+                    None => DispatchOutcome::Continue, // unknown session_id
+                }
+            }
+            pane_proto::ServiceFrame::Request { token: _, payload: _ } => {
+                // TODO: provider-side request handling
+                DispatchOutcome::Continue
+            }
+            pane_proto::ServiceFrame::Reply { token: _, payload: _ } => {
+                // TODO: consumer-side reply routing via Dispatch<H>
+                DispatchOutcome::Continue
+            }
+            pane_proto::ServiceFrame::Failed { token: _ } => {
+                // TODO: consumer-side failure routing via Dispatch<H>
+                DispatchOutcome::Continue
+            }
+            _ => {
+                // Future ServiceFrame variants (e.g. streaming).
+                DispatchOutcome::Continue
+            }
+        }
+    }
+
+    /// Convert a Flow value into a DispatchOutcome, running
+    /// the destruction sequence on Flow::Stop.
+    fn flow_to_outcome(&mut self, flow: Flow) -> DispatchOutcome {
+        match flow {
+            Flow::Continue => DispatchOutcome::Continue,
+            Flow::Stop => {
+                self.run_destruction(ExitReason::Graceful);
+                DispatchOutcome::Exit(ExitReason::Graceful)
+            }
+        }
+    }
+
+    /// Run the looper, reading LooperMessages from the channel.
     ///
     /// Sends Ready to the handler, then enters the main dispatch
     /// loop. Blocks until Flow::Stop, a handler panic, or the
@@ -225,7 +302,8 @@ impl<H: pane_proto::Handler> LooperCore<H> {
     ///
     /// Consumes self — after run returns, the handler is dropped
     /// and the destruction sequence has completed.
-    pub fn run(mut self, rx: mpsc::Receiver<pane_proto::control::ControlMessage>) -> ExitReason {
+    pub fn run(mut self, rx: mpsc::Receiver<pane_session::bridge::LooperMessage>) -> ExitReason {
+        use pane_session::bridge::LooperMessage;
         use pane_proto::control::ControlMessage;
 
         // Main loop: read from channel, dispatch.
@@ -233,15 +311,22 @@ impl<H: pane_proto::Handler> LooperCore<H> {
         // — the looper does not inject it synthetically.
         let exit_reason = loop {
             match rx.recv() {
-                Ok(ControlMessage::Lifecycle(msg)) => {
+                Ok(LooperMessage::Control(ControlMessage::Lifecycle(msg))) => {
                     let outcome = self.dispatch_lifecycle(msg);
                     if let DispatchOutcome::Exit(reason) = outcome {
                         break reason;
                     }
                 }
-                Ok(_other) => {
+                Ok(LooperMessage::Control(_other)) => {
                     // Non-lifecycle ControlMessage — framework-internal.
-                    // Vertical slice: no services registered, ignore.
+                    // Service negotiation messages handled by PaneBuilder
+                    // during setup.
+                }
+                Ok(LooperMessage::Service { session_id, payload }) => {
+                    let outcome = self.dispatch_service(session_id, &payload);
+                    if let DispatchOutcome::Exit(reason) = outcome {
+                        break reason;
+                    }
                 }
                 Err(_) => {
                     // Channel closed — reader thread exited (disconnect).
@@ -659,6 +744,79 @@ mod tests {
 
         // But the entry was cleared in step 2
         assert!(core.dispatch_mut().is_empty());
+    }
+
+    // ── Service frame dispatch through run() ────────────────
+
+    #[test]
+    fn run_dispatches_service_notification() {
+        use pane_session::bridge::LooperMessage;
+        use pane_proto::ServiceFrame;
+        use crate::service_dispatch::{ServiceDispatch, make_service_receiver};
+
+        // Test protocol
+        struct NotifyProto;
+        #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+        enum NotifyMsg { Ping(String) }
+        impl pane_proto::Protocol for NotifyProto {
+            fn service_id() -> pane_proto::ServiceId {
+                pane_proto::ServiceId::new("com.test.notify")
+            }
+            type Message = NotifyMsg;
+        }
+
+        struct NotifyHandler {
+            log: Arc<Mutex<Vec<String>>>,
+        }
+        impl pane_proto::Handler for NotifyHandler {
+            fn close_requested(&mut self) -> Flow { Flow::Stop }
+        }
+        impl pane_proto::Handles<NotifyProto> for NotifyHandler {
+            fn receive(&mut self, msg: NotifyMsg) -> Flow {
+                match msg {
+                    NotifyMsg::Ping(s) => self.log.lock().unwrap().push(s),
+                }
+                Flow::Continue
+            }
+        }
+        impl Drop for NotifyHandler {
+            fn drop(&mut self) {
+                self.log.lock().unwrap().push("dropped".into());
+            }
+        }
+
+        let log = Arc::new(Mutex::new(Vec::new()));
+        let (exit_tx, _exit_rx) = mpsc::channel();
+        let (msg_tx, msg_rx) = mpsc::channel();
+
+        // Build service dispatch table
+        let mut service_dispatch = ServiceDispatch::new();
+        service_dispatch.register(3, make_service_receiver::<NotifyHandler, NotifyProto>());
+
+        let handler = NotifyHandler { log: log.clone() };
+        let core = LooperCore::with_service_dispatch(
+            handler, ConnectionId(1), exit_tx, service_dispatch,
+        );
+
+        // Send a service notification on session_id=3
+        let inner = postcard::to_allocvec(&NotifyMsg::Ping("wired".into())).unwrap();
+        let frame = ServiceFrame::Notification { payload: inner };
+        let outer = postcard::to_allocvec(&frame).unwrap();
+        msg_tx.send(LooperMessage::Service { session_id: 3, payload: outer }).unwrap();
+
+        // Send CloseRequested to stop the loop
+        msg_tx.send(LooperMessage::Control(
+            pane_proto::control::ControlMessage::Lifecycle(
+                pane_proto::protocols::lifecycle::LifecycleMessage::CloseRequested,
+            ),
+        )).unwrap();
+
+        let reason = core.run(msg_rx);
+        assert_eq!(reason, ExitReason::Graceful);
+
+        let events = log.lock().unwrap().clone();
+        assert!(events.contains(&"wired".to_string()),
+            "handler must receive service notification. Got: {:?}", events);
     }
 
     // ── Vertical slice: IO → bridge → LooperCore ──────────────
