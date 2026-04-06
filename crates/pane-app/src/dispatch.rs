@@ -7,6 +7,16 @@
 //! Static protocol dispatch (Handles<P> fn pointers) lives in
 //! the service dispatch table on PaneBuilder/looper. Dispatch<H>
 //! handles the dynamic request/reply correlation.
+//!
+//! Design heritage: Plan 9's devmnt tracked outstanding request
+//! tags and matched replies by tag
+//! (reference/plan9/src/sys/src/9/port/devmnt.c:803).
+//!
+//! Theoretical basis: EAct's handler store σ maps request tokens
+//! to reply continuations (Fowler/Hu, "Speak Now: Safe Actor
+//! Programming with Multiparty Session Types," §3.2). insert is
+//! E-Suspend (register callback), fire_reply is E-React (consume
+//! and invoke).
 
 use std::collections::HashMap;
 use pane_proto::Flow;
@@ -18,7 +28,7 @@ use pane_proto::Flow;
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct PeerScope(pub u64);
 
-/// Request token. Unique per Connection (AtomicU64).
+/// Request token. Unique per Dispatch instance (monotonic counter).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct Token(pub u64);
 

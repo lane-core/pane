@@ -22,6 +22,10 @@ use crate::Messenger;
 
 /// Monotonic token counter for request/reply correlation.
 /// Global — tokens are unique across all ServiceHandles in a process.
+///
+/// Placeholder: when Reply routing lands, tokens will be sourced
+/// from Dispatch (per-looper scope) instead. The global counter
+/// is temporary so send_request can produce valid wire frames now.
 static NEXT_TOKEN: AtomicU64 = AtomicU64::new(1);
 
 /// A live connection to a service. Parameterized by protocol.
