@@ -18,8 +18,8 @@
 //! E-Suspend (register callback), fire_reply is E-React (consume
 //! and invoke).
 
-use std::collections::HashMap;
 use pane_proto::Flow;
+use std::collections::HashMap;
 
 /// Scopes dispatch entries by peer. Distinct from the server's
 /// ConnectionId — this is looper-internal, the server never sees it.
@@ -36,7 +36,9 @@ pub struct Token(pub u64);
 /// Type-erased at storage time; the callbacks capture the
 /// concrete types via closure.
 pub(crate) struct DispatchEntry<H> {
-    pub on_reply: Box<dyn FnOnce(&mut H, &crate::Messenger, Box<dyn std::any::Any + Send>) -> Flow + Send>,
+    pub session_id: u8,
+    pub on_reply:
+        Box<dyn FnOnce(&mut H, &crate::Messenger, Box<dyn std::any::Any + Send>) -> Flow + Send>,
     pub on_failed: Box<dyn FnOnce(&mut H, &crate::Messenger) -> Flow + Send>,
 }
 
@@ -107,9 +109,33 @@ impl<H> Dispatch<H> {
         handler: &mut H,
         messenger: &crate::Messenger,
     ) {
-        let keys: Vec<_> = self.entries.keys()
+        let keys: Vec<_> = self
+            .entries
+            .keys()
             .filter(|(c, _)| *c == connection)
             .copied()
+            .collect();
+        for key in keys {
+            if let Some(entry) = self.entries.remove(&key) {
+                let _ = (entry.on_failed)(handler, messenger);
+            }
+        }
+    }
+
+    /// Fire on_failed for all entries on a specific session (S1 fix).
+    /// Called when a service teardown is received — the consumer's
+    /// outstanding requests for that session will never get replies.
+    pub(crate) fn fail_session(
+        &mut self,
+        session_id: u8,
+        handler: &mut H,
+        messenger: &crate::Messenger,
+    ) {
+        let keys: Vec<_> = self
+            .entries
+            .iter()
+            .filter(|(_, e)| e.session_id == session_id)
+            .map(|(k, _)| *k)
             .collect();
         for key in keys {
             if let Some(entry) = self.entries.remove(&key) {
@@ -147,26 +173,36 @@ mod tests {
     #[test]
     fn insert_and_fire_reply() {
         let mut dispatch = Dispatch::new();
-        let mut handler = TestHandler { replies: vec![], failures: vec![] };
+        let mut handler = TestHandler {
+            replies: vec![],
+            failures: vec![],
+        };
         let messenger = Messenger::new();
         let conn = PeerScope(1);
 
-        let token = dispatch.insert(conn, DispatchEntry {
-            on_reply: Box::new(|h: &mut TestHandler, _, payload| {
-                let msg = payload.downcast::<String>().unwrap();
-                h.replies.push(*msg);
-                Flow::Continue
-            }),
-            on_failed: Box::new(|h: &mut TestHandler, _| {
-                h.failures.push("failed".into());
-                Flow::Continue
-            }),
-        });
+        let token = dispatch.insert(
+            conn,
+            DispatchEntry {
+                session_id: 0,
+                on_reply: Box::new(|h: &mut TestHandler, _, payload| {
+                    let msg = payload.downcast::<String>().unwrap();
+                    h.replies.push(*msg);
+                    Flow::Continue
+                }),
+                on_failed: Box::new(|h: &mut TestHandler, _| {
+                    h.failures.push("failed".into());
+                    Flow::Continue
+                }),
+            },
+        );
 
         assert_eq!(dispatch.len(), 1);
 
         let flow = dispatch.fire_reply(
-            conn, token, &mut handler, &messenger,
+            conn,
+            token,
+            &mut handler,
+            &messenger,
             Box::new("hello".to_string()),
         );
         assert_eq!(flow, Some(Flow::Continue));
@@ -177,19 +213,30 @@ mod tests {
     #[test]
     fn fire_reply_consumes_entry() {
         let mut dispatch = Dispatch::new();
-        let mut handler = TestHandler { replies: vec![], failures: vec![] };
+        let mut handler = TestHandler {
+            replies: vec![],
+            failures: vec![],
+        };
         let messenger = Messenger::new();
         let conn = PeerScope(1);
 
-        let token = dispatch.insert(conn, DispatchEntry {
-            on_reply: Box::new(|_, _, _| Flow::Continue),
-            on_failed: Box::new(|_, _| Flow::Continue),
-        });
+        let token = dispatch.insert(
+            conn,
+            DispatchEntry {
+                session_id: 0,
+                on_reply: Box::new(|_, _, _| Flow::Continue),
+                on_failed: Box::new(|_, _| Flow::Continue),
+            },
+        );
 
         // First fire succeeds
-        assert!(dispatch.fire_reply(conn, token, &mut handler, &messenger, Box::new(())).is_some());
+        assert!(dispatch
+            .fire_reply(conn, token, &mut handler, &messenger, Box::new(()))
+            .is_some());
         // Second fire returns None — entry consumed
-        assert!(dispatch.fire_reply(conn, token, &mut handler, &messenger, Box::new(())).is_none());
+        assert!(dispatch
+            .fire_reply(conn, token, &mut handler, &messenger, Box::new(()))
+            .is_none());
     }
 
     #[test]
@@ -197,10 +244,14 @@ mod tests {
         let mut dispatch = Dispatch::new();
         let conn = PeerScope(1);
 
-        let token = dispatch.insert(conn, DispatchEntry::<TestHandler> {
-            on_reply: Box::new(|_, _, _| panic!("should not fire")),
-            on_failed: Box::new(|_, _| panic!("should not fire")),
-        });
+        let token = dispatch.insert(
+            conn,
+            DispatchEntry::<TestHandler> {
+                session_id: 0,
+                on_reply: Box::new(|_, _, _| panic!("should not fire")),
+                on_failed: Box::new(|_, _| panic!("should not fire")),
+            },
+        );
 
         assert!(dispatch.cancel(conn, token));
         assert_eq!(dispatch.len(), 0);
@@ -209,26 +260,37 @@ mod tests {
     #[test]
     fn fail_connection_fires_on_failed_for_matching_entries() {
         let mut dispatch = Dispatch::new();
-        let mut handler = TestHandler { replies: vec![], failures: vec![] };
+        let mut handler = TestHandler {
+            replies: vec![],
+            failures: vec![],
+        };
         let messenger = Messenger::new();
 
         let conn1 = PeerScope(1);
         let conn2 = PeerScope(2);
 
-        dispatch.insert(conn1, DispatchEntry {
-            on_reply: Box::new(|_, _, _| Flow::Continue),
-            on_failed: Box::new(|h: &mut TestHandler, _| {
-                h.failures.push("conn1".into());
-                Flow::Continue
-            }),
-        });
-        dispatch.insert(conn2, DispatchEntry {
-            on_reply: Box::new(|_, _, _| Flow::Continue),
-            on_failed: Box::new(|h: &mut TestHandler, _| {
-                h.failures.push("conn2".into());
-                Flow::Continue
-            }),
-        });
+        dispatch.insert(
+            conn1,
+            DispatchEntry {
+                session_id: 0,
+                on_reply: Box::new(|_, _, _| Flow::Continue),
+                on_failed: Box::new(|h: &mut TestHandler, _| {
+                    h.failures.push("conn1".into());
+                    Flow::Continue
+                }),
+            },
+        );
+        dispatch.insert(
+            conn2,
+            DispatchEntry {
+                session_id: 0,
+                on_reply: Box::new(|_, _, _| Flow::Continue),
+                on_failed: Box::new(|h: &mut TestHandler, _| {
+                    h.failures.push("conn2".into());
+                    Flow::Continue
+                }),
+            },
+        );
 
         // Fail connection 1 only
         dispatch.fail_connection(conn1, &mut handler, &messenger);
@@ -242,14 +304,22 @@ mod tests {
         let mut dispatch = Dispatch::<TestHandler>::new();
         let conn = PeerScope(1);
 
-        dispatch.insert(conn, DispatchEntry {
-            on_reply: Box::new(|_, _, _| panic!("should not fire")),
-            on_failed: Box::new(|_, _| panic!("should not fire")),
-        });
-        dispatch.insert(conn, DispatchEntry {
-            on_reply: Box::new(|_, _, _| panic!("should not fire")),
-            on_failed: Box::new(|_, _| panic!("should not fire")),
-        });
+        dispatch.insert(
+            conn,
+            DispatchEntry {
+                session_id: 0,
+                on_reply: Box::new(|_, _, _| panic!("should not fire")),
+                on_failed: Box::new(|_, _| panic!("should not fire")),
+            },
+        );
+        dispatch.insert(
+            conn,
+            DispatchEntry {
+                session_id: 0,
+                on_reply: Box::new(|_, _, _| panic!("should not fire")),
+                on_failed: Box::new(|_, _| panic!("should not fire")),
+            },
+        );
 
         dispatch.clear();
         assert_eq!(dispatch.len(), 0);
@@ -258,21 +328,28 @@ mod tests {
     #[test]
     fn fire_failed_delivers_failure_to_handler() {
         let mut dispatch = Dispatch::new();
-        let mut handler = TestHandler { replies: vec![], failures: vec![] };
+        let mut handler = TestHandler {
+            replies: vec![],
+            failures: vec![],
+        };
         let messenger = Messenger::new();
         let conn = PeerScope(1);
 
-        let token = dispatch.insert(conn, DispatchEntry {
-            on_reply: Box::new(|h: &mut TestHandler, _, payload| {
-                let msg = payload.downcast::<String>().unwrap();
-                h.replies.push(*msg);
-                Flow::Continue
-            }),
-            on_failed: Box::new(|h: &mut TestHandler, _| {
-                h.failures.push("single_failed".into());
-                Flow::Continue
-            }),
-        });
+        let token = dispatch.insert(
+            conn,
+            DispatchEntry {
+                session_id: 0,
+                on_reply: Box::new(|h: &mut TestHandler, _, payload| {
+                    let msg = payload.downcast::<String>().unwrap();
+                    h.replies.push(*msg);
+                    Flow::Continue
+                }),
+                on_failed: Box::new(|h: &mut TestHandler, _| {
+                    h.failures.push("single_failed".into());
+                    Flow::Continue
+                }),
+            },
+        );
 
         assert_eq!(dispatch.len(), 1);
 
@@ -289,14 +366,22 @@ mod tests {
         let mut dispatch = Dispatch::<TestHandler>::new();
         let conn = PeerScope(1);
 
-        let t1 = dispatch.insert(conn, DispatchEntry {
-            on_reply: Box::new(|_, _, _| Flow::Continue),
-            on_failed: Box::new(|_, _| Flow::Continue),
-        });
-        let t2 = dispatch.insert(conn, DispatchEntry {
-            on_reply: Box::new(|_, _, _| Flow::Continue),
-            on_failed: Box::new(|_, _| Flow::Continue),
-        });
+        let t1 = dispatch.insert(
+            conn,
+            DispatchEntry {
+                session_id: 0,
+                on_reply: Box::new(|_, _, _| Flow::Continue),
+                on_failed: Box::new(|_, _| Flow::Continue),
+            },
+        );
+        let t2 = dispatch.insert(
+            conn,
+            DispatchEntry {
+                session_id: 0,
+                on_reply: Box::new(|_, _, _| Flow::Continue),
+                on_failed: Box::new(|_, _| Flow::Continue),
+            },
+        );
 
         assert_ne!(t1, t2); // S1: token uniqueness
     }

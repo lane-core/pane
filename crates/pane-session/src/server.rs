@@ -292,12 +292,24 @@ impl ServerState {
                     };
                     self.routing_table.remove(&(peer_conn, peer_session));
                     // Notify the peer of teardown.
-                    let teardown = ControlMessage::ServiceTeardown {
+                    let peer_teardown = ControlMessage::ServiceTeardown {
                         session_id: peer_session,
                         reason: pane_proto::control::TeardownReason::ServiceRevoked,
                     };
-                    if let Ok(bytes) = postcard::to_allocvec(&teardown) {
+                    if let Ok(bytes) = postcard::to_allocvec(&peer_teardown) {
                         if let Some(wh) = self.writers.get(&peer_conn) {
+                            let _ = wh.write_frame(0, &bytes);
+                        }
+                    }
+                    // Echo teardown to the revoker so its looper can
+                    // fail outstanding dispatch entries for this session
+                    // (S1 fix: prevents dispatch entry orphaning).
+                    let revoker_teardown = ControlMessage::ServiceTeardown {
+                        session_id,
+                        reason: pane_proto::control::TeardownReason::ServiceRevoked,
+                    };
+                    if let Ok(bytes) = postcard::to_allocvec(&revoker_teardown) {
+                        if let Some(wh) = self.writers.get(&conn_id) {
                             let _ = wh.write_frame(0, &bytes);
                         }
                     }

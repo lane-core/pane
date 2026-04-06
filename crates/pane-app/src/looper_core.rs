@@ -331,6 +331,19 @@ impl<H: pane_proto::Handler> LooperCore<H> {
                         break reason;
                     }
                 }
+                Ok(LooperMessage::Control(ControlMessage::ServiceTeardown {
+                    session_id,
+                    reason: _,
+                })) => {
+                    // Service torn down — fail all outstanding dispatch
+                    // entries for this session so the handler's on_failed
+                    // callbacks fire and closures are released (S1 fix).
+                    self.dispatch.fail_session(
+                        session_id,
+                        &mut self.handler,
+                        &self.messenger,
+                    );
+                }
                 Ok(LooperMessage::Control(_other)) => {
                     // Non-lifecycle ControlMessage — framework-internal.
                     // Service negotiation messages handled by PaneBuilder
@@ -554,6 +567,7 @@ mod tests {
         core.dispatch_mut().insert(
             conn,
             DispatchEntry {
+                session_id: 0,
                 on_reply: Box::new(|_h: &mut TestHandler, _, _| Flow::Continue),
                 on_failed: Box::new(move |_h: &mut TestHandler, _| {
                     log2.lock().unwrap().push("on_failed".into());
@@ -568,6 +582,7 @@ mod tests {
         core.dispatch_mut().insert(
             other_conn,
             DispatchEntry {
+                session_id: 0,
                 on_reply: Box::new(|_h: &mut TestHandler, _, _| Flow::Continue),
                 on_failed: Box::new(move |_h: &mut TestHandler, _| {
                     // This should NOT fire — clear() drops without callbacks
@@ -713,6 +728,7 @@ mod tests {
         let token = core.dispatch.insert(
             conn,
             DispatchEntry {
+                session_id: 0,
                 on_reply: Box::new(|h: &mut TestHandler, _, payload| {
                     let msg = payload.downcast::<String>().unwrap();
                     h.log.lock().unwrap().push(format!("on_reply:{}", msg));
@@ -789,6 +805,7 @@ mod tests {
         core.dispatch_mut().insert(
             secondary,
             DispatchEntry {
+                session_id: 0,
                 on_reply: Box::new(|_h: &mut TestHandler, _, _| Flow::Continue),
                 on_failed: Box::new(move |_h: &mut TestHandler, _| {
                     log2.lock().unwrap().push("secondary_failed".into());

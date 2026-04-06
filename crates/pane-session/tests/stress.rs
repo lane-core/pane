@@ -452,6 +452,15 @@ fn revoke_interest_no_stale_routing_entries() {
             session_id: a_session,
         });
 
+        // Revoker receives ServiceTeardown echo (S1 fix: lets
+        // the looper fail outstanding dispatch entries).
+        match pane_a.read_control() {
+            ControlMessage::ServiceTeardown { session_id: s, .. } => {
+                assert_eq!(s, a_session);
+            }
+            other => panic!("revoker expected ServiceTeardown at iteration {i}, got {other:?}"),
+        }
+
         // Provider receives ServiceTeardown
         match pane_b.read_control() {
             ControlMessage::ServiceTeardown { .. } => {}
@@ -1010,10 +1019,15 @@ fn session_exhaustion_no_recycling() {
     // Revoke all 254 sessions
     for &session_id in &sessions {
         pane_a.send_control(&ControlMessage::RevokeInterest { session_id });
-        // Provider gets ServiceTeardown for each
+        // Revoker gets ServiceTeardown echo (S1 fix)
+        match pane_a.read_control() {
+            ControlMessage::ServiceTeardown { .. } => {}
+            other => panic!("revoker expected ServiceTeardown, got {other:?}"),
+        }
+        // Provider gets ServiceTeardown
         match pane_b.read_control() {
             ControlMessage::ServiceTeardown { .. } => {}
-            other => panic!("expected ServiceTeardown, got {other:?}"),
+            other => panic!("provider expected ServiceTeardown, got {other:?}"),
         }
     }
 

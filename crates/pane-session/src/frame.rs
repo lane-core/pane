@@ -21,6 +21,7 @@
 //! types are the schema.
 
 use std::io::{self, Read, Write};
+use std::sync::atomic::{AtomicBool, Ordering};
 
 /// A decoded frame from the wire.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -33,9 +34,13 @@ pub enum Frame {
 
 /// Errors from reading a frame off the wire.
 ///
-/// These are connection-level errors. An unknown service or oversized
-/// frame means the peer violated the protocol — the connection is no
-/// longer trustworthy.
+/// These are connection-level errors. After any FrameError, the
+/// connection must be considered dead — the stream may be desynced
+/// (Oversized leaves body bytes unconsumed, so subsequent reads
+/// interpret body as the next length prefix).
+///
+/// The codec self-poisons on any read error: all subsequent
+/// read_frame calls return Poisoned without touching the stream.
 #[derive(Debug)]
 pub enum FrameError {
     /// Declared length exceeds the negotiated maximum.
@@ -46,6 +51,8 @@ pub enum FrameError {
     Transport(io::Error),
     /// Declared length is zero — no room for even the service byte.
     TooShort { declared: u32 },
+    /// Codec poisoned by a prior error. No further reads possible.
+    Poisoned,
 }
 
 impl std::fmt::Display for FrameError {
@@ -59,8 +66,12 @@ impl std::fmt::Display for FrameError {
             }
             FrameError::Transport(e) => write!(f, "transport error: {e}"),
             FrameError::TooShort { declared } => {
-                write!(f, "frame too short: declared length {declared}, minimum is 1")
+                write!(
+                    f,
+                    "frame too short: declared length {declared}, minimum is 1"
+                )
             }
+            FrameError::Poisoned => write!(f, "codec poisoned by prior error"),
         }
     }
 }
@@ -69,7 +80,10 @@ impl std::error::Error for FrameError {
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
         match self {
             FrameError::Transport(e) => Some(e),
-            _ => None,
+            FrameError::Oversized { .. }
+            | FrameError::UnknownService(_)
+            | FrameError::TooShort { .. }
+            | FrameError::Poisoned => None,
         }
     }
 }
@@ -90,6 +104,12 @@ pub struct FrameCodec {
     /// Indexed 0..=254. Index i corresponds to service i.
     /// 0xFF is not representable — it's handled as a special case.
     known_services: [bool; 255],
+    /// Set on any read error. All subsequent read_frame calls
+    /// return Poisoned without touching the stream. AtomicBool
+    /// because the codec is shared via Arc between reader and
+    /// writer threads (writer doesn't check this — writes can
+    /// still go out on a poisoned-read connection).
+    poisoned: AtomicBool,
 }
 
 impl FrameCodec {
@@ -103,6 +123,7 @@ impl FrameCodec {
         FrameCodec {
             max_message_size,
             known_services,
+            poisoned: AtomicBool::new(false),
         }
     }
 
@@ -120,6 +141,7 @@ impl FrameCodec {
         FrameCodec {
             max_message_size,
             known_services: [true; 255],
+            poisoned: AtomicBool::new(false),
         }
     }
 
@@ -137,7 +159,10 @@ impl FrameCodec {
     ///
     /// Panics if `service` is 0xFF (reserved for ProtocolAbort).
     pub fn register_service(&mut self, service: u8) {
-        assert!(service != 0xFF, "service 0xFF is reserved for ProtocolAbort");
+        assert!(
+            service != 0xFF,
+            "service 0xFF is reserved for ProtocolAbort"
+        );
         self.known_services[service as usize] = true;
     }
 
@@ -146,6 +171,18 @@ impl FrameCodec {
     /// Blocks until a complete frame is available or the transport fails.
     /// Returns `Frame::Abort` if the service byte is 0xFF.
     pub fn read_frame(&self, reader: &mut impl Read) -> Result<Frame, FrameError> {
+        if self.poisoned.load(Ordering::Relaxed) {
+            return Err(FrameError::Poisoned);
+        }
+
+        let result = self.read_frame_inner(reader);
+        if result.is_err() {
+            self.poisoned.store(true, Ordering::Relaxed);
+        }
+        result
+    }
+
+    fn read_frame_inner(&self, reader: &mut impl Read) -> Result<Frame, FrameError> {
         // Step 1: read length prefix
         let mut len_buf = [0u8; 4];
         reader.read_exact(&mut len_buf)?;
@@ -194,7 +231,10 @@ impl FrameCodec {
         service: u8,
         payload: &[u8],
     ) -> io::Result<()> {
-        assert!(service != 0xFF, "service 0xFF is reserved for ProtocolAbort");
+        assert!(
+            service != 0xFF,
+            "service 0xFF is reserved for ProtocolAbort"
+        );
 
         let length = 1u32 + payload.len() as u32;
         writer.write_all(&length.to_le_bytes())?;
