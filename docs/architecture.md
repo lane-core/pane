@@ -216,10 +216,19 @@ pub struct PaneBuilder<H: Handler> {
 }
 
 impl<H: Handler> PaneBuilder<H> {
-    /// Open a service. Blocks until InterestAccepted/Declined.
-    /// Returns None if the service is unavailable.
+    /// Open a service (consumer side). Blocks until
+    /// InterestAccepted/Declined. Returns None if unavailable.
     /// Duplicate ServiceId is rejected (panics).
     pub fn open_service<P: Protocol>(&mut self) -> Option<ServiceHandle<P>>
+    where H: Handles<P>;
+
+    /// Advertise a service (provider side). Declares that this
+    /// pane implements protocol P for other panes. The server
+    /// routes DeclareInterest requests from consumers to this
+    /// pane. Requires H: Handles<P> — compile-time proof that
+    /// the handler implements the protocol it advertises.
+    /// Populates Hello.provides.
+    pub fn serve<P: Protocol>(&mut self)
     where H: Handles<P>;
 
     pub fn run_with(self, handler: H) -> !;
@@ -411,9 +420,12 @@ Implicit — never DeclareInterest'd.
 
 ### Capability declaration
 
-Display declared in handshake (Hello's interests list). Other
-services declared via DeclareInterest in active phase. Server
-assigns session-local u8 per accepted service.
+Two sides: consumers declare interest, providers advertise.
+
+**Consumer (open_service):** Display declared in handshake
+(Hello's interests list). Other services declared via
+DeclareInterest in active phase. Server assigns session-local
+u8 per accepted service.
 
 ```rust
 // In ClientToServer:
@@ -427,15 +439,84 @@ InterestDeclined { service_uuid: Uuid, reason: DeclineReason }
 // version or accepts unavailability.
 ```
 
+**Provider (serve):** Advertised in Hello.provides at handshake
+time. The server builds a provider index: `HashMap<ServiceId,
+Vec<ConnectionId>>` (Vec for Phase 2 multi-provider). When a
+consumer sends DeclareInterest, the server matches against the
+index. `H: Handles<P>` is required at compile time — a pane
+cannot advertise a protocol it doesn't implement.
+
+Connection drop revokes all provider entries. The server
+synthesizes `ServiceFrame::Failed` for in-flight tokens when a
+provider disconnects (S4 at the server level). Dynamic provision
+(DeclareProvide in the active phase) is deferred to Phase 2.
+
 RevokeInterest when ServiceHandle drops. Idempotent. In-flight
-messages for revoked services discarded by looper.
+messages for revoked services discarded by looper (soft-dead —
+FrameCodec known_services is monotonic, discard at looper level).
+
+### Service frame wire format
+
+Messages on services 1..=254 use a `ServiceFrame` envelope
+inside the FrameCodec payload. Service 0 (Control) uses
+`ControlMessage` directly.
+
+```rust
+/// Wire envelope for service-channel messages.
+/// Untyped — inner payload is postcard bytes.
+/// Type safety at the edges: sender serializes P::Message,
+/// receiver deserializes P::Message after demux.
+#[non_exhaustive]
+enum ServiceFrame {
+    Request { token: u64, payload: Vec<u8> },
+    Reply { token: u64, payload: Vec<u8> },
+    Failed { token: u64 },
+    Notification { payload: Vec<u8> },
+}
+```
+
+Two-step decode: FrameCodec yields `Frame::Message { service,
+payload }`. If service != 0, payload is `postcard ServiceFrame`.
+Inner `payload` is `postcard P::Message` (request/notification)
+or `postcard R` (reply). Inner decode happens before the filter
+chain — filters see typed `P::Message`, never raw bytes (I5).
+
+Token is end-to-end correlation: allocated by the sender's
+Dispatch, forwarded opaquely by the server, matched at the
+receiver's Dispatch. Version is bound at DeclareInterest time,
+not per-frame.
+
+### Server routing
+
+The server is a frame router (exportfs principle). It forwards
+raw bytes between connections, rewriting session_ids. It never
+deserializes service payloads — type safety lives at the edges.
+
+Each accepted service creates a routing pair:
+`(consumer_conn, session_id_A) <-> (provider_conn, session_id_B)`.
+Session_ids are per-connection (u8, 254 slots). The server
+rewrites the service byte when forwarding.
+
+Cancel { token } on Control is forwarded to the provider
+connection's Control channel. The server does not interpret
+tokens — it routes by connection.
+
+Deserialization failure on a service channel fails the service,
+not the connection. Missing Dispatch entry on incoming Reply
+is not an error (Cancel/Reply race — expected outcome).
 
 ### Handshake
 
 ```
-Client → Server: Hello { version, max_message_size, interests }
-Server → Client: Welcome { version, instance_id, max_message_size, bindings }
+Client → Server: Hello { version, max_message_size, interests, provides }
+Server → Client: Result<Welcome { version, instance_id, max_message_size, bindings }, Rejection>
 ```
+
+`interests` declares what the pane wants to consume. `provides`
+declares what it implements for others. Both are resolved at
+handshake time. `DeclareInterest` in the active phase is the
+incremental path for services opened after startup; `Hello` is
+the batch path for the common case.
 
 <!-- Plan 9: factotum handled authentication outside the
 application. pane pushes further — the application doesn't even
@@ -596,14 +677,24 @@ Services opened during PaneBuilder\<H\> setup phase:
 
 1. Resolve capability to a Connection (service map)
 2. Send DeclareInterest (blocking — pre-looper, I2/I8 don't apply)
-3. Wait for InterestAccepted/Declined
+3. Wait for InterestAccepted/Declined (timeout: 5s)
 4. On acceptance: capture monomorphized Handles\<P\>::receive fn
-   pointer, register calloop source
+   pointer, register calloop source, register session_id with
+   FrameCodec
 5. Return `Some(ServiceHandle<P>)` or `None` on decline
 
-All open_service calls resolve before run_with starts the looper.
-No race between interest confirmation and dispatch — enforced
-structurally by PaneBuilder consumption.
+Services provided during PaneBuilder\<H\> setup phase:
+
+1. serve\<P\>() populates Hello.provides with ServiceProvision
+2. Server registers this pane as a provider for P in its index
+3. When a consumer sends DeclareInterest for P, server assigns
+   session_ids on both connections and notifies provider
+4. Provider's Handles\<P\>::receive fn pointer is already
+   registered (from serve call)
+
+All open_service and serve calls resolve before run_with starts
+the looper. No race between interest confirmation and dispatch —
+enforced structurally by PaneBuilder consumption.
 
 ---
 
