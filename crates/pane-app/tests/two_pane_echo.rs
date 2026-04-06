@@ -67,6 +67,18 @@ impl ClientConn {
         }
     }
 
+    /// Read Ready from the server. Asserts the first active-phase
+    /// message is Lifecycle::Ready — the server sends this after
+    /// Welcome to signal the active phase has begun.
+    fn expect_ready(&mut self) {
+        match self.read_control() {
+            ControlMessage::Lifecycle(
+                pane_proto::protocols::lifecycle::LifecycleMessage::Ready,
+            ) => {}
+            other => panic!("expected Ready, got {other:?}"),
+        }
+    }
+
     fn register_session(&mut self, session_id: u8) {
         self.codec.register_service(session_id);
     }
@@ -119,6 +131,7 @@ fn two_pane_echo_roundtrip() {
         provides: vec![ServiceProvision { service: echo_id, version: 1 }],
     });
     let conn_b = accept_b.join().unwrap();
+    pane_b.expect_ready();
 
     // -- Pane A: echo consumer --
     let (a_client, a_server) = MemoryTransport::pair();
@@ -131,6 +144,7 @@ fn two_pane_echo_roundtrip() {
         provides: vec![],
     });
     let conn_a = accept_a.join().unwrap();
+    pane_a.expect_ready();
 
     // -- DeclareInterest --
     pane_a.send_control(&ControlMessage::DeclareInterest {
@@ -188,6 +202,104 @@ fn two_pane_echo_roundtrip() {
     conn_b.wait();
 }
 
+/// Old gap #1: connection drop → ServiceTeardown delivery to the peer.
+/// Verifies that when one pane disconnects, the other receives
+/// ServiceTeardown on the wire (not just server-side cleanup).
+#[test]
+fn connection_drop_delivers_service_teardown_to_peer() {
+    let server = Arc::new(ProtocolServer::new());
+    let echo_id = echo_service_id();
+
+    // Pane B: provider
+    let (b_client, b_server) = MemoryTransport::pair();
+    let accept_b = accept_on_thread(&server, b_server);
+    let (mut pane_b, _) = ClientConn::connect(b_client, Hello {
+        version: 1,
+        max_message_size: 16 * 1024 * 1024,
+        interests: vec![],
+        provides: vec![ServiceProvision { service: echo_id, version: 1 }],
+    });
+    let conn_b = accept_b.join().unwrap();
+    pane_b.expect_ready();
+
+    // Pane A: consumer
+    let (a_client, a_server) = MemoryTransport::pair();
+    let accept_a = accept_on_thread(&server, a_server);
+    let (mut pane_a, _) = ClientConn::connect(a_client, Hello {
+        version: 1,
+        max_message_size: 16 * 1024 * 1024,
+        interests: vec![],
+        provides: vec![],
+    });
+    let conn_a = accept_a.join().unwrap();
+    pane_a.expect_ready();
+
+    // Establish service binding
+    pane_a.send_control(&ControlMessage::DeclareInterest {
+        service: echo_id,
+        expected_version: 1,
+    });
+    let _a_session = match pane_a.read_control() {
+        ControlMessage::InterestAccepted { session_id, .. } => session_id,
+        other => panic!("expected InterestAccepted for A, got {other:?}"),
+    };
+    let _b_session = match pane_b.read_control() {
+        ControlMessage::InterestAccepted { session_id, .. } => session_id,
+        other => panic!("expected InterestAccepted for B, got {other:?}"),
+    };
+
+    // Drop pane A — server should send ServiceTeardown to pane B
+    drop(pane_a);
+    conn_a.wait();
+
+    // Pane B should receive ServiceTeardown
+    let msg = pane_b.read_control();
+    match msg {
+        ControlMessage::ServiceTeardown { reason, .. } => {
+            assert!(matches!(reason, pane_proto::control::TeardownReason::ConnectionLost));
+        }
+        other => panic!("expected ServiceTeardown, got {other:?}"),
+    }
+
+    drop(pane_b);
+    conn_b.wait();
+}
+
+/// Old gap #2: self-provide rejection — a pane declaring interest
+/// in a service it provides itself should be declined.
+#[test]
+fn self_provide_interest_declined() {
+    let server = Arc::new(ProtocolServer::new());
+    let echo_id = echo_service_id();
+
+    // Pane A provides echo AND tries to consume echo
+    let (a_client, a_server) = MemoryTransport::pair();
+    let accept_a = accept_on_thread(&server, a_server);
+    let (mut pane_a, _) = ClientConn::connect(a_client, Hello {
+        version: 1,
+        max_message_size: 16 * 1024 * 1024,
+        interests: vec![],
+        provides: vec![ServiceProvision { service: echo_id, version: 1 }],
+    });
+    let conn_a = accept_a.join().unwrap();
+    pane_a.expect_ready();
+
+    pane_a.send_control(&ControlMessage::DeclareInterest {
+        service: echo_id,
+        expected_version: 1,
+    });
+
+    match pane_a.read_control() {
+        ControlMessage::InterestDeclined { .. } => {
+            // Correct: self-provide is declined
+        }
+        other => panic!("expected InterestDeclined for self-provide, got {other:?}"),
+    }
+
+    drop(pane_a);
+    conn_a.wait();
+}
+
 #[test]
 fn declare_interest_no_provider_declined() {
     let server = Arc::new(ProtocolServer::new());
@@ -202,6 +314,7 @@ fn declare_interest_no_provider_declined() {
         provides: vec![],
     });
     let conn_a = accept_a.join().unwrap();
+    pane_a.expect_ready();
 
     pane_a.send_control(&ControlMessage::DeclareInterest {
         service: ServiceId::new("com.pane.nonexistent"),
@@ -233,6 +346,7 @@ fn notification_round_trip() {
         provides: vec![ServiceProvision { service: echo_id, version: 1 }],
     });
     let conn_b = accept_b.join().unwrap();
+    pane_b.expect_ready();
 
     let (a_client, a_server) = MemoryTransport::pair();
     let accept_a = accept_on_thread(&server, a_server);
@@ -243,6 +357,7 @@ fn notification_round_trip() {
         provides: vec![],
     });
     let conn_a = accept_a.join().unwrap();
+    pane_a.expect_ready();
 
     // DeclareInterest
     pane_a.send_control(&ControlMessage::DeclareInterest {

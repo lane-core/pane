@@ -448,6 +448,19 @@ impl ProtocolServer {
         codec.write_frame(&mut writer, 0, &bytes)
             .map_err(AcceptError::Transport)?;
 
+        // Send Ready — the active phase begins. Matches Be's
+        // B_READY_TO_RUN posted by BApplication's constructor
+        // (src/kits/app/Application.cpp:497) right after registrar
+        // registration. The server sends it because it knows
+        // the connection is fully established.
+        let ready = ControlMessage::Lifecycle(
+            pane_proto::protocols::lifecycle::LifecycleMessage::Ready,
+        );
+        let ready_bytes = postcard::to_allocvec(&ready)
+            .expect("Ready serialization failed");
+        codec.write_frame(&mut writer, 0, &ready_bytes)
+            .map_err(AcceptError::Transport)?;
+
         codec.set_max_message_size(welcome.max_message_size);
         let codec = Arc::new(codec);
 
@@ -671,6 +684,20 @@ mod tests {
         assert!(peers.iter().any(|(c, _)| *c == ConnectionId(2)));
     }
 
+    /// Old gap #3: session_id overflow at 255 boundary.
+    #[test]
+    #[should_panic(expected = "session_id overflow")]
+    fn alloc_session_panics_at_overflow() {
+        let mut state = ServerState::new();
+        let conn = ConnectionId(1);
+        // Exhaust session_ids 1..254
+        for _ in 1..255 {
+            state.alloc_session(conn);
+        }
+        // 255th allocation should panic (255 is < 255 fails)
+        state.alloc_session(conn);
+    }
+
     #[test]
     fn server_state_revoke_interest_cleans_route() {
         let mut state = ServerState::new();
@@ -734,6 +761,17 @@ mod tests {
             let decision: Result<Welcome, Rejection> = postcard::from_bytes(&payload).unwrap();
             let welcome = decision.expect("expected welcome");
             assert_eq!(welcome.version, 1);
+
+            // Server sends Ready after Welcome
+            let frame = codec.read_frame(&mut transport).unwrap();
+            let payload = match frame {
+                Frame::Message { service: 0, payload } => payload,
+                other => panic!("expected Ready frame, got {:?}", other),
+            };
+            let msg: ControlMessage = postcard::from_bytes(&payload).unwrap();
+            assert!(matches!(msg,
+                ControlMessage::Lifecycle(pane_proto::protocols::lifecycle::LifecycleMessage::Ready)
+            ), "first active-phase message should be Ready, got {msg:?}");
 
             drop(transport);
         });
