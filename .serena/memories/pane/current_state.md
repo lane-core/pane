@@ -2,11 +2,11 @@
 
 ## Implementation status
 
-Four crates, 136 unit tests + 2 doc-tests:
+Four crates, 143 unit tests + 2 doc-tests:
 
 - **pane-proto** (12 files, 77 tests) — Protocol vocabulary, no IO. Message, Protocol, ServiceId, Flow, Handler, Handles<P>, MessageFilter, MonadicLens<S,A>, obligation handles (ReplyPort, CompletionReplyPort, CancelHandle), PeerAuth + AuthSource (transport-level peer identity).
-- **pane-session** (5 files, 26 tests) — Session-typed IPC. Transport trait, MemoryTransport, bridge (two-phase handshake over par), FrameCodec (wire framing with reserved 0xFF abort, monotonic known_services bitset).
-- **pane-app** (8 files, 28 tests) — Actor framework. Pane, PaneBuilder<H>, Dispatch<H> (with fire_failed tested), LooperCore<H> (catch_unwind + destruction sequence + exited guard + E-Suspend/E-React end-to-end), Messenger (stub), ServiceHandle (stub), ExitReason.
+- **pane-session** (5 files, 31 tests) — Session-typed IPC. Transport trait, MemoryTransport, bridge (two-phase handshake over par), FrameCodec (wire framing with reserved 0xFF abort, monotonic known_services bitset).
+- **pane-app** (8 files, 30 tests) — Actor framework. Pane, PaneBuilder<H>, Dispatch<H> (with fire_failed tested), LooperCore<H> (catch_unwind + destruction sequence + exited guard + E-Suspend/E-React end-to-end), Messenger (stub), ServiceHandle (stub), ExitReason.
 - **pane-fs** (3 files, 5 tests) — Filesystem namespace. AttrReader<S>, AttrSet<S>, AttrValue, PaneEntry<S>.
 
 pane-notify is listed in PLAN.md as "preserved from prototype" but is not part of the redesign crate set.
