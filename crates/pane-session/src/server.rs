@@ -31,9 +31,9 @@ use std::io::{Read, Write};
 use std::sync::mpsc;
 use std::sync::{Arc, Mutex};
 
-use crate::frame::{Frame, FrameCodec, FrameError};
-use crate::handshake::{Hello, Welcome, Rejection, ServiceProvision};
 use crate::bridge::HANDSHAKE_MAX_MESSAGE_SIZE;
+use crate::frame::{Frame, FrameCodec, FrameError};
+use crate::handshake::{Hello, Rejection, ServiceProvision, Welcome};
 use pane_proto::control::ControlMessage;
 use pane_proto::protocol::ServiceId;
 
@@ -52,7 +52,11 @@ enum ServerEvent {
         hello: Hello,
     },
     /// A frame arrived on a connection.
-    Frame { conn_id: ConnectionId, service: u8, payload: Vec<u8> },
+    Frame {
+        conn_id: ConnectionId,
+        service: u8,
+        payload: Vec<u8>,
+    },
     /// A connection's reader thread exited (transport closed or error).
     Disconnected { conn_id: ConnectionId },
 }
@@ -127,8 +131,8 @@ impl ServerState {
     fn alloc_session(&mut self, conn: ConnectionId) -> Option<u8> {
         let next = self.next_session.entry(conn).or_insert(1);
         let session = *next;
-        if session >= 255 {
-            return None; // session_id space exhausted
+        if session == 255 {
+            return None; // 0xFF reserved for ProtocolAbort
         }
         *next += 1;
         Some(session)
@@ -150,7 +154,9 @@ impl ServerState {
         service: ServiceId,
         _expected_version: u32,
     ) -> Result<(ControlMessage, ConnectionId, u8), pane_proto::control::DeclineReason> {
-        let providers = self.provider_index.get(&service.uuid)
+        let providers = self
+            .provider_index
+            .get(&service.uuid)
             .and_then(|p| p.first().copied());
         let provider_conn = match providers {
             Some(p) => p,
@@ -160,9 +166,11 @@ impl ServerState {
             return Err(pane_proto::control::DeclineReason::SelfProvide);
         }
 
-        let consumer_session = self.alloc_session(consumer_conn)
+        let consumer_session = self
+            .alloc_session(consumer_conn)
             .ok_or(pane_proto::control::DeclineReason::SessionExhausted)?;
-        let provider_session = self.alloc_session(provider_conn)
+        let provider_session = self
+            .alloc_session(provider_conn)
             .ok_or(pane_proto::control::DeclineReason::SessionExhausted)?;
 
         let route = Route {
@@ -172,14 +180,10 @@ impl ServerState {
             provider_session,
         };
 
-        self.routing_table.insert(
-            (consumer_conn, consumer_session),
-            route.clone(),
-        );
-        self.routing_table.insert(
-            (provider_conn, provider_session),
-            route,
-        );
+        self.routing_table
+            .insert((consumer_conn, consumer_session), route.clone());
+        self.routing_table
+            .insert((provider_conn, provider_session), route);
 
         let accepted = ControlMessage::InterestAccepted {
             service_uuid: service.uuid,
@@ -197,7 +201,9 @@ impl ServerState {
         }
         self.provider_index.retain(|_, v| !v.is_empty());
 
-        let affected_keys: Vec<_> = self.routing_table.keys()
+        let affected_keys: Vec<_> = self
+            .routing_table
+            .keys()
             .filter(|(c, _)| *c == conn)
             .cloned()
             .collect();
@@ -239,7 +245,10 @@ impl ServerState {
         };
 
         match msg {
-            ControlMessage::DeclareInterest { service, expected_version } => {
+            ControlMessage::DeclareInterest {
+                service,
+                expected_version,
+            } => {
                 match self.handle_declare_interest(conn_id, service, expected_version) {
                     Ok((accepted, provider_conn, provider_session)) => {
                         // Send InterestAccepted to consumer
@@ -412,25 +421,38 @@ impl ProtocolServer {
         let mut codec = FrameCodec::permissive(HANDSHAKE_MAX_MESSAGE_SIZE);
 
         // Read Hello
-        let frame = codec.read_frame(&mut reader)
-            .map_err(|e| AcceptError::Transport(
-                std::io::Error::new(std::io::ErrorKind::ConnectionAborted, e.to_string()),
-            ))?;
+        let frame = codec.read_frame(&mut reader).map_err(|e| {
+            AcceptError::Transport(std::io::Error::new(
+                std::io::ErrorKind::ConnectionAborted,
+                e.to_string(),
+            ))
+        })?;
 
         let payload = match frame {
-            Frame::Message { service: 0, payload } => payload,
-            Frame::Abort => return Err(AcceptError::Transport(
-                std::io::Error::new(std::io::ErrorKind::ConnectionAborted, "client sent ProtocolAbort"),
-            )),
-            _ => return Err(AcceptError::Transport(
-                std::io::Error::new(std::io::ErrorKind::InvalidData, "unexpected frame during handshake"),
-            )),
+            Frame::Message {
+                service: 0,
+                payload,
+            } => payload,
+            Frame::Abort => {
+                return Err(AcceptError::Transport(std::io::Error::new(
+                    std::io::ErrorKind::ConnectionAborted,
+                    "client sent ProtocolAbort",
+                )))
+            }
+            _ => {
+                return Err(AcceptError::Transport(std::io::Error::new(
+                    std::io::ErrorKind::InvalidData,
+                    "unexpected frame during handshake",
+                )))
+            }
         };
 
-        let hello: Hello = postcard::from_bytes(&payload)
-            .map_err(|e| AcceptError::Transport(
-                std::io::Error::new(std::io::ErrorKind::InvalidData, e.to_string()),
-            ))?;
+        let hello: Hello = postcard::from_bytes(&payload).map_err(|e| {
+            AcceptError::Transport(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                e.to_string(),
+            ))
+        })?;
 
         // Allocate connection ID
         let conn_id = {
@@ -449,11 +471,11 @@ impl ProtocolServer {
         };
 
         let decision: Result<Welcome, Rejection> = Ok(welcome.clone());
-        let bytes = postcard::to_allocvec(&decision)
-            .expect("Welcome serialization failed");
+        let bytes = postcard::to_allocvec(&decision).expect("Welcome serialization failed");
 
         // Send Welcome
-        codec.write_frame(&mut writer, 0, &bytes)
+        codec
+            .write_frame(&mut writer, 0, &bytes)
             .map_err(AcceptError::Transport)?;
 
         // Send Ready — the active phase begins. Matches Be's
@@ -461,12 +483,11 @@ impl ProtocolServer {
         // (src/kits/app/Application.cpp:497) right after registrar
         // registration. The server sends it because it knows
         // the connection is fully established.
-        let ready = ControlMessage::Lifecycle(
-            pane_proto::protocols::lifecycle::LifecycleMessage::Ready,
-        );
-        let ready_bytes = postcard::to_allocvec(&ready)
-            .expect("Ready serialization failed");
-        codec.write_frame(&mut writer, 0, &ready_bytes)
+        let ready =
+            ControlMessage::Lifecycle(pane_proto::protocols::lifecycle::LifecycleMessage::Ready);
+        let ready_bytes = postcard::to_allocvec(&ready).expect("Ready serialization failed");
+        codec
+            .write_frame(&mut writer, 0, &ready_bytes)
             .map_err(AcceptError::Transport)?;
 
         codec.set_max_message_size(welcome.max_message_size);
@@ -513,12 +534,20 @@ fn actor_loop(event_rx: mpsc::Receiver<ServerEvent>) {
 
     loop {
         match event_rx.recv() {
-            Ok(ServerEvent::NewConnection { conn_id, write_handle, hello }) => {
+            Ok(ServerEvent::NewConnection {
+                conn_id,
+                write_handle,
+                hello,
+            }) => {
                 state.register_provides(conn_id, &hello.provides);
                 state.writers.insert(conn_id, write_handle);
                 state.next_session.insert(conn_id, 1);
             }
-            Ok(ServerEvent::Frame { conn_id, service, payload }) => {
+            Ok(ServerEvent::Frame {
+                conn_id,
+                service,
+                payload,
+            }) => {
                 state.process_frame(conn_id, service, payload);
             }
             Ok(ServerEvent::Disconnected { conn_id }) => {
@@ -546,7 +575,14 @@ fn reader_loop(
     loop {
         match codec.read_frame(&mut reader) {
             Ok(Frame::Message { service, payload }) => {
-                if event_tx.send(ServerEvent::Frame { conn_id, service, payload }).is_err() {
+                if event_tx
+                    .send(ServerEvent::Frame {
+                        conn_id,
+                        service,
+                        payload,
+                    })
+                    .is_err()
+                {
                     break; // Actor dropped
                 }
             }
@@ -565,8 +601,8 @@ fn reader_loop(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::transport::MemoryTransport;
     use crate::handshake::ServiceProvision;
+    use crate::transport::MemoryTransport;
     use pane_proto::protocol::ServiceId;
 
     #[test]
@@ -593,10 +629,13 @@ mod tests {
         let conn = ConnectionId(1);
         let service = ServiceId::new("com.pane.echo");
 
-        state.register_provides(conn, &[ServiceProvision {
-            service,
-            version: 1,
-        }]);
+        state.register_provides(
+            conn,
+            &[ServiceProvision {
+                service,
+                version: 1,
+            }],
+        );
 
         let providers = state.provider_index.get(&service.uuid).unwrap();
         assert_eq!(providers, &[ConnectionId(1)]);
@@ -607,14 +646,20 @@ mod tests {
         let mut state = ServerState::new();
         let service = ServiceId::new("com.pane.echo");
 
-        state.register_provides(ConnectionId(1), &[ServiceProvision {
-            service,
-            version: 1,
-        }]);
-        state.register_provides(ConnectionId(2), &[ServiceProvision {
-            service,
-            version: 1,
-        }]);
+        state.register_provides(
+            ConnectionId(1),
+            &[ServiceProvision {
+                service,
+                version: 1,
+            }],
+        );
+        state.register_provides(
+            ConnectionId(2),
+            &[ServiceProvision {
+                service,
+                version: 1,
+            }],
+        );
 
         let providers = state.provider_index.get(&service.uuid).unwrap();
         assert_eq!(providers.len(), 2);
@@ -625,18 +670,17 @@ mod tests {
         let mut state = ServerState::new();
         let service = ServiceId::new("com.pane.echo");
 
-        state.register_provides(ConnectionId(1), &[ServiceProvision {
-            service,
-            version: 1,
-        }]);
+        state.register_provides(
+            ConnectionId(1),
+            &[ServiceProvision {
+                service,
+                version: 1,
+            }],
+        );
         state.next_session.insert(ConnectionId(1), 1);
         state.next_session.insert(ConnectionId(2), 1);
 
-        let result = state.handle_declare_interest(
-            ConnectionId(2),
-            service,
-            1,
-        );
+        let result = state.handle_declare_interest(ConnectionId(2), service, 1);
 
         assert!(result.is_ok());
         let (accepted, provider_conn, provider_session) = result.unwrap();
@@ -660,13 +704,12 @@ mod tests {
         let service = ServiceId::new("com.pane.nonexistent");
         state.next_session.insert(ConnectionId(1), 1);
 
-        let result = state.handle_declare_interest(
-            ConnectionId(1),
-            service,
-            1,
-        );
+        let result = state.handle_declare_interest(ConnectionId(1), service, 1);
 
-        assert!(matches!(result, Err(pane_proto::control::DeclineReason::ServiceUnknown)));
+        assert!(matches!(
+            result,
+            Err(pane_proto::control::DeclineReason::ServiceUnknown)
+        ));
     }
 
     #[test]
@@ -674,10 +717,13 @@ mod tests {
         let mut state = ServerState::new();
         let service = ServiceId::new("com.pane.echo");
 
-        state.register_provides(ConnectionId(1), &[ServiceProvision {
-            service,
-            version: 1,
-        }]);
+        state.register_provides(
+            ConnectionId(1),
+            &[ServiceProvision {
+                service,
+                version: 1,
+            }],
+        );
         state.next_session.insert(ConnectionId(1), 1);
         state.next_session.insert(ConnectionId(2), 1);
 
@@ -686,8 +732,10 @@ mod tests {
 
         let peers = state.remove_connection(ConnectionId(1));
 
-        assert!(state.provider_index.get(&service.uuid).is_none()
-            || state.provider_index.get(&service.uuid).unwrap().is_empty());
+        assert!(
+            state.provider_index.get(&service.uuid).is_none()
+                || state.provider_index.get(&service.uuid).unwrap().is_empty()
+        );
         assert!(state.routing_table.is_empty());
         assert!(peers.iter().any(|(c, _)| *c == ConnectionId(2)));
     }
@@ -713,10 +761,13 @@ mod tests {
         let mut state = ServerState::new();
         let service = ServiceId::new("com.pane.echo");
 
-        state.register_provides(ConnectionId(1), &[ServiceProvision {
-            service,
-            version: 1,
-        }]);
+        state.register_provides(
+            ConnectionId(1),
+            &[ServiceProvision {
+                service,
+                version: 1,
+            }],
+        );
         state.next_session.insert(ConnectionId(1), 1);
         state.next_session.insert(ConnectionId(2), 1);
 
@@ -732,7 +783,9 @@ mod tests {
 
         // Simulate process_control receiving RevokeInterest
         // (extracted from process_control for unit test)
-        let route = state.routing_table.remove(&(ConnectionId(2), consumer_session));
+        let route = state
+            .routing_table
+            .remove(&(ConnectionId(2), consumer_session));
         assert!(route.is_some(), "consumer route should exist");
         let route = route.unwrap();
         let (peer_conn, peer_session) = if route.consumer_conn == ConnectionId(2) {
@@ -742,7 +795,10 @@ mod tests {
         };
         state.routing_table.remove(&(peer_conn, peer_session));
 
-        assert!(state.routing_table.is_empty(), "all routes should be removed");
+        assert!(
+            state.routing_table.is_empty(),
+            "all routes should be removed"
+        );
     }
 
     #[test]
@@ -765,7 +821,10 @@ mod tests {
 
             let frame = codec.read_frame(&mut transport).unwrap();
             let payload = match frame {
-                Frame::Message { service: 0, payload } => payload,
+                Frame::Message {
+                    service: 0,
+                    payload,
+                } => payload,
                 other => panic!("expected Control frame, got {:?}", other),
             };
             let decision: Result<Welcome, Rejection> = postcard::from_bytes(&payload).unwrap();
@@ -775,13 +834,22 @@ mod tests {
             // Server sends Ready after Welcome
             let frame = codec.read_frame(&mut transport).unwrap();
             let payload = match frame {
-                Frame::Message { service: 0, payload } => payload,
+                Frame::Message {
+                    service: 0,
+                    payload,
+                } => payload,
                 other => panic!("expected Ready frame, got {:?}", other),
             };
             let msg: ControlMessage = postcard::from_bytes(&payload).unwrap();
-            assert!(matches!(msg,
-                ControlMessage::Lifecycle(pane_proto::protocols::lifecycle::LifecycleMessage::Ready)
-            ), "first active-phase message should be Ready, got {msg:?}");
+            assert!(
+                matches!(
+                    msg,
+                    ControlMessage::Lifecycle(
+                        pane_proto::protocols::lifecycle::LifecycleMessage::Ready
+                    )
+                ),
+                "first active-phase message should be Ready, got {msg:?}"
+            );
 
             drop(transport);
         });
