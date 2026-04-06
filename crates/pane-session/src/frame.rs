@@ -9,6 +9,14 @@
 //! Service 0 is the control protocol, always known from construction.
 //! Service 0xFF is reserved for ProtocolAbort and cannot be registered
 //! or sent via write_frame.
+//!
+//! Design heritage: Plan 9 9P framing: [size: u32][type: u8][tag: u16]
+//! — similar structure, type byte discriminates message kinds. BeOS
+//! LinkSender/LinkReceiver used StartMessage(code)/Attach/EndMessage/
+//! Flush batched protocol over kernel ports — compact binary where
+//! both sides agree on the schema. pane's framing follows the same
+//! principle: no self-describing format, postcard + Rust types are
+//! the schema.
 
 use std::io::{self, Read, Write};
 

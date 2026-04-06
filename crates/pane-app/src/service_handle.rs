@@ -6,6 +6,13 @@
 //! new walks only.)
 //!
 //! Drop sends RevokeInterest (idempotent).
+//!
+//! Design heritage: Plan 9 fids were the result of walk+open — a
+//! bound handle to a specific file on a specific server. BeOS
+//! BMessenger targeting a specific BHandler was the equivalent
+//! addressing mechanism. ServiceHandle combines both: fid binding
+//! semantics (stable after open) with typed protocol constraint
+//! (Handles<P> at compile time, which BMessenger lacked).
 
 use std::marker::PhantomData;
 use pane_proto::{Address, Flow, Handler, Handles, Protocol};

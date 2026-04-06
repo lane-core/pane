@@ -13,6 +13,14 @@
 //!
 //! Obligation handles are NOT Message variants. They are
 //! !Clone (move-only) and !Serialize (contain channel senders).
+//!
+//! Design heritage: BeOS BMessage carried REPLY_REQUIRED flag
+//! and reply_port/reply_target/reply_team, but enforcement was
+//! voluntary — forgetting to reply was a common bug class.
+//! Plan 9 9P had no reply obligation mechanism — tags correlated
+//! requests to replies, but nothing enforced that a reply was
+//! sent. pane's #[must_use] + Drop compensation eliminates both
+//! failure modes at compile time.
 //! The protocol_handler macro generates a separate dispatch
 //! path for obligation callbacks.
 

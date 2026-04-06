@@ -11,6 +11,13 @@
 //! Only Lifecycle is handled in the vertical slice. The remaining
 //! variants (service negotiation, cancel) are defined for wire
 //! format stability and will be connected as those subsystems land.
+//!
+//! Design heritage: Plan 9 9P used a type byte to discriminate
+//! message kinds (Tversion=100, Tread=116, etc.) in a flat
+//! namespace. BeOS ServerProtocol.h had ~370 flat opcodes.
+//! ControlMessage nests sub-protocols (Lifecycle, service
+//! negotiation) as enum variants — the type system groups related
+//! messages, an improvement over both flat dispatch tables.
 
 use serde::{Serialize, Deserialize};
 use crate::protocols::lifecycle::LifecycleMessage;

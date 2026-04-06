@@ -13,6 +13,14 @@
 //!
 //! This module is the core dispatch logic, independent of calloop.
 //! The full looper wraps LooperCore with calloop event sources.
+//!
+//! Design heritage: BeOS BLooper::task_looper() blocked on
+//! port_buffer_size_etc(fMsgPort), read one message, then drained
+//! the port nonblocking (batch read, serial dispatch). Plan 9
+//! devmnt had a reader proc per mount that blocked on read(2) and
+//! dispatched by tag. pane's run() follows the same pattern:
+//! block on mpsc::Receiver, dispatch sequentially, channel close
+//! = disconnect.
 
 use std::panic::{catch_unwind, AssertUnwindSafe};
 use std::sync::mpsc;

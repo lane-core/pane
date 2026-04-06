@@ -4,6 +4,14 @@
 //! Like a Plan 9 fid, resolution happens once and the result is stable.
 //! How it was resolved (service map, namespace query, received in a
 //! message) is not part of the address.
+//!
+//! Design heritage: Plan 9 fids were client-assigned handles bound
+//! at walk/open time. BeOS BMessenger stored (port_id, handler_token,
+//! team_id) — a resolved triple you could copy, serialize, and send.
+//! Address is the copyable/serializable part; Messenger (which holds
+//! a live LooperSender) is the capability part. The split is forced
+//! by Rust's ownership — BMessenger could be both because kernel
+//! ports were globally addressable.
 
 use std::fmt;
 use serde::{Serialize, Deserialize};

@@ -3,6 +3,14 @@
 //! Derives PeerAuth from the transport's kernel credentials.
 //! Platform-specific: Linux uses SO_PEERCRED, macOS uses
 //! getpeereid + LOCAL_PEERPID.
+//!
+//! Design heritage: Plan 9 factotum(4) resolved credentials to
+//! a username via auth_check — the kernel produced the AuthId
+//! after the auth conversation completed. BeOS had no equivalent
+//! — identity was self-reported (team_id stuffed into
+//! AS_CREATE_APP). pane's peer_cred is stronger: the kernel
+//! asserts identity, the peer cannot lie (SO_PEERCRED/getpeereid
+//! are kernel-verified).
 
 use std::os::unix::net::UnixStream;
 use std::os::unix::io::AsRawFd;

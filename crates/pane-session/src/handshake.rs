@@ -11,6 +11,14 @@
 //!
 //! Protocol types defined with par. Executed over a Transport
 //! via the bridge module.
+//!
+//! Design heritage: Plan 9 Tversion/Rversion negotiated protocol
+//! version and max message size. Rerror provided explicit rejection
+//! on every T-message. BeOS AS_CREATE_APP sent team_id/port/signature
+//! and got back a status_t (explicit but terse). pane's explicit
+//! Result<Welcome, Rejection> combines both: rich rejection reasons
+//! (Plan 9 Rerror's explicitness) with typed structure (not Be's
+//! bare status_t integer).
 
 use serde::{Serialize, Deserialize};
 use pane_proto::ServiceId;

@@ -5,6 +5,12 @@
 //!     running, connection refused) are caught before par is involved.
 //!   Phase 2 (handshake + active): uses FrameCodec over Read + Write.
 //!     A verified transport that dies mid-session is exceptional.
+//!
+//! Design heritage: Plan 9 assumed a reliable byte stream (TCP, pipe)
+//! for all 9P communication. BeOS used kernel ports (message-oriented,
+//! reliable, in-order). pane uses Read + Write (byte stream), matching
+//! Plan 9. MemoryTransport bridges the gap for testing — it's an
+//! in-process byte stream over mpsc channels.
 
 use crate::handshake::Rejection;
 
