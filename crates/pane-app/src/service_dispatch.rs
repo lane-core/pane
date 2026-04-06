@@ -19,8 +19,10 @@
 //! deserialize (inside the closure). See session-type consultant's
 //! wiring soundness analysis.
 
+use crate::dispatch_ctx::DispatchCtx;
+use crate::handles_request::HandlesRequest;
 use crate::Messenger;
-use pane_proto::{Flow, Handles, HandlesRequest, Protocol, RequestProtocol, ServiceFrame};
+use pane_proto::{Flow, Handles, Protocol, RequestProtocol, ServiceFrame};
 use std::collections::HashMap;
 use std::sync::mpsc::SyncSender;
 
@@ -36,9 +38,11 @@ pub type ServiceReceiver<H> = Box<dyn Fn(&mut H, &Messenger, &[u8]) -> Flow + Se
 /// construction time — reply routing is wired at registration, not
 /// at dispatch.
 ///
-/// 4 params: handler, messenger, inner payload (tag byte + message
-/// bytes), token for reply correlation.
-pub type RequestReceiver<H> = Box<dyn Fn(&mut H, &Messenger, &[u8], u64) -> Flow + Send>;
+/// 5 params: handler, messenger, inner payload (tag byte + message
+/// bytes), token for reply correlation, dispatch context for
+/// outbound requests.
+pub type RequestReceiver<H> =
+    Box<dyn Fn(&mut H, &Messenger, &[u8], u64, &mut DispatchCtx<'_, H>) -> Flow + Send>;
 
 /// Static dispatch table for service frames.
 /// Frozen before the looper runs — no dynamic registration.
@@ -115,6 +119,7 @@ impl<H> ServiceDispatch<H> {
     /// every Request produces exactly one Reply or Failed (Ferrite,
     /// Chen/Balzer/Toninho ECOOP 2022, §4.2). Returning Flow (not
     /// Option<Flow>) encodes totality at the type level.
+    #[allow(clippy::too_many_arguments)]
     pub fn dispatch_request(
         &self,
         session_id: u16,
@@ -123,9 +128,10 @@ impl<H> ServiceDispatch<H> {
         payload: &[u8],
         token: u64,
         write_tx: &SyncSender<(u16, Vec<u8>)>,
+        ctx: &mut DispatchCtx<'_, H>,
     ) -> Flow {
         match self.request_receivers.get(&session_id) {
-            Some(receiver) => receiver(handler, messenger, payload, token),
+            Some(receiver) => receiver(handler, messenger, payload, token, ctx),
             None => {
                 // No request receiver registered — send Failed so the
                 // consumer's Dispatch entry isn't orphaned.
@@ -207,7 +213,11 @@ where
 {
     let expected_tag = P::service_id().tag();
     Box::new(
-        move |handler: &mut H, _messenger: &Messenger, payload: &[u8], token: u64| {
+        move |handler: &mut H,
+              _messenger: &Messenger,
+              payload: &[u8],
+              token: u64,
+              ctx: &mut DispatchCtx<'_, H>| {
             // Protocol tag check (S8): verify the payload's tag matches
             // the protocol registered for this session_id.
             if payload.is_empty() || payload[0] != expected_tag {
@@ -229,7 +239,7 @@ where
                 session_id,
                 token,
             );
-            handler.receive_request(msg, reply_port)
+            handler.receive_request(msg, reply_port, ctx)
         },
     )
 }
@@ -413,8 +423,11 @@ mod tests {
 
     // ── RequestReceiver tests ────────────────────────────────
 
+    use crate::dispatch::{Dispatch, PeerScope};
+    use crate::dispatch_ctx::DispatchCtx;
+    use crate::handles_request::HandlesRequest;
     use pane_proto::obligation::ReplyPort;
-    use pane_proto::{HandlesRequest, RequestProtocol, ServiceFrame};
+    use pane_proto::{RequestProtocol, ServiceFrame};
     use std::sync::mpsc::sync_channel;
 
     #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -448,7 +461,12 @@ mod tests {
         }
     }
     impl HandlesRequest<TestRequestProto> for RequestHandler {
-        fn receive_request(&mut self, msg: TestMsg, reply: ReplyPort<TestReply>) -> Flow {
+        fn receive_request(
+            &mut self,
+            msg: TestMsg,
+            reply: ReplyPort<TestReply>,
+            _ctx: &mut DispatchCtx<Self>,
+        ) -> Flow {
             match msg {
                 TestMsg::Ping(s) => {
                     let echo = s.clone();
@@ -475,7 +493,9 @@ mod tests {
         let mut payload = vec![wrong_tag];
         payload.extend_from_slice(&msg_bytes);
 
-        let flow = receiver(&mut handler, &messenger, &payload, 42);
+        let mut dispatch = Dispatch::new();
+        let mut ctx = DispatchCtx::new(&mut dispatch, PeerScope(1));
+        let flow = receiver(&mut handler, &messenger, &payload, 42, &mut ctx);
         assert_eq!(flow, Flow::Continue);
         assert!(handler.received.is_empty());
 
@@ -498,7 +518,9 @@ mod tests {
         let correct_tag = TestRequestProto::service_id().tag();
         let payload = vec![correct_tag, 0xFF, 0xFF, 0xFF, 0xFF];
 
-        let flow = receiver(&mut handler, &messenger, &payload, 99);
+        let mut dispatch = Dispatch::new();
+        let mut ctx = DispatchCtx::new(&mut dispatch, PeerScope(1));
+        let flow = receiver(&mut handler, &messenger, &payload, 99, &mut ctx);
         assert_eq!(flow, Flow::Continue);
         assert!(handler.received.is_empty());
 
@@ -518,7 +540,9 @@ mod tests {
 
         let payload = tagged_payload::<TestRequestProto>(&TestMsg::Ping("hello".into()));
 
-        let flow = receiver(&mut handler, &messenger, &payload, 10);
+        let mut dispatch = Dispatch::new();
+        let mut ctx = DispatchCtx::new(&mut dispatch, PeerScope(1));
+        let flow = receiver(&mut handler, &messenger, &payload, 10, &mut ctx);
         assert_eq!(flow, Flow::Continue);
         assert_eq!(handler.received, vec!["hello"]);
 
@@ -548,7 +572,12 @@ mod tests {
             }
         }
         impl HandlesRequest<TestRequestProto> for PanicHandler {
-            fn receive_request(&mut self, _msg: TestMsg, _reply: ReplyPort<TestReply>) -> Flow {
+            fn receive_request(
+                &mut self,
+                _msg: TestMsg,
+                _reply: ReplyPort<TestReply>,
+                _ctx: &mut DispatchCtx<Self>,
+            ) -> Flow {
                 panic!("handler crashed");
             }
         }
@@ -560,8 +589,10 @@ mod tests {
         let messenger = crate::Messenger::new();
         let payload = tagged_payload::<TestRequestProto>(&TestMsg::Ping("boom".into()));
 
+        let mut dispatch = Dispatch::new();
         let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            receiver(&mut handler, &messenger, &payload, 55)
+            let mut ctx = DispatchCtx::new(&mut dispatch, PeerScope(1));
+            receiver(&mut handler, &messenger, &payload, 55, &mut ctx)
         }));
         assert!(result.is_err());
 
@@ -605,7 +636,12 @@ mod tests {
             }
         }
         impl HandlesRequest<TestRequestProto> for MultiReqHandler {
-            fn receive_request(&mut self, msg: TestMsg, reply: ReplyPort<TestReply>) -> Flow {
+            fn receive_request(
+                &mut self,
+                msg: TestMsg,
+                reply: ReplyPort<TestReply>,
+                _ctx: &mut DispatchCtx<Self>,
+            ) -> Flow {
                 match msg {
                     TestMsg::Ping(s) => {
                         self.pings.push(s.clone());
@@ -621,7 +657,12 @@ mod tests {
             }
         }
         impl HandlesRequest<OtherRequestProto> for MultiReqHandler {
-            fn receive_request(&mut self, msg: OtherReqMsg, reply: ReplyPort<OtherReply>) -> Flow {
+            fn receive_request(
+                &mut self,
+                msg: OtherReqMsg,
+                reply: ReplyPort<OtherReply>,
+                _ctx: &mut DispatchCtx<Self>,
+            ) -> Flow {
                 match msg {
                     OtherReqMsg::Query(n) => {
                         self.queries.push(n);
@@ -633,12 +674,12 @@ mod tests {
         }
 
         let (write_tx, write_rx) = sync_channel(16);
-        let mut dispatch = ServiceDispatch::<MultiReqHandler>::new();
-        dispatch.register_request(
+        let mut service_dispatch = ServiceDispatch::<MultiReqHandler>::new();
+        service_dispatch.register_request(
             1,
             make_request_receiver::<MultiReqHandler, TestRequestProto>(write_tx.clone(), 1),
         );
-        dispatch.register_request(
+        service_dispatch.register_request(
             2,
             make_request_receiver::<MultiReqHandler, OtherRequestProto>(write_tx, 2),
         );
@@ -662,21 +703,26 @@ mod tests {
         // Fallback write_tx — only used if dispatch finds no receiver.
         // Here both session_ids are registered, so this is never used.
         let (fallback_tx, _fallback_rx) = sync_channel(16);
-        dispatch.dispatch_request(
+        let mut dispatch_table = Dispatch::new();
+        let mut ctx = DispatchCtx::new(&mut dispatch_table, PeerScope(1));
+        service_dispatch.dispatch_request(
             1,
             &mut handler,
             &messenger,
             &ping_payload,
             100,
             &fallback_tx,
+            &mut ctx,
         );
-        dispatch.dispatch_request(
+        let mut ctx = DispatchCtx::new(&mut dispatch_table, PeerScope(1));
+        service_dispatch.dispatch_request(
             2,
             &mut handler,
             &messenger,
             &query_payload,
             200,
             &fallback_tx,
+            &mut ctx,
         );
 
         assert_eq!(handler.pings, vec!["a"]);
@@ -692,12 +738,22 @@ mod tests {
 
     #[test]
     fn request_unknown_session_sends_failed() {
-        let dispatch = ServiceDispatch::<RequestHandler>::new();
+        let service_dispatch = ServiceDispatch::<RequestHandler>::new();
         let mut handler = RequestHandler { received: vec![] };
         let messenger = crate::Messenger::new();
 
         let (fallback_tx, fallback_rx) = sync_channel(16);
-        let flow = dispatch.dispatch_request(99, &mut handler, &messenger, &[], 1, &fallback_tx);
+        let mut dispatch_table = Dispatch::new();
+        let mut ctx = DispatchCtx::new(&mut dispatch_table, PeerScope(1));
+        let flow = service_dispatch.dispatch_request(
+            99,
+            &mut handler,
+            &messenger,
+            &[],
+            1,
+            &fallback_tx,
+            &mut ctx,
+        );
         assert_eq!(flow, Flow::Continue);
 
         // No receiver registered — Failed sent via fallback write_tx
@@ -744,7 +800,9 @@ mod tests {
         let mut handler = RequestHandler { received: vec![] };
         let messenger = crate::Messenger::new();
 
-        let flow = receiver(&mut handler, &messenger, &[], 77);
+        let mut dispatch = Dispatch::new();
+        let mut ctx = DispatchCtx::new(&mut dispatch, PeerScope(1));
+        let flow = receiver(&mut handler, &messenger, &[], 77, &mut ctx);
         assert_eq!(flow, Flow::Continue);
         assert!(handler.received.is_empty());
 

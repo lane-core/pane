@@ -13,7 +13,9 @@
 use std::collections::HashSet;
 use std::marker::PhantomData;
 
-use pane_proto::{Handler, Handles, HandlesRequest, Protocol, RequestProtocol, ServiceId};
+use pane_proto::{Handler, Handles, Protocol, RequestProtocol, ServiceId};
+
+use crate::handles_request::HandlesRequest;
 use pane_session::bridge::{self, LooperMessage, WriteMessage};
 use pane_session::handshake::ServiceProvision;
 

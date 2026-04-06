@@ -49,6 +49,12 @@ pub struct Dispatch<H> {
     next_token: u64,
 }
 
+impl<H> Default for Dispatch<H> {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl<H> Dispatch<H> {
     pub fn new() -> Self {
         Dispatch {

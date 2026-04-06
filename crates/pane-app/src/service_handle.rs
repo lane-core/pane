@@ -14,19 +14,12 @@
 //! semantics (stable after open) with typed protocol constraint
 //! (Handles<P> at compile time, which BMessenger lacked).
 
+use crate::dispatch::DispatchEntry;
+use crate::dispatch_ctx::DispatchCtx;
 use crate::Messenger;
 use pane_proto::obligation::{CancelHandle, ReplyPort};
-use pane_proto::{Address, Flow, Handler, Handles, Protocol, ServiceFrame};
+use pane_proto::{Address, Flow, Protocol, ServiceFrame};
 use std::marker::PhantomData;
-use std::sync::atomic::{AtomicU64, Ordering};
-
-/// Monotonic token counter for request/reply correlation.
-/// Global — tokens are unique across all ServiceHandles in a process.
-///
-/// Placeholder: when Reply routing lands, tokens will be sourced
-/// from Dispatch (per-looper scope) instead. The global counter
-/// is temporary so send_request can produce valid wire frames now.
-static NEXT_TOKEN: AtomicU64 = AtomicU64::new(1);
 
 /// A live connection to a service. Parameterized by protocol.
 ///
@@ -72,43 +65,63 @@ impl<P: Protocol> ServiceHandle<P> {
     }
 
     /// Send a typed request through this service binding.
-    /// Installs a one-shot reply callback in the handler's Dispatch.
+    /// Installs a one-shot reply callback in the handler's Dispatch
+    /// BEFORE the frame hits the wire (install-before-wire invariant).
     ///
     /// The message type is P::Message — protocol-scoped, not
     /// arbitrary serializable. Both sides implement Handles<P>,
     /// so the type agreement is compile-time within a crate
     /// and version-negotiated across processes.
+    ///
+    /// Design heritage: Plan 9 devmnt.c:786-790 linked Mntrpc
+    /// onto m->queue under spinlock BEFORE the write at line 798.
+    /// pane: DispatchEntry installed via ctx.insert() before wire
+    /// send in send_request.
     pub fn send_request<H, R>(
         &self,
+        ctx: &mut DispatchCtx<'_, H>,
         msg: P::Message,
         on_reply: impl FnOnce(&mut H, &Messenger, R) -> Flow + Send + 'static,
         on_failed: impl FnOnce(&mut H, &Messenger) -> Flow + Send + 'static,
     ) -> CancelHandle
     where
-        H: Handler + Handles<P> + 'static,
+        H: pane_proto::Handler + 'static,
         R: pane_proto::Message,
     {
+        // 1. Build entry — install BEFORE wire send
+        let session_id = self.session_id;
+        let entry = DispatchEntry {
+            session_id,
+            on_reply: Box::new(move |h, m, payload| {
+                let reply = *payload
+                    .downcast::<R>()
+                    .expect("reply type mismatch — handler H and reply R diverged");
+                on_reply(h, m, reply)
+            }),
+            on_failed: Box::new(on_failed),
+        };
+        let token = ctx.insert(entry);
+
+        // 2. Serialize with allocated token
         let tag = P::service_id().tag();
         let msg_bytes = postcard::to_allocvec(&msg).expect("service message serialization failed");
         let mut inner_payload = Vec::with_capacity(1 + msg_bytes.len());
         inner_payload.push(tag);
         inner_payload.extend_from_slice(&msg_bytes);
 
-        let token = NEXT_TOKEN.fetch_add(1, Ordering::Relaxed);
         let frame = ServiceFrame::Request {
-            token,
+            token: token.0,
             payload: inner_payload,
         };
         let outer_payload =
             postcard::to_allocvec(&frame).expect("service frame serialization failed");
 
+        // 3. Wire send AFTER entry installed
         if let Some(ref tx) = self.write_tx {
             let _ = tx.send((self.session_id, outer_payload));
         }
 
-        // TODO: install Dispatch entry keyed by token so replies route back.
-        // For now, stub callbacks are not installed.
-        let _ = (on_reply, on_failed);
+        // Stub: real cancel sends Cancel{token} on control channel
         CancelHandle::new(|| {})
     }
 
@@ -191,7 +204,9 @@ impl<P: Protocol> Drop for ServiceHandle<P> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::dispatch::{Dispatch, PeerScope};
     use pane_proto::protocol::ServiceId;
+    use pane_proto::{Handler, Handles};
     use serde::{Deserialize, Serialize};
 
     // -- Test protocol for exercising type bounds --
@@ -241,7 +256,10 @@ mod tests {
         // This test verifies the type constraints compile and
         // the stub returns a CancelHandle.
         let handle = ServiceHandle::<TestProto>::new();
+        let mut dispatch = Dispatch::<TestHandler>::new();
+        let mut ctx = DispatchCtx::new(&mut dispatch, PeerScope(1));
         let cancel = handle.send_request::<TestHandler, TestReply>(
+            &mut ctx,
             TestMsg::Ping,
             |_handler: &mut TestHandler, _messenger: &Messenger, _reply: TestReply| Flow::Continue,
             |_handler: &mut TestHandler, _messenger: &Messenger| Flow::Continue,
@@ -253,7 +271,10 @@ mod tests {
     #[test]
     fn send_request_cancel_handle_drop_is_noop() {
         let handle = ServiceHandle::<TestProto>::new();
+        let mut dispatch = Dispatch::<TestHandler>::new();
+        let mut ctx = DispatchCtx::new(&mut dispatch, PeerScope(1));
         let cancel = handle.send_request::<TestHandler, TestReply>(
+            &mut ctx,
             TestMsg::Ping,
             |_: &mut TestHandler, _, _: TestReply| Flow::Continue,
             |_: &mut TestHandler, _| Flow::Continue,
@@ -267,7 +288,10 @@ mod tests {
         let (tx, rx) = std::sync::mpsc::sync_channel(16);
         let handle = ServiceHandle::<TestProto>::with_channel(5, tx);
 
+        let mut dispatch = Dispatch::<TestHandler>::new();
+        let mut ctx = DispatchCtx::new(&mut dispatch, PeerScope(1));
         let _cancel = handle.send_request::<TestHandler, TestReply>(
+            &mut ctx,
             TestMsg::Ping,
             |_: &mut TestHandler, _, _: TestReply| Flow::Continue,
             |_: &mut TestHandler, _| Flow::Continue,
@@ -281,7 +305,8 @@ mod tests {
             postcard::from_bytes(&payload).expect("ServiceFrame deserialization failed");
         match frame {
             ServiceFrame::Request { token, payload } => {
-                assert!(token > 0, "token should be nonzero");
+                // Token comes from Dispatch's monotonic counter (starts at 0)
+                assert_eq!(token, 0, "first token from Dispatch should be 0");
                 // First byte is the protocol tag
                 let expected_tag = TestProto::service_id().tag();
                 assert_eq!(payload[0], expected_tag, "protocol tag must be first byte");
@@ -292,6 +317,27 @@ mod tests {
             }
             _ => panic!("expected Request frame"),
         }
+    }
+
+    #[test]
+    fn send_request_installs_dispatch_entry() {
+        // Verify the dispatch entry is installed before the
+        // wire frame is sent — the install-before-wire invariant.
+        let (tx, _rx) = std::sync::mpsc::sync_channel(16);
+        let handle = ServiceHandle::<TestProto>::with_channel(5, tx);
+
+        let mut dispatch = Dispatch::<TestHandler>::new();
+        assert!(dispatch.is_empty());
+
+        let mut ctx = DispatchCtx::new(&mut dispatch, PeerScope(1));
+        let _cancel = handle.send_request::<TestHandler, TestReply>(
+            &mut ctx,
+            TestMsg::Ping,
+            |_: &mut TestHandler, _, _: TestReply| Flow::Continue,
+            |_: &mut TestHandler, _| Flow::Continue,
+        );
+
+        assert_eq!(dispatch.len(), 1, "dispatch entry must be installed");
     }
 
     #[test]
@@ -324,7 +370,10 @@ mod tests {
     fn stub_handle_send_request_does_not_panic() {
         // A handle without a write channel (stub) silently drops sends.
         let handle = ServiceHandle::<TestProto>::new();
+        let mut dispatch = Dispatch::<TestHandler>::new();
+        let mut ctx = DispatchCtx::new(&mut dispatch, PeerScope(1));
         let _cancel = handle.send_request::<TestHandler, TestReply>(
+            &mut ctx,
             TestMsg::Ping,
             |_: &mut TestHandler, _, _: TestReply| Flow::Continue,
             |_: &mut TestHandler, _| Flow::Continue,

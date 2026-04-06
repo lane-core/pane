@@ -6,7 +6,6 @@
 //!   - Protocol trait + RequestProtocol supertrait + ServiceId
 //!   - Flow (Continue / Stop)
 //!   - Handles<P> (uniform per-protocol dispatch)
-//!   - HandlesRequest<P> (request/reply dispatch with ReplyPort obligation)
 //!   - Handler (lifecycle convenience, blanket Handles<Lifecycle>)
 //!   - MessageFilter<M> (typed per-protocol filters)
 //!   - MonadicLens<S,A> (optic-backed state access)
@@ -33,7 +32,7 @@ pub use control::{ControlMessage, DeclineReason, TeardownReason};
 pub use filter::{FilterAction, MessageFilter};
 pub use flow::Flow;
 pub use handler::Handler;
-pub use handles::{Handles, HandlesRequest};
+pub use handles::Handles;
 pub use message::Message;
 pub use peer_auth::{AuthSource, PeerAuth};
 pub use protocol::{Protocol, RequestProtocol, ServiceId};

@@ -41,7 +41,8 @@
 use std::panic::{catch_unwind, AssertUnwindSafe};
 use std::sync::mpsc;
 
-use crate::dispatch::{Dispatch, PeerScope};
+use crate::dispatch::{Dispatch, PeerScope, Token};
+use crate::dispatch_ctx::DispatchCtx;
 use crate::exit_reason::ExitReason;
 use crate::messenger::Messenger;
 use crate::service_dispatch::ServiceDispatch;
@@ -294,13 +295,19 @@ impl<H: pane_proto::Handler> LooperCore<H> {
                 // `default: respond(r, "unknown message")` for
                 // unrecognized T-messages
                 // (reference/plan9/src/sys/src/lib9p/srv.c:705-727).
+                //
+                // Split borrow: handler, dispatch, service_dispatch,
+                // messenger, write_tx are distinct fields — Rust allows
+                // simultaneous mutable borrows of distinct struct fields.
                 let handler = &mut self.handler;
                 let service_dispatch = &self.service_dispatch;
                 let messenger = &self.messenger;
                 let write_tx = &self.write_tx;
+                let mut ctx = DispatchCtx::new(&mut self.dispatch, self.primary_connection);
                 let result = catch_unwind(AssertUnwindSafe(|| {
-                    service_dispatch
-                        .dispatch_request(session_id, handler, messenger, &inner, token, write_tx)
+                    service_dispatch.dispatch_request(
+                        session_id, handler, messenger, &inner, token, write_tx, &mut ctx,
+                    )
                 }));
                 match result {
                     Ok(flow) => self.flow_to_outcome(flow),
@@ -311,15 +318,38 @@ impl<H: pane_proto::Handler> LooperCore<H> {
                 }
             }
             pane_proto::ServiceFrame::Reply {
-                token: _,
-                payload: _,
+                token,
+                payload: reply_bytes,
             } => {
-                // TODO: consumer-side reply routing via Dispatch<H>
-                DispatchOutcome::Continue
+                // Consumer-side reply routing: look up the Dispatch
+                // entry by (connection, token) and fire on_reply.
+                let conn = self.primary_connection;
+                let tok = Token(token);
+                let flow = self.dispatch.fire_reply(
+                    conn,
+                    tok,
+                    &mut self.handler,
+                    &self.messenger,
+                    Box::new(reply_bytes),
+                );
+                match flow {
+                    Some(f) => self.flow_to_outcome(f),
+                    // Unknown token — entry already consumed or cancelled.
+                    None => DispatchOutcome::Continue,
+                }
             }
-            pane_proto::ServiceFrame::Failed { token: _ } => {
-                // TODO: consumer-side failure routing via Dispatch<H>
-                DispatchOutcome::Continue
+            pane_proto::ServiceFrame::Failed { token } => {
+                // Consumer-side failure routing: fire on_failed for
+                // the Dispatch entry keyed by this token.
+                let conn = self.primary_connection;
+                let tok = Token(token);
+                let flow = self
+                    .dispatch
+                    .fire_failed(conn, tok, &mut self.handler, &self.messenger);
+                match flow {
+                    Some(f) => self.flow_to_outcome(f),
+                    None => DispatchOutcome::Continue,
+                }
             }
             _ => {
                 // Future ServiceFrame variants (e.g. streaming).
@@ -1166,11 +1196,13 @@ mod tests {
 
     mod request_dispatch {
         use super::*;
+        use crate::dispatch_ctx::DispatchCtx;
+        use crate::handles_request::HandlesRequest;
         use crate::service_dispatch::{
             make_request_receiver, make_service_receiver, ServiceDispatch,
         };
         use pane_proto::obligation::ReplyPort;
-        use pane_proto::{HandlesRequest, Protocol, RequestProtocol, ServiceFrame, ServiceId};
+        use pane_proto::{Protocol, RequestProtocol, ServiceFrame, ServiceId};
         use serde::{Deserialize, Serialize};
 
         #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -1212,7 +1244,12 @@ mod tests {
             }
         }
         impl HandlesRequest<ReqProto> for ReqHandler {
-            fn receive_request(&mut self, msg: ReqMsg, reply: ReplyPort<ReqReply>) -> Flow {
+            fn receive_request(
+                &mut self,
+                msg: ReqMsg,
+                reply: ReplyPort<ReqReply>,
+                _ctx: &mut DispatchCtx<Self>,
+            ) -> Flow {
                 if self.should_panic {
                     panic!("handler crashed in receive_request");
                 }
