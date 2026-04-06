@@ -1,8 +1,16 @@
-//! Messenger: scoped pane handle for handler use.
+//! Messenger: inbound self-reference handle for handler use.
 //!
-//! Wraps a Handle (pane identity) + ServiceRouter (which Connection
-//! for which service). Cloneable, Send. Passed to handler methods
-//! by the looper at dispatch time.
+//! Represents "what I am" — the pane's own identity and framework
+//! capabilities (address, content, timers). Cloneable, passed to
+//! handler methods by the looper at dispatch time.
+//!
+//! Distinct from ServiceHandle<P>, which represents "who I'm
+//! talking to" — an outbound connection to a remote service.
+//! Messenger is inbound (self-reference), ServiceHandle is
+//! outbound (remote reference). They are not unifiable because
+//! they face opposite directions and carry different state:
+//! Messenger carries self-address and framework APIs; ServiceHandle
+//! carries a session_id, write channel, and protocol type parameter.
 //!
 //! Plan 9: like a fid — resolution happens once at open time;
 //! the result is a direct binding, not a name.

@@ -24,6 +24,13 @@
 //! StartMessage/Attach/Flush protocol was also a writer monad —
 //! (status_t, Buffer<Message>) — called "reducing port
 //! round-trips" (headers/private/app/LinkSender.h:36-40).
+//!
+//! Note: pane-fs has its own AttrReader/AttrSet (pane-fs/src/attrs.rs)
+//! for the FUSE read-only projection. That is intentionally separate:
+//! pane-proto's version supports effectful mutation via the writer
+//! monad; pane-fs's version is a snapshot-only read interface with
+//! HashMap-based name lookup for FUSE performance. They serve
+//! different layers of the three-tier model.
 
 use std::fmt;
 

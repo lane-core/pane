@@ -11,6 +11,24 @@
 //! once — either the success path (.reply, .commit, .wait)
 //! or the failure path (Drop).
 //!
+//! Three types, not one generic, because they differ semantically:
+//!   - ReplyPort<T>: mandatory obligation, carries reply value T.
+//!     Drop sends ReplyFailed.
+//!   - CompletionReplyPort: mandatory obligation, no payload.
+//!     Drop sends CompletionFailed. Could be ReplyPort<()> but
+//!     the distinct type makes the "acknowledgment only" intent
+//!     visible at the API surface.
+//!   - CancelHandle: optional obligation, inverted Drop. Drop is
+//!     a no-op (request completes normally). `.cancel()` is the
+//!     active intervention. Not unifiable with the mandatory types
+//!     because the Drop semantics are opposite.
+//!
+//! All three use closure-erased backends: the obligation carrier
+//! is `Box<dyn FnOnce(...)>`, not a concrete channel type. This
+//! lets the same `ReplyPort<T>` work for in-process replies (mpsc
+//! closure) and wire replies (serialization closure). The backend
+//! is a construction-time decision, invisible to the handler.
+//!
 //! Obligation handles are NOT Message variants. They are
 //! !Clone (move-only) and !Serialize (contain boxed closures).
 //!

@@ -10,6 +10,14 @@
 //!
 //! This module defines the AttributeSet — a type-erased collection
 //! of named attributes that pane-fs can enumerate and read.
+//!
+//! Intentionally separate from pane-proto's AttrReader/AttrSet
+//! (pane-proto/src/monadic_lens.rs), which supports effectful
+//! mutation via the writer monad. This module is read-only
+//! snapshot access with HashMap-based name lookup for FUSE
+//! performance. Both serve the same attribute surface but at
+//! different layers: pane-proto for the kit API (mutation +
+//! effects), pane-fs for the filesystem projection (read-only).
 
 use std::collections::HashMap;
 use std::fmt;

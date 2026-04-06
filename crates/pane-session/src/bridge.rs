@@ -235,10 +235,16 @@ pub fn accept_and_run(
 
 /// Result of a successful client connection.
 ///
-/// Holds both the read channel (for the looper) and the write
-/// channel (for ServiceHandle/PaneBuilder). The bridge spawns
-/// a reader thread and a writer thread; the caller interacts
-/// only through channels.
+/// Bidirectional: holds both the read channel (rx, for the looper)
+/// and the write channel (write_tx, for ServiceHandle/PaneBuilder).
+/// The bridge spawns a reader thread and a writer thread; the
+/// caller interacts only through channels.
+///
+/// Intentionally distinct from ServerReader, which is read-only.
+/// The asymmetry reflects the two-thread architecture: the client
+/// bridge owns both reader and writer threads, while the server
+/// bridge hands the writer to the ProtocolServer actor (which
+/// manages writes centrally via WriteHandle).
 #[derive(Debug)]
 pub struct ClientConnection {
     pub welcome: Welcome,
@@ -246,7 +252,11 @@ pub struct ClientConnection {
     pub write_tx: std::sync::mpsc::SyncSender<WriteMessage>,
 }
 
-/// Result of a successful server-side accept.
+/// Result of a successful server-side accept. Read-only — the
+/// server bridge does not expose a write channel here because
+/// the ProtocolServer actor owns all write handles centrally
+/// (via WriteHandle in server.rs). See ClientConnection for the
+/// bidirectional client-side equivalent.
 #[derive(Debug)]
 pub struct ServerReader {
     pub hello: Hello,

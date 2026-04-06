@@ -63,9 +63,19 @@ enum ServerEvent {
 
 // -- Write handle: leaf mutex, one per connection --
 
-/// Write handle to a connection. The writer is behind its own
-/// Mutex — only the actor thread writes, so contention is minimal.
-/// Leaf lock: never held while acquiring another lock.
+/// Write handle to a connection. Server-internal — not exposed
+/// to clients. The writer is behind its own Mutex; only the actor
+/// thread writes, so contention is minimal. Leaf lock: never held
+/// while acquiring another lock.
+///
+/// Distinct from the client-side write path (SyncSender<WriteMessage>
+/// in ClientConnection/ServiceHandle) because the server owns the
+/// raw transport writer directly. The client sends write requests
+/// through a bounded channel to a writer thread; the server's actor
+/// writes through this handle on the actor thread itself. Both
+/// paths use FrameCodec for wire encoding but differ in ownership:
+/// the client's writer thread owns the transport half, while this
+/// handle wraps it in Arc<Mutex> for the actor's sequential access.
 #[derive(Clone)]
 struct WriteHandle {
     writer: Arc<Mutex<Box<dyn Write + Send>>>,
