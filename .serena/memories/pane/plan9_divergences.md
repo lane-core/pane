@@ -106,4 +106,66 @@ Default policy: when pane draws on Plan 9, cite the specific concept and documen
 | rio `wdir` — writable, app updates on chdir, used for plumb messages | pane-fs `/pane/<id>/attrs/cwd` — writable, app updates, used for routing | Direct adaptation. The shell maintains this file so that routing rules know the working directory context. |
 | rio `wsys` directory — per-window subdirectories | pane-fs `/pane/` hierarchy | rio(4) served a `wsys` directory with one subdirectory per window, each containing cons, consctl, label, mouse, etc. pane-fs serves the same structure under `/pane/<id>/`. |
 
+## Inter-Pane Addressing (Address + ServiceHandle.send_request)
+
+| Plan 9 | pane | Rationale |
+|--------|------|-----------|
+| fid obtained by walk/open — name resolved once, then direct binding | `Address` — lightweight copyable address (pane_id + server_id). ServiceHandle<P> is the typed binding for protocol-scoped communication. | Same fid semantics: resolution is separate from communication. Address is sendable in messages ("here's how to reach me"). ServiceHandle is the live binding. |
+| Kernel routes file ops, but direct client-to-client possible via shared namespaces | Direct pane-to-pane communication supported; server is one routing path, not the only one | Lane chose direct over server-mediated-only. Authorization for direct connections uses PeerAuth + .plan — each endpoint verifies the peer, same as factotum's mutual auth model. |
+| plumber(4) — separate file server for content-based routing, independent of direct file ops | Plumber-style routing kept separate from ServiceHandle.send_request — future routing service, not a messaging method | Plan 9's plumber was powerful because it was a separate service with its own rules. Conflating direct addressing and content-based routing in one API loses both clarity and the ability to evolve routing rules independently. |
+| `import` made remote files transparent; same open/read/write, different failure modes (hung reads on dead network) | Address to remote pane is API-identical to local (`Address::remote(id, server)`); on_failed may fire from partition. `is_local()` exposes hint without type-level distinction | Plan 9 got transparency right but experienced users still knew /n/kremvax might hang. pane: same API, honest about timing. No type-level local/remote split. |
+| send_request was untyped in original spec (like BMessage's any-to-any) | send_request is protocol-scoped on ServiceHandle<P> — msg is P::Message, not arbitrary bytes | Compile-time protocol agreement. Cross-process type safety via shared Protocol trait + version negotiation in DeclareInterest. |
+
+Resolution paths: (1) by ID = walk /pane/42, (2) by service signature = walk /pane/by-sig/..., (3) by pane-fs path (filesystem tier, for scripting). Address is the resolved result; ServiceHandle<P> is the typed communication channel.
+
 ## What pane does NOT take from Plan 9
+
+### Per-process namespaces → per-uid filtering + Landlock + optional 9P (mechanism survey 2026-04-05)
+
+Plan 9's rfork(RFNAMEG) gave each process its own kernel mount table — per-process, not per-user. Inferno replicated this in userspace (Pgrp mount hash table per process group). pane cannot achieve true per-process namespaces on Linux without kernel support (mount namespaces require CAP_SYS_ADMIN or user namespaces, which are deployment-variable).
+
+**Mechanism survey findings (five approaches evaluated):**
+
+1. **Linux mount namespaces (CLONE_NEWNS):** Closest to Plan 9 conceptually, but FUSE impedance mismatch is severe — copying a mount namespace shares the same FUSE connection (same data), and mounting a new FUSE instance per namespace requires privilege. Viable only for coarse isolation (one per agent user), not per-process.
+
+2. **FUSE per-uid filtering (recommended, Phase 1):** FUSE passes uid/pid in every request context. Server reads `.plan` per uid, serves filtered readdir/read/stat. Gives per-user isolation (different uid → different view). `/pane/self/` uses pid for self-reference. Stable identity (no pid reuse), natural inheritance (child same uid), composes with unix permissions. Does not give per-process variation within one uid.
+
+3. **FUSE per-pid filtering:** Technically possible but fragile — PID reuse, no fork inheritance, thread group ambiguity. Useful only for targeted cases (`/pane/self/`), not general namespace variation.
+
+4. **Landlock + FUSE (recommended, Phase 2):** `.plan` → Landlock rule generation provides kernel-enforced defense-in-depth. FUSE hides restricted panes (invisibility), Landlock blocks access to them (enforcement). Landlock is restriction-only (EACCES not ENOENT for bypassed entries), so both layers needed. Landlock works with FUSE if pane-fs assigns stable inodes to computed directories.
+
+5. **9P library interface (recommended, Phase 2-3):** Per-connection views via Tattach aname parameter. No privilege needed — it's a socket protocol, not a kernel mount. Unlocks client-side namespace composition (the Plan 9 pattern). Cost: tools must speak 9P or use a bridge. Complements FUSE (FUSE for convenience, 9P for composition).
+
+**Adopted model (three tiers):**
+- **Protocol tier:** Per-connection ConnectionNamespace — visibility predicate per connection. Non-visible panes return "not found" (Inferno semantics). Configured via `.plan` for remote; All for local.
+- **Filesystem tier:** Per-uid FUSE filtering + Landlock enforcement. Coarser than per-connection but sufficient for scripting.
+- **Composition tier (future):** 9P interface alongside FUSE for programmatic per-connection namespace composition.
+
+**Key Inferno lesson:** namespace isolation ≠ security isolation. Inferno's hosted namespaces were advisory. pane's namespace determines what you see; Landlock determines what you can access on the host.
+
+**What's lost vs. Plan 9:** Client-side composition (bind/mount in your own namespace), structural isolation without identity (two same-uid processes seeing different namespaces), recursive compositor nesting, remote namespace reconstruction (`cpu` pattern). These are acceptable losses — pane-fs is the scripting/inspection tier, not the primary communication tier. The protocol layer provides per-connection isolation through session-typed channels and PeerAuth.
+
+Not adopted: Inferno's bind/mount operations (pane's namespace is computed projections, not overlay mounts), recursive namespace composition, COW mount tables (unnecessary — per-connection state is a small predicate).
+
+### Recursive symmetry (8½/rio nesting)
+8½ could run inside itself because the window manager was a file server speaking the same interface as the kernel's /dev. pane permits connecting a pane app to a different pane server, but the FUSE namespace doesn't recurse without Linux mount namespaces. Edge case — the practical version (local desktop connected to remote headless, merged namespace) is supported.
+
+### import as kernel operation
+Plan 9's import was a kernel mount of a remote file tree at an arbitrary path. pane has one FUSE mount at /pane/; remote panes appear there via the unified namespace. More structured, less error-prone than arbitrary mounts, but not as flexible.
+
+## Architectural Checkpoint Findings (2026-04-05)
+
+### Critical execution gap: FUSE mount
+The pane-fs design is sound but almost entirely unimplemented at the FUSE level. AttrReader, AttrSet, PaneEntry exist; the FUSE bridge does not. Every Plan 9 promise (scriptability, observability, composition) depends on pane-fs being a real mounted filesystem. This is the validation surface for the namespace design — seven architecture invariants are testable only through pane-fs.
+
+### Missing: blocking-read observer file
+Plan 9 used blocking reads on state files (rio wctl, proc wait) as the observer pattern at the filesystem tier. pane-fs has no equivalent planned — needs an `event` or `wait` file per pane that blocks until state changes. Without it, filesystem-tier observation degrades to polling. Essential for scripting.
+
+### Dual-interface obligation
+The kit API and filesystem must project the same state through the same optics. MonadicLens enforces this by construction (same fn pointer for read path and write path). This is the structural defense against pane-fs becoming a second-class citizen. Must be tested explicitly: every kit-accessible attribute must be filesystem-accessible, every ctl command must have the same effect as the kit API equivalent.
+
+### Staleness indicator for remote panes
+Cached remote pane metadata can go stale when the remote host disconnects. Need a visible staleness indicator: `/pane/<n>/attrs/connected` returning connected/stale/unreachable, and the event file should emit on connection state changes. Different errno for remote-unreachable (ECONNREFUSED/EHOSTUNREACH) vs bad-command (EINVAL).
+
+### Bridge thread architecture
+The bridge module spawns a thread per connection for par/transport bridging. Works for handshake; for the active phase, need either a non-blocking FrameCodec for calloop integration or accept the extra thread + copy per message. The current synchronous FrameCodec (std::io::Read/Write) must evolve.

@@ -28,6 +28,7 @@ Single server (N=1), headless, no suspension, no streaming. All multi-server dat
 - [x] **Obligation handles** — ReplyPort, CompletionReplyPort, CancelHandle with `#[must_use]`, Drop compensation (14 tests)
 - [ ] **Framework protocols** — `Display` as Protocol impl; `ControlMessage` enum (wire service 0)
 - [x] **PeerAuth** — `PeerAuth { uid, source: AuthSource }` with `AuthSource::Kernel { pid }` (SO_PEERCRED) and `AuthSource::Certificate { subject, issuer }` (TLS); `#[non_exhaustive]`, full Eq/Hash (10 tests)
+- [x] **Address** — `Address { pane_id, server_id }`, `#[non_exhaustive]`, Copy, resolved pane address for routing (13 tests)
 - [ ] **Handshake types** — Hello with `interests: Vec<ServiceInterest>`, Welcome with `bindings: Vec<ServiceBinding>`, `max_message_size` negotiation
 - [ ] **DeclareInterest / InterestAccepted / InterestDeclined** — late-binding active-phase messages
 - [ ] **Cancel { token }** — advisory request cancellation (Tflush equivalent)
@@ -47,11 +48,11 @@ Single server (N=1), headless, no suspension, no streaming. All multi-server dat
 - [x] **LooperCore\<H\>** — catch_unwind boundary, destruction sequence (fail_connection → clear → handler drop → notify), exited guard (12 tests)
 - [x] **PaneBuilder\<H\>** — two-phase lifecycle, open_service stub, duplicate rejection (3 tests)
 - [x] **Pane** — non-generic connection identity (stub)
-- [x] **Messenger** — scoped handle (stub)
-- [x] **ServiceHandle\<P\>** — stub with Drop RevokeInterest placeholder
+- [x] **Messenger** — scoped handle with Address, `address()` accessor (3 tests)
+- [x] **ServiceHandle\<P\>** — stub with Drop RevokeInterest, protocol-scoped `send_request<H,R>()`, `target_address()` (3 tests)
 - [x] **ExitReason** — Graceful/Disconnected/Failed/InfraError
-- [ ] **Messenger full impl** — `send_request`, `set_content`, `set_pulse_rate`, `post_app_message`
-- [ ] **ConnectionSource** — calloop EventSource for a single Connection (read + buffered write)
+- [ ] **Messenger full impl** — `set_content`, `set_pulse_rate`, `post_app_message` (send_request moved to ServiceHandle)
+- [ ] **ConnectionSource** — calloop EventSource for a single Connection (read + buffered write) — **bumped priority: enables real Messenger/ServiceHandle routing**
 - [ ] **Service registration** — `PaneBuilder::open_service::<P>()` with real DeclareInterest exchange
 - [ ] **Looper** — calloop-backed, per-protocol typed channels, unified batch, coalescing
 - [ ] **AppPayload** — `Clone + Send + 'static` marker trait
@@ -151,9 +152,9 @@ Orthogonal to protocol phases — can proceed in parallel once Phase 1 server ex
 
 | Crate | Role | Status |
 |-------|------|--------|
-| pane-proto | Protocol vocabulary, no IO | Active (53 tests) |
+| pane-proto | Protocol vocabulary, no IO | Active (66 tests) |
 | pane-session | Session-typed IPC, transport, framing | Active (25 tests) |
-| pane-app | Actor framework, dispatch, looper | Active (20 tests) |
+| pane-app | Actor framework, dispatch, looper | Active (28 tests) |
 | pane-fs | Filesystem namespace | Active (5 tests) |
 | pane-notify | Filesystem notification abstraction | Preserved from prototype |
 

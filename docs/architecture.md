@@ -242,17 +242,17 @@ running process. -->
 ### Dispatch\<H\>: request/reply
 
 ```rust
-impl Messenger {
-    /// Send a request, register typed reply callback.
+impl<P: Protocol> ServiceHandle<P> {
+    /// Send a typed request through this service binding.
     /// Installs a one-shot reply callback in the handler store.
+    /// Protocol-scoped: msg is P::Message, not arbitrary bytes.
     pub fn send_request<H, R>(
         &self,
-        target: &Messenger,
-        msg: impl Serialize + Send + 'static,
+        msg: P::Message,
         on_reply: impl FnOnce(&mut H, &Messenger, R) -> Flow + Send + 'static,
         on_failed: impl FnOnce(&mut H, &Messenger) -> Flow + Send + 'static,
     ) -> CancelHandle
-    where H: Handler + 'static, R: DeserializeOwned + Send + 'static;
+    where H: Handler + Handles<P> + 'static, R: Message;
 }
 
 /// Drop = no-op (request completes normally).
@@ -346,7 +346,8 @@ impl Messenger {
     pub fn set_pulse_rate(&self, duration: Duration) -> TimerToken;
     pub fn set_pointer_policy(&self, policy: PointerPolicy);
     pub fn post_app_message<T: AppPayload>(&self, msg: T);
-    // send_request defined above in Dispatch section
+    /// This pane's address. Sendable to others.
+    pub fn address(&self) -> Address;
 }
 
 /// Marker trait for fire-and-forget messages. Requires Clone

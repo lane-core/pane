@@ -2,11 +2,11 @@
 
 ## Implementation status
 
-Four crates, 105 unit tests + 1 doc-test:
+Four crates, 124 unit tests + 2 doc-tests:
 
-- **pane-proto** (10 files, 53 tests) — Protocol vocabulary, no IO. Message, Protocol, ServiceId, Flow, Handler, Handles<P>, MessageFilter, MonadicLens<S,A>, obligation handles (ReplyPort, CompletionReplyPort, CancelHandle), PeerAuth + AuthSource (transport-level peer identity).
+- **pane-proto** (11 files, 66 tests) — Protocol vocabulary, no IO. Message, Protocol, ServiceId, Flow, Handler, Handles<P>, MessageFilter, MonadicLens<S,A>, obligation handles (ReplyPort, CompletionReplyPort, CancelHandle), PeerAuth + AuthSource (transport-level peer identity).
 - **pane-session** (5 files, 25 tests) — Session-typed IPC. Transport trait, MemoryTransport, bridge (two-phase handshake over par), FrameCodec (wire framing with reserved 0xFF abort, monotonic known_services bitset).
-- **pane-app** (8 files, 22 tests) — Actor framework. Pane, PaneBuilder<H>, Dispatch<H> (with fire_failed tested), LooperCore<H> (catch_unwind + destruction sequence + exited guard + E-Suspend/E-React end-to-end), Messenger (stub), ServiceHandle (stub), ExitReason.
+- **pane-app** (8 files, 28 tests) — Actor framework. Pane, PaneBuilder<H>, Dispatch<H> (with fire_failed tested), LooperCore<H> (catch_unwind + destruction sequence + exited guard + E-Suspend/E-React end-to-end), Messenger (stub), ServiceHandle (stub), ExitReason.
 - **pane-fs** (3 files, 5 tests) — Filesystem namespace. AttrReader<S>, AttrSet<S>, AttrValue, PaneEntry<S>.
 
 pane-notify is listed in PLAN.md as "preserved from prototype" but is not part of the redesign crate set.
@@ -19,7 +19,7 @@ Exhaustive audit against Fowler and Hu's "Speak Now" paper completed 2026-04-05.
 
 ## What's next
 
-See PLAN.md. Phase 1 (Core) is partially complete. PeerAuth implemented 2026-04-05 (product-of-sum: `PeerAuth { uid, source: AuthSource }`, designed by four-agent workflow). Next items: Framework protocols (Display, ControlMessage), then Handshake types (Hello/Welcome), then service registration (DeclareInterest → InterestAccepted → ServiceHandle).
+See PLAN.md. Phase 1 (Core) is partially complete. PeerAuth and Address implemented 2026-04-05 (both via four-agent workflow). Messenger addressing designed: `send_request` is protocol-scoped on `ServiceHandle<P>`, direct pane-to-pane communication, `Address` is lightweight copyable wire type. ConnectionSource bumped in priority (enables real routing). Next items: Framework protocols (Display, ControlMessage), then Handshake types (Hello/Welcome), then ConnectionSource + service registration.
 
 ## Doc surface
 

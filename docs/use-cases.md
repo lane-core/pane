@@ -137,16 +137,15 @@ desktop connects to it for display.
 
 ```rust
 fn pulse(&mut self) -> Flow {
-    for (id, messenger) in &self.services {
+    for (id, handle) in &self.services {
         let id = *id;
-        self.messenger.send_request::<Self, Metrics>(
-            messenger,
+        handle.send_request::<Self, Metrics>(
             MetricsQuery,
-            move |dashboard, metrics| {
+            move |dashboard, _messenger, metrics| {
                 dashboard.update_status(id, Status::Healthy(metrics));
                 Flow::Continue
             },
-            move |dashboard| {
+            move |dashboard, _messenger| {
                 dashboard.update_status(id, Status::Unreachable);
                 Flow::Continue
             },
@@ -239,14 +238,13 @@ fn key(&mut self, event: KeyEvent) -> Flow {
         handle.cancel(); // Dispatch entry removed, no callback fires
     }
     // Send a new completion request.
-    let handle = self.messenger.send_request::<Self, Completion>(
-        &self.model_messenger,
+    let handle = self.model_handle.send_request::<Self, Completion>(
         CompletionQuery { cursor: self.cursor, context: self.context() },
-        |editor, completion| {
+        |editor, _messenger, completion| {
             editor.show_inline_completion(&completion);
             Flow::Continue
         },
-        |editor| {
+        |editor, _messenger| {
             // Model unavailable — degrade gracefully, no crash.
             editor.clear_completion_hint();
             Flow::Continue

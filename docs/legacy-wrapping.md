@@ -183,8 +183,7 @@ impl Handler for LibreWolfBridge {
             .expect("D-Bus connection to firefox");
 
         // Declare enrichment for the synthetic pane.
-        self.messenger.send_request::<Self, EnrichmentGrant>(
-            &self.server_messenger,
+        self.enrichment_handle.send_request::<Self, EnrichmentGrant>(
             EnrichRequest {
                 target: self.target_pane,
                 properties: vec![

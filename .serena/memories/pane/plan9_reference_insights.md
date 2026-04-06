@@ -261,6 +261,42 @@ From `reference/plan9/man/8/drawterm`: drawterm "serves its local name space as 
 
 **pane implication:** This maps directly to `App::connect_remote()` — a remote pane app connects to the local compositor, which imports the remote app's protocol messages. But drawterm also shows the inverse: the local machine could export its display/input devices to a remote headless instance, which then serves them to remote apps. This is the `cpu` pattern — compute remotely, display locally. pane's architecture already supports this via the unified namespace and connect_remote, but the explicit reverse-export of local devices to remote servers could be a first-class operation.
 
+### Inferno hosted-mode namespace implementation (2026-04-05)
+
+Inferno's emu ran per-process namespaces as pure C data structures, zero host OS namespace facilities. Key source files: `emu/port/pgrp.c` (Pgrp — mount hash table per process group), `emu/port/chan.c` (walk/open dispatch through namespace), `emu/port/devmnt.c` (Styx client mounts), `emu/port/sysfile.c` (syscalls). Namespace fork was full-copy of mount table metadata (O(mount_points), typically 10-30 entries, ~1-2KB); underlying channels were refcounted shared. No COW — deliberate choice for semantic clarity. `NEWNS` created empty namespace; `FORKNS` copied. This proves per-process namespaces work without kernel support when a runtime mediates name resolution.
+
+Key limitation: Inferno namespaces only affected Dis VM processes, not host-native processes spawned from emu. Also advisory, not security boundary — devfs could reach host filesystem if mounted. Recursive remote mounts worked but latency compounded and any partition in the chain broke the walk.
+
+pane's adaptation: per-connection visibility policy in pane-server (predicate over pane attributes, not a mount table). "Not found" semantics for non-visible panes (Inferno-style, not ACL-style "access denied"). `.plan` configures remote connection visibility. FUSE layer uses uid-based filtering (coarser, sufficient for scripting).
+
+### Inter-pane addressing: fid model applied (2026-04-05)
+
+Plan 9 addressing was always: resolve a name to a fid (walk/open), then communicate through the fid (read/write/clunk). The fid was stable — mount table changes didn't affect existing fids. pane adopts this as: resolve to a Target (via server round-trip), then send_request through the Target. Key insight: the Target is NOT a Messenger. A fid to /proc/42/ctl lets you write commands to process 42; it doesn't let you become process 42. Similarly, Target is a write-end — you can send to it, you cannot act as it.
+
+Server-as-router follows the same pattern as Plan 9's kernel: when you wrote to /proc/42/ctl, the kernel's proc device checked permissions and forwarded. The kernel was always in the path. pane-server plays the same role, holding PeerAuth and enforcing .plan policy. This is why direct pane-to-pane is deferred: without an intermediary, every pane must reimplement authorization.
+
+Plumber kept separate from addressing because Plan 9 kept them separate: open/read/write was direct file I/O; plumber was a separate file server for content-based routing. Merging them loses the ability to evolve routing rules independently.
+
+### Per-process namespace mechanism survey (2026-04-05)
+
+**Plan 9 kernel mechanics:** rfork(RFNAMEG) duplicated the mount table — a per-process data structure consulted by namec() in syspath.c on every walk(5). mount(2) took a raw fd (speaking 9P) and attached it to a path. This is why per-process namespaces were cheap: mounting was connecting a protocol fd to a path, not installing a filesystem driver. Linux has no equivalent — mount(2) requires a kernel filesystem type, which requires privilege.
+
+**Inferno userspace namespaces:** emu's Pgrp struct held a mount hash per process group with full-copy fork semantics. Proved kernel support unnecessary if the runtime mediates name resolution. pane's FUSE server is the analogous runtime.
+
+**FUSE per-client discrimination:** fuse_req_ctx provides uid, gid, pid, umask on every operation. Per-uid filtering is reliable (stable identity, inheritable). Per-pid filtering is fragile (pid reuse after exit, no fork inheritance, thread group ambiguity in some FUSE configurations). The /pane/self/ path uses pid safely because it's a single self-referential lookup, not a persistent filter.
+
+**Landlock integration with FUSE:** Landlock rules bind to directories via fd at rule-creation time. FUSE directories must have stable inodes for Landlock to bind correctly. pane-fs should assign deterministic inode numbers to computed directories (/pane/local/, /pane/by-sig/X/) so that Landlock rules persist across FUSE reconnects.
+
+**9P aname for per-connection views:** 9P's Tattach includes aname (attach name) — the server uses it to select a subtree or filter. Plan 9's exportfs -P used this. pane could use aname as a filter specification: aname="sig=com.pane.editor,uid=ada" attaches to a filtered view. Each 9P session with a different aname gets a different namespace projection. No kernel mount needed for 9P library access — just a socket.
+
+**v9fs on Linux:** Kernel 9P client (CONFIG_9P_NET), mounts via `mount -t 9p`. Works but poorly maintained, cache coherence modes (loose/fscache/none) add complexity. Doesn't solve the privilege problem — mount(2) still requires CAP_SYS_ADMIN. Only useful if pane needs kernel-level 9P mount integration (probably not — FUSE + 9P library is better).
+
+### Architectural checkpoint: custom protocol vs 9P (2026-04-05)
+
+9P could technically represent pane's operations but would be a poor fit: 9P is file-oriented (walk/open/read/write/clunk) while pane has typed enum messages; 9P has no service multiplexing (would need separate connections per service or path-based routing); 9P tags max at 65535 outstanding requests; 9P implementations carry walk cache and fid table complexity pane doesn't need. The custom protocol preserves 9P's design principles (length-prefixed framing, negotiated parameters, stateful connections with explicit teardown) without the file-operation impedance mismatch.
+
+The FrameCodec's [length: u32 LE][service: u8][payload: postcard] maps to 9P's [size[4] type[1] tag[2] ...]. ProtocolAbort via reserved 0xFF is an improvement — 9P had no structured teardown signal at the framing layer. Monotonic known_services bitset prevents race conditions analogous to 9P's clunked-fid-with-in-flight-operations problem.
+
 ### Thread library alt (thread(2))
 
 From `reference/plan9/man/2/thread`: The `alt` call selects among multiple channel operations (send or receive). "If at least one Alt structure can proceed, one of them is chosen at random to be executed." Terminates with CHANEND (blocking) or CHANNOBLK (non-blocking).
