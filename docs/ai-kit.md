@@ -17,9 +17,9 @@ pane's existing protocol architecture.
 
 An agent has a unix user account. Not a metaphorical one —
 a real uid in `/etc/passwd`. Local connections authenticate
-via `SO_PEERCRED` (`PeerAuth::Kernel { uid, pid }`). Remote
+via `SO_PEERCRED` (`AuthSource::Kernel { pid }`). Remote
 connections authenticate via TLS client certificate
-(`PeerAuth::Certificate { subject, issuer }`), mapped to a
+(`AuthSource::Certificate { subject, issuer }`), mapped to a
 local unix account by the server. The architecture spec's
 transport-derived identity model applies identically to
 agents and humans.
@@ -674,8 +674,8 @@ runtime concept. It is a usage pattern over existing
 infrastructure.
 
 An agent process is a headless pane (Handler). Its identity
-comes from `PeerAuth::Kernel` (local) or
-`PeerAuth::Certificate` (remote). Its panes are visible in
+comes from `AuthSource::Kernel` (local) or
+`AuthSource::Certificate` (remote). Its panes are visible in
 the pane-fs namespace at `/pane/<n>/` and discoverable via
 `/pane/by-sig/`. Inter-agent communication uses `Messenger`
 and `send_request`. Typed protocol participation uses

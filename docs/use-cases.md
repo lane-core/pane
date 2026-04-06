@@ -455,8 +455,9 @@ demonstrating the system. The guide is a pane.
 **Architecture exercised:**
 - **Agent as user**: the guide runs under its own unix account.
   Its sandbox policy (Landlock rules, network namespace
-  restrictions) governs what it can access. PeerAuth::Kernel
-  identifies it by uid, not by self-reported string.
+  restrictions) governs what it can access. PeerAuth with
+  AuthSource::Kernel identifies it by uid, not by self-reported
+  string.
 - **Scripting via pane-fs (Phase 3 — Handles<Routing> enables
   cross-pane writes)**: the guide reads and writes other panes'
   properties to demonstrate features. It writes to

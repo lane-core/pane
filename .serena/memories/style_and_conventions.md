@@ -21,6 +21,9 @@
 - ExitReason (looper-internal): Graceful / Disconnected / Failed / InfraError
 - Handler methods return Flow (not Result). Three error channels: Protocol (ReplyPort), Control (Flow), Crash (panic → catch_unwind).
 
+## Writing Style
+- Agent identities in docs/examples use generic human names (ada, bob, ralph) — not dotted names (agent.reviewer). Dotted names are invalid unix usernames.
+
 ## Testing
 - proptest for roundtrip serialization tests
 - Tests run on macOS against in-memory channels

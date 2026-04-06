@@ -11,7 +11,7 @@ Every type in Phase 1 must be the full architecture's type, populated minimally.
 - `ServiceRouter` with one entry, not a bare sender
 - `ServiceId { uuid, name }`, not a bare string
 - `HashMap<(ConnectionId, token)>`, not `HashMap<token>`
-- `PeerAuth::Kernel { uid, pid }`, not self-reported strings
+- `PeerAuth { uid, source: AuthSource }`, not self-reported strings
 - calloop ConnectionSource, not pump threads
 
 The cost is near-zero (deterministic UUID derivation, HashMap with one entry, enum with one populated variant). The alternative is a guaranteed breaking change across every Protocol impl, Handler, and downstream application.
@@ -29,7 +29,7 @@ The functor from "architecture" to "programs buildable on it" is not additive ov
 - ServiceId { uuid, name } from day one (not &'static str → ServiceId later)
 - ServiceRouter with HashMap (not bare mpsc::Sender)
 - Dispatch keyed by (ConnectionId, token) (not bare token)
-- PeerAuth enum (not PeerIdentity strings)
+- PeerAuth { uid, source: AuthSource } (not PeerIdentity strings)
 - DeclareInterest in the protocol (not implicit capability)
 - Wire framing [length][service][payload] (not v1's [length][payload])
 - Message enum base-protocol only, Clone-safe (not flat with panic Clone); service events via Handles<P>

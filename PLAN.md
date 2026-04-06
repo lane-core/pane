@@ -27,7 +27,7 @@ Single server (N=1), headless, no suspension, no streaming. All multi-server dat
 - [x] **MonadicLens\<S,A\>** — concrete fn-pointer optics with effectful set, law test harness (16 tests)
 - [x] **Obligation handles** — ReplyPort, CompletionReplyPort, CancelHandle with `#[must_use]`, Drop compensation (14 tests)
 - [ ] **Framework protocols** — `Display` as Protocol impl; `ControlMessage` enum (wire service 0)
-- [ ] **PeerAuth** — `Kernel { uid, pid }` (SO_PEERCRED) and `Certificate { subject, issuer }` (TLS) variants
+- [x] **PeerAuth** — `PeerAuth { uid, source: AuthSource }` with `AuthSource::Kernel { pid }` (SO_PEERCRED) and `AuthSource::Certificate { subject, issuer }` (TLS); `#[non_exhaustive]`, full Eq/Hash (10 tests)
 - [ ] **Handshake types** — Hello with `interests: Vec<ServiceInterest>`, Welcome with `bindings: Vec<ServiceBinding>`, `max_message_size` negotiation
 - [ ] **DeclareInterest / InterestAccepted / InterestDeclined** — late-binding active-phase messages
 - [ ] **Cancel { token }** — advisory request cancellation (Tflush equivalent)
@@ -151,7 +151,7 @@ Orthogonal to protocol phases — can proceed in parallel once Phase 1 server ex
 
 | Crate | Role | Status |
 |-------|------|--------|
-| pane-proto | Protocol vocabulary, no IO | Active (47 tests) |
+| pane-proto | Protocol vocabulary, no IO | Active (53 tests) |
 | pane-session | Session-typed IPC, transport, framing | Active (25 tests) |
 | pane-app | Actor framework, dispatch, looper | Active (20 tests) |
 | pane-fs | Filesystem namespace | Active (5 tests) |

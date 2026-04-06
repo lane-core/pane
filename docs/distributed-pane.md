@@ -139,7 +139,7 @@ The trust model is unix identity, extended to the network. There is no pane-spec
 
 For local connections (unix domain sockets), identity is implicit: `SO_PEERCRED` provides the kernel-verified uid of the connecting process. No declaration needed, no spoofing possible.
 
-For remote connections (TCP/TLS), identity is derived from the TLS client certificate: `PeerAuth::Certificate { subject, issuer }`. The Hello message carries no identity — authentication is transport-level (see architecture spec §Connection Model). The server maps the certificate subject to a local unix user for enforcement purposes. A remote agent whose certificate maps to `agent.reviewer` gets the filesystem permissions, Landlock constraints, and `.plan` governance of the local `agent.reviewer` account. If no local account maps, the connection is rejected.
+For remote connections (TCP/TLS), identity is derived from the TLS client certificate (`AuthSource::Certificate { subject, issuer }`). The Hello message carries no identity — authentication is transport-level (see architecture spec §Connection Model). The server maps the certificate subject to a local unix user for enforcement purposes. A remote agent whose certificate maps to `ada` gets the filesystem permissions, Landlock constraints, and `.plan` governance of the local `ada` account. If no local account maps, the connection is rejected.
 
 ### The `.plan` file
 
@@ -160,8 +160,8 @@ Pane's architecture resolves this differently. TLS handles transport-layer authe
 
 The `Transport` trait provides identity uniformly via `PeerAuth`:
 
-- `UnixTransport`: `PeerAuth::Kernel { uid, pid }` from `SO_PEERCRED`
-- `TlsTransport`: `PeerAuth::Certificate { subject, issuer }` from client certificate
+- `UnixTransport`: `PeerAuth::new(uid, AuthSource::Kernel { pid })` from `SO_PEERCRED`
+- `TlsTransport`: `PeerAuth::new(uid, AuthSource::Certificate { subject, issuer })` from client certificate
 - `MemoryTransport`: test-configured `PeerAuth`
 
 Each transport derives identity its own way. The protocol layer sees `PeerAuth` regardless of how it was obtained. This is factotum's principle — separate auth from application logic — achieved through Rust's trait system rather than a separate daemon.

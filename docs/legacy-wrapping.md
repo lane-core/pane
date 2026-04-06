@@ -322,7 +322,7 @@ server enforces:
 - **Same-uid default**: a bridge running as uid 1000 can enrich
   synthetic panes whose Wayland client is also uid 1000. This
   is the common case (user's bridge enriches user's apps).
-  PeerAuth::Kernel provides the uid.
+  PeerAuth provides the uid (via AuthSource::Kernel).
 - **Cross-uid via policy**: an agent running as a different uid
   can enrich a pane if the user's sandbox policy grants
   `enrich` permission to that uid. The policy mechanism
@@ -749,7 +749,7 @@ spec components:
 | pane-fs `by-uuid` view | Stable cross-machine reference for synthetic panes |
 | MonadicLens + AttrInfo | Enrichment attributes use the monadic lens layer |
 | DeclareInterest | Bridge declares `com.pane.enrichment` |
-| PeerAuth::Kernel | Bridge authenticated by uid; same-uid enrichment is default |
+| PeerAuth (AuthSource::Kernel) | Bridge authenticated by uid; same-uid enrichment is default |
 | Dispatch + send_request | Bridge requests enrichment grant from server |
 | ServiceTeardown (Control) | Enrichment revoked on bridge disconnect |
 | `service_id!` macro | Compile-time ServiceId for enrichment protocol |

@@ -440,9 +440,11 @@ Server → Client: Welcome { version, instance_id, max_message_size, bindings }
 application. pane pushes further — the application doesn't even
 see an auth conversation. Identity is a transport property. -->
 
-PeerAuth derived from transport: `Kernel { uid, pid }` for unix
-(SO_PEERCRED), `Certificate { subject, issuer }` for TLS. Identity
-is transport-level, not carried in Hello.
+PeerAuth derived from transport: `PeerAuth { uid, source }` where
+source is `AuthSource::Kernel { pid }` for unix (SO_PEERCRED) or
+`AuthSource::Certificate { subject, issuer }` for TLS. Every
+accepted connection resolves to a uid. Identity is transport-level,
+not carried in Hello.
 
 ### Request cancellation
 
@@ -536,7 +538,7 @@ cross-connection causality use send_request callbacks.
 
 ### Remote connections require TLS
 
-`PeerAuth::Certificate { subject, issuer }` for TLS.
+`AuthSource::Certificate { subject, issuer }` for TLS.
 Plaintext TCP not supported. `pane dev-certs` for development.
 
 ---
