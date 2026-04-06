@@ -37,16 +37,16 @@ Single server (N=1), headless, no suspension, no streaming. All multi-server dat
 
 #### Session layer (pane-session)
 
-- [x] **Transport** — `Transport` trait, `MemoryTransport::pair()` for testing (3 tests)
-- [x] **Bridge** — two-phase connect (verify_transport + par handshake) (2 tests)
-- [x] **FrameCodec** — `[length: u32 LE][service: u8][payload]`, reserved 0xFF abort, known_services bitset, max_message_size enforcement (20 tests)
+- [x] **Transport** — `Read + Write + Send + 'static` blanket trait, `MemoryTransport::pair()` byte-level (5 tests)
+- [x] **Bridge** — two-phase connect (verify_transport + par handshake via FrameCodec), `connect_and_run`/`accept_and_run` with reader loop (7 tests)
+- [x] **FrameCodec** — `[length: u32 LE][service: u8][payload]`, reserved 0xFF abort, known_services bitset, max_message_size enforcement + set_max_message_size (20 tests)
 - [ ] **Verify Chan<S,T> compatibility** — ensure session-typed channels work with new handshake types
 - [ ] **SessionEnum derive** — N-ary enum branching with `#[session_tag]` wire stability
 
 #### Kit API (pane-app)
 
 - [x] **Dispatch\<H\>** — per-request typed dispatch entries, token uniqueness, fail_connection, cancel (6 tests)
-- [x] **LooperCore\<H\>** — catch_unwind boundary, destruction sequence (fail_connection → clear → handler drop → notify), exited guard (12 tests)
+- [x] **LooperCore\<H\>** — catch_unwind boundary, destruction sequence, `dispatch_lifecycle`, `run()` with channel-driven main loop (14 tests, including 2 vertical slice integration tests)
 - [x] **PaneBuilder\<H\>** — two-phase lifecycle, open_service stub, duplicate rejection (3 tests)
 - [x] **Pane** — non-generic connection identity (stub)
 - [x] **Messenger** — scoped handle with Address, `address()` accessor (3 tests)
@@ -154,8 +154,8 @@ Orthogonal to protocol phases — can proceed in parallel once Phase 1 server ex
 | Crate | Role | Status |
 |-------|------|--------|
 | pane-proto | Protocol vocabulary, no IO | Active (77 tests) |
-| pane-session | Session-typed IPC, transport, framing | Active (26 tests) |
-| pane-app | Actor framework, dispatch, looper | Active (28 tests) |
+| pane-session | Session-typed IPC, transport, framing | Active (31 tests) |
+| pane-app | Actor framework, dispatch, looper | Active (30 tests) |
 | pane-fs | Filesystem namespace | Active (5 tests) |
 | pane-notify | Filesystem notification abstraction | Preserved from prototype |
 
