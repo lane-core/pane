@@ -65,8 +65,9 @@ fn main() {
 
     println!("client: connected to {}", client.welcome.instance_id);
 
+    let (write_tx, _write_rx) = std::sync::mpsc::sync_channel(16);
     let (exit_tx, _exit_rx) = mpsc::channel();
-    let looper = LooperCore::new(HelloHandler, PeerScope(0), exit_tx);
+    let looper = LooperCore::new(HelloHandler, PeerScope(0), write_tx, exit_tx);
     let reason = looper.run(client.rx);
 
     println!("client: exited with {reason:?}");

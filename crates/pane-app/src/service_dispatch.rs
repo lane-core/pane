@@ -100,7 +100,21 @@ impl<H> ServiceDispatch<H> {
     }
 
     /// Dispatch a Request payload to the handler for this session_id.
-    /// Returns None if the session_id has no request receiver registered.
+    ///
+    /// Total: every Request produces exactly one Reply or Failed on
+    /// the wire. If no request receiver is registered for this
+    /// session_id, sends Failed via write_tx so the consumer's
+    /// Dispatch entry isn't orphaned, then returns Flow::Continue.
+    ///
+    /// The write_tx parameter is ONLY for the fallback path (no
+    /// receiver registered). Per-protocol RequestReceiver closures
+    /// use their captured write_tx clones from registration time —
+    /// these are two different failure domains.
+    ///
+    /// Design heritage: session types require protocol fidelity —
+    /// every Request produces exactly one Reply or Failed (Ferrite,
+    /// Chen/Balzer/Toninho ECOOP 2022, §4.2). Returning Flow (not
+    /// Option<Flow>) encodes totality at the type level.
     pub fn dispatch_request(
         &self,
         session_id: u16,
@@ -108,9 +122,17 @@ impl<H> ServiceDispatch<H> {
         messenger: &Messenger,
         payload: &[u8],
         token: u64,
-    ) -> Option<Flow> {
-        let receiver = self.request_receivers.get(&session_id)?;
-        Some(receiver(handler, messenger, payload, token))
+        write_tx: &SyncSender<(u16, Vec<u8>)>,
+    ) -> Flow {
+        match self.request_receivers.get(&session_id) {
+            Some(receiver) => receiver(handler, messenger, payload, token),
+            None => {
+                // No request receiver registered — send Failed so the
+                // consumer's Dispatch entry isn't orphaned.
+                send_failed(write_tx, session_id, token);
+                Flow::Continue
+            }
+        }
     }
 
     pub fn is_empty(&self) -> bool {
@@ -215,7 +237,7 @@ where
 /// Send a ServiceFrame::Failed for a given token. Best-effort:
 /// if the channel is full or closed, the connection is already
 /// torn down.
-fn send_failed(write_tx: &SyncSender<(u16, Vec<u8>)>, session_id: u16, token: u64) {
+pub(crate) fn send_failed(write_tx: &SyncSender<(u16, Vec<u8>)>, session_id: u16, token: u64) {
     let frame = ServiceFrame::Failed { token };
     if let Ok(bytes) = postcard::to_allocvec(&frame) {
         let _ = write_tx.try_send((session_id, bytes));
@@ -637,8 +659,25 @@ mod tests {
             p
         };
 
-        dispatch.dispatch_request(1, &mut handler, &messenger, &ping_payload, 100);
-        dispatch.dispatch_request(2, &mut handler, &messenger, &query_payload, 200);
+        // Fallback write_tx — only used if dispatch finds no receiver.
+        // Here both session_ids are registered, so this is never used.
+        let (fallback_tx, _fallback_rx) = sync_channel(16);
+        dispatch.dispatch_request(
+            1,
+            &mut handler,
+            &messenger,
+            &ping_payload,
+            100,
+            &fallback_tx,
+        );
+        dispatch.dispatch_request(
+            2,
+            &mut handler,
+            &messenger,
+            &query_payload,
+            200,
+            &fallback_tx,
+        );
 
         assert_eq!(handler.pings, vec!["a"]);
         assert_eq!(handler.queries, vec![21]);
@@ -652,13 +691,20 @@ mod tests {
     }
 
     #[test]
-    fn request_unknown_session_returns_none() {
+    fn request_unknown_session_sends_failed() {
         let dispatch = ServiceDispatch::<RequestHandler>::new();
         let mut handler = RequestHandler { received: vec![] };
         let messenger = crate::Messenger::new();
 
-        let flow = dispatch.dispatch_request(99, &mut handler, &messenger, &[], 1);
-        assert!(flow.is_none());
+        let (fallback_tx, fallback_rx) = sync_channel(16);
+        let flow = dispatch.dispatch_request(99, &mut handler, &messenger, &[], 1, &fallback_tx);
+        assert_eq!(flow, Flow::Continue);
+
+        // No receiver registered — Failed sent via fallback write_tx
+        let (sid, bytes) = fallback_rx.recv().expect("expected Failed frame");
+        assert_eq!(sid, 99);
+        let frame: ServiceFrame = postcard::from_bytes(&bytes).unwrap();
+        assert!(matches!(frame, ServiceFrame::Failed { token: 1 }));
     }
 
     #[test]

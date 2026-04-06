@@ -232,10 +232,21 @@ impl<H: Handler> PaneBuilder<H> {
         let service_dispatch = std::mem::take(&mut self.service_dispatch);
         let buffered = std::mem::take(&mut self.buffered_messages);
 
+        let write_tx_for_looper = self
+            .write_tx
+            .as_ref()
+            .expect("must call connect() before run_with()")
+            .clone();
+
         let (exit_tx, _exit_rx) = std::sync::mpsc::channel();
 
-        let mut core =
-            LooperCore::with_service_dispatch(handler, PeerScope(1), exit_tx, service_dispatch);
+        let mut core = LooperCore::with_service_dispatch(
+            handler,
+            PeerScope(1),
+            write_tx_for_looper,
+            exit_tx,
+            service_dispatch,
+        );
 
         // Drain buffered messages from setup phase
         for msg in buffered {

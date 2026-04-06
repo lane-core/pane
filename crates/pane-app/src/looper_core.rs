@@ -62,12 +62,20 @@ pub enum DispatchOutcome {
 /// as part of the destruction sequence — LooperCore::shutdown()
 /// consumes self, ensuring the handler cannot be re-used after
 /// a panic or Flow::Stop.
+///
+/// Design heritage: BeOS BLooper held fMsgPort unconditionally
+/// (src/kits/app/Looper.cpp:1026-1028, _InitData creates port).
+/// Plan 9 exportfs held netfd as a plain int
+/// (reference/plan9/src/sys/src/cmd/exportfs/exportfs.c:45),
+/// always present. write_tx follows the same pattern: non-Option,
+/// always available for sending frames.
 pub struct LooperCore<H> {
     handler: H,
     dispatch: Dispatch<H>,
     service_dispatch: ServiceDispatch<H>,
     messenger: Messenger,
     primary_connection: PeerScope,
+    write_tx: std::sync::mpsc::SyncSender<(u16, Vec<u8>)>,
     exit_tx: mpsc::Sender<ExitReason>,
     exited: bool,
 }
@@ -76,6 +84,7 @@ impl<H: pane_proto::Handler> LooperCore<H> {
     pub fn new(
         handler: H,
         primary_connection: PeerScope,
+        write_tx: std::sync::mpsc::SyncSender<(u16, Vec<u8>)>,
         exit_tx: mpsc::Sender<ExitReason>,
     ) -> Self {
         LooperCore {
@@ -84,6 +93,7 @@ impl<H: pane_proto::Handler> LooperCore<H> {
             service_dispatch: ServiceDispatch::new(),
             messenger: Messenger::new(),
             primary_connection,
+            write_tx,
             exit_tx,
             exited: false,
         }
@@ -94,6 +104,7 @@ impl<H: pane_proto::Handler> LooperCore<H> {
     pub fn with_service_dispatch(
         handler: H,
         primary_connection: PeerScope,
+        write_tx: std::sync::mpsc::SyncSender<(u16, Vec<u8>)>,
         exit_tx: mpsc::Sender<ExitReason>,
         service_dispatch: ServiceDispatch<H>,
     ) -> Self {
@@ -103,6 +114,7 @@ impl<H: pane_proto::Handler> LooperCore<H> {
             service_dispatch,
             messenger: Messenger::new(),
             primary_connection,
+            write_tx,
             exit_tx,
             exited: false,
         }
@@ -267,11 +279,36 @@ impl<H: pane_proto::Handler> LooperCore<H> {
                 }
             }
             pane_proto::ServiceFrame::Request {
-                token: _,
-                payload: _,
+                token,
+                payload: inner,
             } => {
-                // TODO: provider-side request handling
-                DispatchOutcome::Continue
+                // catch_unwind: the request receiver closure may panic
+                // (handler panic in receive_request). The ReplyPort
+                // constructed inside the closure will be dropped during
+                // unwind, sending Failed via Drop compensation.
+                //
+                // Design heritage: BeOS BHandler::MessageReceived sent
+                // B_MESSAGE_NOT_UNDERSTOOD at the dispatch leaf
+                // (src/kits/app/Handler.cpp:277-281), not BLooper.
+                // Plan 9 lib9p srv() dispatch switch had
+                // `default: respond(r, "unknown message")` for
+                // unrecognized T-messages
+                // (reference/plan9/src/sys/src/lib9p/srv.c:705-727).
+                let handler = &mut self.handler;
+                let service_dispatch = &self.service_dispatch;
+                let messenger = &self.messenger;
+                let write_tx = &self.write_tx;
+                let result = catch_unwind(AssertUnwindSafe(|| {
+                    service_dispatch
+                        .dispatch_request(session_id, handler, messenger, &inner, token, write_tx)
+                }));
+                match result {
+                    Ok(flow) => self.flow_to_outcome(flow),
+                    Err(_) => {
+                        self.run_destruction(ExitReason::Failed);
+                        DispatchOutcome::Exit(ExitReason::Failed)
+                    }
+                }
             }
             pane_proto::ServiceFrame::Reply {
                 token: _,
@@ -439,7 +476,8 @@ mod tests {
         exit_tx: mpsc::Sender<ExitReason>,
     ) -> LooperCore<TestHandler> {
         let handler = TestHandler::new(log);
-        LooperCore::new(handler, PeerScope(1), exit_tx)
+        let (write_tx, _write_rx) = std::sync::mpsc::sync_channel(16);
+        LooperCore::new(handler, PeerScope(1), write_tx, exit_tx)
     }
 
     // ── Claim: Flow::Continue → next event ─────────────────
@@ -873,8 +911,14 @@ mod tests {
         service_dispatch.register(3, make_service_receiver::<NotifyHandler, NotifyProto>());
 
         let handler = NotifyHandler { log: log.clone() };
-        let core =
-            LooperCore::with_service_dispatch(handler, PeerScope(1), exit_tx, service_dispatch);
+        let (write_tx, _write_rx) = std::sync::mpsc::sync_channel(16);
+        let core = LooperCore::with_service_dispatch(
+            handler,
+            PeerScope(1),
+            write_tx,
+            exit_tx,
+            service_dispatch,
+        );
 
         // Send a service notification on session_id=3.
         // Inner payload carries protocol tag byte (S8).
@@ -987,7 +1031,8 @@ mod tests {
 
         // Wire the channel into LooperCore.
         let handler = TestHandler::new(log.clone());
-        let core = LooperCore::new(handler, PeerScope(1), exit_tx);
+        let (write_tx, _write_rx) = std::sync::mpsc::sync_channel(16);
+        let core = LooperCore::new(handler, PeerScope(1), write_tx, exit_tx);
 
         let exit_reason = core.run(client.rx);
 
@@ -1085,7 +1130,8 @@ mod tests {
         .expect("client connect failed");
 
         let handler = TestHandler::new(log.clone());
-        let core = LooperCore::new(handler, PeerScope(1), exit_tx);
+        let (write_tx, _write_rx) = std::sync::mpsc::sync_channel(16);
+        let core = LooperCore::new(handler, PeerScope(1), write_tx, exit_tx);
 
         let exit_reason = core.run(client.rx);
 
@@ -1114,5 +1160,331 @@ mod tests {
             "exit signal must include Disconnected. Got: {:?}",
             reasons
         );
+    }
+
+    // ── Request dispatch through LooperCore ─────────────────
+
+    mod request_dispatch {
+        use super::*;
+        use crate::service_dispatch::{
+            make_request_receiver, make_service_receiver, ServiceDispatch,
+        };
+        use pane_proto::obligation::ReplyPort;
+        use pane_proto::{HandlesRequest, Protocol, RequestProtocol, ServiceFrame, ServiceId};
+        use serde::{Deserialize, Serialize};
+
+        #[derive(Debug, Clone, Serialize, Deserialize)]
+        enum ReqMsg {
+            Ping(String),
+        }
+
+        #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+        enum ReqReply {
+            Ack(String),
+        }
+
+        struct ReqProto;
+        impl Protocol for ReqProto {
+            fn service_id() -> ServiceId {
+                ServiceId::new("com.test.looper.request")
+            }
+            type Message = ReqMsg;
+        }
+        impl RequestProtocol for ReqProto {
+            type Reply = ReqReply;
+        }
+
+        struct ReqHandler {
+            log: Arc<Mutex<Vec<String>>>,
+            should_panic: bool,
+        }
+        impl pane_proto::Handler for ReqHandler {
+            fn close_requested(&mut self) -> Flow {
+                Flow::Stop
+            }
+        }
+        impl pane_proto::Handles<ReqProto> for ReqHandler {
+            fn receive(&mut self, msg: ReqMsg) -> Flow {
+                match msg {
+                    ReqMsg::Ping(s) => self.log.lock().unwrap().push(s),
+                }
+                Flow::Continue
+            }
+        }
+        impl HandlesRequest<ReqProto> for ReqHandler {
+            fn receive_request(&mut self, msg: ReqMsg, reply: ReplyPort<ReqReply>) -> Flow {
+                if self.should_panic {
+                    panic!("handler crashed in receive_request");
+                }
+                match msg {
+                    ReqMsg::Ping(s) => {
+                        let echo = s.clone();
+                        self.log.lock().unwrap().push(s);
+                        reply.reply(ReqReply::Ack(echo));
+                    }
+                }
+                Flow::Continue
+            }
+        }
+        impl Drop for ReqHandler {
+            fn drop(&mut self) {
+                self.log.lock().unwrap().push("dropped".into());
+            }
+        }
+
+        /// Build a tagged payload: protocol tag byte + postcard-serialized message.
+        fn tagged_payload(msg: &ReqMsg) -> Vec<u8> {
+            let tag = ReqProto::service_id().tag();
+            let msg_bytes = postcard::to_allocvec(msg).unwrap();
+            let mut payload = Vec::with_capacity(1 + msg_bytes.len());
+            payload.push(tag);
+            payload.extend_from_slice(&msg_bytes);
+            payload
+        }
+
+        /// Wrap an inner payload in ServiceFrame::Request, then
+        /// serialize as the outer wire format.
+        fn wire_request(token: u64, inner: Vec<u8>) -> Vec<u8> {
+            let frame = ServiceFrame::Request {
+                token,
+                payload: inner,
+            };
+            postcard::to_allocvec(&frame).unwrap()
+        }
+
+        #[test]
+        fn request_dispatch_routes_to_handler_and_produces_reply() {
+            use pane_session::bridge::LooperMessage;
+
+            let log = Arc::new(Mutex::new(Vec::new()));
+            let (exit_tx, _exit_rx) = mpsc::channel();
+            let (msg_tx, msg_rx) = mpsc::channel();
+            let (write_tx, write_rx) = std::sync::mpsc::sync_channel(16);
+
+            let mut service_dispatch = ServiceDispatch::new();
+            service_dispatch.register(5, make_service_receiver::<ReqHandler, ReqProto>());
+            service_dispatch.register_request(
+                5,
+                make_request_receiver::<ReqHandler, ReqProto>(write_tx.clone(), 5),
+            );
+
+            let handler = ReqHandler {
+                log: log.clone(),
+                should_panic: false,
+            };
+            let core = LooperCore::with_service_dispatch(
+                handler,
+                PeerScope(1),
+                write_tx,
+                exit_tx,
+                service_dispatch,
+            );
+
+            // Send Request on session_id=5
+            let inner = tagged_payload(&ReqMsg::Ping("hello".into()));
+            let outer = wire_request(42, inner);
+            msg_tx
+                .send(LooperMessage::Service {
+                    session_id: 5,
+                    payload: outer,
+                })
+                .unwrap();
+
+            // Send CloseRequested to stop the loop
+            msg_tx
+                .send(LooperMessage::Control(
+                    pane_proto::control::ControlMessage::Lifecycle(
+                        pane_proto::protocols::lifecycle::LifecycleMessage::CloseRequested,
+                    ),
+                ))
+                .unwrap();
+
+            let reason = core.run(msg_rx);
+            assert_eq!(reason, ExitReason::Graceful);
+
+            let events = log.lock().unwrap().clone();
+            assert!(
+                events.contains(&"hello".to_string()),
+                "handler must receive request message. Got: {:?}",
+                events
+            );
+
+            // Verify Reply was sent on the wire
+            let (sid, bytes) = write_rx.recv().expect("expected Reply frame");
+            assert_eq!(sid, 5);
+            let frame: ServiceFrame = postcard::from_bytes(&bytes).unwrap();
+            match frame {
+                ServiceFrame::Reply { token, payload } => {
+                    assert_eq!(token, 42);
+                    let reply: ReqReply = postcard::from_bytes(&payload).unwrap();
+                    assert_eq!(reply, ReqReply::Ack("hello".into()));
+                }
+                other => panic!("expected Reply, got {other:?}"),
+            }
+        }
+
+        #[test]
+        fn request_to_unregistered_session_sends_failed() {
+            use pane_session::bridge::LooperMessage;
+
+            let log = Arc::new(Mutex::new(Vec::new()));
+            let (exit_tx, _exit_rx) = mpsc::channel();
+            let (msg_tx, msg_rx) = mpsc::channel();
+            let (write_tx, write_rx) = std::sync::mpsc::sync_channel(16);
+
+            // No request receivers registered — empty dispatch
+            let service_dispatch = ServiceDispatch::new();
+
+            let handler = ReqHandler {
+                log: log.clone(),
+                should_panic: false,
+            };
+            let core = LooperCore::with_service_dispatch(
+                handler,
+                PeerScope(1),
+                write_tx,
+                exit_tx,
+                service_dispatch,
+            );
+
+            // Send Request on session_id=99 (not registered)
+            let inner = tagged_payload(&ReqMsg::Ping("orphan".into()));
+            let outer = wire_request(77, inner);
+            msg_tx
+                .send(LooperMessage::Service {
+                    session_id: 99,
+                    payload: outer,
+                })
+                .unwrap();
+
+            // Stop the loop
+            msg_tx
+                .send(LooperMessage::Control(
+                    pane_proto::control::ControlMessage::Lifecycle(
+                        pane_proto::protocols::lifecycle::LifecycleMessage::CloseRequested,
+                    ),
+                ))
+                .unwrap();
+
+            let reason = core.run(msg_rx);
+            assert_eq!(reason, ExitReason::Graceful);
+
+            // Handler must NOT have received the message
+            let events = log.lock().unwrap().clone();
+            assert!(
+                !events.contains(&"orphan".to_string()),
+                "handler must not receive unregistered request. Got: {:?}",
+                events
+            );
+
+            // Failed frame sent via fallback write_tx
+            let (sid, bytes) = write_rx.recv().expect("expected Failed frame");
+            assert_eq!(sid, 99);
+            let frame: ServiceFrame = postcard::from_bytes(&bytes).unwrap();
+            assert!(matches!(frame, ServiceFrame::Failed { token: 77 }));
+        }
+
+        #[test]
+        fn request_handler_panic_triggers_destruction() {
+            use pane_session::bridge::LooperMessage;
+
+            let log = Arc::new(Mutex::new(Vec::new()));
+            let (exit_tx, exit_rx) = mpsc::channel();
+            let (msg_tx, msg_rx) = mpsc::channel();
+            let (write_tx, _write_rx) = std::sync::mpsc::sync_channel(16);
+
+            let mut service_dispatch = ServiceDispatch::new();
+            service_dispatch.register(5, make_service_receiver::<ReqHandler, ReqProto>());
+            service_dispatch.register_request(
+                5,
+                make_request_receiver::<ReqHandler, ReqProto>(write_tx.clone(), 5),
+            );
+
+            let handler = ReqHandler {
+                log: log.clone(),
+                should_panic: true, // will panic in receive_request
+            };
+            let core = LooperCore::with_service_dispatch(
+                handler,
+                PeerScope(1),
+                write_tx,
+                exit_tx,
+                service_dispatch,
+            );
+
+            // Send Request — handler will panic
+            let inner = tagged_payload(&ReqMsg::Ping("boom".into()));
+            let outer = wire_request(10, inner);
+            msg_tx
+                .send(LooperMessage::Service {
+                    session_id: 5,
+                    payload: outer,
+                })
+                .unwrap();
+
+            let reason = core.run(msg_rx);
+            assert_eq!(reason, ExitReason::Failed);
+
+            // Exit signal sent
+            let mut reasons = vec![];
+            while let Ok(r) = exit_rx.try_recv() {
+                reasons.push(r);
+            }
+            assert!(
+                reasons.contains(&ExitReason::Failed),
+                "exit signal must include Failed. Got: {:?}",
+                reasons
+            );
+        }
+
+        #[test]
+        fn request_handler_panic_sends_failed_via_drop_compensation() {
+            use pane_session::bridge::LooperMessage;
+
+            let log = Arc::new(Mutex::new(Vec::new()));
+            let (exit_tx, _exit_rx) = mpsc::channel();
+            let (msg_tx, msg_rx) = mpsc::channel();
+            let (write_tx, write_rx) = std::sync::mpsc::sync_channel(16);
+
+            let mut service_dispatch = ServiceDispatch::new();
+            service_dispatch.register(5, make_service_receiver::<ReqHandler, ReqProto>());
+            service_dispatch.register_request(
+                5,
+                make_request_receiver::<ReqHandler, ReqProto>(write_tx.clone(), 5),
+            );
+
+            let handler = ReqHandler {
+                log: log.clone(),
+                should_panic: true, // will panic in receive_request
+            };
+            let core = LooperCore::with_service_dispatch(
+                handler,
+                PeerScope(1),
+                write_tx,
+                exit_tx,
+                service_dispatch,
+            );
+
+            // Send Request — handler will panic, ReplyPort dropped
+            // during unwind fires Drop compensation (Failed frame)
+            let inner = tagged_payload(&ReqMsg::Ping("crash".into()));
+            let outer = wire_request(55, inner);
+            msg_tx
+                .send(LooperMessage::Service {
+                    session_id: 5,
+                    payload: outer,
+                })
+                .unwrap();
+
+            let reason = core.run(msg_rx);
+            assert_eq!(reason, ExitReason::Failed);
+
+            // ReplyPort Drop fired during unwind — verify Failed
+            // was sent on the wire
+            let (sid, bytes) = write_rx.recv().expect("expected Failed frame from Drop");
+            assert_eq!(sid, 5);
+            let frame: ServiceFrame = postcard::from_bytes(&bytes).unwrap();
+            assert!(matches!(frame, ServiceFrame::Failed { token: 55 }));
+        }
     }
 }
