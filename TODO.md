@@ -8,9 +8,7 @@ Small items, flaky tests, cleanup tasks. Not architectural — those go in PLAN.
 
 ## Cleanup
 
-- [ ] `pane-app` dead code warnings — `Dispatch::cancel`, `Pane` fields (`id`, `tag`), `PaneBuilder.pane` field, `ServiceHandle::new()`. `Dispatch::insert/fire_reply/fire_failed` are now live (Tasks 3-6 complete). `cancel` will become live when Cancel wiring lands.
-- [ ] `pane-session` dead code warnings — `ServerState.next_conn_id` / `alloc_conn_id`. Scaffolding for multi-connection (Phase 2).
-- [ ] Comprehensive warning audit across all crates (`cargo clippy --workspace`). Categorize each warning as: scaffolding (will resolve with upcoming work), genuine dead code (remove), or suppressible.
+- [x] ~~Comprehensive warning audit~~ — completed session 3. Zero clippy warnings. Dead code removed (ServiceHandle::new, alloc_conn_id). Scaffolding suppressed with `#[allow]` + rationale (Dispatch::cancel, Pane fields, PaneBuilder.pane). Complex types factored into aliases. ProtocolServer::new suppressed (spawns thread, no Default).
 
 ## Deferred
 
