@@ -143,7 +143,9 @@ fn accept_on_thread(
 /// poisoning), leaving it to the caller.
 ///
 /// Invariant: FrameError means connection death. Violating this
-/// by continuing to read produces garbage, not valid frames.
+/// by continuing to read. The codec self-poisons on any error
+/// (S3 fix), so the second read returns Poisoned without touching
+/// the stream — the desync is prevented structurally.
 #[test]
 #[ignore]
 fn codec_desync_after_oversized_frame() {
@@ -161,13 +163,14 @@ fn codec_desync_after_oversized_frame() {
     // Body: 200 bytes of 0xAA (the codec won't read these)
     stream.extend_from_slice(&vec![0xAA; 200]);
 
-    // Valid frame after the oversized one: length=2, service=0, payload=[0x42]
-    stream.extend_from_slice(&2u32.to_le_bytes());
-    stream.extend_from_slice(&[0x00, 0x42]);
+    // Valid frame after the oversized one (never reached due to poison)
+    // length=3: u16 service (0x0000) + 1 byte payload
+    stream.extend_from_slice(&3u32.to_le_bytes());
+    stream.extend_from_slice(&[0x00, 0x00, 0x42]);
 
     let mut cursor = Cursor::new(stream);
 
-    // First read: returns Oversized error (correct)
+    // First read: returns Oversized error and poisons the codec
     let result = codec.read_frame(&mut cursor);
     assert!(
         matches!(
@@ -180,26 +183,26 @@ fn codec_desync_after_oversized_frame() {
         "first read must return Oversized, got {result:?}"
     );
 
-    // At this point the cursor is at offset 4 (consumed length prefix only).
-    // The 200 body bytes and the valid frame are still ahead.
-    // The next read will interpret body bytes as a length prefix.
+    // Second read: codec is poisoned, returns Poisoned immediately
+    // without touching the stream. The valid frame is never read.
     let result2 = codec.read_frame(&mut cursor);
-
-    // The second read does NOT return the valid frame. It reads
-    // 0xAAAAAAAA as a length prefix (2863311530), which exceeds
-    // the limit → another Oversized error.
-    //
-    // This documents the desync: the connection is unrecoverable
-    // after an Oversized error without draining the body.
     assert!(
-        result2.is_err(),
-        "second read after desync must not return a valid frame, got {result2:?}"
+        matches!(result2, Err(FrameError::Poisoned)),
+        "second read must return Poisoned (S3 fix), got {result2:?}"
+    );
+
+    // Cursor stayed at offset 4 — poison prevented the desync
+    assert_eq!(
+        cursor.position(),
+        4,
+        "cursor must not advance past the length prefix"
     );
 }
 
 /// Companion to codec_desync_after_oversized_frame: verifies that
-/// a well-behaved caller who stops reading after any FrameError
-/// experiences no unsafety — the stream is simply abandoned.
+/// after an Oversized error, the cursor stays at offset 4 (only
+/// the length prefix consumed). With the poison fix (S3), subsequent
+/// reads return Poisoned without advancing the cursor further.
 #[test]
 #[ignore]
 fn oversized_frame_caller_stops_reading() {
@@ -211,20 +214,20 @@ fn oversized_frame_caller_stops_reading() {
     // Oversized frame
     stream.extend_from_slice(&100u32.to_le_bytes());
     stream.extend_from_slice(&vec![0xBB; 100]);
-    // Valid frame that should never be read
-    stream.extend_from_slice(&2u32.to_le_bytes());
-    stream.extend_from_slice(&[0x00, 0x42]);
+    // Valid frame that should never be read (u16 service format)
+    stream.extend_from_slice(&3u32.to_le_bytes());
+    stream.extend_from_slice(&[0x00, 0x00, 0x42]);
 
     let mut cursor = Cursor::new(stream);
 
     let result = codec.read_frame(&mut cursor);
     assert!(matches!(result, Err(FrameError::Oversized { .. })));
 
-    // Caller stops reading. No further interaction with the stream.
-    // This is the correct behavior pattern.
-    let cursor_pos = cursor.position();
+    // Cursor at offset 4 — length prefix consumed, body not consumed.
+    // The codec is now poisoned; any further read returns Poisoned.
     assert_eq!(
-        cursor_pos, 4,
+        cursor.position(),
+        4,
         "cursor should be at offset 4 (length prefix consumed, body not consumed)"
     );
 }
