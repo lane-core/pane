@@ -12,7 +12,7 @@
 //! or the failure path (Drop).
 //!
 //! Obligation handles are NOT Message variants. They are
-//! !Clone (move-only) and !Serialize (contain channel senders).
+//! !Clone (move-only) and !Serialize (contain boxed closures).
 //!
 //! Design heritage: BeOS BMessage carried MESSAGE_FLAG_REPLY_REQUIRED
 //! (headers/private/app/MessagePrivate.h:28) and reply_port/
@@ -51,32 +51,51 @@ pub struct ReplyFailed;
 /// Consuming .reply() makes double-reply a compile error.
 /// Drop compensation makes forgotten replies a protocol-level
 /// failure (the requester's on_failed fires) rather than a hang.
+///
+/// The backend is closure-erased: the same ReplyPort type works
+/// for in-process channels, wire serialization, or test stubs.
+/// The closure is captured at construction time and called
+/// exactly once — either by .reply() or by Drop.
 #[must_use = "dropping a ReplyPort sends ReplyFailed to the requester"]
 pub struct ReplyPort<T: Send + 'static> {
-    tx: Option<mpsc::Sender<Result<T, ReplyFailed>>>,
+    send: Option<Box<dyn FnOnce(Result<T, ReplyFailed>) + Send>>,
 }
 
 impl<T: Send + 'static> ReplyPort<T> {
-    /// Create a ReplyPort and its receiving end.
-    /// The receiver is held by the framework (Dispatch entry).
+    /// Construct from a closure that handles the reply or failure.
+    /// The closure is called exactly once — either by .reply() or
+    /// by Drop.
+    pub fn new(send: impl FnOnce(Result<T, ReplyFailed>) + Send + 'static) -> Self {
+        ReplyPort {
+            send: Some(Box::new(send)),
+        }
+    }
+
+    /// In-process constructor: returns a ReplyPort and a Receiver.
+    /// The Receiver gets Ok(T) on .reply() or Err(ReplyFailed) on Drop.
     pub fn channel() -> (ReplyPort<T>, mpsc::Receiver<Result<T, ReplyFailed>>) {
         let (tx, rx) = mpsc::channel();
-        (ReplyPort { tx: Some(tx) }, rx)
+        (
+            ReplyPort::new(move |result| {
+                let _ = tx.send(result);
+            }),
+            rx,
+        )
     }
 
     /// Send a reply, consuming this obligation.
     /// The requester's on_reply callback fires with the value.
     pub fn reply(mut self, value: T) {
-        if let Some(tx) = self.tx.take() {
-            let _ = tx.send(Ok(value));
+        if let Some(f) = self.send.take() {
+            f(Ok(value));
         }
     }
 }
 
 impl<T: Send + 'static> Drop for ReplyPort<T> {
     fn drop(&mut self) {
-        if let Some(tx) = self.tx.take() {
-            let _ = tx.send(Err(ReplyFailed));
+        if let Some(f) = self.send.take() {
+            f(Err(ReplyFailed));
         }
     }
 }
@@ -89,32 +108,50 @@ pub struct CompletionFailed;
 /// An obligation to acknowledge completion.
 /// Same linear lens pattern as ReplyPort, but the success
 /// path carries no value — it's a pure acknowledgment.
+///
+/// Closure-erased like ReplyPort — the backend is captured
+/// at construction time.
 #[must_use = "dropping a CompletionReplyPort sends CompletionFailed"]
 pub struct CompletionReplyPort {
-    tx: Option<mpsc::Sender<Result<(), CompletionFailed>>>,
+    send: Option<Box<dyn FnOnce(Result<(), CompletionFailed>) + Send>>,
 }
 
 impl CompletionReplyPort {
+    /// Construct from a closure that handles the completion or failure.
+    /// The closure is called exactly once — either by .complete() or
+    /// by Drop.
+    pub fn new(send: impl FnOnce(Result<(), CompletionFailed>) + Send + 'static) -> Self {
+        CompletionReplyPort {
+            send: Some(Box::new(send)),
+        }
+    }
+
+    /// In-process constructor: returns a CompletionReplyPort and a Receiver.
     pub fn channel() -> (
         CompletionReplyPort,
         mpsc::Receiver<Result<(), CompletionFailed>>,
     ) {
         let (tx, rx) = mpsc::channel();
-        (CompletionReplyPort { tx: Some(tx) }, rx)
+        (
+            CompletionReplyPort::new(move |result| {
+                let _ = tx.send(result);
+            }),
+            rx,
+        )
     }
 
     /// Acknowledge completion, consuming this obligation.
     pub fn complete(mut self) {
-        if let Some(tx) = self.tx.take() {
-            let _ = tx.send(Ok(()));
+        if let Some(f) = self.send.take() {
+            f(Ok(()));
         }
     }
 }
 
 impl Drop for CompletionReplyPort {
     fn drop(&mut self) {
-        if let Some(tx) = self.tx.take() {
-            let _ = tx.send(Err(CompletionFailed));
+        if let Some(f) = self.send.take() {
+            f(Err(CompletionFailed));
         }
     }
 }
@@ -195,7 +232,7 @@ mod tests {
 
     #[test]
     fn reply_port_is_move_only() {
-        // ReplyPort contains Option<mpsc::Sender<_>> which is !Clone.
+        // ReplyPort contains Option<Box<dyn FnOnce(...)>> which is !Clone.
         // This is a compile-time property — the test documents it.
         // Uncommenting the following would fail to compile:
         //   let (port, _rx) = ReplyPort::<u32>::channel();
@@ -317,7 +354,52 @@ mod tests {
 
         assert!(result.is_err());
         assert_eq!(rx.recv().unwrap(), Ok(42)); // reply arrived
-                                                // No second message — Drop found tx already taken
+                                                // No second message — Drop found send already taken
         assert!(rx.try_recv().is_err());
+    }
+
+    // ── Custom backend (closure-erased) ───────────────────
+
+    #[test]
+    fn reply_port_custom_backend() {
+        // Construct with ReplyPort::new(closure), verify closure
+        // is called with Ok on .reply().
+        let (tx, rx) = mpsc::channel();
+        let port = ReplyPort::new(move |result: Result<u32, ReplyFailed>| {
+            tx.send(result).unwrap();
+        });
+        port.reply(99);
+        assert_eq!(rx.recv().unwrap(), Ok(99));
+    }
+
+    #[test]
+    fn reply_port_custom_backend_drop() {
+        // Verify closure is called with Err(ReplyFailed) on Drop.
+        let (tx, rx) = mpsc::channel();
+        let port = ReplyPort::<u32>::new(move |result| {
+            tx.send(result).unwrap();
+        });
+        drop(port);
+        assert_eq!(rx.recv().unwrap(), Err(ReplyFailed));
+    }
+
+    #[test]
+    fn completion_port_custom_backend() {
+        let (tx, rx) = mpsc::channel();
+        let port = CompletionReplyPort::new(move |result| {
+            tx.send(result).unwrap();
+        });
+        port.complete();
+        assert_eq!(rx.recv().unwrap(), Ok(()));
+    }
+
+    #[test]
+    fn completion_port_custom_backend_drop() {
+        let (tx, rx) = mpsc::channel();
+        let port = CompletionReplyPort::new(move |result| {
+            tx.send(result).unwrap();
+        });
+        drop(port);
+        assert_eq!(rx.recv().unwrap(), Err(CompletionFailed));
     }
 }

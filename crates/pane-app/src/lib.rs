@@ -22,7 +22,7 @@ pub use builder::PaneBuilder;
 pub use exit_reason::ExitReason;
 pub use messenger::Messenger;
 pub use pane::Pane;
-pub use service_handle::ServiceHandle;
+pub use service_handle::{wire_reply_port, ServiceHandle};
 
 // Re-export pane-proto types for convenience
 pub use pane_proto::{

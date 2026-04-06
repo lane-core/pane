@@ -15,7 +15,7 @@
 //! (Handles<P> at compile time, which BMessenger lacked).
 
 use crate::Messenger;
-use pane_proto::obligation::CancelHandle;
+use pane_proto::obligation::{CancelHandle, ReplyPort};
 use pane_proto::{Address, Flow, Handler, Handles, Protocol, ServiceFrame};
 use std::marker::PhantomData;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -141,6 +141,35 @@ impl<P: Protocol> ServiceHandle<P> {
     pub fn session_id(&self) -> u16 {
         self.session_id
     }
+}
+
+/// Create a ReplyPort that sends the reply as a ServiceFrame::Reply
+/// through the write channel, or ServiceFrame::Failed on Drop.
+///
+/// T: Serialize bound is on this constructor, not on ReplyPort<T>.
+/// The closure uses try_send — it may be called from Drop, and
+/// blocking in Drop is unacceptable.
+pub fn wire_reply_port<T>(
+    write_tx: std::sync::mpsc::SyncSender<(u16, Vec<u8>)>,
+    session_id: u16,
+    token: u64,
+) -> ReplyPort<T>
+where
+    T: serde::Serialize + Send + 'static,
+{
+    ReplyPort::new(move |result| {
+        let frame = match result {
+            Ok(value) => {
+                let payload = postcard::to_allocvec(&value).expect("reply serialization failed");
+                ServiceFrame::Reply { token, payload }
+            }
+            Err(_) => ServiceFrame::Failed { token },
+        };
+        let bytes = postcard::to_allocvec(&frame).expect("service frame serialization failed");
+        // Best-effort: if the channel is closed, the connection is
+        // already torn down.
+        let _ = write_tx.try_send((session_id, bytes));
+    })
 }
 
 impl<P: Protocol> Drop for ServiceHandle<P> {
@@ -333,5 +362,45 @@ mod tests {
         let (tx, _rx) = std::sync::mpsc::sync_channel(16);
         let handle = ServiceHandle::<TestProto>::with_channel(42, tx);
         assert_eq!(handle.session_id(), 42);
+    }
+
+    // ── wire_reply_port ───────────────────────────────────
+
+    #[test]
+    fn wire_reply_port_sends_reply_frame() {
+        let (tx, rx) = std::sync::mpsc::sync_channel(16);
+        let port = super::wire_reply_port::<TestReply>(tx, 7, 42);
+        port.reply(TestReply(100));
+
+        let (session_id, bytes) = rx.recv().expect("expected frame");
+        assert_eq!(session_id, 7);
+
+        let frame: ServiceFrame = postcard::from_bytes(&bytes).expect("deserialize ServiceFrame");
+        match frame {
+            ServiceFrame::Reply { token, payload } => {
+                assert_eq!(token, 42);
+                let reply: TestReply = postcard::from_bytes(&payload).expect("deserialize reply");
+                assert_eq!(reply.0, 100);
+            }
+            other => panic!("expected Reply, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn wire_reply_port_drop_sends_failed_frame() {
+        let (tx, rx) = std::sync::mpsc::sync_channel(16);
+        let port = super::wire_reply_port::<TestReply>(tx, 3, 99);
+        drop(port);
+
+        let (session_id, bytes) = rx.recv().expect("expected frame");
+        assert_eq!(session_id, 3);
+
+        let frame: ServiceFrame = postcard::from_bytes(&bytes).expect("deserialize ServiceFrame");
+        match frame {
+            ServiceFrame::Failed { token } => {
+                assert_eq!(token, 99);
+            }
+            other => panic!("expected Failed, got {other:?}"),
+        }
     }
 }
