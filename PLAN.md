@@ -47,20 +47,22 @@ Single server (N=1), headless, no suspension, no streaming. All multi-server dat
 
 #### Kit API (pane-app)
 
-- [x] **RequestProtocol** — supertrait of Protocol with `type Reply: Message`; `HandlesRequest<P>` trait for request handlers with `ReplyPort<P::Reply>` (6 tests)
-- [x] **Dispatch\<H\>** — per-request typed dispatch entries, token uniqueness, fail_connection, fail_session (S1 fix), cancel (6 tests)
-- [x] **LooperCore\<H\>** — catch_unwind boundary, destruction sequence, `dispatch_lifecycle`, `run()` with channel-driven main loop (14 tests, including 2 vertical slice integration tests)
-- [x] **PaneBuilder\<H\>** — two-phase lifecycle, open_service stub, duplicate rejection (3 tests)
+- [x] **RequestProtocol** — supertrait of Protocol with `type Reply: Message` (6 tests in pane-proto)
+- [x] **HandlesRequest\<P\>** — request handler trait with `ReplyPort<P::Reply>` + `DispatchCtx<Self>`, lives in pane-app (moved from pane-proto for crate boundary: Cartesian/linear partition). H = Self enforced at compile time. (5 tests)
+- [x] **DispatchCtx\<H\>** — scoped dispatch context wrapping `&mut Dispatch<H>` + PeerScope. Lifetime-bound to dispatch call. Install-before-wire invariant. (3 tests)
+- [x] **Dispatch\<H\>** — per-request typed dispatch entries, token uniqueness (monotonic per-Dispatch counter, no global), fail_connection, fail_session (S1 fix), cancel (7 tests)
+- [x] **LooperCore\<H\>** — catch_unwind boundary, destruction sequence, `dispatch_lifecycle`, `dispatch_service` (Notification + Request + Reply + Failed branches), `run()` with channel-driven main loop, `write_tx` for framework plumbing (22 tests including request dispatch + 2 vertical slice integration tests)
+- [x] **PaneBuilder\<H\>** — two-phase lifecycle, `open_service`, `open_service_with_requests`, duplicate rejection, `open_service_inner` factoring (3 tests)
 - [x] **Pane** — non-generic connection identity (stub)
 - [x] **Messenger** — scoped handle with Address, `address()` accessor (3 tests)
-- [x] **ServiceHandle\<P\>** — Drop RevokeInterest, protocol-scoped `send_request<H,R>()` with real serialization + protocol tag, `send_notification()` with protocol tag, `with_channel()` constructor, `target_address()`, `wire_reply_port<T>` constructor for wire-backed ReplyPort (8 tests)
+- [x] **ServiceHandle\<P\>** — Drop RevokeInterest, protocol-scoped `send_request` with `DispatchCtx` (install-before-wire, token from Dispatch), `send_notification()` with protocol tag, `with_channel()` constructor, `target_address()`, `wire_reply_port<T>` constructor for wire-backed ReplyPort (8 tests)
 - [x] **ExitReason** — Graceful/Disconnected/Failed/InfraError
 - [ ] **Messenger full impl** — `set_content`, `set_pulse_rate`, `post_app_message` (send_request moved to ServiceHandle)
 - [ ] **ConnectionSource** — calloop EventSource for a single Connection (read + buffered write) — **bumped priority: enables real Messenger/ServiceHandle routing**
 - [x] **Service registration wiring** — `PaneBuilder::connect()` + `open_service::<P>()` sends DeclareInterest through real ProtocolServer, `ServiceHandle::Drop` sends RevokeInterest, `LooperCore` dispatches service frames through `ServiceDispatch<H>` (12 new tests)
 - [ ] **Eager Hello.interests** — move initial service interests into Hello, resolved during handshake via Welcome.bindings (four-agent recommendation, deferred from service registration wiring)
-- [ ] **Provider-side Request dispatch** — `dispatch_service` ServiceFrame::Request needs typed message + ReplyPort delivery
-- [ ] **Consumer-side Reply/Failed routing** — `dispatch_service` Reply/Failed route through Dispatch<H> by token
+- [x] **Provider-side Request dispatch** — `dispatch_service` Request branch with catch_unwind, `ServiceDispatch::dispatch_request` returns Flow (total — sends Failed for unregistered sessions), `RequestReceiver` with captured write_tx + session_id
+- [x] **Consumer-side Reply/Failed routing** — `dispatch_service` Reply/Failed route through `Dispatch<H>` by token via `fire_reply`/`fire_failed`
 - [ ] **ActivePhase\<T\>** — explicit shift operator (ω_X) carrying negotiated state (max_message_size, PeerAuth, known_services)
 - [ ] **Looper** — calloop-backed, per-protocol typed channels, unified batch, coalescing
 - [ ] **AppPayload** — `Clone + Send + 'static` marker trait
@@ -160,9 +162,9 @@ Orthogonal to protocol phases — can proceed in parallel once Phase 1 server ex
 
 | Crate | Role | Status |
 |-------|------|--------|
-| pane-proto | Protocol vocabulary, no IO | Active (98 tests) |
+| pane-proto | Protocol vocabulary, no IO | Active (94 tests) |
 | pane-session | Session-typed IPC, transport, framing, server | Active (46 tests + 21 stress) |
-| pane-app | Actor framework, dispatch, looper | Active (47 tests + 7 stress + 12 integration) |
+| pane-app | Actor framework, dispatch, looper | Active (68 tests + 7 stress + 5 integration) |
 | pane-fs | Filesystem namespace | Active (5 tests) |
 | pane-hello | First running pane app (binary) | Active (0 tests, manual verification) |
 | pane-notify | Filesystem notification abstraction | Preserved from prototype |
