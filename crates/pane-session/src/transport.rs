@@ -7,10 +7,13 @@
 //!     A verified transport that dies mid-session is exceptional.
 //!
 //! Design heritage: Plan 9 assumed a reliable byte stream (TCP, pipe)
-//! for all 9P communication. BeOS used kernel ports (message-oriented,
-//! reliable, in-order). pane uses Read + Write (byte stream), matching
-//! Plan 9. MemoryTransport bridges the gap for testing — it's an
-//! in-process byte stream over mpsc channels.
+//! for all 9P communication (intro(5),
+//! reference/plan9/man/5/0intro:30; bind(2) mount takes an fd).
+//! BeOS used kernel ports (message-oriented, reliable, in-order;
+//! headers/os/kernel/OS.h:133; headers/private/app/LinkSender.h).
+//! pane uses Read + Write (byte stream), matching Plan 9.
+//! MemoryTransport bridges the gap for testing — it's an in-process
+//! byte stream over mpsc channels.
 
 use crate::handshake::Rejection;
 
@@ -93,6 +96,69 @@ impl std::io::Read for MemoryTransport {
         buf[..n].copy_from_slice(&available[..n]);
         self.read_pos += n;
         Ok(n)
+    }
+}
+
+/// Read half of a split MemoryTransport.
+pub struct MemoryReader {
+    rx: std::sync::mpsc::Receiver<Vec<u8>>,
+    read_buf: Vec<u8>,
+    read_pos: usize,
+}
+
+/// Write half of a split MemoryTransport.
+pub struct MemoryWriter {
+    tx: std::sync::mpsc::Sender<Vec<u8>>,
+}
+
+impl MemoryTransport {
+    /// Split into independent read and write halves.
+    /// The reader blocks on recv; the writer sends through the channel.
+    /// Neither half needs the other's lock.
+    pub fn split(self) -> (MemoryReader, MemoryWriter) {
+        (
+            MemoryReader {
+                rx: self.rx,
+                read_buf: self.read_buf,
+                read_pos: self.read_pos,
+            },
+            MemoryWriter { tx: self.tx },
+        )
+    }
+}
+
+impl std::io::Read for MemoryReader {
+    fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+        if self.read_pos >= self.read_buf.len() {
+            match self.rx.recv() {
+                Ok(data) => {
+                    self.read_buf = data;
+                    self.read_pos = 0;
+                }
+                Err(_) => return Ok(0),
+            }
+        }
+        let available = &self.read_buf[self.read_pos..];
+        let n = std::cmp::min(buf.len(), available.len());
+        buf[..n].copy_from_slice(&available[..n]);
+        self.read_pos += n;
+        Ok(n)
+    }
+}
+
+impl std::io::Write for MemoryWriter {
+    fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+        if buf.is_empty() {
+            return Ok(0);
+        }
+        self.tx.send(buf.to_vec()).map_err(|_| {
+            std::io::Error::new(std::io::ErrorKind::BrokenPipe, "peer disconnected")
+        })?;
+        Ok(buf.len())
+    }
+
+    fn flush(&mut self) -> std::io::Result<()> {
+        Ok(())
     }
 }
 

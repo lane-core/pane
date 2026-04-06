@@ -2,6 +2,28 @@
 //!
 //! Clarke et al. Definition 4.6. Concrete fn-pointer encoding.
 //! Replaces fp_library's branded Lens for the ctl write path.
+//!
+//! Algebraic structure: a **mixed optic** (Clarke et al.
+//! Proposition 4.7). View side lives in W (cartesian, pure —
+//! the identity comonad). Set side lives in Kl(Ψ) where
+//! Ψ(A) = (A, Vec<Effect>) is a **writer monad** over the free
+//! monoid of effects. This places MonadicLens in the duploid's
+//! two subcategories: the view is negative/co-Kleisli (pure
+//! extraction), the set is positive/Kleisli (effectful mutation).
+//! Cross-polarity composition (set after view) is serialized by
+//! the looper's sequential dispatch. See MMM25 (Mangel/Melliès/
+//! Munch-Maccagnoni 2025) for the duploid framework and MM14b
+//! (Munch-Maccagnoni 2014b) for foundational duploid definitions.
+//!
+//! Design heritage: BeOS BPropertyInfo + BHandler scripting
+//! protocol had the same polarity structure: B_GET_PROPERTY was
+//! a negative co-Kleisli extraction, B_SET_PROPERTY was an
+//! oblique cross-polarity operation (positive value applied to
+//! negative handler state). ResolveSpecifier's recursive property
+//! path walk was optic composition. BeOS LinkSender's buffered
+//! StartMessage/Attach/Flush protocol was also a writer monad —
+//! (status_t, Buffer<Message>) — called "reducing port
+//! round-trips" (headers/private/app/LinkSender.h:36-40).
 
 use std::fmt;
 

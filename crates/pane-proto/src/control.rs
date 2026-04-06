@@ -14,7 +14,9 @@
 //!
 //! Design heritage: Plan 9 9P used a type byte to discriminate
 //! message kinds (Tversion=100, Tread=116, etc.) in a flat
-//! namespace. BeOS ServerProtocol.h had ~370 flat opcodes.
+//! namespace (intro(5), reference/plan9/man/5/0intro:91-96).
+//! BeOS ServerProtocol.h had ~280 flat AS_* opcodes
+//! (headers/private/app/ServerProtocol.h:32-373).
 //! ControlMessage nests sub-protocols (Lifecycle, service
 //! negotiation) as enum variants — the type system groups related
 //! messages, an improvement over both flat dispatch tables.

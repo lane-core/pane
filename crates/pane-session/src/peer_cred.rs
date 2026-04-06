@@ -5,12 +5,13 @@
 //! getpeereid + LOCAL_PEERPID.
 //!
 //! Design heritage: Plan 9 factotum(4) resolved credentials to
-//! a username via auth_check — the kernel produced the AuthId
-//! after the auth conversation completed. BeOS had no equivalent
-//! — identity was self-reported (team_id stuffed into
-//! AS_CREATE_APP). pane's peer_cred is stronger: the kernel
-//! asserts identity, the peer cannot lie (SO_PEERCRED/getpeereid
-//! are kernel-verified).
+//! a username — the AuthInfo, produced after the auth conversation
+//! completed via the authinfo RPC (reference/plan9/man/4/factotum),
+//! carried the resolved identity. BeOS had no equivalent —
+//! identity was self-reported (team_id stuffed into AS_CREATE_APP,
+//! src/kits/app/Application.cpp:1414). pane's peer_cred is
+//! stronger: the kernel asserts identity, the peer cannot lie
+//! (SO_PEERCRED/getpeereid are kernel-verified).
 
 use std::os::unix::net::UnixStream;
 use std::os::unix::io::AsRawFd;

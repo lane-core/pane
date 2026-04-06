@@ -20,9 +20,12 @@
 //! looper through an mpsc channel.
 //!
 //! Design heritage: BeOS split connection into find_port (returned
-//! status_t) and the AS_CREATE_APP exchange (debugger on failure).
-//! Plan 9's mount() returned -1 on unreachable; Tversion/Rattach
-//! was the handshake over a verified fd.
+//! port_id, negative on error; headers/os/kernel/OS.h:134) and the
+//! AS_CREATE_APP exchange (debugger on failure;
+//! src/kits/app/Application.cpp:1432). Plan 9's mount() returned
+//! -1 on unreachable (bind(2), reference/plan9/man/2/bind:227);
+//! the Tversion...Tattach sequence was the handshake over a
+//! verified fd.
 
 use par::exchange::{Send as ParSend, Recv as ParRecv};
 use par::Session;
@@ -455,6 +458,7 @@ mod tests {
             version: 1,
             max_message_size: 16 * 1024 * 1024,
             interests: vec![],
+            provides: vec![],
         });
 
         let (hello, server) = futures::executor::block_on(server.recv());
@@ -483,6 +487,7 @@ mod tests {
             version: 99,
             max_message_size: 16 * 1024 * 1024,
             interests: vec![],
+            provides: vec![],
         });
 
         let (hello, server) = futures::executor::block_on(server.recv());
@@ -550,6 +555,7 @@ mod tests {
                 version: 1,
                 max_message_size: 16 * 1024 * 1024,
                 interests: vec![],
+                provides: vec![],
             },
             ct,
         ).expect("client connect failed");
@@ -583,6 +589,7 @@ mod tests {
                 version: 99,
                 max_message_size: 16 * 1024 * 1024,
                 interests: vec![],
+                provides: vec![],
             },
             ct,
         ).expect_err("expected rejection");
@@ -638,6 +645,7 @@ mod tests {
                 version: 1,
                 max_message_size: 16 * 1024 * 1024,
                 interests: vec![],
+                provides: vec![],
             },
             ct,
         ).expect("client connect failed");

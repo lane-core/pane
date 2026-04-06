@@ -11,12 +11,14 @@
 //! or sent via write_frame.
 //!
 //! Design heritage: Plan 9 9P framing: [size: u32][type: u8][tag: u16]
-//! — similar structure, type byte discriminates message kinds. BeOS
-//! LinkSender/LinkReceiver used StartMessage(code)/Attach/EndMessage/
-//! Flush batched protocol over kernel ports — compact binary where
-//! both sides agree on the schema. pane's framing follows the same
-//! principle: no self-describing format, postcard + Rust types are
-//! the schema.
+//! (intro(5), reference/plan9/man/5/0intro:91-100) — similar
+//! structure, type byte discriminates message kinds. BeOS
+//! LinkSender (headers/private/app/LinkSender.h:36-40) used
+//! StartMessage(code)/Attach/EndMessage/Flush batched protocol
+//! over kernel ports (headers/os/kernel/OS.h:133) — compact binary
+//! where both sides agree on the schema. pane's framing follows
+//! the same principle: no self-describing format, postcard + Rust
+//! types are the schema.
 
 use std::io::{self, Read, Write};
 
@@ -94,12 +96,30 @@ impl FrameCodec {
     /// Create a new codec with the given maximum message size.
     ///
     /// Service 0 (control) is registered from construction.
+    /// Client-side: only registered services are accepted.
     pub fn new(max_message_size: u32) -> Self {
         let mut known_services = [false; 255];
         known_services[0] = true;
         FrameCodec {
             max_message_size,
             known_services,
+        }
+    }
+
+    /// Create a permissive codec that accepts all service discriminants.
+    ///
+    /// Used by the server, which validates frames against its routing
+    /// table rather than a static service set. Session_ids are allocated
+    /// dynamically by DeclareInterest — the codec can't know them in
+    /// advance because it's behind Arc (no interior mutability).
+    ///
+    /// I12 (unknown discriminant → connection error) still holds for
+    /// client-side codecs. The server-side equivalent is: unknown
+    /// route → frame silently dropped (constraint 5, Cancel/Reply race).
+    pub fn permissive(max_message_size: u32) -> Self {
+        FrameCodec {
+            max_message_size,
+            known_services: [true; 255],
         }
     }
 

@@ -14,13 +14,22 @@
 //! Obligation handles are NOT Message variants. They are
 //! !Clone (move-only) and !Serialize (contain channel senders).
 //!
-//! Design heritage: BeOS BMessage carried REPLY_REQUIRED flag
-//! and reply_port/reply_target/reply_team, but enforcement was
-//! voluntary — forgetting to reply was a common bug class.
-//! Plan 9 9P had no reply obligation mechanism — tags correlated
-//! requests to replies, but nothing enforced that a reply was
-//! sent. pane's #[must_use] + Drop compensation eliminates both
+//! Design heritage: BeOS BMessage carried MESSAGE_FLAG_REPLY_REQUIRED
+//! (headers/private/app/MessagePrivate.h:28) and reply_port/
+//! reply_target/reply_team (MessagePrivate.h:66-68), but enforcement
+//! was voluntary — forgetting to reply was a common bug class.
+//! Plan 9 9P tags correlated requests to replies
+//! (intro(5), reference/plan9/man/5/0intro:307-324) but nothing
+//! enforced that a reply was sent — a hung server meant a hung
+//! client. pane's #[must_use] + Drop compensation eliminates both
 //! failure modes at compile time.
+//!
+//! In duploid terms (MMM25): ReplyPort is ↑(continuation) — a
+//! positive wrapper around a negative one-shot channel endpoint.
+//! `.reply(value)` is the force operator ↓. Drop compensation
+//! forces with an error value (ReplyFailed). An unanswered
+//! ReplyPort is a thunk that was never forced, not an incomplete
+//! cut — the Drop mechanism discharges the obligation.
 //! The protocol_handler macro generates a separate dispatch
 //! path for obligation callbacks.
 

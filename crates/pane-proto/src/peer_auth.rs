@@ -9,14 +9,16 @@
 //! layer. It does not participate in the par handshake, optics
 //! chain, or EAct model.
 //!
-//! Design heritage: Plan 9 factotum(4) separated authentication
-//! from application protocols — the credential proves a claim,
-//! the system operates on the resolved principal. BeOS team_id
-//! was kernel-assigned process identity used for ownership checks
-//! (e.g., cursor->OwningTeam() == fClientTeam in app_server).
-//! PeerAuth combines both: uid (factotum's resolved user) +
-//! pid (Be's team_id) + provenance (how identity was established,
-//! which neither system tracked).
+//! Design heritage: Plan 9 factotum(4)
+//! (reference/plan9/man/4/factotum) separated authentication from
+//! application protocols — the credential proves a claim, the
+//! system operates on the resolved principal (AuthInfo user name).
+//! BeOS team_id was kernel-assigned process identity used for
+//! ownership checks (cursor->OwningTeam() == fClientTeam,
+//! src/servers/app/ServerApp.cpp:1294). PeerAuth combines both:
+//! uid (factotum's resolved user) + pid (Be's team_id,
+//! src/servers/app/ServerApp.h:71) + provenance (how identity was
+//! established, which neither system tracked).
 //!
 //! # Certificate subject comparison
 //!

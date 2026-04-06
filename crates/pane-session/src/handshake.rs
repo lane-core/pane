@@ -13,9 +13,12 @@
 //! via the bridge module.
 //!
 //! Design heritage: Plan 9 Tversion/Rversion negotiated protocol
-//! version and max message size. Rerror provided explicit rejection
-//! on every T-message. BeOS AS_CREATE_APP sent team_id/port/signature
-//! and got back a status_t (explicit but terse). pane's explicit
+//! version and max message size (version(5),
+//! reference/plan9/man/5/version:19-48). Rerror provided explicit
+//! rejection on any T-message (intro(5), 0intro:325-331). BeOS
+//! AS_CREATE_APP sent team_id/port/signature
+//! (src/kits/app/Application.cpp:1402-1416) and got back a status_t
+//! via FlushWithReply (Application.cpp:1423). pane's explicit
 //! Result<Welcome, Rejection> combines both: rich rejection reasons
 //! (Plan 9 Rerror's explicitness) with typed structure (not Be's
 //! bare status_t integer).
@@ -30,12 +33,31 @@ pub type ClientHandshake = par::exchange::Send<Hello, par::exchange::Recv<Result
 /// The handshake protocol from the server's perspective (dual).
 pub type ServerHandshake = par::Dual<ClientHandshake>;
 
+/// A service this pane implements for others.
+///
+/// Declared in Hello so the server's provider index is populated
+/// at handshake time.
+///
+/// Design heritage: Plan 9's Tattach carried aname (the file tree
+/// to mount) — the client declared what it offered in the
+/// namespace. BeOS's AS_CREATE_APP carried the app signature,
+/// which the roster used to index capabilities. ServiceProvision
+/// combines both: a typed service identity with a version, declared
+/// upfront for routing.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ServiceProvision {
+    pub service: ServiceId,
+    pub version: u32,
+}
+
 /// Client → Server: initial connection message.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Hello {
     pub version: u32,
     pub max_message_size: u32,
     pub interests: Vec<ServiceInterest>,
+    /// Services this pane provides for others.
+    pub provides: Vec<ServiceProvision>,
 }
 
 /// Server → Client: handshake response.

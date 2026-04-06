@@ -14,13 +14,29 @@
 //! This module is the core dispatch logic, independent of calloop.
 //! The full looper wraps LooperCore with calloop event sources.
 //!
-//! Design heritage: BeOS BLooper::task_looper() blocked on
-//! port_buffer_size_etc(fMsgPort), read one message, then drained
-//! the port nonblocking (batch read, serial dispatch). Plan 9
-//! devmnt had a reader proc per mount that blocked on read(2) and
-//! dispatched by tag. pane's run() follows the same pattern:
-//! block on mpsc::Receiver, dispatch sequentially, channel close
-//! = disconnect.
+//! Design heritage: BeOS BLooper::task_looper()
+//! (src/kits/app/Looper.cpp:1162) blocked via MessageFromPort()
+//! on port_buffer_size_etc(fMsgPort) (Looper.cpp:1086), read one
+//! message, then drained the port nonblocking via port_count +
+//! zero-timeout loop (Looper.cpp:1187-1193) — batch read, serial
+//! dispatch. Plan 9 devmnt gated callers as readers one at a time
+//! per mount (devmnt.c mountio():803, "Gate readers onto the mount
+//! point one at a time") and used mountmux to dispatch replies by
+//! tag. pane's run() follows the same pattern: block on
+//! mpsc::Receiver, dispatch sequentially, channel close =
+//! disconnect.
+//!
+//! Theoretical basis: the active phase is a plain (non-dialogue)
+//! duploid (MMM25, Mangel/Melliès/Munch-Maccagnoni 2025).
+//! Sequential dispatch prevents non-associative cross-polarity
+//! composition from arising — every dispatch is either (+,+) or
+//! (-,-) or a single polarity crossing, never the (+,-,+) triple
+//! where associativity fails (MM14b, Munch-Maccagnoni 2014b).
+//! The writer monad Ψ(A) = (A, Vec<Effect>) on the positive
+//! subcategory gives associative effect concatenation within
+//! same-polarity batches. DLfActRiS (Hinrichsen/Krebbers/
+//! Birkedal, POPL 2024) proves deadlock freedom for this
+//! single-mailbox actor topology.
 
 use std::panic::{catch_unwind, AssertUnwindSafe};
 use std::sync::mpsc;
@@ -707,6 +723,7 @@ mod tests {
                 version: 1,
                 max_message_size: 16 * 1024 * 1024,
                 interests: vec![],
+                provides: vec![],
             },
             ct,
         ).expect("client connect failed");
@@ -794,6 +811,7 @@ mod tests {
                 version: 1,
                 max_message_size: 16 * 1024 * 1024,
                 interests: vec![],
+                provides: vec![],
             },
             ct,
         ).expect("client connect failed");
