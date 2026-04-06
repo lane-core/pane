@@ -111,11 +111,14 @@ impl<S: 'static> AttrReader<S> {
     }
 }
 
+/// Type-erased write closure: parse text, apply to state, return effects.
+type WriteFn<S> = Box<dyn Fn(&mut S, &str) -> Result<Vec<Effect>, WriteError> + Send + Sync>;
+
 /// Type-erased attribute writer (write path).
 /// Constructed from a MonadicLens by capturing parse + set.
 pub struct AttrWriter<S> {
     pub name: &'static str,
-    writer: Box<dyn Fn(&mut S, &str) -> Result<Vec<Effect>, WriteError> + Send + Sync>,
+    writer: WriteFn<S>,
 }
 
 #[derive(Debug, PartialEq)]
@@ -148,12 +151,18 @@ pub struct AttrSet<S> {
     writers: Vec<AttrWriter<S>>,
 }
 
-impl<S: 'static> AttrSet<S> {
-    pub fn new() -> Self {
+impl<S: 'static> Default for AttrSet<S> {
+    fn default() -> Self {
         AttrSet {
             readers: vec![],
             writers: vec![],
         }
+    }
+}
+
+impl<S: 'static> AttrSet<S> {
+    pub fn new() -> Self {
+        Self::default()
     }
 
     pub fn register_monadic_lens<A: fmt::Display + 'static>(&mut self, lens: &MonadicLens<S, A>) {
@@ -176,7 +185,7 @@ impl<S: 'static> AttrSet<S> {
         self.writers
             .iter()
             .find(|w| w.name == name)
-            .ok_or_else(|| WriteError::ReadOnly)
+            .ok_or(WriteError::ReadOnly)
             .and_then(|w| w.write(state, text))
     }
 

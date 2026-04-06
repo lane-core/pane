@@ -29,7 +29,9 @@ pub type Id = u64;
 /// Non-generic. Connection identity.
 #[must_use = "a Pane must be consumed by run, run_with, or setup"]
 pub struct Pane {
+    #[allow(dead_code)] // used when Pane gets real server connection
     pub(crate) id: Id,
+    #[allow(dead_code)] // used when Pane gets real server connection
     pub(crate) tag: Tag,
     // TODO: connection, looper_tx
 }

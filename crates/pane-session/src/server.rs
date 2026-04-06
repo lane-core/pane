@@ -117,8 +117,6 @@ struct ServerState {
     /// Write handles per connection.
     writers: HashMap<ConnectionId, WriteHandle>,
 
-    /// Next connection ID.
-    next_conn_id: u64,
 }
 
 impl ServerState {
@@ -128,14 +126,7 @@ impl ServerState {
             routing_table: HashMap::new(),
             next_session: HashMap::new(),
             writers: HashMap::new(),
-            next_conn_id: 1,
         }
-    }
-
-    fn alloc_conn_id(&mut self) -> ConnectionId {
-        let id = ConnectionId(self.next_conn_id);
-        self.next_conn_id += 1;
-        id
     }
 
     fn alloc_session(&mut self, conn: ConnectionId) -> Option<u16> {
@@ -371,6 +362,7 @@ impl ServerState {
 /// Call `accept()` to add connections. The actor thread processes
 /// all routing events sequentially. Reader threads are spawned
 /// per connection as thin negative adapters.
+///
 pub struct ProtocolServer {
     /// Channel to the actor thread. All events (new connections,
     /// frames, disconnects) go through this single channel.
@@ -416,6 +408,8 @@ impl std::fmt::Display for AcceptError {
 
 impl std::error::Error for AcceptError {}
 
+// No Default impl: new() spawns a thread. Use new() explicitly.
+#[allow(clippy::new_without_default)]
 impl ProtocolServer {
     pub fn new() -> Self {
         let (event_tx, event_rx) = mpsc::channel();
@@ -626,14 +620,6 @@ mod tests {
     use crate::handshake::ServiceProvision;
     use crate::transport::MemoryTransport;
     use pane_proto::protocol::ServiceId;
-
-    #[test]
-    fn server_state_alloc_conn_ids_are_unique() {
-        let mut state = ServerState::new();
-        let a = state.alloc_conn_id();
-        let b = state.alloc_conn_id();
-        assert_ne!(a, b);
-    }
 
     #[test]
     fn server_state_alloc_sessions_increment() {

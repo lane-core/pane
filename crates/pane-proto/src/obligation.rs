@@ -58,6 +58,12 @@ use std::sync::mpsc;
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ReplyFailed;
 
+/// One-shot reply closure: called with Ok(T) on reply or Err(ReplyFailed) on drop.
+type ReplySender<T> = Box<dyn FnOnce(Result<T, ReplyFailed>) + Send>;
+
+/// One-shot completion closure: called with Ok(()) or Err(CompletionFailed).
+type CompletionSender = Box<dyn FnOnce(Result<(), CompletionFailed>) + Send>;
+
 /// An obligation to reply to a request.
 ///
 /// Linear lens structure: the request decomposes the handler's
@@ -76,7 +82,7 @@ pub struct ReplyFailed;
 /// exactly once — either by .reply() or by Drop.
 #[must_use = "dropping a ReplyPort sends ReplyFailed to the requester"]
 pub struct ReplyPort<T: Send + 'static> {
-    send: Option<Box<dyn FnOnce(Result<T, ReplyFailed>) + Send>>,
+    send: Option<ReplySender<T>>,
 }
 
 impl<T: Send + 'static> ReplyPort<T> {
@@ -131,7 +137,7 @@ pub struct CompletionFailed;
 /// at construction time.
 #[must_use = "dropping a CompletionReplyPort sends CompletionFailed"]
 pub struct CompletionReplyPort {
-    send: Option<Box<dyn FnOnce(Result<(), CompletionFailed>) + Send>>,
+    send: Option<CompletionSender>,
 }
 
 impl CompletionReplyPort {

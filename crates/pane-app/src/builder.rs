@@ -31,6 +31,7 @@ use crate::service_handle::ServiceHandle;
 /// serve after dispatch begins.
 #[must_use = "a PaneBuilder must be consumed by run_with"]
 pub struct PaneBuilder<H: Handler> {
+    #[allow(dead_code)] // used when run_with passes pane identity to looper
     pane: Pane,
     /// Looper message receiver from the reader thread.
     rx: Option<std::sync::mpsc::Receiver<LooperMessage>>,

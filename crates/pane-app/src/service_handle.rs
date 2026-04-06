@@ -42,16 +42,6 @@ pub struct ServiceHandle<P: Protocol> {
 }
 
 impl<P: Protocol> ServiceHandle<P> {
-    /// Stub constructor — will be created by PaneBuilder::open_service.
-    /// No write channel — sends are silently dropped.
-    pub(crate) fn new() -> Self {
-        ServiceHandle {
-            session_id: 0,
-            write_tx: None,
-            _protocol: PhantomData,
-        }
-    }
-
     /// Full constructor with a write channel and assigned session_id.
     pub(crate) fn with_channel(
         session_id: u16,
@@ -249,7 +239,8 @@ mod tests {
 
     #[test]
     fn target_address_returns_address() {
-        let handle = ServiceHandle::<TestProto>::new();
+        let (tx, _rx) = std::sync::mpsc::sync_channel(1);
+        let handle = ServiceHandle::<TestProto>::with_channel(0, tx);
         let addr = handle.target_address();
         // Stub returns local(0)
         assert!(addr.is_local());
@@ -260,7 +251,8 @@ mod tests {
     fn send_request_compiles_with_correct_bounds() {
         // This test verifies the type constraints compile and
         // the stub returns a CancelHandle.
-        let handle = ServiceHandle::<TestProto>::new();
+        let (tx, _rx) = std::sync::mpsc::sync_channel(16);
+        let handle = ServiceHandle::<TestProto>::with_channel(0, tx);
         let mut dispatch = Dispatch::<TestHandler>::new();
         let mut ctx = DispatchCtx::new(&mut dispatch, PeerScope(1));
         let cancel = handle.send_request::<TestHandler, TestReply>(
@@ -275,7 +267,8 @@ mod tests {
 
     #[test]
     fn send_request_cancel_handle_drop_is_noop() {
-        let handle = ServiceHandle::<TestProto>::new();
+        let (tx, _rx) = std::sync::mpsc::sync_channel(16);
+        let handle = ServiceHandle::<TestProto>::with_channel(0, tx);
         let mut dispatch = Dispatch::<TestHandler>::new();
         let mut ctx = DispatchCtx::new(&mut dispatch, PeerScope(1));
         let cancel = handle.send_request::<TestHandler, TestReply>(
@@ -374,7 +367,8 @@ mod tests {
     #[test]
     fn stub_handle_send_request_does_not_panic() {
         // A handle without a write channel (stub) silently drops sends.
-        let handle = ServiceHandle::<TestProto>::new();
+        let (tx, _rx) = std::sync::mpsc::sync_channel(16);
+        let handle = ServiceHandle::<TestProto>::with_channel(0, tx);
         let mut dispatch = Dispatch::<TestHandler>::new();
         let mut ctx = DispatchCtx::new(&mut dispatch, PeerScope(1));
         let _cancel = handle.send_request::<TestHandler, TestReply>(
@@ -407,7 +401,8 @@ mod tests {
     #[test]
     fn drop_stub_handle_no_panic() {
         // A stub handle (no write channel) should not panic on drop.
-        let handle = ServiceHandle::<TestProto>::new();
+        let (tx, _rx) = std::sync::mpsc::sync_channel(16);
+        let handle = ServiceHandle::<TestProto>::with_channel(0, tx);
         drop(handle); // no-op, no panic
     }
 

@@ -37,11 +37,17 @@ pub struct Token(pub u64);
 /// A one-shot dispatch entry for a pending request/reply.
 /// Type-erased at storage time; the callbacks capture the
 /// concrete types via closure.
+/// Reply callback: handler + messenger + type-erased payload → Flow.
+pub(crate) type OnReply<H> =
+    Box<dyn FnOnce(&mut H, &crate::Messenger, Box<dyn std::any::Any + Send>) -> Flow + Send>;
+
+/// Failure callback: handler + messenger → Flow.
+pub(crate) type OnFailed<H> = Box<dyn FnOnce(&mut H, &crate::Messenger) -> Flow + Send>;
+
 pub(crate) struct DispatchEntry<H> {
     pub session_id: u16,
-    pub on_reply:
-        Box<dyn FnOnce(&mut H, &crate::Messenger, Box<dyn std::any::Any + Send>) -> Flow + Send>,
-    pub on_failed: Box<dyn FnOnce(&mut H, &crate::Messenger) -> Flow + Send>,
+    pub on_reply: OnReply<H>,
+    pub on_failed: OnFailed<H>,
 }
 
 /// The dynamic handler store for request/reply.
@@ -101,6 +107,8 @@ impl<H> Dispatch<H> {
     }
 
     /// Cancel an entry without firing callbacks (S5).
+    /// Used when Cancel message wiring lands (PLAN.md).
+    #[allow(dead_code)]
     pub(crate) fn cancel(&mut self, connection: PeerScope, token: Token) -> bool {
         self.entries.remove(&(connection, token)).is_some()
     }
