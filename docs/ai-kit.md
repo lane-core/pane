@@ -59,8 +59,9 @@ session with it.
 
 Agent panes are enumerable through the per-signature pane-fs
 index: `ls /pane/by-sig/com.pane.ai.agent.<name>/`. Without
-pane-fs, agent panes are not externally discoverable. (pane-fs
-is not yet specified; see PLAN.md Phase 2.)
+pane-fs, agent panes are not externally discoverable.
+(pane-fs specified in architecture.md §Namespace;
+FUSE implementation pending.)
 
 ### Crash safety
 
@@ -253,7 +254,8 @@ namespace (`/pane/<n>/body`, `/pane/<n>/attrs/`,
 `/pane/<n>/ctl`), use `Handles<P>` with `DeclareInterest` for
 typed protocol interaction, and `mail` for async messaging.
 `.access` governs which agents communicate with which.
-(pane-fs paths require pane-fs; see PLAN.md Phase 2.)
+(pane-fs specified in architecture.md §Namespace;
+FUSE implementation pending.)
 
 **Human ↔ agent:** unix terminal commands. `write ada` or
 `talk bob` — text on the agent's terminal. `mail` for async.
@@ -326,7 +328,7 @@ reads or writes a property — `echo "dark" >
 /pane/3/attrs/theme` sets the theme. `ctl` is imperative
 (do this); `attrs/` is declarative (set this to that).
 `ls /pane/3/commands/` discovers what `ctl` accepts.
-(Requires pane-fs.)
+(pane-fs specified; FUSE pending.)
 
 ### `talk(1)` — split-screen real-time session
 
@@ -339,7 +341,7 @@ agent streaming tokens. Ctrl-D ends the session.
 shared pane — both participants see the same editor buffer
 alongside the conversation. `cat /pane/9/body` shows the
 transcript. talk provides the session; pane-fs provides the
-enrichment. (Requires pane-fs.)
+enrichment. (pane-fs specified; FUSE pending.)
 
 ### `wall(1)` — broadcast
 
@@ -358,7 +360,7 @@ user's pane session can expose `/pane/self/attrs/available`.
 Agents interacting through pane-fs check this attribute.
 `.access` provides the hard enforcement: if the agent's
 `.access` doesn't grant write access, Landlock blocks the
-write regardless of availability. (Requires pane-fs.)
+write regardless of availability. (pane-fs specified; FUSE pending.)
 
 ### `vacation(1)` — auto-delegation
 
@@ -501,7 +503,7 @@ watching ~/src/pane for changes
 
 Running panes are discoverable via the per-signature index.
 `body` shows current output. `attrs/` shows typed state.
-(Requires pane-fs.)
+(pane-fs specified; FUSE pending.)
 
 **Capability discovery.** `ls /pane/5/attrs/` lists exposed
 properties. `ls /pane/5/commands/` lists accepted commands.
@@ -692,20 +694,19 @@ launch-time tool invoked by the s6-rc service `run` script
 before exec'ing the agent — not a build-time tool and not
 a runtime service.
 
-### Unspecified dependencies
+### Partially specified dependencies
 
-Several concepts used throughout this document are not yet
-specified in `docs/architecture.md`:
-
-- **pane-fs** — the filesystem namespace at `/pane/`. Agent
-  discovery, structured state, and cross-pane scripting
-  depend on it. PLAN.md Phase 2.
+- **pane-fs** — the filesystem namespace at `/pane/`. Specified
+  in architecture.md §Namespace (tree layout, snapshot model,
+  ctl dispatch, computed views, json reserved filename). FUSE
+  implementation pending. Agent discovery, structured state,
+  and cross-pane scripting depend on it.
 - **pane-store** — attribute indexing and queries. Agent
-  memory queries and mail indexing depend on it. PLAN.md
-  Phase 2.
+  memory queries and mail indexing depend on it. Not yet
+  specified. PLAN.md Phase 2.
 - **pane-notify** — filesystem-level change notification on
   pane-fs paths. Bulk monitoring depends on it. Not yet
-  phased.
+  specified.
 
 ### Phase mapping
 

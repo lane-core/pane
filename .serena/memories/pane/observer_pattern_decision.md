@@ -15,7 +15,7 @@ Filesystem attributes are strictly better for observable state:
 - **Crash recovery** — last-written state persists
 - **Scriptability** — `pane-notify watch /pane/42/attr/progress` works without app cooperation
 - **C1 alignment** — each observation is a separate filesystem watch, not a shared observer list
-- **Zero new infrastructure** — pane-notify and filesystem attributes already exist
+- **Minimal new infrastructure** — pane-notify preserved from prototype (not yet part of redesign crate set); filesystem attributes specified in architecture.md §Namespace
 
 ## Where filesystem doesn't work
 
@@ -25,8 +25,4 @@ Filesystem attributes are strictly better for observable state:
 
 ## Future API surface
 
-When pane-fs is implemented, add to Messenger:
-```rust
-fn set_property(&self, name: &str, value: &[u8]) -> Result<()>
-```
-This is the SendNotices equivalent: write an attribute, pane-notify watchers are automatically notified.
+pane-fs namespace is specified in architecture.md §Namespace (AttrReader, AttrSet, ctl dispatch, json reserved filename). FUSE implementation pending. When implemented, attribute writes through pane-fs trigger watchers automatically — the SendNotices equivalent.

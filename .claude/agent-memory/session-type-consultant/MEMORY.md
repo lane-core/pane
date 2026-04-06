@@ -1,32 +1,5 @@
-# Session Type Consultant Memory
+# Memory
 
-- [Optics soundness review](project_optics_soundness_review.md) -- pane-optic design conditionally sound, four invariants, reviewed 2026-03-30
-- [Distributed protocol review](project_distributed_protocol_review.md) -- reconnect, UUID PaneId, payload changes: polarity fix, Option B unsound, no Drop on Chan
-- [Distributed code review](project_distributed_code_review.md) -- TCP active phase NOT dropped (false positive), TLS lazy, non-blocking unenforced, duality correct
-- [Kit API improvements review](project_kit_api_improvements_review.md) -- filter mutation, quit protocol, PaneCreateFuture: deadlock constraint + orphan-pane race
-- [Clipboard + undo analysis](project_clipboard_undo_analysis.md) -- two-interface problem, TTL/security, undo sensitivity, six invariants for implementation
-- [C1 looper evolution](project_c1_looper_evolution.md) -- calloop multi-source select: conditionally sound, six invariants, three-phase migration
-- [Protocol audit 2026-03-31](project_protocol_audit_2026_03_31.md) -- full audit: ownership gap, reconnect unsound, Chan no Drop, Message::Clone partial, duality correct
-- [Phase 3 channel topology](project_phase3_channel_topology.md) -- register_channel<E> generic, ClipboardEvent extraction, commit() should return Result
-- [Service disconnect analysis](project_service_disconnect_analysis.md) -- proactive required, generic variant, commit()->Result, not opt-in
-- [Handler trait debate](project_handler_trait_debate.md) -- monolithic Handler vs per-protocol: concessions, attack points, key theorems
-- [Handler debate FINAL](project_handler_debate_final.md) -- settled: commit register_channel+EventKind+commit()->Result, defer trait split, five invariants
-- [Greenfield architecture](project_greenfield_architecture.md) -- SUPERSEDED: early from-scratch proposal (Sigma<H> renamed to Dispatch, builder pattern evolved to PaneBuilder<H>); see architecture.md
-- [Cross-proposal review](project_cross_proposal_review.md) -- Be+Plan9 review: Sigma (now Dispatch) conceded, messaging extraction argued, DeclareInterest adopted
-- [AI Kit review](project_ai_kit_review.md) -- conditionally sound, 7 issues (1 moderate: event blocking on looper thread), agents are protocol participants
-- [Phase 1 session review](project_phase1_session_review.md) -- ProtocolAbort+SessionEnum+handshake: two new invariants I10/I11, abort via framing layer, Cow for ServiceId
-- [Architecture spec review](project_architecture_spec_review.md) -- full spec review: KP2 misattribution, unknown discriminant gap, 4 new invariants I10-I13
-- [Pane<H> vs PaneBuilder<H>](project_pane_generic_decision.md) -- PaneBuilder<H> confirmed (name evolved PaneSetup→PaneInit→PaneBuilder), 7 actions, EAct mapping verified, blocking correct
-- [Optics doc audit](project_optics_doc_audit.md) -- both optics docs stale vs architecture.md, recommend archive, 26 stale type refs total
-- [Message trait analysis](project_message_trait_analysis.md) -- Message-as-trait conditionally sound, 5 conditions, CLONE_SAFE via #[obligation], naming collision
-- [Three-tier assessment](project_three_tier_assessment.md) -- telltale+par+pane-session: composition gap closed, two projection steps, vendor types, defer to Phase 2
-- [EAct homeroll analysis](project_eact_homeroll_analysis.md) -- SUPERSEDES three-tier: par+EAct sufficient for binary, no MPST layer needed, 4 critical invariants
-- [architecture.md review](project_architecture_next_review.md) -- spec review (now promoted to architecture.md): typed filters resolved object-safety, 2 minor
-- [Three-crate code review](project_three_crate_review.md) -- updated 2026-04-03: 2 moderate (Messenger crate boundary, Chan no Drop), 5 minor, EAct+CLL sound
-- [Handshake disconnect analysis](project_handshake_disconnect_analysis.md) -- panic=correct CLL encoding, error-through-channel violates 3-channel separation, 4 conditions
-- [EAct invariant verification](project_eact_invariant_verification.md) -- I1-I13+S1-S6: 9 satisfied, 2 convention, 8 need looper; Dispatch<H> correctly defunctionalizes sigma
-- [Namespace invariant observability](project_namespace_invariant_observability.md) -- 7 observable, 8 internal-only, 4-test minimal set, publication boundary is the unique value
-- [Optics x session types deliberation](project_optics_session_deliberation.md) -- no unified calculus, linear lenses=obligation handles, 8 findings, three-concern separation validated
-- [Session/optic boundary rules](project_boundary_rules.md) -- R1-R10 implementer rules, obligation handle placement, cartesian/linear split verified against code
-- [Language deliberation](project_language_deliberation.md) -- Haskell/OCaml vs Rust+par: stay with Rust, affine gap compensated, OCaml CBV real but narrow
-- [Wire framing analysis](project_wire_framing_analysis.md) -- sentinel collision, reserve 0xFF, I12 framing/looper split, Frame codec type+tests
+Serena is the single source of truth. Use `mcp__serena__list_memories` and `mcp__serena__read_memory` for all project context. Start with `pane/current_state`.
+
+Do NOT write to this directory. Write to serena instead.

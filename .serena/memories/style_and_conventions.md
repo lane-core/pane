@@ -12,7 +12,7 @@
 
 ## Architecture Patterns
 - Per-pane threading (BeOS BLooper model)
-- Three-phase protocol: session-typed handshake → per-service typed messages → session-typed teardown
+- Two-phase connection: Phase 1 verifies transport (Result), Phase 2 runs par handshake. Active phase uses per-service typed messages.
 - Message is base-protocol-only (lifecycle + display). Clone-safe. Service events dispatch through Handles<P>.
 - Messenger wraps scoped Handle + ServiceRouter. Cloneable Send handle.
 - Handler (lifecycle) + Handles<P> (Display, Clipboard, Routing, and all other protocols)

@@ -74,11 +74,11 @@ Default policy: when pane draws on Plan 9, cite the specific concept and documen
 | plumber `click` attribute: cursor context refines regex match | (not yet designed — should be adopted) | The click attribute pattern lets the plumber narrow a text selection to the semantically relevant portion. pane routing rules should support content-refinement. See plumb(6) `click` description. |
 | plumber BUGS: "file name space is fixed" | Kit-level routing evaluates in app's own namespace | Confirmed from plumber(4) BUGS section. The plumber couldn't route messages involving files in newly mounted services because it used its own fixed namespace. pane avoids this by design. |
 
-## Connection Resilience (IMPLEMENTED)
+## Connection Resilience (v1 REMOVED — redesign pending)
 
 | Plan 9 | pane | Rationale |
 |--------|------|-----------|
-| `aan(8)` filter — always-available network, buffers messages during temporary disconnection, retransmits unacknowledged data after reconnection | `ReconnectingTransport` in `pane-session/src/transport/reconnecting.rs` | Wraps TCP transport with reconnection + message buffering + replay. Configurable timeout (default 60s vs aan's 1 day). **Divergence:** aan was a symmetric filter applied to both client and server via `import -p`/`exportfs`; `ReconnectingTransport` is currently client-side only. Server-side buffering requires a matching component. Also: aan used a custom sequence-number protocol for reliable delivery; pane replays buffered messages at the framing layer, which is simpler but loses server-side messages sent during disconnection. |
+| `aan(8)` filter — always-available network, buffers messages during temporary disconnection, retransmits unacknowledged data after reconnection | (planned) ReconnectingTransport wrapping TCP with reconnection + message buffering + replay | v1 prototype had a ReconnectingTransport impl; removed during redesign. Design: configurable timeout (default 60s vs aan's 1 day). **Divergence:** aan was a symmetric filter applied to both client and server via `import -p`/`exportfs`; pane's version will be client-side only initially. aan used a custom sequence-number protocol; pane will replay buffered messages at the framing layer, simpler but loses server-side messages sent during disconnection. |
 
 ## Export / Namespace Filtering (UPDATED from primary sources)
 
@@ -86,12 +86,12 @@ Default policy: when pane draws on Plan 9, cite the specific concept and documen
 |--------|------|-----------|
 | `exportfs -P patternfile` — regex `+`/`-` patterns on path names | `.plan` file governs what a remote observer can see | exportfs(4) confirms: "For a file to be exported, all lines with prefix `+` must match and all those with prefix `-` must not match." pane's `.plan` should use structured predicates (signature, type, sensitivity) rather than path regexes. |
 
-## Diagnostic / Debugging Patterns (IMPLEMENTED)
+## Diagnostic / Debugging Patterns (v1 REMOVED — redesign pending)
 
 | Plan 9 | pane | Rationale |
 |--------|------|-----------|
-| `iostats` — transparent 9P proxy that monitors file operations | `ProxyTransport` wrapper in `pane-session/src/transport/proxy.rs` | Wraps any Transport impl, logs all send/recv with timestamps and hex preview. The names paper pattern applied to pane's Transport trait. |
-| `exportfs -d` — log all 9P traffic to a debug file | `--protocol-trace <file>` flag on pane-headless | Logs handshake messages (via ProxyTransport) and active-phase incoming messages to a file. Divergence: pane logs at both transport and application layers; Plan 9 logged only at the 9P layer. |
+| `iostats` — transparent 9P proxy that monitors file operations | (planned) ProxyTransport wrapping any Transport impl | v1 prototype had a ProxyTransport; removed during redesign. Design: wrap any Transport, log all send/recv with timestamps and hex preview. The names paper pattern applied to pane's Transport trait. |
+| `exportfs -d` — log all 9P traffic to a debug file | (planned) `--protocol-trace <file>` flag on headless binary | Design: log handshake + active-phase messages to file. Divergence: pane logs at both transport and application layers; Plan 9 logged only at the 9P layer. |
 
 ## Terminal / Window Architecture (NEW — from primary sources)
 

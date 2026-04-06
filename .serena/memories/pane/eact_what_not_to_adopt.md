@@ -1,6 +1,6 @@
 # EAct Concepts NOT Appropriate for Pane
 
-Aspects of Fowler et al. EventActors that should NOT be adopted, with rationale. Knowing what to avoid is as important as knowing what to adopt.
+Aspects of Fowler and Hu's EAct calculus ("Speak Now") that should NOT be adopted, with rationale. Knowing what to avoid is as important as knowing what to adopt.
 
 ## Flow-Sensitive Effect System
 
@@ -16,7 +16,7 @@ EAct checks linear usage of state type objects dynamically (multiple uses caught
 
 ## `suspend` as Named Primitive
 
-EAct's `suspend(handler, state)` is a first-class construct that installs a handler and yields to the event loop. In pane, the Handler method returning `Ok(true)` IS the suspend — the method returns, the looper loops, state persists as `&mut self` on the Handler. No need for an explicit suspend construct.
+EAct's `suspend(handler, state)` is a first-class construct that installs a handler and yields to the event loop. In pane, the Handler method returning `Flow::Continue` IS the suspend — the method returns, the looper loops, state persists as `&mut self` on the Handler. No need for an explicit suspend construct.
 
 ## `become` / `ibecome` (Session Switching)
 
@@ -24,7 +24,7 @@ EAct's session switching freezes a send-state session and activates it later via
 
 ## Access Points as Separate Abstraction (Now)
 
-EAct's `newAP[Protocol]` + `register(ap, role, callback)` is powerful but premature for pane. Currently one protocol relationship (compositor↔client). When pane has multiple system services (clipboard service, notification service, app registry), revisit the access point model for service discovery and session establishment. Building it now would be speculative infrastructure.
+EAct's `newAP[Protocol]` + `register(ap, role, callback)` is powerful but premature for pane. Multiple protocol relationships now exist (Lifecycle, Display, Clipboard, Routing, and application-defined protocols via Protocol + Handles<P>). DeclareInterest + ServiceRouter already provide access-point semantics. Revisit the full access point model if service discovery needs grow beyond the current service map.
 
 ## Multiparty Session Types on the Wire
 

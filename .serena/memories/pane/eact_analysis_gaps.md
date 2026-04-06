@@ -1,6 +1,6 @@
 # Structural Gaps: EAct Analysis of Pane's Actor Model
 
-Four gaps identified by analyzing Fowler et al. EventActors against pane's architecture. Each gap includes what EAct reveals and how the architecture spec resolves it.
+Four gaps identified by analyzing Fowler and Hu's EAct calculus ("Speak Now: Safe Actor Programming with Multiparty Session Types") against pane's architecture. Each gap includes what EAct reveals and how the architecture spec resolves it.
 
 ## Gap 1: Active Phase Sub-Protocols → Protocol Trait + DeclareInterest
 

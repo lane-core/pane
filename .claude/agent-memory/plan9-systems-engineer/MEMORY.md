@@ -1,25 +1,5 @@
-# Plan 9 Systems Engineer Memory
+# Memory
 
-- [Project: pane distributed model mapping](project_distributed_mapping.md) — completed research mapping Plan 9 mechanisms to pane's architecture
-- [User: Lane's distributed systems context](user_lane_context.md) — Lane's background and how to calibrate advice
-- [Reference: key Plan 9 design decisions for pane](reference_plan9_decisions.md) — which Plan 9 patterns were adopted/adapted/rejected and why
-- [Project: Phase 1 protocol extension decisions](project_protocol_extension_decisions.md) — PeerIdentity placement, instance_id format, calloop channel, Cancel deferral
-- [Project: test suite design for distributed pane](project_test_suite_design.md) — three-layer test taxonomy, MockCompositor vs headless roles, PaneId discipline
-- [Project: code review findings](project_code_review_findings.md) — 3-crate rewrite review: ServiceId UUID gap, Box::leak DoS, wire framing (2026-04-03)
-- [Project: clipboard and undo design](project_clipboard_undo_design.md) — MIME negotiation, TTL, cross-machine policy, undo ctl pattern (2026-03-31)
-- [Project: C1 looper evolution](project_c1_looper_evolution.md) — calloop multi-source select: wire stays single-stream, source priorities, coalescing risk (2026-03-31)
-- [Project: Plan 9 lineage audit](project_plan9_lineage_audit.md) — 10 new annotations needed, licensing clear (MIT), divergences tracker proposed (2026-03-31)
-- [Project: Plan 9 reference audit](project_reference_audit.md) — deep reading of vendored man pages + papers complete, insights in serena (2026-03-31)
-- [Project: Phase 3 channel topology](project_phase3_channel_topology.md) — mount metaphor, priority deferral, async clipboard channel, no fd table, concrete-not-generic
-- [Project: service disconnect model](project_service_disconnect_model.md) — fail at use site (Plan 9 Ehangup), no proactive notification, commit() returns Result
-- [Project: Pane-as-trait assessment](project_pane_as_trait_assessment.md) — SUPERSEDED by PaneBuilder<H> decision: Pane-as-trait was explored but not adopted; see architecture.md §Two-phase pane lifecycle
-- [Project: Pane-as-trait debate](project_pane_as_trait_debate.md) — Plan 9 vs Be positions: concessions, attacks, unresolved tensions (2026-03-31)
-- [Project: Handler architecture final](project_handler_architecture_final.md) — unified Handler + callback-struct, protocol caps, trait split deferred (2026-03-31)
-- [Project: Pane-is-directory architecture](project_pane_is_directory_architecture.md) — clean-slate: services as opened handles, DeclareInterest protocol, Handler shrinks to compositor
-- [Project: AI Kit review findings](project_ai_kit_review.md) — two rounds: identity, governance, communication, namespace, cpu, events, crash recovery (2026-04-03)
-- [Project: Pane generic parameter decision](project_pane_generic_decision.md) — PaneBuilder<H> approved (name evolved PaneSetup→PaneInit→PaneBuilder): run_with shortcuts, ServiceHandle binding semantics (2026-04-03)
-- [Project: EAct vs MPST decision](project_eact_vs_mpst_decision.md) — bottom-up (par CLL + EAct) over top-down (MPST): Plan 9 alignment, recursion gap, debugging risk (2026-04-03)
-- [Project: Three-channel error model](project_three_channel_error_model.md) — Handler returns bare Flow; errors split into protocol/control/crash channels (2026-04-03)
-- [Project: Namespace-as-test-surface](project_namespace_testing.md) — synchronous ctl, snapshot consistency, shell test idioms for pane-fs (2026-04-05)
-- [Project: 9P-as-optic-composition deliberation](project_optics_deliberation.md) — structural mapping real but keep optics as semantic model, not wire mechanism (2026-04-05)
-- [Project: Language split deliberation](project_language_split_deliberation.md) — core in OCaml/Haskell: postcard blocks it, CBOR recommended, split after Phase 1 (2026-04-05)
+Serena is the single source of truth. Use `mcp__serena__list_memories` and `mcp__serena__read_memory` for all project context. Start with `pane/current_state`.
+
+Do NOT write to this directory. Write to serena instead.

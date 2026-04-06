@@ -1,6 +1,6 @@
 # Session-Typed Actor Design Principles for Pane
 
-Derived from analysis of Fowler et al. "Safe Actor Programming with Multiparty Session Types" (EventActors/EAct) against pane's architecture. These principles guide protocol and API design.
+Derived from analysis of Fowler and Hu, "Speak Now: Safe Actor Programming with Multiparty Session Types," which defines the EAct calculus. Source: `~/gist/safe-actor-programming-with-multiparty-session-types/eventactors-extended.tex`. These principles guide protocol and API design.
 
 ## C1: Heterogeneous Session Loop
 

@@ -1,0 +1,15 @@
+name: pane-verification-0.1
+include: proofs
+depend: standard-library
+flags:
+  --no-sized-types
+  --erasure
+  --auto-inline
+  --erased-matches
+  --exact-split
+  --hidden-argument-puns
+  --postfix-projections
+  --qualified-instances
+
+  -Werror
+  -WnoUnsupportedIndexedMatch

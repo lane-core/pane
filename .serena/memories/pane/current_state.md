@@ -1,48 +1,32 @@
-# Pane Project Current State (2026-04-02)
+# Pane Project Current State (2026-04-05)
 
-## Redesign in progress
+## Implementation status
 
-The project is undergoing a fresh implementation based on the architecture spec (`docs/architecture.md`). The v1 prototype codebase has been struck — source files emptied for crates that require >20% rewrite. The spec is the source of truth; PLAN.md tracks execution against its four phases.
+Four crates, 93 tests:
 
-## What exists and works
+- **pane-proto** (10 files, 43 tests) — Protocol vocabulary, no IO. Message, Protocol, ServiceId, Flow, Handler, Handles<P>, MessageFilter, MonadicLens<S,A>, obligation handles (ReplyPort, CompletionReplyPort, CancelHandle).
+- **pane-session** (5 files, 25 tests) — Session-typed IPC. Transport trait, MemoryTransport, bridge (two-phase handshake over par), FrameCodec (wire framing with reserved 0xFF abort).
+- **pane-app** (8 files, 20 tests) — Actor framework. Pane, PaneBuilder<H>, Dispatch<H>, LooperCore<H> (catch_unwind + destruction sequence + exited guard), Messenger (stub), ServiceHandle (stub), ExitReason.
+- **pane-fs** (3 files, 5 tests) — Filesystem namespace. AttrReader<S>, AttrSet<S>, AttrValue, PaneEntry<S>.
 
-- **pane-session** — session-typed channels (Chan<S,T>), transport abstraction (Unix, TCP, TLS, Memory, Proxy, Reconnecting), calloop integration. ~520 LOC, 40 tests. Orthogonal to the redesign.
-- **pane-optic** — composable optic types (FieldLens, FieldAffine, FieldTraversal), composition, optic law tests. ~220 LOC. Pure crate, no protocol dependencies.
-- **pane-notify** — filesystem notification abstraction (fanotify/inotify on Linux, polling stub on macOS). ~180 LOC. No protocol dependencies.
-- **Nix flake** — NixOS, Darwin, sixos module definitions. Infrastructure carries forward.
-- **Reference material** — Haiku Book (reference/haiku-book/), Plan 9 man pages (reference/plan9/).
+pane-notify is listed in PLAN.md as "preserved from prototype" but is not part of the redesign crate set.
 
-## Current crates (clean slate, 2026-04-04)
-
-Three crates, 33 tests passing:
-- **pane-proto** — protocol vocabulary (Message, Protocol, ServiceId with UUID, Handles<P>, Handler, Flow, MessageFilter<M>, Property<S,A> via fp-library). No IO. Depends on fp-library, serde, uuid.
-- **pane-session** — par-backed IPC channels (Chan<S,T> using par's types as phantom state, Transport trait, MemoryTransport, handshake Hello/Welcome, ProtocolAbort on Drop). Depends on par, pane-proto, serde, postcard.
-- **pane-app** — EAct actor framework (Pane, PaneBuilder<H>, Dispatch<H>, Messenger, ServiceHandle<P>, ExitReason). Depends on pane-proto.
-
-All prior crates (pane-optic, pane-notify, pane-server, pane-comp, pane-headless, pane-hello) deleted.
+Optics live in `pane-proto/src/monadic_lens.rs` (Clarke et al. Def 4.6). No pane-optic crate. No fp-library dependency.
 
 ## What's next
 
-See PLAN.md. No phases — the spec describes the full architecture.
+See PLAN.md. Phase 1 (Core) is partially complete. Remaining: Display protocol, PeerAuth, handshake types, DeclareInterest, Cancel, ProtocolHandler derive macro, Messenger full impl, ConnectionSource, service registration, looper (calloop), AppPayload, server crate, headless binary.
 
 ## Dev workflow
 
-- `cargo check` / `cargo test` for surviving crates
-- Specs in docs/ (architecture.md is the design spec)
-- Kit-level API docs in Rust doc comments (source of truth for implemented crates)
-- Style guide: `docs/kit-documentation-style.md`
-- Naming guide: `docs/naming-conventions.md`
-- Haiku Book at `reference/haiku-book/` — primary BeOS/Haiku API reference
-- Plan 9 Programmer's Manual at `reference/plan9/` — man pages + paper sources
-- serena is sole memory system. Divergence trackers: `pane/beapi_divergences`, `pane/plan9_divergences`
-- Be engineer + Plan 9 engineer must be consulted before new subsystems
+See `suggested_commands` for build commands, `task_completion_checklist` for post-task steps.
 
-## Design guidance
-
-All protocol work designed against the EAct-derived session-type principles:
-- `pane/session_type_design_principles` — 6 principles (C1–C6)
-- `pane/eact_analysis_gaps` — 4 structural gaps
-- `pane/eact_what_not_to_adopt` — anti-patterns
-- `pane/plan9_reference_insights` — Plan 9 patterns per subsystem
-
-Key: sub-protocols use typestate handles (C2), new channels are separate typed sources (C1), failure modes use per-request Dispatch entries (C3).
+- Specs in `docs/` — `architecture.md` is the design spec
+- Kit API docs in Rust doc comments (source of truth for implemented crates)
+- Style: `docs/kit-documentation-style.md`
+- Naming: `docs/naming-conventions.md`
+- Haiku Book at `reference/haiku-book/`
+- Plan 9 material at `reference/plan9/`
+- Divergence trackers: `pane/beapi_divergences`, `pane/plan9_divergences`
+- Consult Be engineer + Plan 9 engineer before new subsystems
+- Four-agent workflow: see `pane/agent_workflow`
