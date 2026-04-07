@@ -22,4 +22,8 @@ After completing a planned multi-phase task where all tests and doc builds pass,
 
 ### Commit message format
 
-Two-paragraph body after the subject line. First paragraph describes the user's provenance in third person, using their name ("Lane decided...", "Lane asked..."): the decision procedure, thought process, design direction, and/or summary of the prompting history that led to the change. Second paragraph begins with "Agent steps:" and describes what the agent did to meet that objective, including model, agent consultations, and verification.
+Two-paragraph body after the subject line. First paragraph describes the user's provenance in third person, using their name ("Lane decided...", "Lane asked..."): the decision procedure, thought process, design direction, and/or summary of the prompting history that led to the change. Include a concrete summary of the prompt or directive that initiated the work (what was asked, not just what was decided). Second paragraph begins with "Agent steps:" and describes what the agent did to meet that objective, including model, agent consultations, and verification.
+
+Every commit containing AI-generated code must end with a `Generated-with:` trailer:
+
+    Generated-with: Claude opus-4-6 (Anthropic) via Claude Code

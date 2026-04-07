@@ -6,3 +6,4 @@ nixos.qcow2
 .direnv/
 generated/
 verification/_build/
+.genai-archive/
