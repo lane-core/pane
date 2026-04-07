@@ -239,6 +239,71 @@ impl<H: pane_proto::Handler> LooperCore<H> {
         drop(self);
     }
 
+    /// Process a synchronous request from a non-looper thread.
+    ///
+    /// Installs a dispatch entry whose on_reply/on_failed closures
+    /// route the result through the oneshot sender, then sends the
+    /// wire frame. This preserves the install-before-wire invariant
+    /// from within the looper thread.
+    ///
+    /// Does not touch the handler — no catch_unwind needed. The
+    /// dispatch entry closures ignore `&mut H` and `&Messenger`,
+    /// using only the captured `reply_tx`.
+    ///
+    /// Design heritage: Plan 9 devmnt.c mountio()
+    /// (reference/plan9/src/sys/src/9/port/devmnt.c:786-798)
+    /// linked Mntrpc onto m->queue (install) then wrote the
+    /// request (wire send) — same two-step from the dispatch
+    /// thread. BeOS BMessenger::SendMessage with reply port
+    /// (src/kits/app/Messenger.cpp:409-472).
+    pub(crate) fn process_sync_request(&mut self, req: crate::send_and_wait::SyncRequest) {
+        use crate::dispatch::DispatchEntry;
+        use crate::send_and_wait::SendAndWaitError;
+
+        let reply_tx_ok = req.reply_tx.clone();
+        let reply_tx_fail = req.reply_tx;
+
+        // 1. Install dispatch entry on the primary connection's
+        // PeerScope so reply routing (which uses primary_connection
+        // for lookup) can find it. During destruction,
+        // fail_connection fires on_failed for these entries —
+        // the caller receives Failed, meaning "your request did
+        // not get a reply." This is correct for both remote
+        // failure (explicit Failed frame) and local shutdown
+        // (destruction sequence).
+        let entry = DispatchEntry {
+            session_id: req.session_id,
+            on_reply: Box::new(move |_h: &mut H, _m: &Messenger, payload| {
+                let bytes = *payload
+                    .downcast::<Vec<u8>>()
+                    .expect("fire_reply must pass Box<Vec<u8>>");
+                // Best-effort: if the caller timed out and
+                // dropped the receiver, the send fails silently.
+                let _ = reply_tx_ok.try_send(Ok(bytes));
+                Flow::Continue
+            }),
+            on_failed: Box::new(move |_h: &mut H, _m: &Messenger| {
+                let _ = reply_tx_fail.try_send(Err(SendAndWaitError::Failed));
+                Flow::Continue
+            }),
+        };
+        let token = self.dispatch.insert(self.primary_connection, entry);
+
+        // 2. Build the wire frame with the allocated token.
+        // The SyncRequest carries the inner payload (tag + msg);
+        // we wrap it in ServiceFrame::Request here where the
+        // token is known.
+        let frame = pane_proto::ServiceFrame::Request {
+            token: token.0,
+            payload: req.wire_payload,
+        };
+        let outer_payload =
+            postcard::to_allocvec(&frame).expect("ServiceFrame serialization failed");
+
+        // 3. Wire send AFTER entry installed.
+        let _ = self.write_tx.send((req.session_id, outer_payload));
+    }
+
     /// Dispatch a lifecycle message through the Handler's blanket
     /// Handles<Lifecycle> impl, wrapped in catch_unwind.
     pub fn dispatch_lifecycle(

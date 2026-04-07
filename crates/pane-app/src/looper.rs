@@ -35,10 +35,15 @@ use calloop::{EventLoop, RegistrationToken};
 use crate::exit_reason::ExitReason;
 use crate::looper_core::{DispatchOutcome, LooperCore};
 use crate::timer::{TimerControl, TimerId};
+use crate::watchdog::{Heartbeat, Watchdog};
 use pane_proto::control::{ControlMessage, TeardownReason};
 use pane_proto::protocols::lifecycle::LifecycleMessage;
 use pane_proto::Address;
 use pane_session::bridge::LooperMessage;
+
+/// Default watchdog timeout: 5 seconds. A handler callback that
+/// hasn't returned in this time is presumed stuck (I2/I3).
+const DEFAULT_WATCHDOG_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
 
 /// Calloop-backed event loop with batch-ordered dispatch.
 ///
@@ -47,12 +52,17 @@ use pane_session::bridge::LooperMessage;
 /// channel (from the bridge) and a timer control channel (from
 /// Messenger/TimerToken) as calloop event sources.
 ///
+/// A watchdog thread monitors the heartbeat and fires if the
+/// looper stalls for longer than the watchdog timeout (I2/I3).
+///
 /// The looper thread's ThreadId is stored for I8 (send_and_wait)
 /// enforcement in a later task.
 pub struct Looper<H: pane_proto::Handler> {
     core: LooperCore<H>,
     thread_id: Option<thread::ThreadId>,
     timer_rx: Option<Channel<TimerControl>>,
+    sync_rx: Option<Channel<crate::send_and_wait::SyncRequest>>,
+    watchdog_timeout: std::time::Duration,
 }
 
 /// Events collected in one calloop iteration, sorted by dispatch phase.
@@ -61,6 +71,10 @@ pub struct Looper<H: pane_proto::Handler> {
 /// not yet implemented — they will be added when ctl write handling
 /// and snapshot publishing land.
 struct Batch {
+    /// Phase 0: Sync requests from non-looper threads. Processed
+    /// before any reply/failed phases to ensure the dispatch entry
+    /// and wire frame are emitted before reply dispatch.
+    sync_requests: Vec<crate::send_and_wait::SyncRequest>,
     /// Phase 1: Reply — resolve pending obligations first.
     replies: Vec<(u16, u64, Vec<u8>)>,
     /// Phase 1: Failed — resolve pending obligations first.
@@ -83,6 +97,7 @@ struct Batch {
 impl Batch {
     fn new() -> Self {
         Batch {
+            sync_requests: Vec::new(),
             replies: Vec::new(),
             failed: Vec::new(),
             teardowns: Vec::new(),
@@ -95,7 +110,8 @@ impl Batch {
     }
 
     fn is_empty(&self) -> bool {
-        self.replies.is_empty()
+        self.sync_requests.is_empty()
+            && self.replies.is_empty()
             && self.failed.is_empty()
             && self.teardowns.is_empty()
             && self.pane_exited.is_empty()
@@ -167,12 +183,26 @@ impl<H: pane_proto::Handler + 'static> Looper<H> {
     /// The timer_rx channel is registered as a calloop event
     /// source during run(). Pass None for tests that don't use
     /// timers — the Messenger::stub() constructor pairs with this.
-    pub(crate) fn new(core: LooperCore<H>, timer_rx: Option<Channel<TimerControl>>) -> Self {
+    pub(crate) fn new(
+        core: LooperCore<H>,
+        timer_rx: Option<Channel<TimerControl>>,
+        sync_rx: Option<Channel<crate::send_and_wait::SyncRequest>>,
+    ) -> Self {
         Looper {
             core,
             thread_id: None,
             timer_rx,
+            sync_rx,
+            watchdog_timeout: DEFAULT_WATCHDOG_TIMEOUT,
         }
+    }
+
+    /// Override the watchdog timeout. Default is 5 seconds.
+    /// Used by tests and applications with known long-running handlers.
+    #[doc(hidden)]
+    pub fn with_watchdog_timeout(mut self, timeout: std::time::Duration) -> Self {
+        self.watchdog_timeout = timeout;
+        self
     }
 
     /// The looper thread's ThreadId. Set during run(), None before.
@@ -192,6 +222,24 @@ impl<H: pane_proto::Handler + 'static> Looper<H> {
     /// and the destruction sequence has completed.
     pub fn run(mut self, rx: mpsc::Receiver<LooperMessage>) -> ExitReason {
         self.thread_id = Some(thread::current().id());
+
+        // Publish the looper thread's ThreadId for I8 enforcement.
+        // send_and_wait reads this via Messenger::looper_thread_id().
+        let _ = self
+            .core
+            .messenger()
+            .looper_thread_lock()
+            .set(thread::current().id());
+
+        // Spawn the watchdog thread. It monitors the heartbeat
+        // and logs if the looper stalls (I2/I3 detection).
+        let heartbeat = Heartbeat::new();
+        let _watchdog = Watchdog::spawn(heartbeat.clone(), self.watchdog_timeout, |duration| {
+            eprintln!(
+                "pane: watchdog fired — handler callback stalled for {:.1}s (I2/I3 violation)",
+                duration.as_secs_f64()
+            );
+        });
 
         // Create the calloop event loop and channel.
         let mut event_loop: EventLoop<LoopState> = match EventLoop::try_new() {
@@ -268,6 +316,25 @@ impl<H: pane_proto::Handler + 'static> Looper<H> {
             }
         }
 
+        // Register the sync request channel if present.
+        // SyncRequests arrive from non-looper threads via
+        // send_and_wait. Collected into the batch for Phase 0
+        // processing (dispatch entry install + wire send).
+        if let Some(sync_rx) = self.sync_rx.take() {
+            if handle
+                .insert_source(sync_rx, |event, _, state: &mut LoopState| {
+                    if let calloop_channel::Event::Msg(req) = event {
+                        state.batch.sync_requests.push(req);
+                    }
+                })
+                .is_err()
+            {
+                self.core.run_destruction_reason(ExitReason::InfraError);
+                self.core.shutdown();
+                return ExitReason::InfraError;
+            }
+        }
+
         // Forwarding thread: reads from the existing mpsc and sends
         // into the calloop channel. Blocks for one message, then
         // drains any immediately available messages before yielding.
@@ -309,6 +376,12 @@ impl<H: pane_proto::Handler + 'static> Looper<H> {
         // during the blocking call (especially from the forwarding
         // thread).
         loop {
+            // Heartbeat: signal the watchdog that the looper is alive.
+            // Placed at the top of the loop so the watchdog measures
+            // time spent inside dispatch (handler callbacks + batch
+            // processing), not time waiting for events.
+            heartbeat.beat();
+
             // Block until at least one event is available.
             if event_loop.dispatch(None, &mut state).is_err() {
                 self.core.run_destruction_reason(ExitReason::InfraError);
@@ -344,6 +417,16 @@ impl<H: pane_proto::Handler + 'static> Looper<H> {
     /// before iterating, so an early exit cleanly drops the remaining
     /// events without double-borrow issues on the batch.
     fn dispatch_batch(&mut self, batch: &mut Batch) -> Option<ExitReason> {
+        // Phase 0: Sync requests — install dispatch entries and
+        // send wire frames for blocked send_and_wait callers.
+        // Must run before Reply/Failed so entries are installed
+        // before any reply in a future batch could match them.
+        // Does not touch the handler (no catch_unwind needed).
+        let sync_reqs = std::mem::take(&mut batch.sync_requests);
+        for req in sync_reqs {
+            self.core.process_sync_request(req);
+        }
+
         // Phase 1: Reply and Failed — resolve pending obligations
         // before teardown can fail remaining entries.
         let replies = std::mem::take(&mut batch.replies);
@@ -434,6 +517,10 @@ impl Batch {
     /// Discard all remaining events. Used on early exit to avoid
     /// dispatching stale events after an exit condition.
     fn clear(&mut self) {
+        // Sync requests: callers are still blocked. Dropping the
+        // SyncRequest drops reply_tx, which unblocks them with
+        // RecvError (→ Disconnected).
+        self.sync_requests.clear();
         self.replies.clear();
         self.failed.clear();
         self.teardowns.clear();
@@ -581,7 +668,7 @@ mod tests {
             crate::Messenger::stub(),
         );
 
-        (Looper::new(core, None), msg_tx, msg_rx)
+        (Looper::new(core, None, None), msg_tx, msg_rx)
     }
 
     // ── Claim: single event dispatches correctly ─────────────
@@ -681,7 +768,7 @@ mod tests {
             },
         );
 
-        let looper = Looper::new(core, None);
+        let looper = Looper::new(core, None, None);
 
         // Send Reply matching the installed token, ServiceTeardown
         // for the same session, and CloseRequested in rapid succession.
@@ -740,7 +827,7 @@ mod tests {
             ServiceDispatch::new(),
             crate::Messenger::stub(),
         );
-        let looper = Looper::new(core, None);
+        let looper = Looper::new(core, None, None);
 
         // Teardown first in submission order, but phase ordering
         // ensures it also dispatches first.
@@ -878,7 +965,9 @@ mod tests {
         let (write_tx, _write_rx) = std::sync::mpsc::sync_channel(16);
 
         let (timer_tx, timer_rx) = calloop_channel::channel::<TimerControl>();
-        let messenger = crate::Messenger::new(timer_tx.clone());
+        let (sync_tx, _sync_rx) = calloop_channel::channel::<crate::send_and_wait::SyncRequest>();
+        let looper_thread = std::sync::Arc::new(std::sync::OnceLock::new());
+        let messenger = crate::Messenger::new(timer_tx.clone(), sync_tx, looper_thread);
 
         let handler = PulseTestHandler {
             log,
@@ -894,7 +983,12 @@ mod tests {
             messenger,
         );
 
-        (Looper::new(core, Some(timer_rx)), msg_tx, msg_rx, timer_tx)
+        (
+            Looper::new(core, Some(timer_rx), None),
+            msg_tx,
+            msg_rx,
+            timer_tx,
+        )
     }
 
     // ── Claim: timer fires pulse ────────────────────────────
@@ -972,5 +1066,313 @@ mod tests {
             "Cancelled timer should fire at most once, got {}: {events:?}",
             pulse_events.len()
         );
+    }
+
+    // ── send_and_wait tests ─────────────────────────────────
+
+    use crate::send_and_wait::SendAndWaitError;
+    use crate::service_handle::ServiceHandle;
+    use pane_proto::RequestProtocol;
+
+    // A request protocol for send_and_wait tests.
+    struct SawProto;
+
+    #[derive(Debug, Clone, Serialize, Deserialize)]
+    enum SawMsg {
+        Query(String),
+    }
+
+    #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+    enum SawReply {
+        Answer(String),
+    }
+
+    impl Protocol for SawProto {
+        fn service_id() -> ServiceId {
+            ServiceId::new("com.test.looper.send_and_wait")
+        }
+        type Message = SawMsg;
+    }
+
+    impl RequestProtocol for SawProto {
+        type Reply = SawReply;
+    }
+
+    /// Setup a looper with the sync channel wired up.
+    /// Returns: looper, msg_tx (for injecting replies), msg_rx
+    /// (for looper.run), messenger (for send_and_wait),
+    /// ServiceHandle<SawProto>, write_rx (for reading outbound
+    /// frames).
+    fn setup_looper_for_saw() -> (
+        Looper<BatchTestHandler>,
+        mpsc::Sender<LooperMessage>,
+        mpsc::Receiver<LooperMessage>,
+        crate::Messenger,
+        ServiceHandle<SawProto>,
+        std::sync::mpsc::Receiver<(u16, Vec<u8>)>,
+    ) {
+        let (exit_tx, _exit_rx) = mpsc::channel();
+        let (msg_tx, msg_rx) = mpsc::channel();
+        let (write_tx, write_rx) = std::sync::mpsc::sync_channel(16);
+
+        let (timer_tx, _timer_rx) = calloop_channel::channel::<TimerControl>();
+        let (sync_tx, sync_rx) = calloop_channel::channel::<crate::send_and_wait::SyncRequest>();
+        let looper_thread = std::sync::Arc::new(std::sync::OnceLock::new());
+        let messenger = crate::Messenger::new(timer_tx, sync_tx, looper_thread);
+
+        let log = Arc::new(Mutex::new(Vec::new()));
+        let handler = BatchTestHandler { log };
+
+        let core = LooperCore::with_service_dispatch(
+            handler,
+            PeerScope(1),
+            write_tx.clone(),
+            exit_tx,
+            ServiceDispatch::new(),
+            messenger.clone(),
+        );
+
+        let looper = Looper::new(core, None, Some(sync_rx));
+        let service_handle = ServiceHandle::<SawProto>::with_channel(5, write_tx);
+
+        (looper, msg_tx, msg_rx, messenger, service_handle, write_rx)
+    }
+
+    // ── Claim: send_and_wait returns reply ──────────────────
+
+    #[test]
+    fn send_and_wait_returns_reply() {
+        let (looper, msg_tx, msg_rx, messenger, service_handle, write_rx) = setup_looper_for_saw();
+
+        // Run the looper on a background thread.
+        let looper_thread = thread::spawn(move || looper.run(msg_rx));
+
+        // Simulate the remote side: read the outbound request,
+        // build a reply, and inject it back into the looper.
+        let reply_thread = {
+            let msg_tx = msg_tx.clone();
+            thread::spawn(move || {
+                let (session_id, payload) = write_rx.recv().expect("expected outbound request");
+                let frame: ServiceFrame =
+                    postcard::from_bytes(&payload).expect("deserialize outbound frame");
+                match frame {
+                    ServiceFrame::Request { token, .. } => {
+                        // Build a reply with the echoed token.
+                        let reply_bytes =
+                            postcard::to_allocvec(&SawReply::Answer("hello back".into())).unwrap();
+                        let reply_frame = ServiceFrame::Reply {
+                            token,
+                            payload: reply_bytes,
+                        };
+                        let reply_outer = postcard::to_allocvec(&reply_frame).unwrap();
+                        msg_tx
+                            .send(LooperMessage::Service {
+                                session_id,
+                                payload: reply_outer,
+                            })
+                            .unwrap();
+                    }
+                    other => panic!("expected Request, got {other:?}"),
+                }
+            })
+        };
+
+        // Call send_and_wait from this thread (non-looper).
+        let result = service_handle.send_and_wait(
+            &messenger,
+            SawMsg::Query("hello".into()),
+            std::time::Duration::from_secs(5),
+        );
+
+        assert_eq!(result.unwrap(), SawReply::Answer("hello back".into()));
+
+        reply_thread.join().unwrap();
+
+        // Shut down the looper cleanly.
+        msg_tx
+            .send(LooperMessage::Control(ControlMessage::Lifecycle(
+                LifecycleMessage::CloseRequested,
+            )))
+            .unwrap();
+        drop(msg_tx);
+
+        let reason = looper_thread.join().unwrap();
+        assert!(
+            matches!(reason, ExitReason::Graceful | ExitReason::Disconnected),
+            "expected Graceful or Disconnected, got {reason:?}"
+        );
+    }
+
+    // ── Claim: send_and_wait panics from looper thread (I8) ─
+
+    #[test]
+    fn send_and_wait_panics_from_looper_thread() {
+        // Create a messenger with the current thread's ID set
+        // as the looper thread, simulating a call from the looper.
+        let (timer_tx, _) = calloop_channel::channel::<TimerControl>();
+        let (sync_tx, _) = calloop_channel::channel::<crate::send_and_wait::SyncRequest>();
+        let looper_thread = std::sync::Arc::new(std::sync::OnceLock::new());
+        looper_thread.set(thread::current().id()).unwrap();
+        let messenger = crate::Messenger::new(timer_tx, sync_tx, looper_thread);
+
+        let (write_tx, _write_rx) = std::sync::mpsc::sync_channel(16);
+        let handle = ServiceHandle::<SawProto>::with_channel(1, write_tx);
+
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            handle.send_and_wait(
+                &messenger,
+                SawMsg::Query("should panic".into()),
+                std::time::Duration::from_secs(1),
+            )
+        }));
+
+        assert!(
+            result.is_err(),
+            "send_and_wait must panic from looper thread (I8)"
+        );
+    }
+
+    // ── Claim: send_and_wait times out ──────────────────────
+
+    #[test]
+    fn send_and_wait_timeout() {
+        let (looper, msg_tx, msg_rx, messenger, service_handle, _write_rx) = setup_looper_for_saw();
+
+        // Run the looper — but no one reads from write_rx to reply.
+        let looper_thread = thread::spawn(move || looper.run(msg_rx));
+
+        let result = service_handle.send_and_wait(
+            &messenger,
+            SawMsg::Query("no reply".into()),
+            std::time::Duration::from_millis(100),
+        );
+
+        assert_eq!(result.unwrap_err(), SendAndWaitError::Timeout);
+
+        // Shut down.
+        msg_tx
+            .send(LooperMessage::Control(ControlMessage::Lifecycle(
+                LifecycleMessage::CloseRequested,
+            )))
+            .unwrap();
+        drop(msg_tx);
+        looper_thread.join().unwrap();
+    }
+
+    // ── Claim: send_and_wait returns Failed ─────────────────
+
+    #[test]
+    fn send_and_wait_failed() {
+        let (looper, msg_tx, msg_rx, messenger, service_handle, write_rx) = setup_looper_for_saw();
+
+        let looper_thread = thread::spawn(move || looper.run(msg_rx));
+
+        // Simulate the remote side sending Failed.
+        let reply_thread = {
+            let msg_tx = msg_tx.clone();
+            thread::spawn(move || {
+                let (session_id, payload) = write_rx.recv().expect("expected outbound request");
+                let frame: ServiceFrame = postcard::from_bytes(&payload).expect("deserialize");
+                match frame {
+                    ServiceFrame::Request { token, .. } => {
+                        let failed_frame = ServiceFrame::Failed { token };
+                        let failed_outer = postcard::to_allocvec(&failed_frame).unwrap();
+                        msg_tx
+                            .send(LooperMessage::Service {
+                                session_id,
+                                payload: failed_outer,
+                            })
+                            .unwrap();
+                    }
+                    other => panic!("expected Request, got {other:?}"),
+                }
+            })
+        };
+
+        let result = service_handle.send_and_wait(
+            &messenger,
+            SawMsg::Query("will fail".into()),
+            std::time::Duration::from_secs(5),
+        );
+
+        assert_eq!(result.unwrap_err(), SendAndWaitError::Failed);
+
+        reply_thread.join().unwrap();
+
+        msg_tx
+            .send(LooperMessage::Control(ControlMessage::Lifecycle(
+                LifecycleMessage::CloseRequested,
+            )))
+            .unwrap();
+        drop(msg_tx);
+        looper_thread.join().unwrap();
+    }
+
+    // ── Claim: send_and_wait unblocks on looper shutdown ──────
+
+    #[test]
+    fn send_and_wait_unblocks_on_shutdown() {
+        let (looper, msg_tx, msg_rx, messenger, service_handle, _write_rx) = setup_looper_for_saw();
+
+        let looper_thread = thread::spawn(move || looper.run(msg_rx));
+
+        // Shut down the looper while the caller is blocked.
+        // CloseRequested triggers the destruction sequence, which
+        // calls fail_connection(primary) — this fires on_failed
+        // for the sync dispatch entry, unblocking the caller with
+        // Failed ("your request did not get a reply").
+        let msg_tx_clone = msg_tx.clone();
+        let shutdown_thread = thread::spawn(move || {
+            // Small delay so send_and_wait has time to submit
+            // the SyncRequest before the looper exits.
+            thread::sleep(std::time::Duration::from_millis(50));
+            msg_tx_clone
+                .send(LooperMessage::Control(ControlMessage::Lifecycle(
+                    LifecycleMessage::CloseRequested,
+                )))
+                .ok();
+        });
+
+        let result = service_handle.send_and_wait(
+            &messenger,
+            SawMsg::Query("shutting down".into()),
+            std::time::Duration::from_secs(5),
+        );
+
+        // The destruction sequence fires on_failed for all entries
+        // on the primary connection — the sync entry is on the
+        // primary connection so reply routing works. The caller
+        // receives Failed, meaning "request did not get a reply."
+        assert_eq!(result.unwrap_err(), SendAndWaitError::Failed);
+
+        shutdown_thread.join().unwrap();
+        drop(msg_tx);
+        looper_thread.join().unwrap();
+    }
+
+    // ── Claim: send_and_wait returns Disconnected if sync channel closed ─
+
+    #[test]
+    fn send_and_wait_disconnected_sync_channel_closed() {
+        // If the sync channel is already closed when send_and_wait
+        // tries to submit the SyncRequest, Disconnected is returned.
+        let (timer_tx, _) = calloop_channel::channel::<TimerControl>();
+        let (sync_tx, sync_rx) = calloop_channel::channel::<crate::send_and_wait::SyncRequest>();
+        let looper_thread_lock = std::sync::Arc::new(std::sync::OnceLock::new());
+        let messenger = crate::Messenger::new(timer_tx, sync_tx, looper_thread_lock);
+
+        // Drop the receiver to close the channel.
+        drop(sync_rx);
+
+        let (write_tx, _write_rx) = std::sync::mpsc::sync_channel(16);
+        let handle = ServiceHandle::<SawProto>::with_channel(1, write_tx);
+
+        let result = handle.send_and_wait(
+            &messenger,
+            SawMsg::Query("no looper".into()),
+            std::time::Duration::from_secs(1),
+        );
+
+        assert_eq!(result.unwrap_err(), SendAndWaitError::Disconnected);
     }
 }

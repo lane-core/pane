@@ -138,6 +138,94 @@ impl<P: Protocol> ServiceHandle<P> {
         }
     }
 
+    /// Send a typed request and block until the reply arrives,
+    /// the request fails, or the timeout expires.
+    ///
+    /// Must NOT be called from the looper thread (I8). Panics if
+    /// the caller is on the looper thread — blocking there would
+    /// deadlock the event loop.
+    ///
+    /// The request is submitted to the looper via a calloop channel.
+    /// The looper installs a dispatch entry (preserving
+    /// install-before-wire) and sends the wire frame. The reply
+    /// routes back through a oneshot channel to the blocked caller.
+    ///
+    /// No CancelHandle is returned — the caller is blocked, so
+    /// cancellation is incoherent. The dispatch entry is resolved
+    /// (reply, failed, or timeout) before this method returns.
+    ///
+    /// Design heritage: Plan 9 devmnt.c mountio()
+    /// (reference/plan9/src/sys/src/9/port/devmnt.c:772-826)
+    /// blocked the calling process until mountmux dispatched the
+    /// reply by tag. BeOS BMessenger::SendMessage(BMessage*,
+    /// BMessage*, bigtime_t) blocked on a temporary reply port
+    /// with a timeout (src/kits/app/Messenger.cpp:409-472).
+    ///
+    /// # Panics
+    ///
+    /// Panics if called from the looper thread (I8 enforcement).
+    pub fn send_and_wait(
+        &self,
+        messenger: &Messenger,
+        msg: P::Message,
+        timeout: std::time::Duration,
+    ) -> Result<P::Reply, crate::send_and_wait::SendAndWaitError>
+    where
+        P: pane_proto::RequestProtocol,
+        P::Reply: pane_proto::Message,
+    {
+        use crate::send_and_wait::{SendAndWaitError, SyncRequest};
+
+        // I8: panic if called from the looper thread.
+        if let Some(looper_tid) = messenger.looper_thread_id() {
+            assert!(
+                std::thread::current().id() != looper_tid,
+                "send_and_wait called from the looper thread (I8 violation). \
+                 Use send_request with callbacks instead."
+            );
+        }
+
+        // Serialize the inner payload (protocol tag + message).
+        // The looper wraps this in ServiceFrame::Request with
+        // the token allocated by Dispatch::insert.
+        let tag = P::service_id().tag();
+        let msg_bytes = match postcard::to_allocvec(&msg) {
+            Ok(b) => b,
+            Err(_) => return Err(SendAndWaitError::SerializationError),
+        };
+        let mut inner_payload = Vec::with_capacity(1 + msg_bytes.len());
+        inner_payload.push(tag);
+        inner_payload.extend_from_slice(&msg_bytes);
+
+        // Oneshot: capacity 1 — the looper sends exactly one result.
+        let (reply_tx, reply_rx) = std::sync::mpsc::sync_channel(1);
+
+        let req = SyncRequest {
+            session_id: self.session_id,
+            wire_payload: inner_payload,
+            reply_tx,
+        };
+
+        // Submit to the looper. If the channel is closed, the
+        // looper has already shut down.
+        if messenger.send_sync_request(req).is_err() {
+            return Err(SendAndWaitError::Disconnected);
+        }
+
+        // Block until reply, failure, or timeout.
+        match reply_rx.recv_timeout(timeout) {
+            Ok(Ok(reply_bytes)) => {
+                // Deserialize the reply type.
+                postcard::from_bytes(&reply_bytes).map_err(|_| SendAndWaitError::SerializationError)
+            }
+            Ok(Err(e)) => Err(e),
+            Err(std::sync::mpsc::RecvTimeoutError::Timeout) => Err(SendAndWaitError::Timeout),
+            Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => {
+                Err(SendAndWaitError::Disconnected)
+            }
+        }
+    }
+
     /// The address of the pane providing this service.
     pub fn target_address(&self) -> Address {
         // TODO: return the resolved target address

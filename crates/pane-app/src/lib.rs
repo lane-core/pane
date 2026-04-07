@@ -18,9 +18,11 @@ pub mod looper;
 pub mod looper_core;
 pub mod messenger;
 pub mod pane;
+pub mod send_and_wait;
 pub mod service_dispatch;
 pub mod service_handle;
 pub mod timer;
+pub(crate) mod watchdog;
 
 pub use builder::PaneBuilder;
 pub use dispatch_ctx::DispatchCtx;
@@ -29,6 +31,7 @@ pub use handles_request::HandlesRequest;
 pub use looper::Looper;
 pub use messenger::Messenger;
 pub use pane::Pane;
+pub use send_and_wait::SendAndWaitError;
 pub use service_handle::{wire_reply_port, ServiceHandle};
 pub use timer::TimerToken;
 

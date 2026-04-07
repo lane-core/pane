@@ -247,7 +247,16 @@ impl<H: Handler> PaneBuilder<H> {
         // Timer control channel: Messenger sends SetPulse/Cancel,
         // Looper processes them as calloop events.
         let (timer_tx, timer_rx) = calloop::channel::channel::<crate::timer::TimerControl>();
-        let messenger = crate::Messenger::new(timer_tx);
+
+        // Sync request channel: send_and_wait submits SyncRequests,
+        // the Looper installs dispatch entries and sends wire frames.
+        let (sync_tx, sync_rx) = calloop::channel::channel::<crate::send_and_wait::SyncRequest>();
+
+        // The looper thread OnceLock is shared between Messenger
+        // (for I8 checks) and Looper (which sets it during run()).
+        let looper_thread = std::sync::Arc::new(std::sync::OnceLock::new());
+
+        let messenger = crate::Messenger::new(timer_tx, sync_tx, looper_thread);
 
         let mut core = LooperCore::with_service_dispatch(
             handler,
@@ -281,7 +290,7 @@ impl<H: Handler> PaneBuilder<H> {
         }
 
         // Enter the calloop-backed event loop
-        let looper = Looper::new(core, Some(timer_rx));
+        let looper = Looper::new(core, Some(timer_rx), Some(sync_rx));
         looper.run(rx)
     }
 }

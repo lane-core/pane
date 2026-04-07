@@ -15,8 +15,12 @@
 //! Plan 9: like a fid — resolution happens once at open time;
 //! the result is a direct binding, not a name.
 
+use std::sync::{Arc, OnceLock};
+use std::thread::ThreadId;
+
 use pane_proto::Address;
 
+use crate::send_and_wait::SyncRequest;
 use crate::timer::{TimerControl, TimerToken};
 
 /// Scoped handle to a pane. The pane ID is baked in.
@@ -31,26 +35,40 @@ pub struct Messenger {
     // TODO: Handle (pane identity) + ServiceRouter
     self_address: Address,
     timer_tx: calloop::channel::Sender<TimerControl>,
+    /// Channel for submitting synchronous requests to the looper.
+    /// The looper installs dispatch entries and sends wire frames
+    /// on behalf of the blocked caller.
+    sync_tx: calloop::channel::Sender<SyncRequest>,
+    /// The looper thread's ThreadId, set during Looper::run().
+    /// Used by send_and_wait for I8 enforcement: callers on the
+    /// looper thread must not block (deadlock).
+    looper_thread: Arc<OnceLock<ThreadId>>,
 }
 
 impl Messenger {
-    /// Construct a Messenger with a real timer channel.
-    /// Called by the Looper during setup.
-    pub(crate) fn new(timer_tx: calloop::channel::Sender<TimerControl>) -> Self {
+    /// Construct a Messenger with real timer and sync channels.
+    /// Called by the builder during setup.
+    pub(crate) fn new(
+        timer_tx: calloop::channel::Sender<TimerControl>,
+        sync_tx: calloop::channel::Sender<SyncRequest>,
+        looper_thread: Arc<OnceLock<ThreadId>>,
+    ) -> Self {
         Messenger {
             self_address: Address::local(0),
             timer_tx,
+            sync_tx,
+            looper_thread,
         }
     }
 
-    /// Test-only constructor with a dummy timer channel.
-    /// The receiver is dropped immediately — timer sends
-    /// will silently fail, which is correct for tests that
-    /// don't exercise timers.
+    /// Test-only constructor with dummy channels.
+    /// Timer and sync sends silently fail — correct for tests
+    /// that don't exercise those paths.
     #[doc(hidden)]
     pub fn stub() -> Self {
-        let (tx, _rx) = calloop::channel::channel::<TimerControl>();
-        Self::new(tx)
+        let (timer_tx, _) = calloop::channel::channel::<TimerControl>();
+        let (sync_tx, _) = calloop::channel::channel::<SyncRequest>();
+        Self::new(timer_tx, sync_tx, Arc::new(OnceLock::new()))
     }
 
     /// This pane's address. Extractable, sendable to others
@@ -102,6 +120,24 @@ impl Messenger {
     pub fn set_pulse_rate(&self, duration: std::time::Duration) -> TimerToken {
         TimerToken::new(duration, self.timer_tx.clone())
     }
+
+    /// Submit a synchronous request to the looper for processing.
+    /// Called by ServiceHandle::send_and_wait.
+    pub(crate) fn send_sync_request(&self, req: SyncRequest) -> Result<(), SyncRequest> {
+        self.sync_tx.send(req).map_err(|e| e.0)
+    }
+
+    /// The looper thread's ThreadId, if the looper has started.
+    /// Returns None before Looper::run() sets it.
+    pub(crate) fn looper_thread_id(&self) -> Option<ThreadId> {
+        self.looper_thread.get().copied()
+    }
+
+    /// Handle to the looper thread OnceLock. The Looper sets this
+    /// during run() before entering the event loop.
+    pub(crate) fn looper_thread_lock(&self) -> &Arc<OnceLock<ThreadId>> {
+        &self.looper_thread
+    }
 }
 
 /// Marker trait for fire-and-forget messages via post_app_message.
@@ -116,8 +152,7 @@ mod tests {
     use super::*;
 
     fn test_messenger() -> Messenger {
-        let (tx, _rx) = calloop::channel::channel::<TimerControl>();
-        Messenger::new(tx)
+        Messenger::stub()
     }
 
     #[test]
