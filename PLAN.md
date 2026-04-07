@@ -96,22 +96,22 @@ Single server (N=1), headless, no suspension, no streaming. All multi-server dat
 
 From architecture spec I1–I13 and S1–S6. Status from formal-verifier audit (2026-04-05):
 
-- [x] **I1** (panic=unwind, Drop fires) — partial: tested via obligation handle unwind tests
-- [ ] **I2** (no blocking in handlers) — not testable without timeout watchdog
-- [ ] **I3** (handlers terminate) — not testable without timeout watchdog
+- [x] **I1** (panic=unwind, Drop fires) — tested via obligation handle unwind tests, request_handler_panic_sends_failed_via_drop
+- [ ] **I2** (no blocking in handlers) — convention, not enforceable without timeout watchdog
+- [ ] **I3** (handlers terminate) — convention, not enforceable without timeout watchdog (same limitation as EAct paper, lines 3068-3076)
 - [x] **I4** (typestate handles) — tested for ReplyPort, CompletionReplyPort, CancelHandle
-- [ ] **I5** (filters see only Clone-safe Messages) — partial: filter tests exist, bypass path untested
-- [ ] **I6** (sequential single-thread dispatch) — needs calloop integration
-- [ ] **I7** (service dispatch fn pointers sequential) — needs fn-pointer dispatch table
+- [x] **I5** (filters see only Clone-safe Messages) — type-level guarantee: Message trait requires Clone + Serialize + DeserializeOwned. No bypass path possible.
+- [x] **I6** (sequential single-thread dispatch) — holds by construction: LooperCore::run() is one thread, one rx.recv(), sequential handler calls. No calloop needed for the invariant — calloop replaces the mpsc loop but preserves single-thread dispatch.
+- [x] **I7** (service dispatch fn pointers sequential) — ServiceDispatch and RequestReceiver closures called sequentially within dispatch_service, same thread as I6
 - [ ] **I8** (send_and_wait panics from looper thread) — send_and_wait not implemented
 - [x] **I9** (dispatch cleared before handler drop) — tested in destruction_sequence_ordering
 - [x] **I10** (ProtocolAbort non-blocking) — partial: framing layer provides fallible write
 - [x] **I11** (ProtocolAbort at framing layer) — tested: reserved 0xFF, all paths covered
 - [x] **I12** (unknown discriminant → connection error) — tested: monotonic known_services
 - [x] **I13** (open_service blocks until accepted) — PaneBuilder::open_service blocks on mpsc channel for InterestAccepted/Declined, buffers unrelated messages
-- [x] **S1** (token uniqueness) — tested: consecutive inserts differ
-- [ ] **S2** (sequential dispatch) — follows from I6
-- [ ] **S3** (control-before-events in batch) — no batch processing
+- [x] **S1** (token uniqueness) — tested: monotonic per-Dispatch counter, no global. Tokens from Dispatch::insert via DispatchCtx.
+- [x] **S2** (sequential dispatch) — follows from I6: single-threaded looper, sequential handler calls
+- [ ] **S3** (control-before-events in batch) — no batch processing yet (requires calloop Looper)
 - [x] **S4** (fail_connection scoped) — tested at both Dispatch and LooperCore levels
 - [x] **S5** (cancel without callbacks) — tested with panic-on-call guards
 - [x] **S6** (panic=unwind) — follows from I1
