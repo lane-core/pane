@@ -403,6 +403,15 @@ impl<H: pane_proto::Handler> LooperCore<H> {
                     self.dispatch
                         .fail_session(session_id, &mut self.handler, &self.messenger);
                 }
+                Ok(LooperMessage::Control(ControlMessage::PaneExited { address, reason })) => {
+                    // Watched pane death notification — dispatch to
+                    // Handler::pane_exited via the blanket Handles<Lifecycle>
+                    // impl. Wrapped in catch_unwind by dispatch().
+                    let outcome = self.dispatch(|h| h.pane_exited(address, reason));
+                    if let DispatchOutcome::Exit(reason) = outcome {
+                        break reason;
+                    }
+                }
                 Ok(LooperMessage::Control(_other)) => {
                     // Non-lifecycle ControlMessage — framework-internal.
                     // Service negotiation messages handled by PaneBuilder

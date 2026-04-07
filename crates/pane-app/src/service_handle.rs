@@ -89,8 +89,7 @@ impl<P: Protocol> ServiceHandle<P> {
                 let bytes = *payload
                     .downcast::<Vec<u8>>()
                     .expect("fire_reply must pass Box<Vec<u8>>");
-                let reply: R = postcard::from_bytes(&bytes)
-                    .expect("reply deserialization failed");
+                let reply: R = postcard::from_bytes(&bytes).expect("reply deserialization failed");
                 on_reply(h, m, reply)
             }),
             on_failed: Box::new(on_failed),

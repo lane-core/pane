@@ -4,6 +4,7 @@
 //! runtime. Defines:
 //!   - Message trait (Clone + Serialize + DeserializeOwned + Send + 'static)
 //!   - Protocol trait + RequestProtocol supertrait + ServiceId
+//!   - ExitReason (pane death notification disposition)
 //!   - Flow (Continue / Stop)
 //!   - Handles<P> (uniform per-protocol dispatch)
 //!   - Handler (lifecycle convenience, blanket Handles<Lifecycle>)
@@ -15,6 +16,7 @@
 
 pub mod address;
 pub mod control;
+pub mod exit_reason;
 pub mod filter;
 pub mod flow;
 pub mod handler;
@@ -29,6 +31,7 @@ pub mod service_frame;
 
 pub use address::Address;
 pub use control::{ControlMessage, DeclineReason, TeardownReason};
+pub use exit_reason::ExitReason;
 pub use filter::{FilterAction, MessageFilter};
 pub use flow::Flow;
 pub use handler::Handler;

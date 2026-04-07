@@ -48,6 +48,24 @@ impl Messenger {
         // TODO: send to server via Handle
     }
 
+    /// Request death notification for a target pane.
+    /// The server sends PaneExited when the target exits.
+    /// Cancel with [`unwatch`](Self::unwatch). Server cleans
+    /// up if this pane exits while watching.
+    ///
+    /// # BeOS
+    ///
+    /// `BRoster::StartWatching`
+    /// (src/servers/registrar/TRoster.cpp:1523-1536).
+    pub fn watch(&self, _target: Address) {
+        // TODO: send ControlMessage::Watch { target } on control channel
+    }
+
+    /// Cancel a prior watch registration.
+    pub fn unwatch(&self, _target: Address) {
+        // TODO: send ControlMessage::Unwatch { target } on control channel
+    }
+
     /// Set the pulse timer interval. Returns a TimerToken
     /// whose Drop cancels the timer.
     pub fn set_pulse_rate(&self, _duration: std::time::Duration) -> TimerToken {

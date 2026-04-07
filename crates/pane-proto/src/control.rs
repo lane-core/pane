@@ -22,6 +22,8 @@
 //! negotiation) as enum variants — the type system groups related
 //! messages, an improvement over both flat dispatch tables.
 
+use crate::address::Address;
+use crate::exit_reason::ExitReason;
 use crate::protocol::ServiceId;
 use crate::protocols::lifecycle::LifecycleMessage;
 use serde::{Deserialize, Serialize};
@@ -61,6 +63,40 @@ pub enum ControlMessage {
     RevokeInterest { session_id: u16 },
     /// Advisory request cancellation (Tflush equivalent).
     Cancel { token: u64 },
+
+    /// Register for death notification of a target pane.
+    /// Server-mediated: the server maintains the watch table.
+    /// If the target is already dead at registration time,
+    /// the server sends PaneExited immediately (no race window).
+    ///
+    /// Fire-and-forget registration -- no obligation handle.
+    /// Cancel via Unwatch. Server cleans up on watcher disconnect.
+    ///
+    /// # BeOS
+    ///
+    /// `BRoster::StartWatching`
+    /// (src/servers/registrar/TRoster.cpp:1523-1536) registered
+    /// watchers at the registrar, which broadcast `B_SOME_APP_QUIT`
+    /// on app death. pane's ProtocolServer is the registrar analog.
+    Watch { target: Address },
+
+    /// Cancel a prior Watch registration.
+    Unwatch { target: Address },
+
+    /// Server -> client: a watched pane has exited.
+    /// Delivered on the control channel (service 0).
+    /// One-shot: the watch entry is consumed on delivery
+    /// (EAct E-InvokeM semantics -- Fowler/Hu S3.3).
+    ///
+    /// # BeOS
+    ///
+    /// `B_SOME_APP_QUIT` carried identity fields through
+    /// `WatchingService::NotifyWatchers()`
+    /// (src/servers/registrar/WatchingService.cpp:204-228).
+    PaneExited {
+        address: Address,
+        reason: ExitReason,
+    },
 }
 
 /// Why the server declined a service interest.
@@ -224,6 +260,65 @@ mod tests {
         match decoded {
             ControlMessage::Cancel { token } => assert_eq!(token, 0xDEAD_BEEF),
             other => panic!("expected Cancel, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn construct_watch() {
+        let msg = ControlMessage::Watch {
+            target: crate::Address::local(42),
+        };
+        assert!(matches!(msg, ControlMessage::Watch { .. }));
+    }
+
+    #[test]
+    fn construct_unwatch() {
+        let msg = ControlMessage::Unwatch {
+            target: crate::Address::local(42),
+        };
+        assert!(matches!(msg, ControlMessage::Unwatch { .. }));
+    }
+
+    #[test]
+    fn construct_pane_exited() {
+        let msg = ControlMessage::PaneExited {
+            address: crate::Address::local(42),
+            reason: crate::ExitReason::Graceful,
+        };
+        assert!(matches!(msg, ControlMessage::PaneExited { .. }));
+    }
+
+    #[test]
+    fn roundtrip_watch() {
+        let msg = ControlMessage::Watch {
+            target: crate::Address::remote(7, 3),
+        };
+        let bytes = postcard::to_allocvec(&msg).expect("serialize");
+        let decoded: ControlMessage = postcard::from_bytes(&bytes).expect("deserialize");
+        match decoded {
+            ControlMessage::Watch { target } => {
+                assert_eq!(target.pane_id, 7);
+                assert_eq!(target.server_id, 3);
+            }
+            other => panic!("expected Watch, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn roundtrip_pane_exited() {
+        let msg = ControlMessage::PaneExited {
+            address: crate::Address::local(99),
+            reason: crate::ExitReason::Disconnected,
+        };
+        let bytes = postcard::to_allocvec(&msg).expect("serialize");
+        let decoded: ControlMessage = postcard::from_bytes(&bytes).expect("deserialize");
+        match decoded {
+            ControlMessage::PaneExited { address, reason } => {
+                assert_eq!(address.pane_id, 99);
+                assert!(address.is_local());
+                assert_eq!(reason, crate::ExitReason::Disconnected);
+            }
+            other => panic!("expected PaneExited, got {other:?}"),
         }
     }
 }

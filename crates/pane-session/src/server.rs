@@ -26,7 +26,7 @@
 //! (Hinrichsen/Krebbers/Birkedal, POPL 2024) proves deadlock
 //! freedom for this single-mailbox actor topology.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::io::{Read, Write};
 use std::sync::mpsc;
 use std::sync::{Arc, Mutex};
@@ -117,6 +117,23 @@ struct ServerState {
     /// Write handles per connection.
     writers: HashMap<ConnectionId, WriteHandle>,
 
+    /// ConnectionId → Address. Populated at connection time.
+    /// Phase 1: pane_id = conn_id, server_id = 0 (local).
+    conn_addresses: HashMap<ConnectionId, pane_proto::Address>,
+
+    /// Watch table: watched ConnectionId → set of watcher ConnectionIds.
+    /// When a connection disconnects, iterate its watchers and send PaneExited.
+    ///
+    /// Design heritage: BeOS BRoster::StartWatching
+    /// (src/servers/registrar/TRoster.cpp:1523-1536) stored watchers
+    /// at the registrar. Plan 9's wait(2) was parent-child only.
+    /// pane's server-mediated watches allow any-to-any monitoring,
+    /// closer to BeOS's registrar model.
+    watch_table: HashMap<ConnectionId, HashSet<ConnectionId>>,
+
+    /// Reverse index: watcher ConnectionId → set of watched ConnectionIds.
+    /// For efficient cleanup when the watcher disconnects.
+    watcher_reverse: HashMap<ConnectionId, HashSet<ConnectionId>>,
 }
 
 impl ServerState {
@@ -126,6 +143,9 @@ impl ServerState {
             routing_table: HashMap::new(),
             next_session: HashMap::new(),
             writers: HashMap::new(),
+            conn_addresses: HashMap::new(),
+            watch_table: HashMap::new(),
+            watcher_reverse: HashMap::new(),
         }
     }
 
@@ -146,6 +166,15 @@ impl ServerState {
                 .or_default()
                 .push(conn);
         }
+    }
+
+    /// Look up a ConnectionId by Address. Linear scan — Phase 1 has
+    /// few connections; Phase 2 can add a reverse index.
+    fn resolve_conn(&self, addr: &pane_proto::Address) -> Option<ConnectionId> {
+        self.conn_addresses
+            .iter()
+            .find(|(_, a)| *a == addr)
+            .map(|(c, _)| *c)
     }
 
     /// Handle DeclareInterest. Returns Err with a reason on failure.
@@ -320,6 +349,52 @@ impl ServerState {
             ControlMessage::Cancel { token: _ } => {
                 // TODO: forward to provider side
             }
+            ControlMessage::Watch { target } => {
+                // Resolve target to a ConnectionId. If the target
+                // is unknown (already dead or never connected),
+                // send PaneExited immediately — no race window.
+                match self.resolve_conn(&target) {
+                    Some(target_conn) => {
+                        self.watch_table
+                            .entry(target_conn)
+                            .or_default()
+                            .insert(conn_id);
+                        self.watcher_reverse
+                            .entry(conn_id)
+                            .or_default()
+                            .insert(target_conn);
+                    }
+                    None => {
+                        // Target unknown — already dead or never existed.
+                        let exited = ControlMessage::PaneExited {
+                            address: target,
+                            reason: pane_proto::ExitReason::Disconnected,
+                        };
+                        if let Ok(bytes) = postcard::to_allocvec(&exited) {
+                            if let Some(wh) = self.writers.get(&conn_id) {
+                                let _ = wh.write_frame(0, &bytes);
+                            }
+                        }
+                    }
+                }
+            }
+            ControlMessage::Unwatch { target } => {
+                if let Some(target_conn) = self.resolve_conn(&target) {
+                    if let Some(watchers) = self.watch_table.get_mut(&target_conn) {
+                        watchers.remove(&conn_id);
+                        if watchers.is_empty() {
+                            self.watch_table.remove(&target_conn);
+                        }
+                    }
+                    if let Some(watched) = self.watcher_reverse.get_mut(&conn_id) {
+                        watched.remove(&target_conn);
+                        if watched.is_empty() {
+                            self.watcher_reverse.remove(&conn_id);
+                        }
+                    }
+                }
+                // Unknown target = no-op (already unwatched or never watched)
+            }
             _ => {}
         }
     }
@@ -339,6 +414,51 @@ impl ServerState {
     }
 
     fn process_disconnect(&mut self, conn_id: ConnectionId) {
+        // Notify watchers of this pane's death BEFORE remove_connection
+        // clears the writer (watchers need live write handles).
+        //
+        // One-shot: the watch entry is consumed on delivery
+        // (EAct E-InvokeM semantics -- Fowler/Hu S3.3).
+        let address = self.conn_addresses.get(&conn_id).copied();
+        if let Some(watchers) = self.watch_table.remove(&conn_id) {
+            if let Some(addr) = address {
+                let exited = ControlMessage::PaneExited {
+                    address: addr,
+                    reason: pane_proto::ExitReason::Disconnected,
+                };
+                if let Ok(bytes) = postcard::to_allocvec(&exited) {
+                    for watcher_conn in &watchers {
+                        if let Some(wh) = self.writers.get(watcher_conn) {
+                            let _ = wh.write_frame(0, &bytes);
+                        }
+                        // Clean up reverse index
+                        if let Some(watched_set) = self.watcher_reverse.get_mut(watcher_conn) {
+                            watched_set.remove(&conn_id);
+                            if watched_set.is_empty() {
+                                self.watcher_reverse.remove(watcher_conn);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        // Clean up any watches THIS connection had on others.
+        if let Some(watched_set) = self.watcher_reverse.remove(&conn_id) {
+            for watched_conn in watched_set {
+                if let Some(watchers) = self.watch_table.get_mut(&watched_conn) {
+                    watchers.remove(&conn_id);
+                    if watchers.is_empty() {
+                        self.watch_table.remove(&watched_conn);
+                    }
+                }
+            }
+        }
+
+        // Clean up address mapping.
+        self.conn_addresses.remove(&conn_id);
+
+        // Existing service teardown logic.
         let peers = self.remove_connection(conn_id);
 
         for (peer_conn, peer_session) in peers {
@@ -558,6 +678,10 @@ fn actor_loop(event_rx: mpsc::Receiver<ServerEvent>) {
                 state.register_provides(conn_id, &hello.provides);
                 state.writers.insert(conn_id, write_handle);
                 state.next_session.insert(conn_id, 1);
+                // Phase 1: pane_id = conn_id, server_id = 0 (local).
+                state
+                    .conn_addresses
+                    .insert(conn_id, pane_proto::Address::local(conn_id.0));
             }
             Ok(ServerEvent::Frame {
                 conn_id,
@@ -867,5 +991,177 @@ mod tests {
 
         client_handle.join().unwrap();
         conn.wait();
+    }
+
+    // -- Watch table tests --
+
+    fn setup_watched_state() -> ServerState {
+        let mut state = ServerState::new();
+        // Register two connections with addresses
+        state
+            .conn_addresses
+            .insert(ConnectionId(1), pane_proto::Address::local(1));
+        state
+            .conn_addresses
+            .insert(ConnectionId(2), pane_proto::Address::local(2));
+        state.next_session.insert(ConnectionId(1), 1);
+        state.next_session.insert(ConnectionId(2), 1);
+        state
+    }
+
+    #[test]
+    fn watch_registers_in_both_tables() {
+        let mut state = setup_watched_state();
+        // Test the data structures directly — process_control
+        // needs a writer, which requires transport wiring.
+        state
+            .watch_table
+            .entry(ConnectionId(1))
+            .or_default()
+            .insert(ConnectionId(2));
+        state
+            .watcher_reverse
+            .entry(ConnectionId(2))
+            .or_default()
+            .insert(ConnectionId(1));
+
+        assert!(state
+            .watch_table
+            .get(&ConnectionId(1))
+            .unwrap()
+            .contains(&ConnectionId(2)));
+        assert!(state
+            .watcher_reverse
+            .get(&ConnectionId(2))
+            .unwrap()
+            .contains(&ConnectionId(1)));
+    }
+
+    #[test]
+    fn unwatch_removes_from_both_tables() {
+        let mut state = setup_watched_state();
+
+        // Set up a watch
+        state
+            .watch_table
+            .entry(ConnectionId(1))
+            .or_default()
+            .insert(ConnectionId(2));
+        state
+            .watcher_reverse
+            .entry(ConnectionId(2))
+            .or_default()
+            .insert(ConnectionId(1));
+
+        // Simulate Unwatch
+        let target_conn = state.resolve_conn(&pane_proto::Address::local(1)).unwrap();
+        assert_eq!(target_conn, ConnectionId(1));
+
+        if let Some(watchers) = state.watch_table.get_mut(&target_conn) {
+            watchers.remove(&ConnectionId(2));
+            if watchers.is_empty() {
+                state.watch_table.remove(&target_conn);
+            }
+        }
+        if let Some(watched) = state.watcher_reverse.get_mut(&ConnectionId(2)) {
+            watched.remove(&target_conn);
+            if watched.is_empty() {
+                state.watcher_reverse.remove(&ConnectionId(2));
+            }
+        }
+
+        assert!(state.watch_table.get(&ConnectionId(1)).is_none());
+        assert!(state.watcher_reverse.get(&ConnectionId(2)).is_none());
+    }
+
+    #[test]
+    fn resolve_conn_finds_by_address() {
+        let state = setup_watched_state();
+        assert_eq!(
+            state.resolve_conn(&pane_proto::Address::local(1)),
+            Some(ConnectionId(1))
+        );
+        assert_eq!(
+            state.resolve_conn(&pane_proto::Address::local(2)),
+            Some(ConnectionId(2))
+        );
+        assert_eq!(state.resolve_conn(&pane_proto::Address::local(99)), None);
+    }
+
+    #[test]
+    fn disconnect_cleans_watch_tables_for_watched() {
+        let mut state = setup_watched_state();
+
+        // conn 2 watches conn 1
+        state
+            .watch_table
+            .entry(ConnectionId(1))
+            .or_default()
+            .insert(ConnectionId(2));
+        state
+            .watcher_reverse
+            .entry(ConnectionId(2))
+            .or_default()
+            .insert(ConnectionId(1));
+
+        // conn 1 disconnects — watch_table entry for conn 1
+        // is consumed during PaneExited delivery
+        state.watch_table.remove(&ConnectionId(1));
+        // Reverse index cleanup
+        if let Some(watched) = state.watcher_reverse.get_mut(&ConnectionId(2)) {
+            watched.remove(&ConnectionId(1));
+            if watched.is_empty() {
+                state.watcher_reverse.remove(&ConnectionId(2));
+            }
+        }
+
+        assert!(state.watch_table.is_empty());
+        assert!(state.watcher_reverse.is_empty());
+    }
+
+    #[test]
+    fn disconnect_cleans_watch_tables_for_watcher() {
+        let mut state = setup_watched_state();
+
+        // conn 2 watches conn 1
+        state
+            .watch_table
+            .entry(ConnectionId(1))
+            .or_default()
+            .insert(ConnectionId(2));
+        state
+            .watcher_reverse
+            .entry(ConnectionId(2))
+            .or_default()
+            .insert(ConnectionId(1));
+
+        // conn 2 disconnects — clean up its watcher_reverse entry
+        // and remove it from watch_table entries
+        if let Some(watched_set) = state.watcher_reverse.remove(&ConnectionId(2)) {
+            for watched_conn in watched_set {
+                if let Some(watchers) = state.watch_table.get_mut(&watched_conn) {
+                    watchers.remove(&ConnectionId(2));
+                    if watchers.is_empty() {
+                        state.watch_table.remove(&watched_conn);
+                    }
+                }
+            }
+        }
+
+        assert!(state.watch_table.is_empty());
+        assert!(state.watcher_reverse.is_empty());
+    }
+
+    #[test]
+    fn conn_address_populated_on_registration() {
+        let mut state = ServerState::new();
+        let conn = ConnectionId(42);
+        state
+            .conn_addresses
+            .insert(conn, pane_proto::Address::local(conn.0));
+
+        let addr = state.conn_addresses.get(&conn).unwrap();
+        assert_eq!(addr.pane_id, 42);
+        assert!(addr.is_local());
     }
 }

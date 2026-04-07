@@ -6,6 +6,8 @@
 //! Handles<Lifecycle> impl dispatches through the same mechanism
 //! as all other protocols.
 
+use crate::address::Address;
+use crate::exit_reason::ExitReason;
 use crate::protocol::{Protocol, ServiceId};
 use serde::{Deserialize, Serialize};
 
@@ -27,4 +29,17 @@ pub enum LifecycleMessage {
     CloseRequested,
     Disconnected,
     Pulse,
+    /// A watched pane has exited. Dispatches to
+    /// [`Handler::pane_exited`](crate::handler::Handler::pane_exited).
+    ///
+    /// Only fires for panes explicitly watched via
+    /// `Messenger::watch()`. Not a broadcast — registration-based.
+    ///
+    /// # BeOS
+    ///
+    /// `B_SOME_APP_QUIT` (src/servers/registrar/WatchingService.cpp:204-228).
+    PaneExited {
+        address: Address,
+        reason: ExitReason,
+    },
 }

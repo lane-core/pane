@@ -9,6 +9,8 @@
 //! pane returns Flow. BLooper::QuitRequested returned bool; pane
 //! keeps this as quit_requested(&self) -> bool.
 
+use crate::address::Address;
+use crate::exit_reason::ExitReason;
 use crate::flow::Flow;
 use crate::handles::Handles;
 use crate::protocols::lifecycle::{Lifecycle, LifecycleMessage};
@@ -33,6 +35,23 @@ pub trait Handler: Send + 'static {
         Flow::Continue
     }
 
+    /// Called when a watched pane has exited. Override to react
+    /// to monitored pane death.
+    ///
+    /// Only fires for panes explicitly watched via
+    /// `Messenger::watch()`. Not a broadcast -- registration-based.
+    ///
+    /// Default: continues the event loop (`Flow::Continue`).
+    ///
+    /// # BeOS
+    ///
+    /// `B_SOME_APP_QUIT` delivered through
+    /// `WatchingService::NotifyWatchers()`
+    /// (src/servers/registrar/WatchingService.cpp:204-228).
+    fn pane_exited(&mut self, _pane: Address, _reason: ExitReason) -> Flow {
+        Flow::Continue
+    }
+
     /// Query, not dispatch — returns bool, not Flow. &self for
     /// deadlock freedom. Side effects must happen before returning
     /// true (save in close_requested, not here).
@@ -52,6 +71,7 @@ impl<H: Handler> Handles<Lifecycle> for H {
             LifecycleMessage::CloseRequested => self.close_requested(),
             LifecycleMessage::Disconnected => self.disconnected(),
             LifecycleMessage::Pulse => self.pulse(),
+            LifecycleMessage::PaneExited { address, reason } => self.pane_exited(address, reason),
         }
     }
 }
@@ -83,6 +103,10 @@ mod tests {
         assert_eq!(h.close_requested(), Flow::Stop);
         assert_eq!(h.disconnected(), Flow::Stop);
         assert_eq!(h.pulse(), Flow::Continue);
+        assert_eq!(
+            h.pane_exited(crate::Address::local(1), crate::ExitReason::Graceful,),
+            Flow::Continue,
+        );
         assert!(h.quit_requested());
     }
 
@@ -115,6 +139,10 @@ mod tests {
             LifecycleMessage::CloseRequested,
             LifecycleMessage::Disconnected,
             LifecycleMessage::Pulse,
+            LifecycleMessage::PaneExited {
+                address: crate::Address::local(1),
+                reason: crate::ExitReason::Graceful,
+            },
         ] {
             let _ = <MinimalHandler as Handles<Lifecycle>>::receive(&mut h, msg);
         }
