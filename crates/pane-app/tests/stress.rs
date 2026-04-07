@@ -70,7 +70,13 @@ fn make_core(
 ) -> LooperCore<StressHandler> {
     let handler = StressHandler::new(log);
     let (write_tx, _write_rx) = std::sync::mpsc::sync_channel(16);
-    LooperCore::new(handler, PeerScope(1), write_tx, exit_tx)
+    LooperCore::new(
+        handler,
+        PeerScope(1),
+        write_tx,
+        exit_tx,
+        pane_app::Messenger::stub(),
+    )
 }
 
 // ════════════════════════════════════════════════════════════════
@@ -177,6 +183,7 @@ fn cross_protocol_gibberish_payload_dropped_by_tag() {
         PeerScope(1),
         write_tx,
         exit_tx,
+        pane_app::Messenger::stub(),
     );
     let messenger = core.messenger().clone();
 
@@ -256,6 +263,7 @@ fn cross_protocol_structural_match_rejected_without_tag() {
         PeerScope(1),
         write_tx,
         exit_tx,
+        pane_app::Messenger::stub(),
     );
     let messenger = core.messenger().clone();
 
@@ -417,7 +425,13 @@ fn run_handler_panic_exits_failed() {
     handler.should_panic_on_ready = true;
 
     let (write_tx, _write_rx) = std::sync::mpsc::sync_channel(16);
-    let core = LooperCore::new(handler, PeerScope(1), write_tx, exit_tx);
+    let core = LooperCore::new(
+        handler,
+        PeerScope(1),
+        write_tx,
+        exit_tx,
+        pane_app::Messenger::stub(),
+    );
 
     let (msg_tx, msg_rx) = mpsc::channel();
 
@@ -534,6 +548,7 @@ fn gibberish_service_frame_tag_check_and_panic() {
         write_tx,
         exit_tx,
         service_dispatch,
+        pane_app::Messenger::stub(),
     );
 
     // Case 1: gibberish that can't parse as ServiceFrame.

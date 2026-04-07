@@ -67,7 +67,13 @@ fn main() {
 
     let (write_tx, _write_rx) = std::sync::mpsc::sync_channel(16);
     let (exit_tx, _exit_rx) = mpsc::channel();
-    let looper = LooperCore::new(HelloHandler, PeerScope(0), write_tx, exit_tx);
+    let looper = LooperCore::new(
+        HelloHandler,
+        PeerScope(0),
+        write_tx,
+        exit_tx,
+        pane_app::Messenger::stub(),
+    );
     let reason = looper.run(client.rx);
 
     println!("client: exited with {reason:?}");

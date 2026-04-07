@@ -87,12 +87,13 @@ impl<H: pane_proto::Handler> LooperCore<H> {
         primary_connection: PeerScope,
         write_tx: std::sync::mpsc::SyncSender<(u16, Vec<u8>)>,
         exit_tx: mpsc::Sender<ExitReason>,
+        messenger: Messenger,
     ) -> Self {
         LooperCore {
             handler,
             dispatch: Dispatch::new(),
             service_dispatch: ServiceDispatch::new(),
-            messenger: Messenger::new(),
+            messenger,
             primary_connection,
             write_tx,
             exit_tx,
@@ -108,12 +109,13 @@ impl<H: pane_proto::Handler> LooperCore<H> {
         write_tx: std::sync::mpsc::SyncSender<(u16, Vec<u8>)>,
         exit_tx: mpsc::Sender<ExitReason>,
         service_dispatch: ServiceDispatch<H>,
+        messenger: Messenger,
     ) -> Self {
         LooperCore {
             handler,
             dispatch: Dispatch::new(),
             service_dispatch,
-            messenger: Messenger::new(),
+            messenger,
             primary_connection,
             write_tx,
             exit_tx,
@@ -586,7 +588,7 @@ mod tests {
     ) -> LooperCore<TestHandler> {
         let handler = TestHandler::new(log);
         let (write_tx, _write_rx) = std::sync::mpsc::sync_channel(16);
-        LooperCore::new(handler, PeerScope(1), write_tx, exit_tx)
+        LooperCore::new(handler, PeerScope(1), write_tx, exit_tx, Messenger::stub())
     }
 
     // ── Claim: Flow::Continue → next event ─────────────────
@@ -1027,6 +1029,7 @@ mod tests {
             write_tx,
             exit_tx,
             service_dispatch,
+            Messenger::stub(),
         );
 
         // Send a service notification on session_id=3.
@@ -1141,7 +1144,7 @@ mod tests {
         // Wire the channel into LooperCore.
         let handler = TestHandler::new(log.clone());
         let (write_tx, _write_rx) = std::sync::mpsc::sync_channel(16);
-        let core = LooperCore::new(handler, PeerScope(1), write_tx, exit_tx);
+        let core = LooperCore::new(handler, PeerScope(1), write_tx, exit_tx, Messenger::stub());
 
         let exit_reason = core.run(client.rx);
 
@@ -1240,7 +1243,7 @@ mod tests {
 
         let handler = TestHandler::new(log.clone());
         let (write_tx, _write_rx) = std::sync::mpsc::sync_channel(16);
-        let core = LooperCore::new(handler, PeerScope(1), write_tx, exit_tx);
+        let core = LooperCore::new(handler, PeerScope(1), write_tx, exit_tx, Messenger::stub());
 
         let exit_reason = core.run(client.rx);
 
@@ -1394,6 +1397,7 @@ mod tests {
                 write_tx,
                 exit_tx,
                 service_dispatch,
+                Messenger::stub(),
             );
 
             // Send Request on session_id=5
@@ -1461,6 +1465,7 @@ mod tests {
                 write_tx,
                 exit_tx,
                 service_dispatch,
+                Messenger::stub(),
             );
 
             // Send Request on session_id=99 (not registered)
@@ -1526,6 +1531,7 @@ mod tests {
                 write_tx,
                 exit_tx,
                 service_dispatch,
+                Messenger::stub(),
             );
 
             // Send Request — handler will panic
@@ -1579,6 +1585,7 @@ mod tests {
                 write_tx,
                 exit_tx,
                 service_dispatch,
+                Messenger::stub(),
             );
 
             // Send Request — handler will panic, ReplyPort dropped

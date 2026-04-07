@@ -16,25 +16,41 @@
 //! the result is a direct binding, not a name.
 
 use pane_proto::Address;
-use std::marker::PhantomData;
+
+use crate::timer::{TimerControl, TimerToken};
 
 /// Scoped handle to a pane. The pane ID is baked in.
 /// The handler receives this from the looper and uses it to
 /// send messages, set content, manage timers, etc.
+///
+/// Clone + Send: the handler can stash it, pass it to spawned
+/// work, or hand it to framework callbacks. The calloop channel
+/// sender inside is Clone + Send when T: Send.
 #[derive(Clone)]
 pub struct Messenger {
     // TODO: Handle (pane identity) + ServiceRouter
     self_address: Address,
-    _private: PhantomData<()>,
+    timer_tx: calloop::channel::Sender<TimerControl>,
 }
 
 impl Messenger {
-    /// Stub — will be constructed by the looper with a real address.
-    pub(crate) fn new() -> Self {
+    /// Construct a Messenger with a real timer channel.
+    /// Called by the Looper during setup.
+    pub(crate) fn new(timer_tx: calloop::channel::Sender<TimerControl>) -> Self {
         Messenger {
             self_address: Address::local(0),
-            _private: PhantomData,
+            timer_tx,
         }
+    }
+
+    /// Test-only constructor with a dummy timer channel.
+    /// The receiver is dropped immediately — timer sends
+    /// will silently fail, which is correct for tests that
+    /// don't exercise timers.
+    #[doc(hidden)]
+    pub fn stub() -> Self {
+        let (tx, _rx) = calloop::channel::channel::<TimerControl>();
+        Self::new(tx)
     }
 
     /// This pane's address. Extractable, sendable to others
@@ -68,23 +84,23 @@ impl Messenger {
 
     /// Set the pulse timer interval. Returns a TimerToken
     /// whose Drop cancels the timer.
-    pub fn set_pulse_rate(&self, _duration: std::time::Duration) -> TimerToken {
-        // TODO: register timer with looper
-        TimerToken {
-            _private: PhantomData,
-        }
-    }
-}
-
-/// Handle for a running timer. Drop cancels.
-#[must_use = "dropping a TimerToken cancels the timer"]
-pub struct TimerToken {
-    _private: PhantomData<()>,
-}
-
-impl Drop for TimerToken {
-    fn drop(&mut self) {
-        // TODO: send CancelTimer to looper
+    ///
+    /// The timer fires `LifecycleMessage::Pulse` at the given
+    /// interval, dispatched through `Handler::pulse()`. Dropping
+    /// the returned token cancels the timer.
+    ///
+    /// Calling this multiple times creates independent timers.
+    /// Each token must be held (or dropped) independently.
+    ///
+    /// # BeOS
+    ///
+    /// `BWindow::SetPulseRate(bigtime_t)`
+    /// (src/kits/interface/Window.cpp:1665-1687).
+    /// Be's version replaced the existing pulse; pane returns
+    /// independent tokens because obligation handles compose
+    /// better than mutable global state.
+    pub fn set_pulse_rate(&self, duration: std::time::Duration) -> TimerToken {
+        TimerToken::new(duration, self.timer_tx.clone())
     }
 }
 
@@ -99,9 +115,14 @@ impl<T: Clone + Send + 'static> AppPayload for T {}
 mod tests {
     use super::*;
 
+    fn test_messenger() -> Messenger {
+        let (tx, _rx) = calloop::channel::channel::<TimerControl>();
+        Messenger::new(tx)
+    }
+
     #[test]
     fn messenger_address_returns_address() {
-        let m = Messenger::new();
+        let m = test_messenger();
         let addr = m.address();
         // Stub address is local(0)
         assert!(addr.is_local());
@@ -110,7 +131,7 @@ mod tests {
 
     #[test]
     fn messenger_address_is_copy() {
-        let m = Messenger::new();
+        let m = test_messenger();
         let a = m.address();
         let b = a; // Copy
         let c = a; // still usable
@@ -119,8 +140,27 @@ mod tests {
 
     #[test]
     fn messenger_clone_preserves_address() {
-        let m = Messenger::new();
+        let m = test_messenger();
         let m2 = m.clone();
         assert_eq!(m.address(), m2.address());
+    }
+
+    #[test]
+    fn messenger_is_send() {
+        fn assert_send<T: Send>() {}
+        assert_send::<Messenger>();
+    }
+
+    #[test]
+    fn messenger_is_clone() {
+        fn assert_clone<T: Clone>() {}
+        assert_clone::<Messenger>();
+    }
+
+    #[test]
+    fn set_pulse_rate_returns_timer_token() {
+        let m = test_messenger();
+        let _token = m.set_pulse_rate(std::time::Duration::from_millis(100));
+        // Token exists, will cancel on drop
     }
 }

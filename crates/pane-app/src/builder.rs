@@ -244,12 +244,18 @@ impl<H: Handler> PaneBuilder<H> {
 
         let (exit_tx, _exit_rx) = std::sync::mpsc::channel();
 
+        // Timer control channel: Messenger sends SetPulse/Cancel,
+        // Looper processes them as calloop events.
+        let (timer_tx, timer_rx) = calloop::channel::channel::<crate::timer::TimerControl>();
+        let messenger = crate::Messenger::new(timer_tx);
+
         let mut core = LooperCore::with_service_dispatch(
             handler,
             PeerScope(1),
             write_tx_for_looper,
             exit_tx,
             service_dispatch,
+            messenger,
         );
 
         // Drain buffered messages from setup phase
@@ -275,7 +281,7 @@ impl<H: Handler> PaneBuilder<H> {
         }
 
         // Enter the calloop-backed event loop
-        let looper = Looper::new(core);
+        let looper = Looper::new(core, Some(timer_rx));
         looper.run(rx)
     }
 }

@@ -20,6 +20,7 @@ pub mod messenger;
 pub mod pane;
 pub mod service_dispatch;
 pub mod service_handle;
+pub mod timer;
 
 pub use builder::PaneBuilder;
 pub use dispatch_ctx::DispatchCtx;
@@ -29,6 +30,7 @@ pub use looper::Looper;
 pub use messenger::Messenger;
 pub use pane::Pane;
 pub use service_handle::{wire_reply_port, ServiceHandle};
+pub use timer::TimerToken;
 
 // Re-export pane-proto types for convenience
 pub use pane_proto::{

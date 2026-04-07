@@ -189,7 +189,7 @@ mod tests {
             replies: vec![],
             failures: vec![],
         };
-        let messenger = Messenger::new();
+        let messenger = Messenger::stub();
         let conn = PeerScope(1);
 
         let token = dispatch.insert(
@@ -229,7 +229,7 @@ mod tests {
             replies: vec![],
             failures: vec![],
         };
-        let messenger = Messenger::new();
+        let messenger = Messenger::stub();
         let conn = PeerScope(1);
 
         let token = dispatch.insert(
@@ -276,7 +276,7 @@ mod tests {
             replies: vec![],
             failures: vec![],
         };
-        let messenger = Messenger::new();
+        let messenger = Messenger::stub();
 
         let conn1 = PeerScope(1);
         let conn2 = PeerScope(2);
@@ -344,7 +344,7 @@ mod tests {
             replies: vec![],
             failures: vec![],
         };
-        let messenger = Messenger::new();
+        let messenger = Messenger::stub();
         let conn = PeerScope(1);
 
         let token = dispatch.insert(

@@ -302,7 +302,7 @@ mod tests {
         dispatch.register(3, make_service_receiver::<TestHandler, TestProto>());
 
         let mut handler = TestHandler { received: vec![] };
-        let messenger = crate::Messenger::new();
+        let messenger = crate::Messenger::stub();
         let payload = tagged_payload::<TestProto>(&TestMsg::Ping("hello".into()));
 
         let flow = dispatch.dispatch_notification(3, &mut handler, &messenger, &payload);
@@ -314,7 +314,7 @@ mod tests {
     fn dispatch_unknown_session_returns_none() {
         let dispatch = ServiceDispatch::<TestHandler>::new();
         let mut handler = TestHandler { received: vec![] };
-        let messenger = crate::Messenger::new();
+        let messenger = crate::Messenger::stub();
 
         let flow = dispatch.dispatch_notification(99, &mut handler, &messenger, &[]);
         assert!(flow.is_none());
@@ -364,7 +364,7 @@ mod tests {
             pings: vec![],
             pongs: vec![],
         };
-        let messenger = crate::Messenger::new();
+        let messenger = crate::Messenger::stub();
 
         let ping_bytes = tagged_payload::<TestProto>(&TestMsg::Ping("a".into()));
         let pong_bytes = tagged_payload::<OtherProto>(&OtherMsg::Pong(42));
@@ -390,7 +390,7 @@ mod tests {
         dispatch.register(3, make_service_receiver::<TestHandler, TestProto>());
 
         let mut handler = TestHandler { received: vec![] };
-        let messenger = crate::Messenger::new();
+        let messenger = crate::Messenger::stub();
 
         // Build a payload with the wrong tag byte (flipped).
         let correct_tag = TestProto::service_id().tag();
@@ -414,7 +414,7 @@ mod tests {
         dispatch.register(3, make_service_receiver::<TestHandler, TestProto>());
 
         let mut handler = TestHandler { received: vec![] };
-        let messenger = crate::Messenger::new();
+        let messenger = crate::Messenger::stub();
 
         let flow = dispatch.dispatch_notification(3, &mut handler, &messenger, &[]);
         assert_eq!(flow, Some(Flow::Continue));
@@ -484,7 +484,7 @@ mod tests {
         let receiver = make_request_receiver::<RequestHandler, TestRequestProto>(write_tx, 5);
 
         let mut handler = RequestHandler { received: vec![] };
-        let messenger = crate::Messenger::new();
+        let messenger = crate::Messenger::stub();
 
         // Wrong tag byte
         let correct_tag = TestRequestProto::service_id().tag();
@@ -512,7 +512,7 @@ mod tests {
         let receiver = make_request_receiver::<RequestHandler, TestRequestProto>(write_tx, 5);
 
         let mut handler = RequestHandler { received: vec![] };
-        let messenger = crate::Messenger::new();
+        let messenger = crate::Messenger::stub();
 
         // Correct tag, garbage payload
         let correct_tag = TestRequestProto::service_id().tag();
@@ -536,7 +536,7 @@ mod tests {
         let receiver = make_request_receiver::<RequestHandler, TestRequestProto>(write_tx, 7);
 
         let mut handler = RequestHandler { received: vec![] };
-        let messenger = crate::Messenger::new();
+        let messenger = crate::Messenger::stub();
 
         let payload = tagged_payload::<TestRequestProto>(&TestMsg::Ping("hello".into()));
 
@@ -586,7 +586,7 @@ mod tests {
         let receiver = make_request_receiver::<PanicHandler, TestRequestProto>(write_tx, 3);
 
         let mut handler = PanicHandler;
-        let messenger = crate::Messenger::new();
+        let messenger = crate::Messenger::stub();
         let payload = tagged_payload::<TestRequestProto>(&TestMsg::Ping("boom".into()));
 
         let mut dispatch = Dispatch::new();
@@ -688,7 +688,7 @@ mod tests {
             pings: vec![],
             queries: vec![],
         };
-        let messenger = crate::Messenger::new();
+        let messenger = crate::Messenger::stub();
 
         let ping_payload = tagged_payload::<TestRequestProto>(&TestMsg::Ping("a".into()));
         let query_payload = {
@@ -740,7 +740,7 @@ mod tests {
     fn request_unknown_session_sends_failed() {
         let service_dispatch = ServiceDispatch::<RequestHandler>::new();
         let mut handler = RequestHandler { received: vec![] };
-        let messenger = crate::Messenger::new();
+        let messenger = crate::Messenger::stub();
 
         let (fallback_tx, fallback_rx) = sync_channel(16);
         let mut dispatch_table = Dispatch::new();
@@ -798,7 +798,7 @@ mod tests {
         let receiver = make_request_receiver::<RequestHandler, TestRequestProto>(write_tx, 5);
 
         let mut handler = RequestHandler { received: vec![] };
-        let messenger = crate::Messenger::new();
+        let messenger = crate::Messenger::stub();
 
         let mut dispatch = Dispatch::new();
         let mut ctx = DispatchCtx::new(&mut dispatch, PeerScope(1));

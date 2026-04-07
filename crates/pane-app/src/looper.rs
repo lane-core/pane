@@ -24,29 +24,35 @@
 //! finding: Reply-Teardown ordering prevents orphaned dispatch
 //! entries).
 
+use std::collections::HashMap;
 use std::sync::mpsc;
 use std::thread;
 
 use calloop::channel::{self as calloop_channel, Channel};
-use calloop::EventLoop;
+use calloop::timer::{TimeoutAction, Timer};
+use calloop::{EventLoop, RegistrationToken};
 
 use crate::exit_reason::ExitReason;
 use crate::looper_core::{DispatchOutcome, LooperCore};
+use crate::timer::{TimerControl, TimerId};
 use pane_proto::control::{ControlMessage, TeardownReason};
+use pane_proto::protocols::lifecycle::LifecycleMessage;
 use pane_proto::Address;
 use pane_session::bridge::LooperMessage;
 
 /// Calloop-backed event loop with batch-ordered dispatch.
 ///
 /// Wraps LooperCore<H> (the dispatch engine) and adds calloop's
-/// EventLoop for event source multiplexing. Currently uses a
-/// single calloop channel; future tasks add timer sources.
+/// EventLoop for event source multiplexing. Uses a message
+/// channel (from the bridge) and a timer control channel (from
+/// Messenger/TimerToken) as calloop event sources.
 ///
 /// The looper thread's ThreadId is stored for I8 (send_and_wait)
 /// enforcement in a later task.
 pub struct Looper<H: pane_proto::Handler> {
     core: LooperCore<H>,
     thread_id: Option<thread::ThreadId>,
+    timer_rx: Option<Channel<TimerControl>>,
 }
 
 /// Events collected in one calloop iteration, sorted by dispatch phase.
@@ -157,10 +163,15 @@ impl Batch {
 
 impl<H: pane_proto::Handler + 'static> Looper<H> {
     /// Create a Looper wrapping the given LooperCore.
-    pub fn new(core: LooperCore<H>) -> Self {
+    ///
+    /// The timer_rx channel is registered as a calloop event
+    /// source during run(). Pass None for tests that don't use
+    /// timers — the Messenger::stub() constructor pairs with this.
+    pub(crate) fn new(core: LooperCore<H>, timer_rx: Option<Channel<TimerControl>>) -> Self {
         Looper {
             core,
             thread_id: None,
+            timer_rx,
         }
     }
 
@@ -215,6 +226,48 @@ impl<H: pane_proto::Handler + 'static> Looper<H> {
             return ExitReason::InfraError;
         }
 
+        // Register the timer control channel if present.
+        // Timer commands (SetPulse/Cancel) arrive from Messenger
+        // and TimerToken. SetPulse inserts a calloop Timer source
+        // that fires Pulse events into the batch; Cancel removes
+        // the timer source.
+        if let Some(timer_rx) = self.timer_rx.take() {
+            let timer_handle = handle.clone();
+            if handle
+                .insert_source(timer_rx, move |event, _, state: &mut LoopState| {
+                    if let calloop_channel::Event::Msg(cmd) = event {
+                        match cmd {
+                            TimerControl::SetPulse { id, interval } => {
+                                let timer = Timer::from_duration(interval);
+                                let reg = timer_handle.insert_source(
+                                    timer,
+                                    move |_deadline, _metadata, state: &mut LoopState| {
+                                        // Timer fired — inject Pulse into
+                                        // the batch's lifecycle phase (3).
+                                        state.batch.lifecycle.push(LifecycleMessage::Pulse);
+                                        TimeoutAction::ToDuration(interval)
+                                    },
+                                );
+                                if let Ok(reg_token) = reg {
+                                    state.timers.insert(id, reg_token);
+                                }
+                            }
+                            TimerControl::Cancel { id } => {
+                                if let Some(reg_token) = state.timers.remove(&id) {
+                                    timer_handle.remove(reg_token);
+                                }
+                            }
+                        }
+                    }
+                })
+                .is_err()
+            {
+                self.core.run_destruction_reason(ExitReason::InfraError);
+                self.core.shutdown();
+                return ExitReason::InfraError;
+            }
+        }
+
         // Forwarding thread: reads from the existing mpsc and sends
         // into the calloop channel. Blocks for one message, then
         // drains any immediately available messages before yielding.
@@ -240,6 +293,7 @@ impl<H: pane_proto::Handler + 'static> Looper<H> {
         let mut state = LoopState {
             batch: Batch::new(),
             exit_reason: None,
+            timers: HashMap::new(),
         };
 
         // Main loop: block for at least one event, drain any
@@ -398,6 +452,9 @@ impl Batch {
 struct LoopState {
     batch: Batch,
     exit_reason: Option<ExitReason>,
+    /// Active timer registrations, keyed by TimerId.
+    /// Used to remove calloop Timer sources on cancel.
+    timers: HashMap<TimerId, RegistrationToken>,
 }
 
 #[cfg(test)]
@@ -521,9 +578,10 @@ mod tests {
             write_tx,
             exit_tx,
             service_dispatch,
+            crate::Messenger::stub(),
         );
 
-        (Looper::new(core), msg_tx, msg_rx)
+        (Looper::new(core, None), msg_tx, msg_rx)
     }
 
     // ── Claim: single event dispatches correctly ─────────────
@@ -602,6 +660,7 @@ mod tests {
             write_tx,
             exit_tx,
             ServiceDispatch::new(),
+            crate::Messenger::stub(),
         );
 
         // Install a dispatch entry on session_id=5.
@@ -622,7 +681,7 @@ mod tests {
             },
         );
 
-        let mut looper = Looper::new(core);
+        let looper = Looper::new(core, None);
 
         // Send Reply matching the installed token, ServiceTeardown
         // for the same session, and CloseRequested in rapid succession.
@@ -679,8 +738,9 @@ mod tests {
             write_tx,
             exit_tx,
             ServiceDispatch::new(),
+            crate::Messenger::stub(),
         );
-        let looper = Looper::new(core);
+        let looper = Looper::new(core, None);
 
         // Teardown first in submission order, but phase ordering
         // ensures it also dispatches first.
@@ -752,6 +812,165 @@ mod tests {
         assert!(
             ready_pos < notif_pos,
             "Ready (phase 3) must dispatch before Notification (phase 5). Got: {events:?}"
+        );
+    }
+
+    // ── Timer tests ─────────────────────────────────────────
+
+    /// Test handler that counts pulse events and exits after
+    /// a target count or on CloseRequested.
+    struct PulseTestHandler {
+        log: Arc<Mutex<Vec<String>>>,
+        pulse_count: Arc<std::sync::atomic::AtomicUsize>,
+        pulse_target: usize,
+    }
+
+    impl Handler for PulseTestHandler {
+        fn ready(&mut self) -> Flow {
+            self.log.lock().unwrap().push("ready".into());
+            Flow::Continue
+        }
+
+        fn pulse(&mut self) -> Flow {
+            let count = self
+                .pulse_count
+                .fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+                + 1;
+            self.log.lock().unwrap().push(format!("pulse:{count}"));
+            if count >= self.pulse_target {
+                Flow::Stop
+            } else {
+                Flow::Continue
+            }
+        }
+
+        fn close_requested(&mut self) -> Flow {
+            self.log.lock().unwrap().push("close_requested".into());
+            Flow::Stop
+        }
+
+        fn disconnected(&mut self) -> Flow {
+            self.log.lock().unwrap().push("disconnected".into());
+            Flow::Stop
+        }
+    }
+
+    impl Drop for PulseTestHandler {
+        fn drop(&mut self) {
+            self.log.lock().unwrap().push("dropped".into());
+        }
+    }
+
+    /// Setup a looper with a live timer channel. Returns the
+    /// looper, msg sender, msg receiver, and timer control sender.
+    fn setup_looper_with_timers(
+        log: Arc<Mutex<Vec<String>>>,
+        pulse_count: Arc<std::sync::atomic::AtomicUsize>,
+        pulse_target: usize,
+    ) -> (
+        Looper<PulseTestHandler>,
+        mpsc::Sender<LooperMessage>,
+        mpsc::Receiver<LooperMessage>,
+        calloop_channel::Sender<TimerControl>,
+    ) {
+        let (exit_tx, _exit_rx) = mpsc::channel();
+        let (msg_tx, msg_rx) = mpsc::channel();
+        let (write_tx, _write_rx) = std::sync::mpsc::sync_channel(16);
+
+        let (timer_tx, timer_rx) = calloop_channel::channel::<TimerControl>();
+        let messenger = crate::Messenger::new(timer_tx.clone());
+
+        let handler = PulseTestHandler {
+            log,
+            pulse_count,
+            pulse_target,
+        };
+        let core = LooperCore::with_service_dispatch(
+            handler,
+            PeerScope(1),
+            write_tx,
+            exit_tx,
+            ServiceDispatch::new(),
+            messenger,
+        );
+
+        (Looper::new(core, Some(timer_rx)), msg_tx, msg_rx, timer_tx)
+    }
+
+    // ── Claim: timer fires pulse ────────────────────────────
+
+    #[test]
+    fn timer_fires_pulse() {
+        let log = Arc::new(Mutex::new(Vec::new()));
+        let pulse_count = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let (looper, _msg_tx, msg_rx, timer_tx) =
+            setup_looper_with_timers(log.clone(), pulse_count.clone(), 3);
+
+        // Set a 10ms pulse timer before entering the loop.
+        // The looper processes SetPulse as a calloop event.
+        timer_tx
+            .send(TimerControl::SetPulse {
+                id: TimerId(99),
+                interval: std::time::Duration::from_millis(10),
+            })
+            .unwrap();
+
+        let reason = looper.run(msg_rx);
+        assert_eq!(reason, ExitReason::Graceful);
+
+        let events = log.lock().unwrap().clone();
+        // Handler should have received at least 3 pulses (target)
+        // and then returned Flow::Stop.
+        let pulse_events: Vec<_> = events.iter().filter(|e| e.starts_with("pulse:")).collect();
+        assert!(
+            pulse_events.len() >= 3,
+            "Expected at least 3 pulse events, got: {events:?}"
+        );
+    }
+
+    // ── Claim: timer_token drop cancels timer ───────────────
+
+    #[test]
+    fn timer_token_drop_cancels() {
+        use crate::timer::TimerToken;
+
+        let log = Arc::new(Mutex::new(Vec::new()));
+        let pulse_count = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        // Set target very high — we don't expect to reach it
+        let (looper, msg_tx, msg_rx, timer_tx) =
+            setup_looper_with_timers(log.clone(), pulse_count.clone(), 1000);
+
+        // Create a TimerToken, then immediately drop it.
+        // The SetPulse and Cancel will both be in the channel
+        // before the looper starts.
+        let token = TimerToken::new(std::time::Duration::from_millis(10), timer_tx);
+        drop(token);
+
+        // Give the looper a short time to process, then close.
+        let msg_tx_clone = msg_tx.clone();
+        std::thread::spawn(move || {
+            // Wait long enough that if the timer were still
+            // active, it would have fired many times.
+            std::thread::sleep(std::time::Duration::from_millis(100));
+            msg_tx_clone
+                .send(LooperMessage::Control(ControlMessage::Lifecycle(
+                    LifecycleMessage::CloseRequested,
+                )))
+                .ok();
+        });
+
+        let reason = looper.run(msg_rx);
+        assert_eq!(reason, ExitReason::Graceful);
+
+        let events = log.lock().unwrap().clone();
+        let pulse_events: Vec<_> = events.iter().filter(|e| e.starts_with("pulse:")).collect();
+        // Timer was cancelled before it could fire. Zero pulses
+        // is the expected outcome, but we tolerate a small number
+        // due to timer/channel ordering.
+        assert!(
+            pulse_events.len() <= 1,
+            "Cancelled timer should fire at most once, got {}: {events:?}",
+            pulse_events.len()
         );
     }
 }
