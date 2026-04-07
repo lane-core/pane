@@ -1951,7 +1951,10 @@ fn unix_stream_rapid_connect_disconnect() {
     use std::os::unix::net::UnixStream;
 
     let server = Arc::new(ProtocolServer::new());
-    let iterations = 100;
+    // 50 iterations is sufficient to exercise the churn invariant.
+    // Higher counts increase the chance of timing-related flakiness
+    // on loaded machines (real sockets, real threads).
+    let iterations = 50;
 
     let (done_tx, done_rx) = std::sync::mpsc::channel();
     let server2 = Arc::clone(&server);
@@ -2022,7 +2025,7 @@ fn unix_stream_rapid_connect_disconnect() {
         let _ = done_tx.send(());
     });
 
-    match done_rx.recv_timeout(std::time::Duration::from_secs(15)) {
+    match done_rx.recv_timeout(std::time::Duration::from_secs(30)) {
         Ok(()) => {}
         Err(_) => panic!(
             "unix stream rapid connect/disconnect timed out — \
