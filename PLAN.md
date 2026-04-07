@@ -52,20 +52,23 @@ Single server (N=1), headless, no suspension, no streaming. All multi-server dat
 - [x] **HandlesRequest\<P\>** — request handler trait with `ReplyPort<P::Reply>` + `DispatchCtx<Self>`, lives in pane-app (moved from pane-proto for crate boundary: Cartesian/linear partition). H = Self enforced at compile time. (5 tests)
 - [x] **DispatchCtx\<H\>** — scoped dispatch context wrapping `&mut Dispatch<H>` + PeerScope. Lifetime-bound to dispatch call. Install-before-wire invariant. (3 tests)
 - [x] **Dispatch\<H\>** — per-request typed dispatch entries, token uniqueness (monotonic per-Dispatch counter, no global), fail_connection, fail_session (S1 fix), cancel (7 tests)
-- [x] **LooperCore\<H\>** — catch_unwind boundary, destruction sequence, `dispatch_lifecycle`, `dispatch_service` (Notification + Request + Reply + Failed branches), `run()` with channel-driven main loop, `write_tx` for framework plumbing (22 tests including request dispatch + 2 vertical slice integration tests)
+- [x] **LooperCore\<H\>** — catch_unwind boundary, destruction sequence, `dispatch_lifecycle`, `dispatch_service` with factored targeted methods (dispatch_reply, dispatch_failed, dispatch_request, dispatch_notification, dispatch_teardown, dispatch_pane_exited), `process_sync_request`, `run()` with channel-driven main loop, `write_tx` for framework plumbing (22 tests including request dispatch + 2 vertical slice integration tests)
 - [x] **PaneBuilder\<H\>** — two-phase lifecycle, `open_service`, `open_service_with_requests`, duplicate rejection, `open_service_inner` factoring (3 tests)
 - [x] **Pane** — non-generic connection identity (stub)
-- [x] **Messenger** — scoped handle with Address, `address()` accessor (3 tests)
-- [x] **ServiceHandle\<P\>** — Drop RevokeInterest, protocol-scoped `send_request` with `DispatchCtx` (install-before-wire, token from Dispatch), `send_notification()` with protocol tag, `with_channel()` constructor, `target_address()`, `wire_reply_port<T>` constructor for wire-backed ReplyPort (8 tests)
+- [x] **Messenger** — scoped handle with Address, `address()` accessor, `set_pulse_rate`, timer/sync channels. Clone + Send. (9 tests)
+- [x] **ServiceHandle\<P\>** — Drop RevokeInterest, protocol-scoped `send_request` with `DispatchCtx` (install-before-wire, token from Dispatch), `send_notification()` with protocol tag, `with_channel()` constructor, `target_address()`, `wire_reply_port<T>` constructor for wire-backed ReplyPort, `send_and_wait` sync blocking request (14 tests)
 - [x] **ExitReason** — re-export from pane-proto (moved for wire transmission)
-- [ ] **Messenger full impl** — `set_content`, `set_pulse_rate`, `post_app_message`, `watch`/`unwatch` wire send (send_request moved to ServiceHandle)
+- [ ] **Messenger full impl** — `set_content`, `post_app_message`, `watch`/`unwatch` wire send (set_pulse_rate done, send_request moved to ServiceHandle)
 - [ ] **ConnectionSource** — calloop EventSource for a single Connection (read + buffered write) — **bumped priority: enables real Messenger/ServiceHandle routing**
 - [x] **Service registration wiring** — `PaneBuilder::connect()` + `open_service::<P>()` sends DeclareInterest through real ProtocolServer, `ServiceHandle::Drop` sends RevokeInterest, `LooperCore` dispatches service frames through `ServiceDispatch<H>` (12 new tests)
 - [ ] **Eager Hello.interests** — move initial service interests into Hello, resolved during handshake via Welcome.bindings (four-agent recommendation, deferred from service registration wiring)
 - [x] **Provider-side Request dispatch** — `dispatch_service` Request branch with catch_unwind, `ServiceDispatch::dispatch_request` returns Flow (total — sends Failed for unregistered sessions), `RequestReceiver` with captured write_tx + session_id
 - [x] **Consumer-side Reply/Failed routing** — `dispatch_service` Reply/Failed route through `Dispatch<H>` by token via `fire_reply`/`fire_failed`
 - [ ] **ActivePhase\<T\>** — explicit shift operator (ω_X) carrying negotiated state (max_message_size, PeerAuth, known_services)
-- [ ] **Looper** — calloop-backed, per-protocol typed channels, unified batch, coalescing
+- [x] **Looper** — calloop-backed event loop with six-phase batch ordering, forwarding thread from bridge, TimerToken + set_pulse_rate via calloop Timer, heartbeat watchdog for I2/I3 detection, send_and_wait with I8 ThreadId enforcement (21 tests including batch ordering, timer, watchdog, send_and_wait)
+- [x] **TimerToken** — obligation handle for pulse timer, Drop cancels, calloop Timer source (3 tests)
+- [x] **Watchdog** — heartbeat-based stall detection for I2/I3, separate thread, configurable timeout (4 tests)
+- [x] **send_and_wait** — synchronous blocking request from non-looper thread, I8 enforcement via ThreadId, oneshot reply channel, SendAndWaitError (6 tests)
 - [ ] **AppPayload** — `Clone + Send + 'static` marker trait
 
 #### Optics and namespace (pane-fs)
@@ -94,16 +97,16 @@ Single server (N=1), headless, no suspension, no streaming. All multi-server dat
 
 #### Invariants validated
 
-From architecture spec I1–I13 and S1–S6. Status from formal-verifier audit (session 3, 2026-04-06). 15 of 19 verified; 4 not yet applicable (depend on unimplemented features).
+From architecture spec I1–I13 and S1–S6. Session 4 update (2026-04-06): 19 of 19 verified or detection-enforced. I2/I3 detection via heartbeat watchdog. I8 enforced at runtime. S3 batch ordering implemented.
 
 - [x] **I1** (panic=unwind, Drop fires) — tested via obligation handle unwind tests, request_handler_panic_sends_failed_via_drop
-- [ ] **I2** (no blocking in handlers) — convention, not enforceable without timeout watchdog
-- [ ] **I3** (handlers terminate) — convention, not enforceable without timeout watchdog (same limitation as EAct paper, lines 3068-3076)
-- [x] **I4** (typestate handles) — tested for ReplyPort, CompletionReplyPort, CancelHandle
+- [x] **I2** (no blocking in handlers) — convention, detection-enforced via heartbeat watchdog (5s timeout, separate thread). Cannot preempt Rust code; logs and diagnoses. (4 watchdog tests)
+- [x] **I3** (handlers terminate) — same mechanism as I2 (heartbeat watchdog)
+- [x] **I4** (typestate handles) — tested for ReplyPort, CompletionReplyPort, CancelHandle, TimerToken
 - [x] **I5** (filters see only Clone-safe Messages) — type-level guarantee: Message trait requires Clone + Serialize + DeserializeOwned. No bypass path possible.
-- [x] **I6** (sequential single-thread dispatch) — holds by construction: LooperCore::run() is one thread, one rx.recv(), sequential handler calls. No calloop needed for the invariant — calloop replaces the mpsc loop but preserves single-thread dispatch.
+- [x] **I6** (sequential single-thread dispatch) — holds by construction: Looper::run() is one thread, calloop EventLoop, sequential handler calls via six-phase batch.
 - [x] **I7** (service dispatch fn pointers sequential) — ServiceDispatch and RequestReceiver closures called sequentially within dispatch_service, same thread as I6
-- [ ] **I8** (send_and_wait panics from looper thread) — send_and_wait not implemented
+- [x] **I8** (send_and_wait panics from looper thread) — ThreadId stored during Looper::run(), checked in ServiceHandle::send_and_wait. Panics on match. (6 send_and_wait tests including I8 panic test)
 - [x] **I9** (dispatch cleared before handler drop) — tested in destruction_sequence_ordering. Session 3 fix: catch_unwind added to Reply/Failed branches (commit 6e0130b) after formal-verifier found regression.
 - [x] **I10** (ProtocolAbort non-blocking) — partial: framing layer provides fallible write
 - [x] **I11** (ProtocolAbort at framing layer) — tested: reserved 0xFF, all paths covered
@@ -111,7 +114,7 @@ From architecture spec I1–I13 and S1–S6. Status from formal-verifier audit (
 - [x] **I13** (open_service blocks until accepted) — PaneBuilder::open_service blocks on mpsc channel for InterestAccepted/Declined, buffers unrelated messages
 - [x] **S1** (token uniqueness) — tested: monotonic per-Dispatch counter, no global. Tokens from Dispatch::insert via DispatchCtx.
 - [x] **S2** (sequential dispatch) — follows from I6: single-threaded looper, sequential handler calls
-- [ ] **S3** (control-before-events in batch) — no batch processing yet (requires calloop Looper)
+- [x] **S3** (six-phase batch ordering) — implemented in Looper. Phase 1: Reply/Failed → Phase 2: ServiceTeardown → Phase 3: PaneExited/Lifecycle → Phase 4: ctl writes (stub) → Phase 5: Requests/Notifications → Phase 6: post-batch (stub). Tested: batch_ordering_reply_before_teardown, batch_ordering_lifecycle_after_teardown, batch_ordering_notifications_last.
 - [x] **S4** (fail_connection scoped) — tested at both Dispatch and LooperCore levels
 - [x] **S5** (cancel without callbacks) — tested with panic-on-call guards
 - [x] **S6** (panic=unwind) — follows from I1
@@ -165,7 +168,7 @@ Orthogonal to protocol phases — can proceed in parallel once Phase 1 server ex
 |-------|------|--------|
 | pane-proto | Protocol vocabulary, no IO | Active (99 tests) |
 | pane-session | Session-typed IPC, transport, framing, server | Active (51 tests + 21 stress) |
-| pane-app | Actor framework, dispatch, looper | Active (68 tests + 7 stress + 5 integration) |
+| pane-app | Actor framework, dispatch, looper | Active (91 tests + 7 stress + 5 integration) |
 | pane-fs | Filesystem namespace | Active (5 tests) |
 | pane-hello | First running pane app (binary) | Active (0 tests, manual verification) |
 | pane-notify | Filesystem notification abstraction | Preserved from prototype |

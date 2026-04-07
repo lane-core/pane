@@ -756,10 +756,32 @@ pub enum ExitReason {
 ### Batch processing
 
 Each calloop cycle: collect events from all sources into a
-unified batch. Total ordering within the batch. Coalescing
+unified batch. Six-phase ordering within the batch. Coalescing
 within the batch (mouse events, etc.). Base filter chain sees
 Message variants. Service events dispatch through Handles\<P\>.
 Obligation handles dispatch through separate callbacks.
+
+Phase ordering per batch:
+
+| Phase | Events | Rationale |
+|-------|--------|-----------|
+| 1. Resolve obligations | Reply, Failed | Fire dispatch callbacks before teardown clears entries |
+| 2. Session cleanup | ServiceTeardown | Fail remaining entries for torn-down sessions |
+| 3. Framework control | PaneExited, Lifecycle (Ready, Pulse, CloseRequested, Quit) | Handler lifecycle methods |
+| 4. Local control | Ctl writes (from FUSE) | Monadic lens dispatch, effects accumulate |
+| 5. Inbound protocol | Requests, Notifications | New work for the handler |
+| 6. Post-batch | Execute effects, publish snapshot, signal ctl oneshots | One publication point |
+
+Flow::Stop from any phase short-circuits: destruction sequence
+fires, remaining phases skipped, pending ctl oneshots receive
+ENXIO. Within a phase, events process in arrival order.
+
+Replies before teardowns prevents a race where a valid reply
+is discarded because teardown cleared the dispatch entry first.
+Ctl writes between framework control and inbound protocol
+ensures user commands take effect before new protocol work.
+Effects execute once, at batch end — the writer monad over the
+free monoid of effects (concatenation, not deduplication).
 
 ---
 
@@ -967,8 +989,9 @@ check, panic on violation (I8).
 - **S1**: Token uniqueness (AtomicU64, per-Connection namespace).
 - **S2**: Sequential dispatch — callbacks share `&mut H`, never
   concurrent (follows from I6/I7).
-- **S3**: Control-before-events — RegisterRequest processed before
-  Reply in same batch.
+- **S3**: Six-phase batch ordering — Reply/Failed before
+  ServiceTeardown before Lifecycle before ctl writes before
+  Requests/Notifications. See §Batch processing.
 - **S4**: On Connection loss, fail_connection() fires for entries
   keyed to that Connection only, before disconnected(). On handler
   destruction, dispatch.clear() drops entries without callbacks.
@@ -1337,11 +1360,26 @@ all the way down. -->
 ### send_and_wait
 
 Synchronous blocking variant of send_request. Must NOT be called
-from a handler method. Enforced at runtime: looper thread-local
-check, panic on violation (I8). Same-Connection cycles (pane A →
-pane B → pane A through one server) remain a runtime hazard.
-The framework does not track cross-pane dependency graphs.
-Timeouts on send_and_wait bound the deadlock window.
+from a handler method. Enforced at runtime: looper stores its
+ThreadId at construction, send_and_wait checks at call time,
+panics on match (I8). Same-Connection cycles (pane A → pane B →
+pane A through one server) remain a runtime hazard. The framework
+does not track cross-pane dependency graphs. Timeouts on
+send_and_wait bound the deadlock window.
+
+```rust
+fn send_and_wait<P: RequestProtocol>(
+    &self,
+    msg: P::Message,
+    timeout: Duration,
+) -> Result<P::Reply, SendAndWaitError>
+```
+
+No CancelHandle returned — the caller is blocked, so
+cancellation is incoherent. The dispatch entry is resolved
+(reply, failed, or timeout) before send_and_wait returns.
+On looper shutdown while blocked, the oneshot sender drops,
+unblocking the caller with SendAndWaitError::Disconnected.
 
 Tokens are per-Connection (three servers = three namespaces).
 Token allocation is internal to the framework.
