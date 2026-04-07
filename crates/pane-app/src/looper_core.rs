@@ -323,32 +323,53 @@ impl<H: pane_proto::Handler> LooperCore<H> {
             } => {
                 // Consumer-side reply routing: look up the Dispatch
                 // entry by (connection, token) and fire on_reply.
+                // catch_unwind: the on_reply closure is user code
+                // that may panic. Without this boundary, the panic
+                // propagates out of run(), skipping the destruction
+                // sequence (I9 violation).
+                let handler = &mut self.handler;
+                let dispatch = &mut self.dispatch;
+                let messenger = &self.messenger;
                 let conn = self.primary_connection;
                 let tok = Token(token);
-                let flow = self.dispatch.fire_reply(
-                    conn,
-                    tok,
-                    &mut self.handler,
-                    &self.messenger,
-                    Box::new(reply_bytes),
-                );
-                match flow {
-                    Some(f) => self.flow_to_outcome(f),
+                let result = catch_unwind(AssertUnwindSafe(|| {
+                    dispatch.fire_reply(
+                        conn,
+                        tok,
+                        handler,
+                        messenger,
+                        Box::new(reply_bytes),
+                    )
+                }));
+                match result {
+                    Ok(Some(f)) => self.flow_to_outcome(f),
                     // Unknown token — entry already consumed or cancelled.
-                    None => DispatchOutcome::Continue,
+                    Ok(None) => DispatchOutcome::Continue,
+                    Err(_) => {
+                        self.run_destruction(ExitReason::Failed);
+                        DispatchOutcome::Exit(ExitReason::Failed)
+                    }
                 }
             }
             pane_proto::ServiceFrame::Failed { token } => {
                 // Consumer-side failure routing: fire on_failed for
                 // the Dispatch entry keyed by this token.
+                // catch_unwind: same rationale as Reply branch (I9).
+                let handler = &mut self.handler;
+                let dispatch = &mut self.dispatch;
+                let messenger = &self.messenger;
                 let conn = self.primary_connection;
                 let tok = Token(token);
-                let flow = self
-                    .dispatch
-                    .fire_failed(conn, tok, &mut self.handler, &self.messenger);
-                match flow {
-                    Some(f) => self.flow_to_outcome(f),
-                    None => DispatchOutcome::Continue,
+                let result = catch_unwind(AssertUnwindSafe(|| {
+                    dispatch.fire_failed(conn, tok, handler, messenger)
+                }));
+                match result {
+                    Ok(Some(f)) => self.flow_to_outcome(f),
+                    Ok(None) => DispatchOutcome::Continue,
+                    Err(_) => {
+                        self.run_destruction(ExitReason::Failed);
+                        DispatchOutcome::Exit(ExitReason::Failed)
+                    }
                 }
             }
             _ => {
