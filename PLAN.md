@@ -94,7 +94,7 @@ Single server (N=1), headless, no suspension, no streaming. All multi-server dat
 
 #### Invariants validated
 
-From architecture spec I1–I13 and S1–S6. Status from formal-verifier audit (2026-04-05):
+From architecture spec I1–I13 and S1–S6. Status from formal-verifier audit (session 3, 2026-04-06). 15 of 19 verified; 4 not yet applicable (depend on unimplemented features).
 
 - [x] **I1** (panic=unwind, Drop fires) — tested via obligation handle unwind tests, request_handler_panic_sends_failed_via_drop
 - [ ] **I2** (no blocking in handlers) — convention, not enforceable without timeout watchdog
@@ -104,7 +104,7 @@ From architecture spec I1–I13 and S1–S6. Status from formal-verifier audit (
 - [x] **I6** (sequential single-thread dispatch) — holds by construction: LooperCore::run() is one thread, one rx.recv(), sequential handler calls. No calloop needed for the invariant — calloop replaces the mpsc loop but preserves single-thread dispatch.
 - [x] **I7** (service dispatch fn pointers sequential) — ServiceDispatch and RequestReceiver closures called sequentially within dispatch_service, same thread as I6
 - [ ] **I8** (send_and_wait panics from looper thread) — send_and_wait not implemented
-- [x] **I9** (dispatch cleared before handler drop) — tested in destruction_sequence_ordering
+- [x] **I9** (dispatch cleared before handler drop) — tested in destruction_sequence_ordering. Session 3 fix: catch_unwind added to Reply/Failed branches (commit 6e0130b) after formal-verifier found regression.
 - [x] **I10** (ProtocolAbort non-blocking) — partial: framing layer provides fallible write
 - [x] **I11** (ProtocolAbort at framing layer) — tested: reserved 0xFF, all paths covered
 - [x] **I12** (unknown discriminant → connection error) — tested: monotonic known_services
