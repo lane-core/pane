@@ -223,9 +223,10 @@ impl<H: Handler> PaneBuilder<H> {
     /// Consume the builder and enter the event loop.
     ///
     /// Drains buffered messages (received during open_service),
-    /// then enters the looper main loop. Returns the exit reason.
+    /// then enters the calloop-backed Looper. Returns the exit reason.
     pub fn run_with(mut self, handler: H) -> crate::exit_reason::ExitReason {
         use crate::dispatch::PeerScope;
+        use crate::looper::Looper;
         use crate::looper_core::{DispatchOutcome, LooperCore};
 
         let rx = self
@@ -273,8 +274,9 @@ impl<H: Handler> PaneBuilder<H> {
             }
         }
 
-        // Enter main loop
-        core.run(rx)
+        // Enter the calloop-backed event loop
+        let looper = Looper::new(core);
+        looper.run(rx)
     }
 }
 

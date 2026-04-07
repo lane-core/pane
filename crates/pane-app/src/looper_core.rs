@@ -222,6 +222,12 @@ impl<H: pane_proto::Handler> LooperCore<H> {
         let _ = self.exit_tx.send(reason);
     }
 
+    /// Trigger the destruction sequence from outside the core.
+    /// Used by Looper when calloop infrastructure fails.
+    pub(crate) fn run_destruction_reason(&mut self, reason: ExitReason) {
+        self.run_destruction(reason);
+    }
+
     /// Consume the looper core, dropping the handler.
     /// This is where step 3 (obligation handle Drop compensation)
     /// fires — the handler's fields are dropped, which includes
@@ -260,123 +266,173 @@ impl<H: pane_proto::Handler> LooperCore<H> {
 
         match frame {
             pane_proto::ServiceFrame::Notification { payload: inner } => {
-                // catch_unwind: the service receiver closure calls
-                // postcard::from_bytes(..).expect(..) which panics on
-                // malformed inner payloads. Without this boundary, the
-                // panic propagates out of run(), crashing the looper.
-                let handler = &mut self.handler;
-                let service_dispatch = &self.service_dispatch;
-                let messenger = &self.messenger;
-                let result = catch_unwind(AssertUnwindSafe(|| {
-                    service_dispatch.dispatch_notification(session_id, handler, messenger, &inner)
-                }));
-                match result {
-                    Ok(Some(flow)) => self.flow_to_outcome(flow),
-                    Ok(None) => DispatchOutcome::Continue, // unknown session_id
-                    Err(_) => {
-                        self.run_destruction(ExitReason::Failed);
-                        DispatchOutcome::Exit(ExitReason::Failed)
-                    }
-                }
+                self.dispatch_notification(session_id, inner)
             }
             pane_proto::ServiceFrame::Request {
                 token,
                 payload: inner,
-            } => {
-                // catch_unwind: the request receiver closure may panic
-                // (handler panic in receive_request). The ReplyPort
-                // constructed inside the closure will be dropped during
-                // unwind, sending Failed via Drop compensation.
-                //
-                // Design heritage: BeOS BHandler::MessageReceived sent
-                // B_MESSAGE_NOT_UNDERSTOOD at the dispatch leaf
-                // (src/kits/app/Handler.cpp:277-281), not BLooper.
-                // Plan 9 lib9p srv() dispatch switch had
-                // `default: respond(r, "unknown message")` for
-                // unrecognized T-messages
-                // (reference/plan9/src/sys/src/lib9p/srv.c:705-727).
-                //
-                // Split borrow: handler, dispatch, service_dispatch,
-                // messenger, write_tx are distinct fields — Rust allows
-                // simultaneous mutable borrows of distinct struct fields.
-                let handler = &mut self.handler;
-                let service_dispatch = &self.service_dispatch;
-                let messenger = &self.messenger;
-                let write_tx = &self.write_tx;
-                let mut ctx = DispatchCtx::new(&mut self.dispatch, self.primary_connection);
-                let result = catch_unwind(AssertUnwindSafe(|| {
-                    service_dispatch.dispatch_request(
-                        session_id, handler, messenger, &inner, token, write_tx, &mut ctx,
-                    )
-                }));
-                match result {
-                    Ok(flow) => self.flow_to_outcome(flow),
-                    Err(_) => {
-                        self.run_destruction(ExitReason::Failed);
-                        DispatchOutcome::Exit(ExitReason::Failed)
-                    }
-                }
-            }
+            } => self.dispatch_request(session_id, token, inner),
             pane_proto::ServiceFrame::Reply {
                 token,
                 payload: reply_bytes,
-            } => {
-                // Consumer-side reply routing: look up the Dispatch
-                // entry by (connection, token) and fire on_reply.
-                // catch_unwind: the on_reply closure is user code
-                // that may panic. Without this boundary, the panic
-                // propagates out of run(), skipping the destruction
-                // sequence (I9 violation).
-                let handler = &mut self.handler;
-                let dispatch = &mut self.dispatch;
-                let messenger = &self.messenger;
-                let conn = self.primary_connection;
-                let tok = Token(token);
-                let result = catch_unwind(AssertUnwindSafe(|| {
-                    dispatch.fire_reply(
-                        conn,
-                        tok,
-                        handler,
-                        messenger,
-                        Box::new(reply_bytes),
-                    )
-                }));
-                match result {
-                    Ok(Some(f)) => self.flow_to_outcome(f),
-                    // Unknown token — entry already consumed or cancelled.
-                    Ok(None) => DispatchOutcome::Continue,
-                    Err(_) => {
-                        self.run_destruction(ExitReason::Failed);
-                        DispatchOutcome::Exit(ExitReason::Failed)
-                    }
-                }
-            }
-            pane_proto::ServiceFrame::Failed { token } => {
-                // Consumer-side failure routing: fire on_failed for
-                // the Dispatch entry keyed by this token.
-                // catch_unwind: same rationale as Reply branch (I9).
-                let handler = &mut self.handler;
-                let dispatch = &mut self.dispatch;
-                let messenger = &self.messenger;
-                let conn = self.primary_connection;
-                let tok = Token(token);
-                let result = catch_unwind(AssertUnwindSafe(|| {
-                    dispatch.fire_failed(conn, tok, handler, messenger)
-                }));
-                match result {
-                    Ok(Some(f)) => self.flow_to_outcome(f),
-                    Ok(None) => DispatchOutcome::Continue,
-                    Err(_) => {
-                        self.run_destruction(ExitReason::Failed);
-                        DispatchOutcome::Exit(ExitReason::Failed)
-                    }
-                }
-            }
+            } => self.dispatch_reply(session_id, token, reply_bytes),
+            pane_proto::ServiceFrame::Failed { token } => self.dispatch_failed(session_id, token),
             _ => {
                 // Future ServiceFrame variants (e.g. streaming).
                 DispatchOutcome::Continue
             }
         }
+    }
+
+    /// Dispatch a pre-parsed Notification to the service dispatch table.
+    /// Used by both dispatch_service (single-event path) and the
+    /// batch dispatcher (phase 5).
+    pub(crate) fn dispatch_notification(
+        &mut self,
+        session_id: u16,
+        inner: Vec<u8>,
+    ) -> DispatchOutcome {
+        // catch_unwind: the service receiver closure calls
+        // postcard::from_bytes(..).expect(..) which panics on
+        // malformed inner payloads. Without this boundary, the
+        // panic propagates out of run(), crashing the looper.
+        let handler = &mut self.handler;
+        let service_dispatch = &self.service_dispatch;
+        let messenger = &self.messenger;
+        let result = catch_unwind(AssertUnwindSafe(|| {
+            service_dispatch.dispatch_notification(session_id, handler, messenger, &inner)
+        }));
+        match result {
+            Ok(Some(flow)) => self.flow_to_outcome(flow),
+            Ok(None) => DispatchOutcome::Continue, // unknown session_id
+            Err(_) => {
+                self.run_destruction(ExitReason::Failed);
+                DispatchOutcome::Exit(ExitReason::Failed)
+            }
+        }
+    }
+
+    /// Dispatch a pre-parsed Request to the service dispatch table.
+    /// Used by both dispatch_service (single-event path) and the
+    /// batch dispatcher (phase 5).
+    ///
+    /// Design heritage: BeOS BHandler::MessageReceived sent
+    /// B_MESSAGE_NOT_UNDERSTOOD at the dispatch leaf
+    /// (src/kits/app/Handler.cpp:277-281), not BLooper.
+    /// Plan 9 lib9p srv() dispatch switch had
+    /// `default: respond(r, "unknown message")` for
+    /// unrecognized T-messages
+    /// (reference/plan9/src/sys/src/lib9p/srv.c:705-727).
+    pub(crate) fn dispatch_request(
+        &mut self,
+        session_id: u16,
+        token: u64,
+        inner: Vec<u8>,
+    ) -> DispatchOutcome {
+        // catch_unwind: the request receiver closure may panic
+        // (handler panic in receive_request). The ReplyPort
+        // constructed inside the closure will be dropped during
+        // unwind, sending Failed via Drop compensation.
+        //
+        // Split borrow: handler, dispatch, service_dispatch,
+        // messenger, write_tx are distinct fields — Rust allows
+        // simultaneous mutable borrows of distinct struct fields.
+        let handler = &mut self.handler;
+        let service_dispatch = &self.service_dispatch;
+        let messenger = &self.messenger;
+        let write_tx = &self.write_tx;
+        let mut ctx = DispatchCtx::new(&mut self.dispatch, self.primary_connection);
+        let result = catch_unwind(AssertUnwindSafe(|| {
+            service_dispatch.dispatch_request(
+                session_id, handler, messenger, &inner, token, write_tx, &mut ctx,
+            )
+        }));
+        match result {
+            Ok(flow) => self.flow_to_outcome(flow),
+            Err(_) => {
+                self.run_destruction(ExitReason::Failed);
+                DispatchOutcome::Exit(ExitReason::Failed)
+            }
+        }
+    }
+
+    /// Dispatch a pre-parsed Reply to the dynamic dispatch table.
+    /// Used by both dispatch_service (single-event path) and the
+    /// batch dispatcher (phase 1).
+    pub(crate) fn dispatch_reply(
+        &mut self,
+        _session_id: u16,
+        token: u64,
+        reply_bytes: Vec<u8>,
+    ) -> DispatchOutcome {
+        // Consumer-side reply routing: look up the Dispatch
+        // entry by (connection, token) and fire on_reply.
+        // catch_unwind: the on_reply closure is user code
+        // that may panic. Without this boundary, the panic
+        // propagates out of run(), skipping the destruction
+        // sequence (I9 violation).
+        let handler = &mut self.handler;
+        let dispatch = &mut self.dispatch;
+        let messenger = &self.messenger;
+        let conn = self.primary_connection;
+        let tok = Token(token);
+        let result = catch_unwind(AssertUnwindSafe(|| {
+            dispatch.fire_reply(conn, tok, handler, messenger, Box::new(reply_bytes))
+        }));
+        match result {
+            Ok(Some(f)) => self.flow_to_outcome(f),
+            // Unknown token — entry already consumed or cancelled.
+            Ok(None) => DispatchOutcome::Continue,
+            Err(_) => {
+                self.run_destruction(ExitReason::Failed);
+                DispatchOutcome::Exit(ExitReason::Failed)
+            }
+        }
+    }
+
+    /// Dispatch a pre-parsed Failed to the dynamic dispatch table.
+    /// Used by both dispatch_service (single-event path) and the
+    /// batch dispatcher (phase 1).
+    pub(crate) fn dispatch_failed(&mut self, _session_id: u16, token: u64) -> DispatchOutcome {
+        // Consumer-side failure routing: fire on_failed for
+        // the Dispatch entry keyed by this token.
+        // catch_unwind: same rationale as Reply branch (I9).
+        let handler = &mut self.handler;
+        let dispatch = &mut self.dispatch;
+        let messenger = &self.messenger;
+        let conn = self.primary_connection;
+        let tok = Token(token);
+        let result = catch_unwind(AssertUnwindSafe(|| {
+            dispatch.fire_failed(conn, tok, handler, messenger)
+        }));
+        match result {
+            Ok(Some(f)) => self.flow_to_outcome(f),
+            Ok(None) => DispatchOutcome::Continue,
+            Err(_) => {
+                self.run_destruction(ExitReason::Failed);
+                DispatchOutcome::Exit(ExitReason::Failed)
+            }
+        }
+    }
+
+    /// Dispatch a ServiceTeardown: fail all outstanding dispatch
+    /// entries for the torn-down session.
+    pub(crate) fn dispatch_teardown(
+        &mut self,
+        session_id: u16,
+        _reason: pane_proto::control::TeardownReason,
+    ) {
+        self.dispatch
+            .fail_session(session_id, &mut self.handler, &self.messenger);
+    }
+
+    /// Dispatch a PaneExited death notification to the handler.
+    pub(crate) fn dispatch_pane_exited(
+        &mut self,
+        address: pane_proto::Address,
+        reason: ExitReason,
+    ) -> DispatchOutcome {
+        self.dispatch(|h| h.pane_exited(address, reason))
     }
 
     /// Convert a Flow value into a DispatchOutcome, running
@@ -416,19 +472,12 @@ impl<H: pane_proto::Handler> LooperCore<H> {
                 }
                 Ok(LooperMessage::Control(ControlMessage::ServiceTeardown {
                     session_id,
-                    reason: _,
+                    reason,
                 })) => {
-                    // Service torn down — fail all outstanding dispatch
-                    // entries for this session so the handler's on_failed
-                    // callbacks fire and closures are released (S1 fix).
-                    self.dispatch
-                        .fail_session(session_id, &mut self.handler, &self.messenger);
+                    self.dispatch_teardown(session_id, reason);
                 }
                 Ok(LooperMessage::Control(ControlMessage::PaneExited { address, reason })) => {
-                    // Watched pane death notification — dispatch to
-                    // Handler::pane_exited via the blanket Handles<Lifecycle>
-                    // impl. Wrapped in catch_unwind by dispatch().
-                    let outcome = self.dispatch(|h| h.pane_exited(address, reason));
+                    let outcome = self.dispatch_pane_exited(address, reason);
                     if let DispatchOutcome::Exit(reason) = outcome {
                         break reason;
                     }
