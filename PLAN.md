@@ -21,12 +21,13 @@ Single server (N=1), headless, no suspension, no streaming. All multi-server dat
 - [x] **Lifecycle protocol** — `Lifecycle` as Protocol impl; `LifecycleMessage` enum
 - [x] **Message trait** — `Clone + Serialize + DeserializeOwned + Send + 'static` blanket impl
 - [x] **Handles\<P\> trait** — `fn receive(&mut self, msg: P::Message) -> Flow` (3 tests)
-- [x] **Handler trait** — lifecycle methods, blanket `Handles<Lifecycle>` impl (3 tests)
+- [x] **Handler trait** — lifecycle methods including `pane_exited`, blanket `Handles<Lifecycle>` impl (3 tests)
 - [x] **Flow** — `Continue` / `Stop`
 - [x] **MessageFilter** — typed per-protocol, `FilterAction::Pass/Transform/Consume` (3 tests)
 - [x] **MonadicLens\<S,A\>** — concrete fn-pointer optics with effectful set, law test harness (16 tests)
 - [x] **Obligation handles** — ReplyPort, CompletionReplyPort, CancelHandle with `#[must_use]`, Drop compensation (14 tests)
-- [x] **ControlMessage** — wire service 0 envelope with all 7 variants (Lifecycle, DeclareInterest, InterestAccepted/Declined, ServiceTeardown, RevokeInterest, Cancel); DeclineReason, TeardownReason (11 tests)
+- [x] **ControlMessage** — wire service 0 envelope with all 10 variants (Lifecycle, DeclareInterest, InterestAccepted/Declined, ServiceTeardown, RevokeInterest, Cancel, Watch, Unwatch, PaneExited); DeclineReason, TeardownReason, ExitReason (16 tests)
+- [x] **ExitReason** — `Graceful/Disconnected/Failed/InfraError`, Serialize + Deserialize for PaneExited wire transmission
 - [ ] **Display protocol** — `Display` as Protocol impl; `DisplayMessage` enum
 - [x] **PeerAuth** — `PeerAuth { uid, source: AuthSource }` with `AuthSource::Kernel { pid }` (SO_PEERCRED) and `AuthSource::Certificate { subject, issuer }` (TLS); `#[non_exhaustive]`, full Eq/Hash (10 tests)
 - [x] **Address** — `Address { pane_id, server_id }`, `#[non_exhaustive]`, Copy, resolved pane address for routing (13 tests)
@@ -40,7 +41,7 @@ Single server (N=1), headless, no suspension, no streaming. All multi-server dat
 - [x] **Transport** — `Read + Write + Send + 'static` blanket trait, `MemoryTransport::pair()` byte-level (5 tests)
 - [x] **Bridge** — two-phase connect (verify_transport + par handshake via FrameCodec), `connect_and_run`/`accept_and_run` with reader loop (7 tests)
 - [x] **FrameCodec** — `[length: u32 LE][service: u16 LE][payload]`, reserved 0xFFFF abort, HashSet-based known_services, max_message_size enforcement, self-poison on any read error (S3), protocol tag byte in service payloads (S8) (21 tests + 4 proptest)
-- [x] **ProtocolServer** — single-threaded actor, provider index from Hello.provides, DeclareInterest handler, frame routing with session_id rewriting, connection drop cleanup with ServiceTeardown (8 unit + 3 integration tests)
+- [x] **ProtocolServer** — single-threaded actor, provider index from Hello.provides, DeclareInterest handler, frame routing with session_id rewriting, connection drop cleanup with ServiceTeardown, watch table with Watch/Unwatch/PaneExited death notification (14 unit + 3 integration tests)
 - [x] **peer_cred** — SO_PEERCRED via rustix (Linux) / getpeereid + LOCAL_PEERPID (macOS) → PeerAuth (1 test)
 - [ ] **Verify Chan<S,T> compatibility** — ensure session-typed channels work with new handshake types
 - [ ] **SessionEnum derive** — N-ary enum branching with `#[session_tag]` wire stability
@@ -56,8 +57,8 @@ Single server (N=1), headless, no suspension, no streaming. All multi-server dat
 - [x] **Pane** — non-generic connection identity (stub)
 - [x] **Messenger** — scoped handle with Address, `address()` accessor (3 tests)
 - [x] **ServiceHandle\<P\>** — Drop RevokeInterest, protocol-scoped `send_request` with `DispatchCtx` (install-before-wire, token from Dispatch), `send_notification()` with protocol tag, `with_channel()` constructor, `target_address()`, `wire_reply_port<T>` constructor for wire-backed ReplyPort (8 tests)
-- [x] **ExitReason** — Graceful/Disconnected/Failed/InfraError
-- [ ] **Messenger full impl** — `set_content`, `set_pulse_rate`, `post_app_message` (send_request moved to ServiceHandle)
+- [x] **ExitReason** — re-export from pane-proto (moved for wire transmission)
+- [ ] **Messenger full impl** — `set_content`, `set_pulse_rate`, `post_app_message`, `watch`/`unwatch` wire send (send_request moved to ServiceHandle)
 - [ ] **ConnectionSource** — calloop EventSource for a single Connection (read + buffered write) — **bumped priority: enables real Messenger/ServiceHandle routing**
 - [x] **Service registration wiring** — `PaneBuilder::connect()` + `open_service::<P>()` sends DeclareInterest through real ProtocolServer, `ServiceHandle::Drop` sends RevokeInterest, `LooperCore` dispatches service frames through `ServiceDispatch<H>` (12 new tests)
 - [ ] **Eager Hello.interests** — move initial service interests into Hello, resolved during handshake via Welcome.bindings (four-agent recommendation, deferred from service registration wiring)
@@ -162,8 +163,8 @@ Orthogonal to protocol phases — can proceed in parallel once Phase 1 server ex
 
 | Crate | Role | Status |
 |-------|------|--------|
-| pane-proto | Protocol vocabulary, no IO | Active (94 tests) |
-| pane-session | Session-typed IPC, transport, framing, server | Active (46 tests + 21 stress) |
+| pane-proto | Protocol vocabulary, no IO | Active (99 tests) |
+| pane-session | Session-typed IPC, transport, framing, server | Active (51 tests + 21 stress) |
 | pane-app | Actor framework, dispatch, looper | Active (68 tests + 7 stress + 5 integration) |
 | pane-fs | Filesystem namespace | Active (5 tests) |
 | pane-hello | First running pane app (binary) | Active (0 tests, manual verification) |
