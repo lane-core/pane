@@ -12,4 +12,6 @@ Small items, flaky tests, cleanup tasks. Not architectural — those go in PLAN.
 
 ## Deferred
 
-- [ ] **Notification-triggers-request** — a notification handler (`Handles<P>::receive`) currently cannot send requests (no DispatchCtx access). Deferred to Phase 2 via self-messaging or Messenger carrying dispatch context. Roundtable confirmed this doesn't create a ratchet.
+- [ ] **Notification-triggers-request** — a notification handler (`Handles<P>::receive`) currently cannot send requests (no DispatchCtx access). Deferred to Phase 2 via self-messaging (`Messenger::post_to_self()`) or Messenger carrying dispatch context. Roundtable confirmed this doesn't create a ratchet. EAct audit confirmed E-Self is not a formal rule and safety theorems hold without it.
+- [ ] **Messenger::watch/unwatch wire send** — stub methods exist, need write_tx on Messenger. Tracked under "Messenger full impl" in PLAN.md.
+- [ ] **Agda formalization** — four properties identified for formal verification (ReplyPort exactly-once, Dispatch one-shot, destruction sequence ordering, install-before-wire). Deferred until architecture stabilizes — code-level verification gives high confidence.
