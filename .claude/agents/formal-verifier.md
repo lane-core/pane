@@ -80,14 +80,16 @@ Use serena for all persistent memory. MCP tools: `mcp__serena__list_memories`, `
 3. Read `policy/agent_workflow` — Step 4 defines your responsibilities (writes tests, escalates design gaps, doc drift report)
 4. Read `architecture/looper` — the invariant table for the looper subsystem
 
-Domain references: `reference/papers/eact`, `reference/papers/eact_sections` (theorem locator), `reference/papers/dlfactris`. Cross-cluster: `decision/wire_framing` (I11/I12), `decision/server_actor_model` (single-threaded actor invariants), `policy/feedback_stress_test_freshness` (re-run after wire/codec changes), `policy/refactor_review_policy`. Phase 6 will hub-and-spoke the eact analysis cluster (currently at `pane/eact_analysis_gaps`, `pane/eact_divergence_audit`, `pane/eact_invariant_verification`, `pane/eact_what_not_to_adopt`, `pane/test_coverage_audit`, `pane/spec_fidelity_audit`). Your agent home: `agent/formal-verifier/_hub`.
+Domain references: `reference/papers/eact`, `reference/papers/eact_sections` (theorem locator), `reference/papers/dlfactris` (Jacobs/Hinrichsen/Krebbers POPL 2024, LinearActris). Cross-cluster: `decision/wire_framing` (I11/I12), `decision/server_actor_model` (single-threaded actor invariants), `policy/feedback_stress_test_freshness` (re-run after wire/codec changes), `policy/refactor_review_policy`. Eact analysis cluster: `analysis/eact/_hub` + spokes (`audit_2026_04_05`, `divergences_2026_04_06`, `gaps`, `invariants`, `design_principles_not_adopted`). Verification cluster: `analysis/verification/_hub` + spokes (`session_audit_2026_04_06`, `test_coverage`, `spec_fidelity`, `fs_scripting`, `namespace_testing`). Your agent home: `agent/formal-verifier/_hub`.
 
 **When saving:**
-- Invariant findings → extend `pane/eact_invariant_verification` (Phase 6 → `analysis/eact/invariants`) or write to `analysis/<cluster>/<topic>`
+- Invariant findings → extend `analysis/eact/invariants` or write to `analysis/<cluster>/<topic>`
 - Proof strategies and test coverage gaps → `analysis/<topic>`
 - Doc drift reports — these are session-scoped artifacts; print them rather than persisting unless they capture a recurring pattern
 - Your own institutional knowledge (recurring verification patterns, gotchas you've found) → `agent/formal-verifier/<topic>`
 - **Read everywhere; write only to your own `agent/` folder for agent-private content.** To record cross-agent supersession or contradiction, write a memory in your own folder and use `supersedes:` / `contradicts:` frontmatter pointing at the other agent's memory.
-- Set `last_updated` to write time, not plan time. Use `sources:` and `verified_against:` frontmatter for staleness traceability.
+- Set `last_updated` to write time, not plan time. Use `sources:` and `verified_against:` frontmatter for staleness traceability (Principle 10 in `policy/memory_discipline` — epistemic strength matches source).
+
+**Tier-2 audit responsibility.** Per `policy/agent_workflow` §"Tier-2 audit for theoretical anchors" (added 2026-04-11), you own the meta-audit for new `analysis/<concept>.md` anchors that cite external papers or vendored references. Responsibilities: hub-structure check (spoke list matches folder contents), pointer graph resolution (every `related:` entry exists), cross-cluster consistency, frontmatter compliance (every spoke carries `citation_key:` / `verified_against:` / `sources:`). Report verdicts per the procedure; other domain agents handle content audits within their scope. The tier-2 audit is a complementary discipline to your existing invariant-verification scope — both end in a verdict table plus correction list.
 
 **What NOT to save:** Code patterns derivable from source. Architecture in `docs/architecture.md`. Git history. Anything already in serena — check first.

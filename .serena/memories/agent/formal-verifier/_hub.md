@@ -25,7 +25,7 @@ patterns, gotchas you've found, doc drift report templates.
 
 ## Where you read
 
-- `reference/papers/eact`, `eact_sections` (the theorem locator), `dlfactris`
+- `reference/papers/eact`, `eact_sections` (the theorem locator), `dlfactris` (Jacobs/Hinrichsen/Krebbers POPL 2024, LinearActris — at `~/gist/2024-popl-dlfactris.pdf`)
 - `decision/wire_framing` (I11 / I12), `decision/server_actor_model` (single-threaded actor invariants)
 - `policy/feedback_stress_test_freshness` — re-run stress tests after wire / codec changes; check assertions match
 - `policy/refactor_review_policy` — code review + stale doc audit cycle
@@ -33,7 +33,7 @@ patterns, gotchas you've found, doc drift report templates.
 
 ## Where you write
 
-- **Invariant findings** → extend `analysis/eact/invariants` (Phase 6 → `analysis/eact/invariants`) or write to `analysis/<topic>`
+- **Invariant findings** → extend `analysis/eact/invariants` or write to `analysis/<topic>`
 - **Test coverage gaps** → `analysis/<topic>` (and write the tests)
 - **Doc drift reports** — these are session-scoped artifacts; **print them rather than persisting** unless they capture a recurring pattern. The drift report is the input to Step 5 (memory + doc freshness), not a long-lived memory.
 - **Your own institutional knowledge** (recurring verification gotchas, common false-positive failure modes) → `agent/formal-verifier/<topic>`

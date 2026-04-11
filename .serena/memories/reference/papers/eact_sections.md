@@ -1,6 +1,8 @@
 ---
 type: reference
 status: current
+citation_key: FH
+aliases: [EAct-sections]
 sources: [agent/session-type-consultant/reference_eact_paper]
 created: 2026-04-10
 last_updated: 2026-04-10

@@ -192,6 +192,82 @@ cite only pane's own materials (`docs/architecture.md`,
 `architecture/<crate>`, `decision/<topic>`). Any new external
 paper citation triggers the audit on the next pass.
 
+## Tier-2 code citation audit
+
+**Parallel to the anchor audit above** but triggered by code
+changes rather than memo writes. Applies to `[Key]`-form
+citations in `//!` and `///` doc comments inside
+`crates/*/src/`. Standard: `policy/code_citation_standard`.
+Bibliography: `docs/citations.md`.
+
+**Triggered by:**
+
+- Any PR that touches a module or function with an existing
+  `[Key]` citation (refactor review).
+- Any PR that adds a new citation.
+- Periodic audit pass run by formal-verifier (quarterly or
+  when `status` notes significant architectural drift).
+
+**Two-step procedure (mandatory for both).**
+
+1. **Mechanical pre-filter.** Run `just cite-lint`. Catches
+   typos, renamed keys, removed papers, unused bibliography
+   entries, alias conflicts. Failure → fix trivial breakage
+   before proceeding. **Green cite-lint is necessary but not
+   sufficient.**
+2. **Semantic audit.** Re-read every cited reference against
+   the implementation claim. For each `[Key]` in the touched
+   code, the auditor (reviewer for PR-level, formal-verifier
+   for periodic) verifies:
+   - The cited reference is actually a reference the function
+     draws from (not a background citation).
+   - The inline phrasing respects epistemic strength
+     (`policy/memory_discipline` §10 — Principle 10). "Realizes"
+     is stronger than "structurally analogous to"; the citation
+     must not strengthen what the source says.
+   - If the code was refactored, the function still implements
+     the cited construct. A stale citation on a refactored
+     function is worse than a missing one.
+   - The citation's cited section / theorem number (e.g.,
+     `[FH] §3.2`) is a real section in the source and covers
+     the claim.
+
+**Reviewer comment template.** On PRs with code citations, the
+reviewer leaves an explicit comment confirming the semantic
+check:
+
+> Citations re-verified against `[JHK24]` §1 (LinearActris
+> affine-plus-closure-capability encoding matches
+> `ReplyPort::drop`) and `[FH]` §3.2 (E-Suspend / E-React match
+> `Dispatch<H>::insert` / `fire_reply`). No drift.
+
+**Do not substitute `cite-lint` green for the semantic check.**
+CI green proves the keys resolve; it does not prove the
+citations are correct. The reviewer comment is the evidence
+that the semantic audit happened.
+
+**Auditor mapping.** Same table as the anchor audit above:
+
+| Citation topic | Auditor |
+|---|---|
+| duploids, VDCs, composition laws, polarity | optics-theorist or formal-verifier |
+| profunctor optics, MonadicLens, accessors | optics-theorist |
+| session types, multiparty, coprocess, wire format | session-type-consultant |
+| Plan 9 heritage, 9P, namespace | plan9-systems-engineer (heritage annotations use `path:line` form per `policy/heritage_annotations`) |
+| BeOS heritage, Haiku, BLooper, BMessage | be-systems-engineer (same) |
+| Rust implementation claims | pane-architect |
+| anchor-audit runs, spec fidelity, invariant coverage, periodic citation audit | formal-verifier |
+
+**Relation to the anchor audit.** Both audits check paraphrase
+fidelity against primary sources; they differ in which artifact
+is being audited (memo vs code doc comment). A single agent
+dispatch can cover both if the touched PR includes memory
+changes and code changes — the auditor applies the same
+discipline to both. In practice, refactor-review-policy
+triggers the code citation audit; tier-2 anchor audit triggers
+on memo writes. `formal-verifier` owns the periodic sweep that
+catches drift neither trigger caught.
+
 ## Provenance
 
 Workflow established 2026-04-05 after agents were bypassed in
@@ -199,4 +275,7 @@ earlier sessions. Refined over sessions 2 and 3 with Step 5 (memory
 freshness) added explicitly. Tier-2 audit procedure ported
 2026-04-11 from psh's agent-workflow after psh's 2026-04-11 tier-1
 anchor batch established the 1:2 self-caught-to-agent-caught
-hallucination ratio.
+hallucination ratio. Tier-2 code citation audit added 2026-04-11
+alongside the code citation standard and bibliography
+(`docs/citations.md`, `STYLEGUIDE.md` §"Code Documentation and
+Citation Standard", `policy/code_citation_standard`).

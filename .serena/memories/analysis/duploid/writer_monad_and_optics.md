@@ -47,4 +47,4 @@ BLooper sequential dispatch = canonical bracketing for non-commutative writer mo
 - Clarke et al. Definition 4.6 = MonadicLens definition
 - Clarke et al. Proposition 4.7 = mixed optic characterization
 - MM14b Proposition 6 = thunkable ⟹ central (holds in any duploid)
-- DLfActRiS (Hinrichsen/Krebbers/Birkedal, POPL 2024) = deadlock freedom for actors
+- DLfActRiS (Jacobs/Hinrichsen/Krebbers, POPL 2024) = deadlock freedom for higher-order message-passing via LinearActris (linearity + connectivity-graph acyclicity ⇒ global progress)

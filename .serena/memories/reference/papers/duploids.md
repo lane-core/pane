@@ -1,6 +1,8 @@
 ---
 type: reference
 status: current
+citation_key: MMM
+aliases: [MMM25, duploids, MM14b]
 created: 2026-04-10
 last_updated: 2026-04-10
 importance: high

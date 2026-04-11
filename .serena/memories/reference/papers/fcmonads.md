@@ -1,6 +1,8 @@
 ---
 type: reference
 status: current
+citation_key: CS10
+aliases: [fcmonads, VDC]
 created: 2026-04-10
 last_updated: 2026-04-10
 importance: high

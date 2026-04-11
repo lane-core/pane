@@ -68,3 +68,50 @@ Lane asked for this. Heritage annotations serve three purposes:
 1. **Design rationale:** why this shape and not another
 2. **Searchability:** grep for "Plan 9:" to find all Plan 9 adaptations
 3. **Divergence tracking:** where pane differs, the annotation explains why
+
+## Relation to `policy/code_citation_standard`
+
+Heritage annotations are a **specialization** of the general
+code citation standard (`policy/code_citation_standard`) for
+Be/Haiku and Plan 9 source-code citations. The general standard
+uses `[Key]` bibliography references for theoretical and paper
+citations (resolved via `docs/citations.md`); heritage
+annotations use `path:line` form for source-code lineage.
+
+Both disciplines apply. A module that draws from both a paper
+and a Be API cites both:
+
+```rust
+//! # pane-app Dispatch
+//!
+//! Design heritage: BeOS BLooper::task_looper()
+//! (src/kits/app/Looper.cpp:1162) blocked via MessageFromPort().
+//!
+//! Theoretical grounding: the install-then-fire shape realizes
+//! EAct's E-Suspend / E-React rules ([FH] §3.2; see also
+//! [JHK24] §1 on affine-plus-closure-capability encoding of
+//! linearity for `ReplyPort`'s Drop compensation).
+//!
+//! # References
+//!
+//! - [FH] — EAct E-Suspend / E-React (§3.2)
+//! - [JHK24] — LinearActris linearity encoding
+```
+
+**Separation of concerns:**
+
+- `path:line` form (this policy) is for source-code lineage —
+  "BeOS did X at `src/kits/app/Looper.cpp:1162`"
+- `[Key]` form (`policy/code_citation_standard`) is for
+  theoretical / paper references — "EAct §3.2 says Y"
+
+Don't cross the streams: a paper citation should not use
+`path:line`, and a Haiku source file should not be given a
+`[Key]` bibliography entry (unless the Haiku Book itself is
+being cited as a secondary source, in which case it lives in
+`docs/citations.md` like any other paper).
+
+The `cite-lint` tool (`just cite-lint`) validates `[Key]`
+citations against `docs/citations.md`; heritage annotations are
+audited separately by the be-systems-engineer /
+plan9-systems-engineer agents during code review.
