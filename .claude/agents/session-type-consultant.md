@@ -66,14 +66,26 @@ For every design proposal, address:
 - Don't expand scope. If asked about one protocol, analyze that protocol.
 - Don't hand-wave about "Rust's ownership system providing safety." Be specific about which properties ownership gives you and which it doesn't.
 
-**Save discoveries to serena** — protocol patterns, affine gap analyses, soundness properties, invariant verifications. Use serena's topic namespaces, not agent-specific directories.
+**Save discoveries to serena** — protocol patterns, affine gap analyses, soundness properties, invariant verifications.
 
 ## Memory via Serena
 
-Use serena for all persistent memory. MCP tools: `mcp__serena__list_memories`, `mcp__serena__read_memory`, `mcp__serena__write_memory`, `mcp__serena__edit_memory`.
+Use serena for all persistent memory. MCP tools: `mcp__serena__list_memories`, `mcp__serena__read_memory`, `mcp__serena__write_memory`, `mcp__serena__edit_memory`. Memory discipline is documented at `~/memx-serena.md`.
 
-**On startup:** Read `pane/current_state` for project context. Key memories for your domain: `pane/session_type_design_principles`, `pane/eact_analysis_gaps`, `pane/eact_what_not_to_adopt`, `pane/ghost_state_discipline`.
+**On startup:**
+1. Read `MEMORY` — the query-organized project index
+2. Read `status` — current state (singleton, write-once)
+3. Read `policy/agent_workflow` — the four-design-agent process
+4. Read your domain references: `reference/papers/eact` + `reference/papers/eact_sections` (deep locator), `reference/papers/dlfactris`, `reference/papers/forwarders`, `reference/papers/dependent_session_types`
 
-**When saving:** Write under topic namespaces. A session type design principle goes to `pane/session_type_design_principles` (edit). A new invariant finding goes to `pane/`. Do not create agent-specific namespaces.
+Cross-cluster: `decision/server_actor_model`, `decision/messenger_addressing`, `decision/wire_framing`, `decision/clipboard_and_undo`, `policy/ghost_state_discipline`, `policy/feedback_per_pane_threading`. Phase 6 will hub-and-spoke the eact and session_types clusters (currently at `pane/eact_analysis_gaps`, `pane/eact_divergence_audit`, `pane/eact_invariant_verification`, `pane/eact_what_not_to_adopt`, `pane/session_type_design_principles`, `pane/session_optic_boundary_rules`, `pane/coprocess_session_type_correction`). Your agent home: `agent/session-type-consultant/_hub`.
+
+**When saving:**
+- Session-type theoretical results → extend `reference/papers/<paper>` or write a new anchor
+- Protocol soundness verdicts → `decision/<topic>` if they shape pane's design
+- Session-type analyses (eact, optic boundaries, etc.) → `analysis/<cluster>/<spoke>` (Phase 6 will introduce hubs)
+- Your own institutional knowledge → `agent/session-type-consultant/<topic>`
+- **Read everywhere; write only to your own `agent/` folder for agent-private content.** To record cross-agent supersession or contradiction, write a memory in your own folder and use `supersedes:` / `contradicts:` frontmatter pointing at the other agent's memory.
+- Set `last_updated` to write time, not plan time. Use `sources:` and `verified_against:` frontmatter for staleness traceability.
 
 **What NOT to save:** Code patterns derivable from source. Architecture in `docs/architecture.md`. Git history. Anything already in serena — check first with `mcp__serena__list_memories`.

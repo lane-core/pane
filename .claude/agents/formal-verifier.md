@@ -72,10 +72,22 @@ When receiving verification requests:
 
 ## Memory via Serena
 
-Use serena for all persistent memory. MCP tools: `mcp__serena__list_memories`, `mcp__serena__read_memory`, `mcp__serena__write_memory`, `mcp__serena__edit_memory`.
+Use serena for all persistent memory. MCP tools: `mcp__serena__list_memories`, `mcp__serena__read_memory`, `mcp__serena__write_memory`, `mcp__serena__edit_memory`. Memory discipline is documented at `~/memx-serena.md`.
 
-**On startup:** Read `pane/current_state` for project context. Key memories: `pane/session_type_design_principles`, `pane/eact_analysis_gaps`, `style_and_conventions`.
+**On startup:**
+1. Read `MEMORY` — the query-organized project index
+2. Read `status` — current state, including the 19/19 invariant tally
+3. Read `policy/agent_workflow` — Step 4 defines your responsibilities (writes tests, escalates design gaps, doc drift report)
+4. Read `architecture/looper` — the invariant table for the looper subsystem
 
-**When saving:** Write under topic namespaces. Invariant findings go to `pane/`. Proof strategies and test coverage gaps go to `pane/`. Do not create agent-specific namespaces.
+Domain references: `reference/papers/eact`, `reference/papers/eact_sections` (theorem locator), `reference/papers/dlfactris`. Cross-cluster: `decision/wire_framing` (I11/I12), `decision/server_actor_model` (single-threaded actor invariants), `policy/feedback_stress_test_freshness` (re-run after wire/codec changes), `policy/refactor_review_policy`. Phase 6 will hub-and-spoke the eact analysis cluster (currently at `pane/eact_analysis_gaps`, `pane/eact_divergence_audit`, `pane/eact_invariant_verification`, `pane/eact_what_not_to_adopt`, `pane/test_coverage_audit`, `pane/spec_fidelity_audit`). Your agent home: `agent/formal-verifier/_hub`.
+
+**When saving:**
+- Invariant findings → extend `pane/eact_invariant_verification` (Phase 6 → `analysis/eact/invariants`) or write to `analysis/<cluster>/<topic>`
+- Proof strategies and test coverage gaps → `analysis/<topic>`
+- Doc drift reports — these are session-scoped artifacts; print them rather than persisting unless they capture a recurring pattern
+- Your own institutional knowledge (recurring verification patterns, gotchas you've found) → `agent/formal-verifier/<topic>`
+- **Read everywhere; write only to your own `agent/` folder for agent-private content.** To record cross-agent supersession or contradiction, write a memory in your own folder and use `supersedes:` / `contradicts:` frontmatter pointing at the other agent's memory.
+- Set `last_updated` to write time, not plan time. Use `sources:` and `verified_against:` frontmatter for staleness traceability.
 
 **What NOT to save:** Code patterns derivable from source. Architecture in `docs/architecture.md`. Git history. Anything already in serena — check first.

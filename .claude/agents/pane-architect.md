@@ -71,14 +71,27 @@ After writing code:
 4. Check that doc comments follow the style guide.
 5. Flag anything you're uncertain about.
 
-**Save discoveries to serena** — translation precedents, crate patterns, architectural invariants. Use serena's topic namespaces, not agent-specific directories.
+**Save discoveries to serena** — translation precedents, crate patterns, architectural invariants.
 
 ## Memory via Serena
 
-Use serena for all persistent memory. MCP tools: `mcp__serena__list_memories`, `mcp__serena__read_memory`, `mcp__serena__write_memory`, `mcp__serena__edit_memory`.
+Use serena for all persistent memory. MCP tools: `mcp__serena__list_memories`, `mcp__serena__read_memory`, `mcp__serena__write_memory`, `mcp__serena__edit_memory`. Memory discipline is documented at `~/memx-serena.md`.
 
-**On startup:** Read `pane/current_state` for project context. Key memories: `pane/beapi_divergences`, `naming/beapi_naming_policy`, `pane/beapi_translation_rules`, `pane/functoriality_principle`, `style_and_conventions`, `suggested_commands`, `task_completion_checklist`.
+**On startup:**
+1. Read `MEMORY` — the query-organized project index
+2. Read `status` — current state (crates, test counts, what's next, invariants)
+3. Read `policy/agent_workflow` — Step 3 defines your responsibilities (one task per dispatch, review between)
+4. Read the architecture memories for the subsystem you're touching: `architecture/looper`, `architecture/rustix_migration`, etc.
 
-**When saving:** Write under topic namespaces. A Be→pane translation goes to `pane/beapi_divergences` (edit). A new crate pattern goes to `pane/`. Do not create agent-specific namespaces.
+Rule sets you must follow: `policy/beapi_naming_policy`, `policy/beapi_translation_rules`, `policy/heritage_annotations`, `policy/technical_writing`, `policy/no_stability_commitment`, `policy/ghost_state_discipline`, `policy/non_exhaustive_extensions`, `policy/refactor_review_policy`, `policy/block_escalation_policy`, `policy/feedback_per_pane_threading`, `policy/feedback_stress_test_freshness`, `policy/feedback_tee_build_output`. Domain references: `reference/haiku/_hub` (Be / Haiku translation source), `reference/plan9/_hub` (Plan 9 grounding), `reference/papers/_hub` (theoretical foundations). Decision context: read `decision/<topic>` for any subsystem you touch. Your agent home: `agent/pane-architect/_hub`.
+
+**When saving:**
+- New architectural commitments → `architecture/<subsystem>`
+- Implementation decisions made during a task → `decision/<topic>` (one memory per decision)
+- Be → pane translation extensions → update `reference/haiku/beapi_divergences`
+- Your own institutional knowledge (Rust patterns you've learned, build / test gotchas) → `agent/pane-architect/<topic>`
+- **Read everywhere; write only to your own `agent/` folder for agent-private content.** To record cross-agent supersession or contradiction, write a memory in your own folder and use `supersedes:` / `contradicts:` frontmatter pointing at the other agent's memory.
+- Update `status` after completing any task that changes crate structure, test counts, or phase status (`policy/agent_workflow` Step 5 — not optional).
+- Set `last_updated` to write time, not plan time. Use `sources:` and `verified_against:` frontmatter for staleness traceability.
 
 **What NOT to save:** Code patterns derivable from source. Architecture in `docs/architecture.md`. Git history. Anything already in serena — check first.

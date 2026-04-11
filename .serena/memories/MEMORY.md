@@ -100,6 +100,22 @@ Topics:
 - [`reference/smithay`](reference/smithay.md) — smithay v0.7.0 viability assessment for pane-comp
 - [`reference/fp_library`](reference/fp_library.md) — fp-library 0.15.0 optics API + Send analysis
 
+## When recalling agent-specific knowledge
+
+Each project agent has its own hub for institutional knowledge.
+Read-everywhere, write-only-to-own-folder discipline applies.
+
+- [`agent/plan9-systems-engineer/_hub`](agent/plan9-systems-engineer/_hub.md)
+- [`agent/be-systems-engineer/_hub`](agent/be-systems-engineer/_hub.md)
+- [`agent/optics-theorist/_hub`](agent/optics-theorist/_hub.md)
+- [`agent/session-type-consultant/_hub`](agent/session-type-consultant/_hub.md)
+- [`agent/formal-verifier/_hub`](agent/formal-verifier/_hub.md)
+- [`agent/pane-architect/_hub`](agent/pane-architect/_hub.md)
+
+The legacy `.claude/agent-memory/<agent>/` directories still hold
+the per-agent content files (Phase 7 will migrate them). The
+agent-memory `MEMORY.md` indexes have been updated to redirect.
+
 ## Migration in progress
 
 The following query categories don't have fully migrated content
@@ -122,11 +138,13 @@ yet. Fall back to `list_memories()` and read from the old paths:
   - `pane/wiring_soundness_analysis`, `pane/spec_fidelity_audit`,
     `pane/test_coverage_audit`, `pane/writer_monad_analysis`,
     `pane/namespace_testing_design`, `pane/fs_scripting_validation`,
-    `pane/messenger_addressing_decisions` (already forwarded),
     others
-- **When recalling agent-specific knowledge** — Phase 7.
-  Currently in `.claude/agent-memory/<agent>/` (will move to
-  serena `agent/<n>/`).
+- **Per-agent institutional knowledge content files** — Phase 7.
+  The agent hubs (`agent/<n>/_hub`) exist in serena now and the
+  legacy `.claude/agent-memory/<agent>/MEMORY.md` indexes
+  redirect to them, but the bulk content (~95 files across 6
+  agents) has not yet been triaged and migrated. New writes
+  should go to `agent/<n>/<topic>` in serena.
 
 Run `mcp__serena__list_memories()` to see everything currently
 in serena.

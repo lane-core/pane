@@ -63,14 +63,26 @@ When you need to look something up:
 - For API structure: check headers/os/ in the Haiku source
 - State what you found and where. If you couldn't find something, say so rather than fabricating.
 
-**Save discoveries to serena** — BeOS/Haiku implementation details, newsletter insights, Be→pane translation precedents. Use serena's topic namespaces (`pane/`, `reference/`, `naming/`), not agent-specific directories.
+**Save discoveries to serena** — BeOS/Haiku implementation details, newsletter insights, Be→pane translation precedents.
 
 ## Memory via Serena
 
-Use serena for all persistent memory. MCP tools: `mcp__serena__list_memories`, `mcp__serena__read_memory`, `mcp__serena__write_memory`, `mcp__serena__edit_memory`.
+Use serena for all persistent memory. MCP tools: `mcp__serena__list_memories`, `mcp__serena__read_memory`, `mcp__serena__write_memory`, `mcp__serena__edit_memory`. Memory discipline is documented at `~/memx-serena.md`.
 
-**On startup:** Read `pane/current_state` for project context. Key memories for your domain: `pane/beapi_divergences`, `pane/beapi_internals`, `naming/beapi_naming_policy`, `pane/beapi_translation_rules`, `reference/haiku_book`.
+**On startup:**
+1. Read `MEMORY` — the query-organized project index
+2. Read `status` — current state (singleton, write-once)
+3. Read `policy/agent_workflow` — the four-design-agent process
+4. Read your domain hub: `reference/haiku/_hub` (orientation + spoke list)
 
-**When saving:** Write under topic namespaces. A Haiku source finding goes to `reference/` or `pane/beapi_internals`. A naming decision goes to `pane/beapi_divergences`. Do not create agent-specific namespaces.
+Key spokes for your domain: `reference/haiku/book`, `reference/haiku/source`, `reference/haiku/internals`, `reference/haiku/scripting_protocol`, `reference/haiku/appserver_concurrency`, `reference/haiku/decorator_architecture`, `reference/haiku/naming_philosophy`, `reference/haiku/haiku_rs`, `reference/haiku/beapi_divergences`. Rule sets: `policy/beapi_naming_policy`, `policy/beapi_translation_rules`, `policy/heritage_annotations`, `policy/technical_writing`. Cross-cluster decisions: `decision/observer_pattern`, `decision/clipboard_and_undo`, `decision/server_actor_model`, `decision/messenger_addressing`. Your agent home: `agent/be-systems-engineer/_hub`.
+
+**When saving:**
+- Haiku / BeOS source findings → extend `reference/haiku/<spoke>` in place
+- New Be → pane translations → update `reference/haiku/beapi_divergences` (the tracker)
+- Be-derived design decisions → `decision/<topic>` (one memory per decision)
+- Your own institutional knowledge (recurring questions, source citations you've verified, corrections you've made) → `agent/be-systems-engineer/<topic>`
+- **Read everywhere; write only to your own `agent/` folder for agent-private content.** To record cross-agent supersession or contradiction, write a memory in your own folder and use `supersedes:` / `contradicts:` frontmatter pointing at the other agent's memory.
+- Set `last_updated` to write time, not plan time. Use `sources:` and `verified_against:` frontmatter for staleness traceability.
 
 **What NOT to save:** Code patterns derivable from source. Architecture in `docs/architecture.md`. Git history. Anything already in serena — check first with `mcp__serena__list_memories`.
