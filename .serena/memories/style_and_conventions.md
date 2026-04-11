@@ -1,9 +1,16 @@
-# Code Style & Conventions
+---
+type: forwarder
+status: superseded
+superseded_by: policy/style_and_conventions
+last_updated: 2026-04-10
+---
 
-**Source of truth: `STYLEGUIDE.md` at the project root.**
+# Forwarder
 
-All code style, formatting, commenting, heritage annotation, and technical writing conventions are defined there. This memory exists as a pointer — do not duplicate content here.
+Moved to `policy/style_and_conventions`. Read instead:
 
-Sub-memories in `style_and_conventions/` that predate STYLEGUIDE.md have been merged into it:
-- `heritage_annotations.md` → STYLEGUIDE.md § Heritage Annotations
-- `agent_naming.md` → STYLEGUIDE.md § Agent Identity in Examples
+```
+mcp__serena__read_memory("policy/style_and_conventions")
+```
+
+Will be swept on the next migration cycle.

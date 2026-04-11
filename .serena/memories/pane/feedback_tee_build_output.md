@@ -1,4 +1,16 @@
-When running builds or tests that produce long output, always tee to /tmp. The user may want to check progress on a long-running build.
+---
+type: forwarder
+status: superseded
+superseded_by: policy/feedback_tee_build_output
+last_updated: 2026-04-10
+---
 
-Use: `nix build ... 2>&1 | tee /tmp/pane-build.log | tail -30`
-Not: `| tail -30` alone.
+# Forwarder
+
+Moved to `policy/feedback_tee_build_output`. Read instead:
+
+```
+mcp__serena__read_memory("policy/feedback_tee_build_output")
+```
+
+Will be swept on the next migration cycle.

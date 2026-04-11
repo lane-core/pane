@@ -1,7 +1,16 @@
-# Agent Naming in Documentation and Examples
+---
+type: forwarder
+status: superseded
+superseded_by: policy/agent_naming
+last_updated: 2026-04-10
+---
 
-Use generic human names (ada, bob, ralph, etc.) for agent identities in docs, examples, and Display output — not dotted service-style names like `agent.reviewer`. 
+# Forwarder
 
-**Why:** Dotted names are invalid unix usernames on most systems (periods not allowed in useradd on Linux, etc.). Since pane maps certificate subjects to local unix accounts, agent names must be valid usernames. Generic human names are both valid and readable.
+Moved to `policy/agent_naming`. Read instead:
 
-**How to apply:** Anywhere an example agent identity appears — doc examples, Display impl output, test fixtures, architecture docs — use names like `ada`, `bob`, `ralph`. Never `agent.reviewer`, `agent.editor`, etc.
+```
+mcp__serena__read_memory("policy/agent_naming")
+```
+
+Will be swept on the next migration cycle.

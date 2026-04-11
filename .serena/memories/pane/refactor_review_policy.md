@@ -1,10 +1,16 @@
-# Post-Refactor Review Policy (CRITICAL)
+---
+type: forwarder
+status: superseded
+superseded_by: policy/refactor_review_policy
+last_updated: 2026-04-10
+---
 
-After any substantial refactor (mass rename, API restructure, architectural change):
+# Forwarder
 
-1. Code review — audit changed code for correctness, idiom, consistency
-2. Stale documentation review (parallel) — audit ALL comments, specs, docs, memories for old names/patterns
-3. If code review fixes are themselves substantial → run another stale doc review after implementing them
-4. Repeat until a review pass produces no substantial changes
+Moved to `policy/refactor_review_policy`. Read instead:
 
-"Substantial" = renames public identifiers, removes/adds public types, changes method signatures, restructures modules.
+```
+mcp__serena__read_memory("policy/refactor_review_policy")
+```
+
+Will be swept on the next migration cycle.

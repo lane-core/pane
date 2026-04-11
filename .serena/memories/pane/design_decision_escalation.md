@@ -1,15 +1,16 @@
-# Design Decision Escalation Path
+---
+type: forwarder
+status: superseded
+superseded_by: policy/design_decision_escalation
+last_updated: 2026-04-10
+---
 
-When a design question has multiple viable approaches:
+# Forwarder
 
-1. Consult the specialist agents (be-systems-engineer, plan9-systems-engineer, session-type-consultant, optics-theorist) with the question and options.
-2. If consensus resolves it, apply and note reasoning.
-3. If not, forward to Lane with agents' input and remaining options. Lane decides.
+Moved to `policy/design_decision_escalation`. Read instead:
 
-Do NOT:
-- Pick an option based on "convention" or preference
-- Skip agent consultation and go straight to Lane
-- File it as an open question to avoid the collaborative step
-- Move forward while noting "this is a design decision"
+```
+mcp__serena__read_memory("policy/design_decision_escalation")
+```
 
-"Convention" from struck v1 code is not authority. Agents' domain expertise is the first resource; Lane's judgment is the final authority.
+Will be swept on the next migration cycle.

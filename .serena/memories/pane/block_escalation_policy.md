@@ -1,11 +1,16 @@
-# Block Escalation Policy (CRITICAL)
+---
+type: forwarder
+status: superseded
+superseded_by: policy/block_escalation_policy
+last_updated: 2026-04-10
+---
 
-If an implementation block requires deviating from the agreed plan/spec:
+# Forwarder
 
-1. STOP work immediately — do not work around silently
-2. Present what happened — the block, what was attempted, what assumption broke
-3. Explain why it's a block — why the original strategy can't proceed
-4. Present options with consequences for the plan as a whole
-5. Wait for Lane's direction before proceeding
+Moved to `policy/block_escalation_policy`. Read instead:
 
-Silent workarounds are forbidden. A block that changes implementation strategy is a design decision belonging to Lane.
+```
+mcp__serena__read_memory("policy/block_escalation_policy")
+```
+
+Will be swept on the next migration cycle.
