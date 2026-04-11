@@ -2,7 +2,7 @@
 type: index
 status: current
 created: 2026-04-10
-last_updated: 2026-04-10
+last_updated: 2026-04-11
 importance: high
 ---
 
@@ -33,6 +33,7 @@ that matches your task.
 - [`policy/heritage_annotations`](policy/heritage_annotations.md) — Be / Plan 9 citation format
 - [`policy/style_and_conventions`](policy/style_and_conventions.md) — pointer to STYLEGUIDE.md
 - [`policy/technical_writing`](policy/technical_writing.md) — Plan 9 voice
+- [`policy/headless_development_unblocking`](policy/headless_development_unblocking.md) — develop against pane-headless by default
 - [`policy/feedback_accept_as_is`](policy/feedback_accept_as_is.md) — roundtable verdicts need Lane
 - [`policy/feedback_per_pane_threading`](policy/feedback_per_pane_threading.md) — intra-pane blocking is backpressure
 - [`policy/feedback_stress_test_freshness`](policy/feedback_stress_test_freshness.md) — re-run after wire/codec changes
@@ -41,6 +42,28 @@ that matches your task.
 - [`policy/feedback_relay_mail`](policy/feedback_relay_mail.md) — handoff memo workflow
 - [`policy/feedback_tee_build_output`](policy/feedback_tee_build_output.md) — tee long-running output to /tmp
 - [`policy/feedback_no_python_extraction`](policy/feedback_no_python_extraction.md) — agents have Write permission
+
+## When making or recalling a decision
+
+### Foundational commitments
+
+- [`decision/host_as_contingent_server`](decision/host_as_contingent_server.md) — local hardware has no architectural privilege
+- [`decision/headless_strategic_priority`](decision/headless_strategic_priority.md) — headless / distributed is the top near-term deliverable
+
+### Subsystem decisions
+
+- [`decision/messenger_addressing`](decision/messenger_addressing.md) — Address, Messenger, ServiceHandle, direct pane-to-pane
+- [`decision/server_actor_model`](decision/server_actor_model.md) — ProtocolServer is a single-threaded actor
+- [`decision/observer_pattern`](decision/observer_pattern.md) — observable state via filesystem attrs, not messaging
+- [`decision/panefs_query_unification`](decision/panefs_query_unification.md) — pane-fs directories ARE queries
+- [`decision/wire_framing`](decision/wire_framing.md) — ProtocolAbort framing, reserved discriminant, I11/I12 split
+- [`decision/clipboard_and_undo`](decision/clipboard_and_undo.md) — MIME ctl, TTL, undo via ctl, RecordingOptic gaps
+- [`decision/system_fonts`](decision/system_fonts.md) — Inter / Gelasio / Monoid as defaults
+
+### Distribution / system layer
+
+- [`decision/s6_init`](decision/s6_init.md) — sixos (s6 + Nix) for the Linux distribution layer
+- [`decision/dependency_review`](decision/dependency_review.md) — Landlock, bcachefs, Wayland protocols, FUSE / io_uring
 
 ## When working on a subsystem
 
@@ -96,11 +119,11 @@ yet. Fall back to `list_memories()` and read from the old paths:
     `pane/coprocess_session_type_correction`
   - `pane/shell_sequent_calculus_analysis`,
     `pane/functoriality_principle`
-- **When making or recalling a decision** — Phase 5. Current
-  locations: `pane/messenger_addressing_decisions`,
-  `pane/observer_pattern_decision`, `pane/server_actor_model_decision`,
-  `pane/host_as_contingent_server`, `pane/headless_strategic_priority`,
-  `pane/panefs_query_unification`, and others under `pane/*`.
+  - `pane/wiring_soundness_analysis`, `pane/spec_fidelity_audit`,
+    `pane/test_coverage_audit`, `pane/writer_monad_analysis`,
+    `pane/namespace_testing_design`, `pane/fs_scripting_validation`,
+    `pane/messenger_addressing_decisions` (already forwarded),
+    others
 - **When recalling agent-specific knowledge** — Phase 7.
   Currently in `.claude/agent-memory/<agent>/` (will move to
   serena `agent/<n>/`).

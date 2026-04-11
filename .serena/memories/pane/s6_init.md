@@ -1,1 +1,8 @@
-pane's Linux distribution layer is planned to be based on sixos (s6 + Nix). s6 as init, s6-rc for service management, Nix for package management and system configuration.
+---
+type: forwarder
+status: superseded
+superseded_by: decision/s6_init
+last_updated: 2026-04-11
+---
+
+See `decision/s6_init`.
