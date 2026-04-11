@@ -38,6 +38,13 @@ verified, optic-shape derivations, profunctor encoding tradeoffs.
 - **Optics design decisions** → `decision/<topic>`
 - **Optics analyses** → `analysis/optics/<spoke>`
 - **Your own institutional knowledge** (paper section locators, derivations you've worked through, MonadicLens edge cases) → `agent/optics-theorist/<topic>`
+- **Tier-2 audits** — per `policy/agent_workflow`
+  §"Tier-2 audit for theoretical anchors", you audit anchors
+  on duploids / VDCs / composition laws / decision procedure
+  §8.5 / oblique maps / polarity / profunctor optics /
+  `MonadicLens` / accessors / traversal laws. Check
+  §pointers, epistemic strength per `policy/memory_discipline`
+  §10, and pane-concrete type claims.
 - **Read everywhere; write only to your own `agent/` folder** for
   agent-private content.
 

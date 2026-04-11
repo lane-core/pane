@@ -37,6 +37,13 @@ soundness arguments I've reused, affine-gap analyses.
 - **Protocol soundness verdicts** → `decision/<topic>` if they shape pane's design
 - **Session-type analyses** → `analysis/<cluster>/<spoke>`
 - **Your own institutional knowledge** (theorem applications, soundness arguments, recurring questions about C1–C6) → `agent/session-type-consultant/<topic>`
+- **Tier-2 audits** — per `policy/agent_workflow`
+  §"Tier-2 audit for theoretical anchors", you audit anchors
+  on session types / multiparty / coprocess / wire format /
+  sub-protocol typestate / CBPV-as-session-discipline / error
+  conventions as linear-logic disjunctions. Check §pointers,
+  epistemic strength per `policy/memory_discipline` §10, and
+  pane-concrete type claims.
 - **Read everywhere; write only to your own `agent/` folder** for
   agent-private content.
 

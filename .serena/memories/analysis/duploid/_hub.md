@@ -49,6 +49,17 @@ refuse.
   (already a duploid), and pane (ServiceFrame positive,
   ReplyPort ↑(...), dispatch CBV). Use this before
   classifying a new type.
+- [`analysis/duploid/oblique_maps`](oblique_maps.md) —
+  ported 2026-04-11 from psh. Cross-polarity arrows P → N as
+  the universal structure for producer-consumer crossings;
+  pane instances are `send_request`, ctl writes,
+  `AttrWriter::write`, `pane_exited` dispatch. Actor model
+  is the runtime analog of the frame discipline.
+- [`analysis/duploid/cbv_focusing`](cbv_focusing.md) —
+  ported 2026-04-11 from psh. Focusing as critical-pair
+  resolution; governance vocabulary for treating each
+  `Handles<P>::receive` call as a focused scope for
+  `MonadicLens` law-checking purposes.
 
 ## Open questions
 

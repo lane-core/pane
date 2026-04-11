@@ -110,8 +110,93 @@ After validation passes:
 - formal-verifier: writes tests, escalates design gaps — does not
   defer them
 
+## Tier-2 audit for theoretical anchors
+
+**Mandatory** before any new `analysis/<concept>.md` (or
+`analysis/<cluster>/<spoke>.md`) theoretical concept anchor that
+cites external papers, framework sections, primary-source code, or
+vendored references is treated as authoritative for cross-agent
+retrieval.
+
+The four-design-agent consultation (Step 1) checks that you read
+the right material *before* writing. The tier-2 audit checks that
+the memo's *paraphrases of cited material* are faithful to the
+source *after* writing. The two are independent; you need both.
+
+**Why mandatory.** Psh ran this procedure on its 2026-04-11 tier-1
+anchor batch (22 memos). A manual spot-check by the writing agent
+caught 3 hallucinations; a follow-up dispatch of 5 domain agents
+caught 1 MAJOR + 6 MINOR more — a 1:2 ratio of self-caught to
+agent-caught, even with the writer trying to be careful. The
+discipline of catching errors at write time is unreliable; the
+discipline of catching them at audit time, by a different agent
+reading the sources fresh, is the practical floor on accuracy.
+
+**Procedure.**
+
+1. Write the anchors. Cite refs and §pointers as you go. Each
+   anchor tags its primary source in
+   `verified_against: [<source>@<date>]` and its cited papers in
+   `related: [reference/papers/<paper>]`.
+2. Identify the domain agent(s) whose scope covers each anchor:
+
+   | Anchor topic | Auditor |
+   |---|---|
+   | duploids, VDCs, composition laws, decision procedure §8.5, oblique maps, polarity | optics-theorist or formal-verifier |
+   | profunctor optics, MonadicLens, accessors, traversal laws | optics-theorist |
+   | session types, multiparty, coprocess, wire format, sub-protocol typestate | session-type-consultant |
+   | Plan 9 heritage, 9P, namespace, rio / plumber precedent | plan9-systems-engineer |
+   | BeOS heritage, Haiku, BLooper, BMessage, scripting protocol | be-systems-engineer |
+   | Rust implementation claims (types, lifetimes, ownership) | pane-architect |
+   | anchor-audit runs, spec fidelity, invariant coverage | formal-verifier |
+
+3. Dispatch the auditor agents in parallel. Each gets a brief
+   listing the anchors it owns and the verification rules:
+
+   - Every §pointer or line number is real and points to material
+     on the claimed topic.
+   - Every substantive claim traces to a specific passage in the
+     cited reference.
+   - Epistemic strength matches the source (per
+     `policy/memory_discipline` §10).
+   - No invented narrative, symptoms, examples, or details.
+   - Output: per-anchor verdict (CLEAN / MINOR / MAJOR) with
+     quotes from source vs anchor when divergent.
+
+4. Fold corrections. Update each corrected anchor's
+   `verified_against:` frontmatter to record the audit date and
+   the agent that verified it. Bump `last_updated:` to merge
+   time.
+5. Only after the audit pass and folded corrections may the
+   anchors be marked authoritative for cross-agent retrieval.
+
+**Relation to `analysis/verification/`.** The verification cluster
+audits implementation against invariant enumeration (I1–I13,
+S1–S6) — code and spec fidelity. The tier-2 audit audits memo
+paraphrase against primary-source epistemic strength — text
+fidelity. Different kinds of audit, same discipline root. The
+formal-verifier owns both because both end in a verdict table
+plus correction list; the other domain agents audit within their
+scope of expertise.
+
+**Out of scope for the audit.** Upstream issues found in the
+primary source (a typo in `docs/architecture.md`, a mis-citation
+in a paper anchor, a stale claim in `architecture/<crate>`) are
+flagged in the audit report and routed to Lane for separate
+resolution. The tier-2 audit fixes the anchors; source documents
+get their own review pass.
+
+**Skipping the audit.** Permitted only for tier-3 anchors, short
+corrections that don't introduce new citations, or anchors that
+cite only pane's own materials (`docs/architecture.md`,
+`architecture/<crate>`, `decision/<topic>`). Any new external
+paper citation triggers the audit on the next pass.
+
 ## Provenance
 
 Workflow established 2026-04-05 after agents were bypassed in
 earlier sessions. Refined over sessions 2 and 3 with Step 5 (memory
-freshness) added explicitly.
+freshness) added explicitly. Tier-2 audit procedure ported
+2026-04-11 from psh's agent-workflow after psh's 2026-04-11 tier-1
+anchor batch established the 1:2 self-caught-to-agent-caught
+hallucination ratio.

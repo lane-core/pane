@@ -37,6 +37,14 @@ patterns, gotchas you've found, doc drift report templates.
 - **Test coverage gaps** → `analysis/<topic>` (and write the tests)
 - **Doc drift reports** — these are session-scoped artifacts; **print them rather than persisting** unless they capture a recurring pattern. The drift report is the input to Step 5 (memory + doc freshness), not a long-lived memory.
 - **Your own institutional knowledge** (recurring verification gotchas, common false-positive failure modes) → `agent/formal-verifier/<topic>`
+- **Tier-2 audit runs** — per `policy/agent_workflow`
+  §"Tier-2 audit for theoretical anchors" (ported 2026-04-11
+  from psh), you own the meta-audit for new
+  `analysis/<concept>.md` anchors that cite external papers
+  or vendored references. Hub-structure check, pointer graph,
+  cross-cluster consistency, frontmatter compliance. Report
+  verdicts per the procedure; other domain agents handle
+  content audits within their scope.
 - **Read everywhere; write only to your own `agent/` folder** for
   agent-private content.
 

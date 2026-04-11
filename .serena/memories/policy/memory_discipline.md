@@ -259,6 +259,63 @@ or in other memories' `related` fields are high-utility and should
 be marked `importance: high`. Memories nobody points to are dead
 weight and become candidates for archiving.
 
+### 10. Epistemic strength matches the source
+
+When citing or paraphrasing a primary source in a memory, the
+epistemic strength of the memory must match the source. If the
+source hedges, the memory hedges. If the source says "structurally
+analogous," the memory must not say "manifest" or "is." If the
+source notes "not formally verified," the memory must carry that
+caveat. The same discipline rejects adding details (symptoms,
+examples, narrative about authorial intent) the source doesn't
+contain — that's the same class of error in the writing direction.
+
+This is the paraphrase-time analogue of MemX's R1 low-confidence
+rejection rule: just as MemX rejects retrieval when both signals
+are weak, the writing agent rejects a paraphrase that strengthens
+the source. Each paraphrase hop must preserve the original
+epistemic strength; if a hop strengthens the claim, the chain is
+broken.
+
+**The rule applied:**
+
+- Read the source's exact wording before paraphrasing.
+- Preserve hedge words ("analogous", "approximately", "the pattern
+  matches", "structurally similar") and caveat phrases ("not
+  formally verified", "modulo", "up to", "we conjecture").
+- Do not invent symptoms, examples, narrative about authorial
+  intent, or details the source doesn't contain.
+- When in doubt, quote the source's exact phrasing rather than
+  paraphrasing it.
+- Tag the memo with `verified_against: [<source>@<date>]` so the
+  next reader can audit the paraphrase against the source.
+
+**The three failure shapes.** Anchor audits on paraphrased memories
+keep turning up the same three:
+
+1. **Strengthening a hedge.** Source says "structurally
+   analogous"; paraphrase says "manifest" or "is." The qualifier
+   carried load-bearing uncertainty that the stronger form erases,
+   and the next reader inherits an unflagged claim.
+2. **Dropping a caveat.** Source says "the pattern matches; the
+   full composition laws have not been formally verified";
+   paraphrase preserves "the pattern matches" but drops the
+   verification caveat. The omission is invisible to anyone who
+   hasn't read the source.
+3. **Inventing detail.** Source names a field, construct, or
+   error but does not list its symptoms, failure modes, or call
+   sites; paraphrase extrapolates from the name alone and
+   fabricates specifics. The hallucinated content looks
+   authoritative because the rest of the memo is well-sourced.
+
+Each is the same failure shape in the writing direction: the
+source's epistemic and detail level is the ceiling, never
+exceeded. Extracting fewer claims is fine; strengthening hedges
+or inventing detail is not. The tier-2 audit procedure in
+`policy/agent_workflow` is the operational enforcement of this
+principle; run it before any theoretical concept anchor is marked
+authoritative for cross-agent retrieval.
+
 ## Agents and the project store
 
 The single most important consequence of treating serena as
