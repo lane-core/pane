@@ -45,7 +45,8 @@ Key empirical findings:
 
 ## Concepts informed
 
-- The principles ported to serena via `~/memx-serena.md`:
+- The principles ported to serena are canonicalized in
+  [`policy/memory_discipline`](../../policy/memory_discipline.md):
   fact-level granularity, frontmatter as manual reranker,
   query-organized index, type-aware namespaces, write-once
   status, merge test for apparent duplicates, low-confidence
@@ -61,5 +62,5 @@ Key empirical findings:
 - `MEMORY` — the index follows MemX-derived organization
 - The whole serena restructure (Phases 1–10) is grounded in
   this paper's principles
-- `~/memx-serena.md` is the reference document mapping MemX
-  mechanisms to serena's name-based architecture
+- `policy/memory_discipline` is the canonical rulebook
+  mapping MemX mechanisms to serena's name-based architecture

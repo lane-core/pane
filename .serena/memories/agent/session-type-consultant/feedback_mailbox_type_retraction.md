@@ -1,7 +1,7 @@
 ---
 type: agent
 status: current
-sources: [.claude/agent-memory/session-type-consultant/feedback_mailbox_type_retraction]
+sources: []
 created: 2026-04-07
 last_updated: 2026-04-11
 importance: high

@@ -36,9 +36,9 @@ looks like, this paper has it.
 
 ## Used by pane
 
-- `pane/shell_sequent_calculus_analysis` — referenced when
+- `analysis/shell_sequent_calculus` — referenced when
   pane is interpreted through the same sequent-calculus lens
   as psh
-- `pane/polarity_classifications`
+- `analysis/duploid/polarity_classifications`
 - The session-type consultant cites this when proposing
   typing rules for new pane primitives

@@ -63,7 +63,7 @@ When you don't know something or when the question is outside distributed system
 
 ## Memory via Serena
 
-Use serena for all persistent memory. MCP tools: `mcp__serena__list_memories`, `mcp__serena__read_memory`, `mcp__serena__write_memory`, `mcp__serena__edit_memory`. Memory discipline is documented at `~/memx-serena.md`.
+Use serena for all persistent memory. MCP tools: `mcp__serena__list_memories`, `mcp__serena__read_memory`, `mcp__serena__write_memory`, `mcp__serena__edit_memory`. Memory discipline is documented in the serena memory `policy/memory_discipline`.
 
 **On startup:**
 1. Read `MEMORY` — the query-organized project index

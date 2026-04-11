@@ -18,10 +18,13 @@ that matches your task.
 ## When designing a feature
 
 - [`policy/agent_workflow`](policy/agent_workflow.md) — four-design-agent process, pane-architect, formal-verifier, memory freshness
+- [`policy/pre_implementation_consultation`](policy/pre_implementation_consultation.md) — required reading list from Haiku / Plan 9 primary sources before implementation
 - [`policy/design_decision_escalation`](policy/design_decision_escalation.md) — when to ask Lane
+- [`policy/functoriality_principle`](policy/functoriality_principle.md) — Phase 1 types must be full-architecture types, populated minimally
 
 ## When you need a process rule
 
+- [`policy/memory_discipline`](policy/memory_discipline.md) — how memory is organized in this project (memx principles, ported)
 - [`policy/block_escalation_policy`](policy/block_escalation_policy.md) — escalate blocks immediately
 - [`policy/refactor_review_policy`](policy/refactor_review_policy.md) — review + stale doc audit after refactors
 - [`policy/no_stability_commitment`](policy/no_stability_commitment.md) — no users, no deprecations
@@ -49,6 +52,7 @@ that matches your task.
 
 - [`decision/host_as_contingent_server`](decision/host_as_contingent_server.md) — local hardware has no architectural privilege
 - [`decision/headless_strategic_priority`](decision/headless_strategic_priority.md) — headless / distributed is the top near-term deliverable
+- [`decision/vertical_slice_first_pane`](decision/vertical_slice_first_pane.md) — Path B: build first running hello-world pane end-to-end
 
 ### Subsystem decisions
 
@@ -67,8 +71,26 @@ that matches your task.
 
 ## When working on a subsystem
 
+- [`architecture/proto`](architecture/proto.md) — pane-proto vocabulary crate: Message, Protocol, Handles, Handler, ControlMessage, ServiceFrame, obligation handles, MonadicLens
+- [`architecture/session`](architecture/session.md) — pane-session IPC: framing, transport, bridge, ProtocolServer single-threaded actor, watch/PaneExited
+- [`architecture/app`](architecture/app.md) — pane-app actor framework: Handler, DispatchCtx, Messenger, ServiceHandle, install-before-wire, destruction sequence
+- [`architecture/fs`](architecture/fs.md) — pane-fs filesystem namespace: PaneEntry, AttrSet, snapshot model, FUSE/ctl/PaneNode gaps
 - [`architecture/looper`](architecture/looper.md) — calloop event loop, six-phase batch ordering, watchdog, send_and_wait/I8
 - [`architecture/rustix_migration`](architecture/rustix_migration.md) — pane-session FFI → rustix migration plan
+
+## When you need theoretical grounding
+
+Analysis clusters are hub-and-spokes. Start at the hub, descend to spokes.
+
+- [`analysis/eact/_hub`](analysis/eact/_hub.md) — EAct calculus audit: theorems, divergences, gaps, invariants, design principles not adopted
+- [`analysis/session_types/_hub`](analysis/session_types/_hub.md) — protocol design: principles (C1–C6), optic boundary rules (R1–R10), coprocess worked example
+- [`analysis/optics/_hub`](analysis/optics/_hub.md) — concrete `MonadicLens` kit + `AttrReader` FUSE path, writer monad, taxonomy, boundaries (what's NOT an optic)
+- [`analysis/duploid/_hub`](analysis/duploid/_hub.md) — polarity structure, non-associativity, writer monad + mixed optic, shift operator
+- [`analysis/verification/_hub`](analysis/verification/_hub.md) — invariant audits (I1–I13, S1–S6), spec fidelity, test coverage, fs scripting validation, namespace testing
+
+Standalone analysis:
+
+- [`analysis/shell_sequent_calculus`](analysis/shell_sequent_calculus.md) — sequent calculus grounding for pane-terminal / psh integration (Phase 2+)
 
 ## When citing Haiku / BeOS reference
 
@@ -92,7 +114,7 @@ Topics:
 - **Profunctor optics:** `dont_fear_optics`, `profunctor_optics`
 - **VDC and duploids:** `duploids`, `fcmonads`, `logical_aspects_vdc`, `linear_logic_no_units`, `squier_hott`
 - **Sequent calculus:** `dissection_of_l`, `grokking_sequent_calculus`
-- **Knowledge management:** `memx` (the rulebook for serena, ported via `~/memx-serena.md`)
+- **Knowledge management:** `memx` (the rulebook for serena, canonicalized in `policy/memory_discipline`)
 - **Unix history:** `unix_retrospective`
 
 ## When citing other external knowledge
@@ -107,51 +129,18 @@ Read-everywhere, write-only-to-own-folder discipline applies.
 
 - [`agent/plan9-systems-engineer/_hub`](agent/plan9-systems-engineer/_hub.md)
 - [`agent/be-systems-engineer/_hub`](agent/be-systems-engineer/_hub.md)
-- [`agent/optics-theorist/_hub`](agent/optics-theorist/_hub.md)
-- [`agent/session-type-consultant/_hub`](agent/session-type-consultant/_hub.md)
+- [`agent/optics-theorist/_hub`](agent/optics-theorist/_hub.md) + [`linearity_gap`](agent/optics-theorist/linearity_gap.md)
+- [`agent/session-type-consultant/_hub`](agent/session-type-consultant/_hub.md) + [`feedback_mailbox_type_retraction`](agent/session-type-consultant/feedback_mailbox_type_retraction.md)
 - [`agent/formal-verifier/_hub`](agent/formal-verifier/_hub.md)
 - [`agent/pane-architect/_hub`](agent/pane-architect/_hub.md)
 
-The legacy `.claude/agent-memory/<agent>/` directories still hold
-the per-agent content files (Phase 7 will migrate them). The
-agent-memory `MEMORY.md` indexes have been updated to redirect.
-
-## Migration in progress
-
-The following query categories don't have fully migrated content
-yet. Fall back to `list_memories()` and read from the old paths:
-
-- **When you need theoretical grounding** — analysis hubs land
-  in Phase 6. Current locations:
-  - `pane/duploid_analysis`, `pane/duploid_deep_analysis`
-  - `pane/eact_analysis_gaps`, `pane/eact_divergence_audit`,
-    `pane/eact_invariant_verification`, `pane/eact_what_not_to_adopt`
-  - `pane/polarity_classifications`
-  - `pane/optics_implementation_guidance`,
-    `pane/optics_scope_deliberation`,
-    `pane/panefs_optic_taxonomy`, `pane/linearity_gap_analysis`
-  - `pane/session_type_design_principles`,
-    `pane/session_optic_boundary_rules`,
-    `pane/coprocess_session_type_correction`
-  - `pane/shell_sequent_calculus_analysis`,
-    `pane/functoriality_principle`
-  - `pane/wiring_soundness_analysis`, `pane/spec_fidelity_audit`,
-    `pane/test_coverage_audit`, `pane/writer_monad_analysis`,
-    `pane/namespace_testing_design`, `pane/fs_scripting_validation`,
-    others
-- **Per-agent institutional knowledge content files** — Phase 7.
-  The agent hubs (`agent/<n>/_hub`) exist in serena now and the
-  legacy `.claude/agent-memory/<agent>/MEMORY.md` indexes
-  redirect to them, but the bulk content (~95 files across 6
-  agents) has not yet been triaged and migrated. New writes
-  should go to `agent/<n>/<topic>` in serena.
-
-Run `mcp__serena__list_memories()` to see everything currently
-in serena.
+The legacy `.claude/agent-memory/<agent>/` layer was retired
+on 2026-04-11; its content migrated to `agent/<n>/*` in serena.
 
 ## How memory works in this project
 
-See `~/memx-serena.md` for the principles. Briefly:
+See [`policy/memory_discipline`](policy/memory_discipline.md) for
+the full principles. Briefly:
 
 - One memory store per project (this serena project), all agents
   share it

@@ -1,7 +1,7 @@
 ---
 type: reference
 status: current
-sources: [.claude/agent-memory/session-type-consultant/reference_eact_paper]
+sources: [agent/session-type-consultant/reference_eact_paper]
 created: 2026-04-10
 last_updated: 2026-04-10
 importance: normal

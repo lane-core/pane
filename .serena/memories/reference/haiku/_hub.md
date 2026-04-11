@@ -7,7 +7,7 @@ importance: high
 keywords: [haiku, beos, haiku_book, app_server, scripting, BLooper, BHandler, hub]
 related: [policy/beapi_translation_rules, policy/beapi_naming_policy]
 sources: []
-verified_against: [pane/.serena/memories/reference, pane/.claude/agent-memory/be-systems-engineer]
+verified_against: [pane/.serena/memories/reference, pane/.serena/memories/agent/be-systems-engineer]
 agents: [be-systems-engineer, pane-architect]
 ---
 

@@ -143,7 +143,7 @@ Problems:
 **pane mapping:** `ServiceId` (UUID + reverse-DNS name). UUID
 deterministic (derived from name). No separate registrar — the
 compositor IS the registry. `DeclareInterest` during session
-setup. The `pane/functoriality_principle` memory explains why
+setup. The `policy/functoriality_principle` memory explains why
 `ServiceId` has structure from day one.
 
 ## Error handling — status_t and InitCheck()

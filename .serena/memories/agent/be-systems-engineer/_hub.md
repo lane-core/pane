@@ -12,7 +12,7 @@ agents: [be-systems-engineer]
 # be-systems-engineer
 
 The home for this agent's institutional knowledge in the new
-serena layout. Per `~/memx-serena.md`, this folder holds content
+serena layout. Per `policy/memory_discipline`, this folder holds content
 that's only useful to this one agent — recurring questions,
 specific Haiku source citations I've verified, corrections I've
 made, and reading orders I've found useful.
@@ -43,9 +43,12 @@ made, and reading orders I've found useful.
 
 ## Currently in this folder
 
-Fresh shell created during the Phase 1–5 memory restructure.
-Per-agent institutional knowledge previously accumulated under
-`.claude/agent-memory/be-systems-engineer/` will migrate here in
-Phase 7. The legacy directory has 23 content files (project_*
-analyses, reference_* citation maps, etc.) worth consulting
-until Phase 7 completes.
+Migrated 2026-04-11 from the retired
+`.claude/agent-memory/be-systems-engineer/` layer. ~23 content
+files: `project_*` analyses (architecture drafts, kit design,
+session/codebase assessments, eact framework assessment) and
+`reference_*` citation maps (haiku book, haiku source, be naming
+philosophy, scripting protocol, decorator architecture). Files
+retain their `project_*` / `reference_*` prefixes as provenance;
+frontmatter is minimal on most — add it as you re-read or
+re-write.

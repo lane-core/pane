@@ -48,7 +48,7 @@ in `~/gist/<paper>/` (or `.gist.txt` for plain-text excerpts).
 
 ## Knowledge management (this is the rulebook)
 
-- [`reference/papers/memx`](memx.md) — Sun (March 2026). MemX, the local-first hybrid retrieval system whose principles are ported to serena via `~/memx-serena.md`.
+- [`reference/papers/memx`](memx.md) — Sun (March 2026). MemX, the local-first hybrid retrieval system whose principles are canonicalized for serena in [`policy/memory_discipline`](../../policy/memory_discipline.md).
 
 ## Unix history (context)
 
@@ -56,7 +56,7 @@ in `~/gist/<paper>/` (or `.gist.txt` for plain-text excerpts).
 
 ## Where the rules live
 
-- `~/memx-serena.md` — the canonical principles document for serena memory organization
+- [`policy/memory_discipline`](../../policy/memory_discipline.md) — the canonical principles document for serena memory organization
 
 ## When to consult
 

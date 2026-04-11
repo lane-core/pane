@@ -1,7 +1,7 @@
 ---
 type: reference
 status: current
-sources: [.claude/agent-memory/plan9-systems-engineer/reference_plan9_decisions]
+sources: [agent/plan9-systems-engineer/reference_plan9_decisions]
 created: 2026-04-10
 last_updated: 2026-04-10
 importance: normal

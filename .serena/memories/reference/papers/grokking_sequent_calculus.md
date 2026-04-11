@@ -41,7 +41,7 @@ The structure of the paper:
 
 ## Used by pane
 
-- `pane/shell_sequent_calculus_analysis` — uses the Fun→Core
+- `analysis/shell_sequent_calculus` — uses the Fun→Core
   compilation framing
 - The session-type consultant cites this as the accessible
   starting point before going to `dissection_of_l`

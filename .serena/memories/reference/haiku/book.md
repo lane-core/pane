@@ -2,7 +2,7 @@
 type: reference
 status: current
 supersedes: [reference/haiku_book, auto-memory/reference_haiku_book]
-sources: [reference/haiku_book, auto-memory/reference_haiku_book, .claude/agent-memory/be-systems-engineer/reference_haiku_book_local]
+sources: [reference/haiku_book, auto-memory/reference_haiku_book, agent/be-systems-engineer/reference_haiku_book_local]
 created: 2026-04-10
 last_updated: 2026-04-10
 importance: high

@@ -5,7 +5,7 @@ created: 2026-04-10
 last_updated: 2026-04-10
 importance: high
 keywords: [duploids, mangel, melliès, munch_maccagnoni, MM14b, MMM25, polarized, non_associative, hasegawa_thielecke, fuhrmann, thunkable, central, dialogue]
-related: [reference/papers/_hub, reference/papers/fcmonads, reference/papers/linear_logic_no_units, pane/duploid_analysis, pane/duploid_deep_analysis]
+related: [reference/papers/_hub, reference/papers/fcmonads, reference/papers/linear_logic_no_units, analysis/duploid/polarity_and_composition, analysis/duploid/writer_monad_and_optics]
 agents: [session-type-consultant, optics-theorist, pane-architect]
 ---
 
@@ -45,10 +45,10 @@ Key results:
 
 ## Used by pane
 
-- `pane/duploid_analysis` (Phase 6 → `analysis/duploid/_hub`)
-- `pane/duploid_deep_analysis` (writer monad, namespace
+- `analysis/duploid/polarity_and_composition` (Phase 6 → `analysis/duploid/_hub`)
+- `analysis/duploid/writer_monad_and_optics` (writer monad, namespace
   commutativity, mixed optics, shift operator analysis)
-- `pane/polarity_classifications` — every pane abstraction
+- `analysis/duploid/polarity_classifications` — every pane abstraction
   classified positive / negative / oblique
 - `architecture/looper` — six-phase batch ordering respects
   polarity discipline

@@ -48,5 +48,6 @@ multiparty session types. Proves three safety theorems:
 - `reference/plan9/divergences` — repeatedly cited
 - `architecture/looper` — six-phase batch ordering preserves
   the EAct E-Send / E-Receive interleaving discipline
-- The whole `analysis/eact/` cluster (Phase 6 will hub-and-spoke
-  this) — gap analysis maps each pane decision to EAct rules
+- The whole `analysis/eact/` cluster — hub at
+  `analysis/eact/_hub` with spokes for audit, divergences,
+  gaps, invariants, and design principles not adopted.

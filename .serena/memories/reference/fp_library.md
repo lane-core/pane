@@ -1,7 +1,7 @@
 ---
 type: reference
 status: current
-sources: [.claude/agent-memory/optics-theorist/reference_fp_library_optics]
+sources: [agent/optics-theorist/reference_fp_library_optics]
 created: 2026-04-03
 last_updated: 2026-04-10
 importance: normal

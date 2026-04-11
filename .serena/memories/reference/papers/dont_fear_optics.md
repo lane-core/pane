@@ -42,7 +42,7 @@ accessor patterns.
 
 ## Used by pane
 
-- `pane/optics_implementation_guidance` (Phase 6 → analysis/optics/)
-- `pane/optics_scope_deliberation`
-- `pane/panefs_optic_taxonomy`
+- `analysis/optics/implementation_guidance` (Phase 6 → analysis/optics/)
+- `analysis/optics/scope_boundaries`
+- `analysis/optics/panefs_taxonomy`
 - The optics-theorist agent reads this first when consulted

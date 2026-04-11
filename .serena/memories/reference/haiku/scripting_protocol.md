@@ -2,7 +2,7 @@
 type: reference
 status: current
 supersedes: [reference/beos_scripting_protocol]
-sources: [reference/beos_scripting_protocol, .claude/agent-memory/be-systems-engineer/reference_scripting_protocol]
+sources: [reference/beos_scripting_protocol, agent/be-systems-engineer/reference_scripting_protocol]
 created: 2026-04-10
 last_updated: 2026-04-10
 importance: high

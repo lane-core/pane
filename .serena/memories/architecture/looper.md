@@ -5,7 +5,7 @@ created: 2026-04-10
 last_updated: 2026-04-10
 importance: high
 keywords: [looper, calloop, six-phase, batch, watchdog, send_and_wait, I8, S3, dispatch, ThreadId]
-related: [status, analysis/eact/_hub, pane/session_type_design_principles]
+related: [status, analysis/eact/_hub, analysis/session_types/principles]
 agents: [pane-architect, formal-verifier, be-systems-engineer, session-type-consultant]
 ---
 
@@ -140,7 +140,7 @@ goes through async ReplyPort.
 - `status` — current state, test counts, what's next
 - `analysis/eact/_hub` (when written) — EAct invariant analysis
   context, gap-by-gap resolutions
-- `pane/session_type_design_principles` — C1–C6 principles the
+- `analysis/session_types/principles` — C1–C6 principles the
   looper enforces at dispatch
 - pane-app source: `crates/pane-app/src/looper/`
 - Recent commits: `bbc7026` (calloop substrate), `0bd0dab` (timer),

@@ -12,7 +12,7 @@ agents: [plan9-systems-engineer]
 # plan9-systems-engineer
 
 The home for this agent's institutional knowledge in the new
-serena layout. Per `~/memx-serena.md`, this folder holds content
+serena layout. Per `policy/memory_discipline`, this folder holds content
 that's only useful to this one agent — recurring questions,
 specific reference passages I've cited, corrections I've made,
 and reading orders I've found useful.
@@ -31,15 +31,15 @@ and reading orders I've found useful.
 - `architecture/looper` — the calloop event loop with EAct-derived invariants
 - `policy/heritage_annotations` — how to cite Plan 9 in Rust doc comments
 
-Phase 6 will hub-and-spoke the analysis cluster currently at
-`pane/eact_*`, `pane/duploid_*`, `pane/optics_*`, `pane/session_types_*`.
-Until then, fall back to those paths via the index footer.
+Phase 6 hub-and-spoked the analysis cluster currently at
+`analysis/eact/*`, `analysis/duploid/*`, `analysis/optics/*`,
+`analysis/session_types/*`. All migrated 2026-04-11.
 
 ## Where you write
 
 - **Plan 9 reference findings** → extend `reference/plan9/<spoke>` in place
 - **Plan 9 → pane decisions** → `decision/<topic>` (one memory per decision)
-- **Plan 9-side analysis** → `analysis/<topic>` (Phase 6 will hub-and-spoke)
+- **Plan 9-side analysis** → `analysis/<topic>`
 - **Your own institutional knowledge** → `agent/plan9-systems-engineer/<topic>`
 - **Read everywhere; write only to your own `agent/` folder** for
   agent-private content. To record cross-agent supersession or
@@ -48,9 +48,10 @@ Until then, fall back to those paths via the index footer.
 
 ## Currently in this folder
 
-This is a fresh shell created during the Phase 1–5 memory
-restructure. Per-agent institutional knowledge previously
-accumulated under `.claude/agent-memory/plan9-systems-engineer/`
-will migrate here in Phase 7. The legacy directory still has
-content (project_*, reference_*, user_lane_context.md) that's
-worth consulting until Phase 7 completes.
+Migrated 2026-04-11 from the retired
+`.claude/agent-memory/plan9-systems-engineer/` layer. ~24
+content files: `project_*` analyses (handler architecture,
+language split, pane-as-trait debate, three-channel error
+model, c1 looper evolution, phase3 channel topology),
+`reference_plan9_decisions` (primary-source Plan 9 notes),
+and `user_lane_context.md` (background on Lane).

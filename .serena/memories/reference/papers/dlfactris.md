@@ -29,7 +29,7 @@ system can be proven deadlock-free regardless of message ordering.
 
 ## Concepts informed
 
-- pane's `pane/linearity_gap_analysis` mentions a "connectivity
+- pane's `agent/optics-theorist/linearity_gap` mentions a "connectivity
   graph debug tool" derived from this paper
 - The acyclicity invariant for pane's WatchPane / PaneExited
   (one-shot, unidirectional server→watcher, no response
@@ -39,8 +39,8 @@ system can be proven deadlock-free regardless of message ordering.
 
 ## Used by pane
 
-- `pane/linearity_gap_analysis` (Phase 6 will land at
-  `analysis/optics/linearity_gap`)
+- `agent/optics-theorist/linearity_gap` — agent-private
+  reference material on LinearActris and connectivity.
 - `architecture/looper` — implicitly relies on connectivity
   acyclicity for I9 destruction-sequence ordering
 - `reference/papers/eact` — cross-reference (EAct + DLfActRiS

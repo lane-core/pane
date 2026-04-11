@@ -12,7 +12,7 @@ agents: [pane-architect]
 # pane-architect
 
 The home for this agent's institutional knowledge in the new
-serena layout. Per `~/memx-serena.md`, this folder holds content
+serena layout. Per `policy/memory_discipline`, this folder holds content
 that's only useful to this one agent — Rust patterns I've
 learned, build / test gotchas, crate-specific conventions.
 
@@ -64,11 +64,11 @@ Read `decision/<topic>` for any subsystem you touch. The decision memories expla
 
 ## Currently in this folder
 
-Fresh shell. The legacy
-`.claude/agent-memory/pane-architect/` directory had only
-`MEMORY.md` (no content files), so Phase 7 migration for this
-agent is essentially "create the agent_hub and start writing."
-This is the only agent that starts Phase 7 with a clean slate.
+Fresh shell. The retired
+`.claude/agent-memory/pane-architect/` layer had only
+`MEMORY.md` (no content files). This agent starts
+post-Phase-7 with a clean slate — the first real write
+lands here.
 
 ## Build / test commands (per `status`)
 

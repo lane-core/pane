@@ -1,7 +1,7 @@
 ---
 type: reference
 status: current
-sources: [.claude/agent-memory/be-systems-engineer/reference_be_naming_philosophy]
+sources: [agent/be-systems-engineer/reference_be_naming_philosophy]
 created: 2026-04-10
 last_updated: 2026-04-10
 importance: normal

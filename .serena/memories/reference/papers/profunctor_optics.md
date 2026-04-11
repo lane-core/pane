@@ -50,6 +50,6 @@ Key results pane uses:
 ## Used by pane
 
 - `crates/pane-proto/src/monadic_lens.rs` — concrete encoding
-- `pane/optics_scope_deliberation` (Phase 6)
-- `pane/panefs_optic_taxonomy` — every optic chosen with
+- `analysis/optics/scope_boundaries` (Phase 6)
+- `analysis/optics/panefs_taxonomy` — every optic chosen with
   reference to this paper

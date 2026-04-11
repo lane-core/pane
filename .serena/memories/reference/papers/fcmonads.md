@@ -48,7 +48,7 @@ holds for a given composition.
 
 ## Used by pane
 
-- `pane/duploid_deep_analysis` — mixed optics use the
+- `analysis/duploid/writer_monad_and_optics` — mixed optics use the
   monad / comonad structure from fcmonads
 - `architecture/looper` — six-phase batch ordering checks the
   Segal condition implicitly

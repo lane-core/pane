@@ -2,7 +2,7 @@
 type: reference
 status: current
 supersedes: [reference/haiku_decorator_architecture]
-sources: [reference/haiku_decorator_architecture, .claude/agent-memory/be-systems-engineer/reference_decorator_architecture]
+sources: [reference/haiku_decorator_architecture, agent/be-systems-engineer/reference_decorator_architecture]
 created: 2026-04-10
 last_updated: 2026-04-10
 importance: normal

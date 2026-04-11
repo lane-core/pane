@@ -17,7 +17,7 @@ agents: [session-type-consultant, formal-verifier, plan9-systems-engineer, be-sy
 verified; 4 not yet applicable" line below is stale — all 19
 are now verified or detection-enforced (see `status`). The
 divergence verdicts (E-CancelMsg, E-Spawn, ibecome, E-Monitor)
-remain valid. Phase 6 will fold this into `analysis/eact/_hub`.
+remain valid. Phase 6 folded this into `analysis/eact/_hub`.
 
 ---
 
