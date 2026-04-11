@@ -85,8 +85,7 @@ Analysis clusters are hub-and-spokes. Start at the hub, descend to spokes.
 - [`analysis/eact/_hub`](analysis/eact/_hub.md) — EAct calculus audit: theorems, divergences, gaps, invariants, design principles not adopted
 - [`analysis/session_types/_hub`](analysis/session_types/_hub.md) — protocol design: principles (C1–C6), optic boundary rules (R1–R10), coprocess worked example
 - [`analysis/optics/_hub`](analysis/optics/_hub.md) — concrete `MonadicLens` kit + `AttrReader` FUSE path, writer monad, taxonomy, boundaries (what's NOT an optic)
-- [`analysis/duploid/_hub`](analysis/duploid/_hub.md) — polarity structure, non-associativity, writer monad + mixed optic, shift operator, oblique maps, CBV focusing
-- [`analysis/foundations/_hub`](analysis/foundations/_hub.md) — theoretical vocabulary ported from psh: decision procedure (§8.5), CBPV F/U adjunction, data vs codata, ⊕/⅋ error duality
+- [`analysis/duploid/_hub`](analysis/duploid/_hub.md) — polarity structure, non-associativity, writer monad + mixed optic, shift operator
 - [`analysis/verification/_hub`](analysis/verification/_hub.md) — invariant audits (I1–I13, S1–S6), spec fidelity, test coverage, fs scripting validation, namespace testing
 
 Standalone analysis:

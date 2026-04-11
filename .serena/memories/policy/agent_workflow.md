@@ -142,7 +142,7 @@ reading the sources fresh, is the practical floor on accuracy.
 
    | Anchor topic | Auditor |
    |---|---|
-   | duploids, VDCs, composition laws, decision procedure §8.5, oblique maps, polarity | optics-theorist or formal-verifier |
+   | duploids, VDCs, composition laws, polarity | optics-theorist or formal-verifier |
    | profunctor optics, MonadicLens, accessors, traversal laws | optics-theorist |
    | session types, multiparty, coprocess, wire format, sub-protocol typestate | session-type-consultant |
    | Plan 9 heritage, 9P, namespace, rio / plumber precedent | plan9-systems-engineer |

@@ -22,14 +22,3 @@ WARNING: Read-triggered refresh would make extract effectful, requiring store co
 
 ## Namespace commutativity
 pane-fs computed projections avoid Plan 9's non-commutative namespace monoid. Filter views compose as set intersection (commutative, idempotent). Service map precedence is configuration-time left-biased merge, not runtime algebraic composition. Exchange rule holds. Lambek calculus not needed unless union-mount overlays are added.
-
-## Related psh concept anchor
-
-- **`../psh/.serena/memories/analysis/monadic_lens`** — psh's
-  keyword-shaped anchor for `MonadicLens` as
-  Kleisli-generalization-of-lens, citing Clarke et al.
-  Definition 4.6 and the Kl(Ψ) structure directly. psh's
-  examples (shell variable disciplines) differ from pane's
-  (kit API + FUSE attribute writers), but the underlying
-  theory is identical. Not vendored into pane; cited as the
-  external theoretical source.
