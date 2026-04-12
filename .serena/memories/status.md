@@ -223,9 +223,22 @@ Handles<Routing>.
   partial-frame hang on server reader, HoL during queue fill.
   All addressed by N1-N4 extraction. Tests currently work around
   them; the extraction makes them impossible by construction.
-- **Haiku test suite port** — 25 tests identified for porting
-  (be-systems-engineer audit). 32 novel tests proposed (session-type).
-  24 Plan9 heritage tests proposed. 5 optic law tests proposed.
+- **Haiku-inspired test suite** — 86 tests proposed, none
+  implemented. Sources:
+  - `agent/be-systems-engineer/haiku_test_audit` — 25 Haiku ports
+    across 6 tiers, with priority mapping and Haiku source citations
+  - `agent/session-type-consultant/test_extension_analysis` — 32
+    novel tests across 7 areas (obligation handles, two-function
+    split, phase ordering, D8, D11, Cancel, provider API)
+  - `analysis/plan9_test_heritage` — 24 Plan9-heritage tests across
+    5 areas (Tflush races, Tversion negotiation, fid binding, 
+    freefidpool cleanup, open/walk rejection). T20 (SelfProvide)
+    and T8 (VersionMismatch) are highest priority — they test
+    implemented code at zero coverage and expose real validation gaps.
+  - optics-theorist — 5 optic law tests (PutPut, GetPut, PutGet,
+    AffineTraversal, Traversal identity)
+  Priority: T20/T8 (zero-coverage code paths), then Tier 1 Haiku
+  ports (lifecycle + watch), then obligation handle tests.
 
 - **Notification-triggers-request** — a notification handler
   cannot send requests (no DispatchCtx access). Deferred to
