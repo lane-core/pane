@@ -449,6 +449,22 @@ decisions documented in `docs/architecture.md`.
 | No stability commitment | Remove dead code outright. Don't deprecate, don't `#[allow(dead_code)]`. |
 | Ghost state discipline | Typed ownership over correlation IDs at API surfaces. |
 
+### Intermediate State Principle
+
+When planning multi-step extractions or refactorings:
+
+> **Incremental refactoring is safer when the intermediate state
+> is a natural resting point. If the intermediate state is
+> something nobody would ever choose to be in permanently, it's a
+> liability, not a safety net.**
+
+Before splitting a refactoring into sequential steps, ask: would
+anyone design the intermediate state on purpose? If not, combine
+the steps. A smaller diff is not inherently safer — an incoherent
+intermediate creates cross-boundary coherence obligations that
+exist only transiently, and those are strictly harder to reason
+about than either the before-state or the after-state.
+
 ---
 
 ## Divergence Protocol

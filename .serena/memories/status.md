@@ -3,7 +3,7 @@ type: status
 status: current
 supersedes: [archive/status/2026-04-06, pane/current_state]
 created: 2026-04-10
-last_updated: 2026-04-12
+last_updated: 2026-04-12T2
 importance: high
 keywords: [status, crates, tests, calloop, looper, invariants, send_and_wait, watchdog, NLnet]
 agents: [all]
@@ -13,7 +13,7 @@ agents: [all]
 
 ## Where we are
 
-Six crates, 356 regular tests + 48 stress/adversarial + 6 benchmarks.
+Six crates, 357 regular tests + 48 stress/adversarial + 6 benchmarks.
 All invariants verified or detection-enforced (22 of 22 + N1-N4
 identified, extraction pending).
 
@@ -23,14 +23,33 @@ Read `decision/pane_session_mpst_foundation` first.
 | Crate | Role | Tests |
 |---|---|---|
 | pane-proto | Protocol vocabulary, no IO | 99 |
-| pane-session | Session-typed IPC, transport, framing, server | 58 + 21 stress |
-| pane-app | Actor framework, dispatch, looper | 178 + 12 stress + 12 adversarial + 14 integration + 6 bench |
+| pane-session | Session-typed IPC, transport, framing, server | 74 + 21 stress |
+| pane-app | Actor framework, dispatch, looper | 162 + 12 stress + 12 adversarial + 14 integration + 6 bench |
 | pane-fs | Filesystem namespace | 5 |
 | pane-hello | First running pane app (binary) | 0 |
 | pane-notify | Filesystem notification abstraction | preserved from prototype |
 
 ### Landed since 2026-04-12
 
+- **A4: NonBlockingSend trait** (`5823d0d`) — New trait in
+  pane-session/send.rs codifying N1 (all looper-thread sends are
+  non-blocking). Single method: try_send_frame(&self, service,
+  payload) → Result<(), Backpressure>. No implementations yet —
+  SharedWriter and mpsc wrapper implementations come in Phase B+C.
+  Module-level docs cite [FH] E-Send §3.2, heritage from BeOS
+  BDirectMessageTarget and Plan 9 mountio. Also tracked
+  backpressure.rs and correlator.rs that were missing from git
+  after A2+A3. Phase A now complete.
+- **A1: FrameReader + FrameWriter extraction** (`7685ecf`) —
+  Moved non-blocking frame codec (FrameReader, FrameWriter,
+  ReadState, ReadProgress, read_into, WRITE_HIGHWATER_BYTES)
+  from pane-app/connection_source.rs to pane-session/frame.rs.
+  Establishes N4 (frame atomicity) as a pane-session guarantee.
+  FrameReader::try_read_frame now returns FrameError (not
+  ConnectionError); From<FrameError> for ConnectionError bridges
+  the boundary. 16 tests moved + 1 new (non-permissive path).
+  pane-session exports: FrameReader, FrameWriter,
+  WRITE_HIGHWATER_BYTES. First task in MPST extraction plan.
 - **D12: Non-blocking write architecture** (`bdf130e`) — Server
   per-connection writer threads (actor enqueues via try_send, never
   blocks, overflow → connection teardown). Direct FrameWriter for
@@ -162,13 +181,20 @@ try_send_request. Counter monotonic within batch phases.
 
 Extract protocol-layer abstractions from pane-app to pane-session,
 grounded in Fowler-Hu EAct formalism. See
-`decision/pane_session_mpst_foundation` for full plan. Key items:
-- NonBlockingSend trait (N1 — makes blocking sends unrepresentable)
-- FlowControl (N2 — per-session credit tracking)
-- RequestCorrelator (token alloc + matching, from Dispatch)
-- ActiveSession state (post-handshake params, session map)
-- FrameReader extraction (N4 — from connection_source.rs to frame.rs)
-- Failure cascade (N3 — transport error → ServiceTeardown)
+`decision/pane_session_mpst_foundation` for full plan.
+
+**Phase A — Foundation (complete):**
+- [x] A1: FrameReader + FrameWriter → pane-session/frame.rs [N4]
+- [x] A2: Backpressure → pane-session/backpressure.rs
+- [x] A3: Token + PeerScope → pane-session
+- [x] A4: NonBlockingSend trait [N1]
+
+**Phase B — RequestCorrelator (depends on A):**
+- [ ] B1: RequestCorrelator → pane-session/correlator.rs [N1+N2]
+
+**Phase C — ActiveSession + Failure Cascade (depends on B):**
+- [ ] C1: ActiveSession → pane-session/active_session.rs
+- [ ] C2: Failure cascade policy [N3]
 
 Three adversarial bugs (bidirectional deadlock, partial-frame hang,
 HoL blocking) become impossible by construction through N1-N4.
