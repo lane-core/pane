@@ -14,12 +14,14 @@
 //! semantics (stable after open) with typed protocol constraint
 //! (Handles<P> at compile time, which BMessenger lacked).
 
+use crate::backpressure::Backpressure;
 use crate::dispatch::DispatchEntry;
 use crate::dispatch_ctx::DispatchCtx;
 use crate::Messenger;
 use pane_proto::obligation::{CancelHandle, ReplyPort};
 use pane_proto::{Address, Flow, Protocol, ServiceFrame};
 use std::marker::PhantomData;
+use std::sync::mpsc::TrySendError;
 
 /// A live connection to a service. Parameterized by protocol.
 ///
@@ -63,6 +65,14 @@ impl<P: Protocol> ServiceHandle<P> {
     /// so the type agreement is compile-time within a crate
     /// and version-negotiated across processes.
     ///
+    /// # Panics
+    ///
+    /// Panics if the outstanding request count would exceed the
+    /// negotiated `max_outstanding_requests` cap. This is the
+    /// "cap-and-abort" behavior from D1 — exceeding the cap with
+    /// the infallible variant is a protocol violation. Use
+    /// `try_send_request` if you need to handle backpressure.
+    ///
     /// Design heritage: Plan 9 devmnt.c:786-790 linked Mntrpc
     /// onto m->queue under spinlock BEFORE the write at line 798.
     /// pane: DispatchEntry installed via ctx.insert() before wire
@@ -78,6 +88,16 @@ impl<P: Protocol> ServiceHandle<P> {
         H: pane_proto::Handler + 'static,
         R: pane_proto::Message,
     {
+        // Cap-and-abort (D1): exceeding the negotiated cap with the
+        // infallible variant is a protocol violation. The panic
+        // propagates to LooperCore::dispatch's catch_unwind, which
+        // runs the destruction sequence — this IS the abort.
+        assert!(
+            !ctx.would_exceed_cap(),
+            "send_request: max_outstanding_requests cap exceeded \
+             (use try_send_request for backpressure handling)"
+        );
+
         // 1. Build entry — install BEFORE wire send
         let session_id = self.session_id;
         let entry = DispatchEntry {
@@ -119,6 +139,92 @@ impl<P: Protocol> ServiceHandle<P> {
         CancelHandle::new(|| {})
     }
 
+    /// Fallible variant of `send_request`. Checks backpressure
+    /// conditions before committing to the send.
+    ///
+    /// Returns `Ok(CancelHandle)` on success, or
+    /// `Err((msg, Backpressure))` on failure — returning the
+    /// original message so the caller retains ownership (L2
+    /// linearity condition: the request obligation must not be
+    /// consumed on the error path).
+    ///
+    /// Two failure modes:
+    /// - `CapExceeded`: outstanding requests >= negotiated cap.
+    ///   No DispatchEntry installed, no wire frame sent.
+    /// - `ChannelFull`: the write channel's SyncSender::try_send
+    ///   returned Full. The DispatchEntry is rolled back via
+    ///   `Dispatch::cancel` — no orphaned entry persists.
+    ///
+    /// Design heritage: Haiku's `write_port_etc(B_TIMEOUT, 0)`
+    /// returned B_WOULD_BLOCK on a full port
+    /// (src/system/kernel/port.cpp:990-1005). pane makes the
+    /// reason explicit and typed.
+    pub fn try_send_request<H, R>(
+        &self,
+        ctx: &mut DispatchCtx<'_, H>,
+        msg: P::Message,
+        on_reply: impl FnOnce(&mut H, &Messenger, R) -> Flow + Send + 'static,
+        on_failed: impl FnOnce(&mut H, &Messenger) -> Flow + Send + 'static,
+    ) -> Result<CancelHandle, (P::Message, Backpressure)>
+    where
+        H: pane_proto::Handler + 'static,
+        R: pane_proto::Message,
+    {
+        // Check cap BEFORE installing the DispatchEntry (D9).
+        if ctx.would_exceed_cap() {
+            return Err((msg, Backpressure::CapExceeded));
+        }
+
+        // 1. Build entry — install BEFORE wire send
+        let session_id = self.session_id;
+        let entry = DispatchEntry {
+            session_id,
+            on_reply: Box::new(move |h, m, payload| {
+                let bytes = *payload
+                    .downcast::<Vec<u8>>()
+                    .expect("fire_reply must pass Box<Vec<u8>>");
+                let reply: R = postcard::from_bytes(&bytes).expect("reply deserialization failed");
+                on_reply(h, m, reply)
+            }),
+            on_failed: Box::new(on_failed),
+        };
+        let token = ctx.insert(entry);
+
+        // 2. Serialize with allocated token
+        let tag = P::service_id().tag();
+        let msg_bytes = postcard::to_allocvec(&msg).expect("service message serialization failed");
+        let mut inner_payload = Vec::with_capacity(1 + msg_bytes.len());
+        inner_payload.push(tag);
+        inner_payload.extend_from_slice(&msg_bytes);
+
+        let frame = ServiceFrame::Request {
+            token: token.0,
+            payload: inner_payload,
+        };
+        let outer_payload =
+            postcard::to_allocvec(&frame).expect("service frame serialization failed");
+
+        // 3. Wire send — try_send to avoid blocking.
+        // On failure, roll back the DispatchEntry (session-type-
+        // consultant requirement: orphaned entries must not persist).
+        if let Some(ref tx) = self.write_tx {
+            match tx.try_send((self.session_id, outer_payload)) {
+                Ok(()) => {}
+                Err(TrySendError::Full(_)) => {
+                    ctx.cancel(token);
+                    return Err((msg, Backpressure::ChannelFull));
+                }
+                Err(TrySendError::Disconnected(_)) => {
+                    ctx.cancel(token);
+                    return Err((msg, Backpressure::ConnectionClosing));
+                }
+            }
+        }
+
+        // Stub: real cancel sends Cancel{token} on control channel
+        Ok(CancelHandle::new(|| {}))
+    }
+
     /// Send a fire-and-forget notification through this service binding.
     pub fn send_notification(&self, msg: P::Message) {
         let tag = P::service_id().tag();
@@ -135,6 +241,37 @@ impl<P: Protocol> ServiceHandle<P> {
 
         if let Some(ref tx) = self.write_tx {
             let _ = tx.send((self.session_id, outer_payload));
+        }
+    }
+
+    /// Fallible variant of `send_notification`. Returns the
+    /// original message on failure so the caller retains ownership
+    /// (L2 linearity condition).
+    ///
+    /// Notifications are NOT counted against
+    /// `max_outstanding_requests` (D9: only requests count).
+    /// The only failure mode is channel contention.
+    pub fn try_send_notification(&self, msg: P::Message) -> Result<(), (P::Message, Backpressure)> {
+        let tag = P::service_id().tag();
+        let msg_bytes = postcard::to_allocvec(&msg).expect("service message serialization failed");
+        let mut inner_payload = Vec::with_capacity(1 + msg_bytes.len());
+        inner_payload.push(tag);
+        inner_payload.extend_from_slice(&msg_bytes);
+
+        let frame = ServiceFrame::Notification {
+            payload: inner_payload,
+        };
+        let outer_payload =
+            postcard::to_allocvec(&frame).expect("service frame serialization failed");
+
+        if let Some(ref tx) = self.write_tx {
+            match tx.try_send((self.session_id, outer_payload)) {
+                Ok(()) => Ok(()),
+                Err(TrySendError::Full(_)) => Err((msg, Backpressure::ChannelFull)),
+                Err(TrySendError::Disconnected(_)) => Err((msg, Backpressure::ConnectionClosing)),
+            }
+        } else {
+            Ok(())
         }
     }
 
@@ -537,6 +674,312 @@ mod tests {
                 assert_eq!(token, 99);
             }
             other => panic!("expected Failed, got {other:?}"),
+        }
+    }
+
+    // ── try_send_request ─────────────────────────────────────
+
+    #[test]
+    fn try_send_request_succeeds_under_cap() {
+        let (tx, rx) = std::sync::mpsc::sync_channel(16);
+        let handle = ServiceHandle::<TestProto>::with_channel(5, tx);
+
+        let mut dispatch = Dispatch::<TestHandler>::new();
+        dispatch.set_request_cap(2);
+        let mut ctx = DispatchCtx::new(&mut dispatch, PeerScope(1));
+
+        let result = handle.try_send_request::<TestHandler, TestReply>(
+            &mut ctx,
+            TestMsg::Ping,
+            |_: &mut TestHandler, _, _: TestReply| Flow::Continue,
+            |_: &mut TestHandler, _| Flow::Continue,
+        );
+        assert!(result.is_ok(), "should succeed under cap");
+
+        // Verify wire frame was sent
+        let (session_id, _payload) = rx.recv().expect("expected frame");
+        assert_eq!(session_id, 5);
+
+        // Counter incremented
+        assert_eq!(dispatch.outstanding_requests(), 1);
+    }
+
+    #[test]
+    fn try_send_request_cap_exceeded() {
+        let (tx, _rx) = std::sync::mpsc::sync_channel(16);
+        let handle = ServiceHandle::<TestProto>::with_channel(5, tx);
+
+        let mut dispatch = Dispatch::<TestHandler>::new();
+        dispatch.set_request_cap(1);
+        let mut ctx = DispatchCtx::new(&mut dispatch, PeerScope(1));
+
+        // First request succeeds
+        let _cancel = handle
+            .try_send_request::<TestHandler, TestReply>(
+                &mut ctx,
+                TestMsg::Ping,
+                |_: &mut TestHandler, _, _: TestReply| Flow::Continue,
+                |_: &mut TestHandler, _| Flow::Continue,
+            )
+            .expect("first should succeed");
+
+        // Second request hits cap
+        let result = handle.try_send_request::<TestHandler, TestReply>(
+            &mut ctx,
+            TestMsg::Ping,
+            |_: &mut TestHandler, _, _: TestReply| Flow::Continue,
+            |_: &mut TestHandler, _| Flow::Continue,
+        );
+        match result {
+            Err((msg, bp)) => {
+                assert!(matches!(msg, TestMsg::Ping), "original message returned");
+                assert_eq!(bp, Backpressure::CapExceeded);
+            }
+            Ok(_) => panic!("should have failed with CapExceeded"),
+        }
+
+        // No extra dispatch entry installed
+        assert_eq!(dispatch.outstanding_requests(), 1);
+        assert_eq!(dispatch.len(), 1);
+    }
+
+    #[test]
+    fn try_send_request_channel_full_rolls_back_entry() {
+        // Channel capacity 1 — fill it, then the next try_send
+        // fails with ChannelFull.
+        let (tx, _rx) = std::sync::mpsc::sync_channel(1);
+        let handle = ServiceHandle::<TestProto>::with_channel(5, tx);
+
+        let mut dispatch = Dispatch::<TestHandler>::new();
+
+        // Scope ctx so we can inspect dispatch between operations.
+        {
+            let mut ctx = DispatchCtx::new(&mut dispatch, PeerScope(1));
+
+            // First send fills the channel
+            let _cancel = handle
+                .try_send_request::<TestHandler, TestReply>(
+                    &mut ctx,
+                    TestMsg::Ping,
+                    |_: &mut TestHandler, _, _: TestReply| Flow::Continue,
+                    |_: &mut TestHandler, _| Flow::Continue,
+                )
+                .expect("first should succeed");
+        }
+        assert_eq!(dispatch.outstanding_requests(), 1);
+        assert_eq!(dispatch.len(), 1);
+
+        // Second send: channel full, entry rolled back
+        {
+            let mut ctx = DispatchCtx::new(&mut dispatch, PeerScope(1));
+            let result = handle.try_send_request::<TestHandler, TestReply>(
+                &mut ctx,
+                TestMsg::Ping,
+                |_: &mut TestHandler, _, _: TestReply| Flow::Continue,
+                |_: &mut TestHandler, _| Flow::Continue,
+            );
+            match result {
+                Err((_msg, bp)) => {
+                    assert_eq!(bp, Backpressure::ChannelFull);
+                }
+                Ok(_) => panic!("should have failed with ChannelFull"),
+            }
+        }
+
+        // Rollback: entry removed, counter back to 1
+        assert_eq!(dispatch.len(), 1, "only first entry should remain");
+        assert_eq!(
+            dispatch.outstanding_requests(),
+            1,
+            "counter must be decremented on rollback"
+        );
+    }
+
+    #[test]
+    fn try_send_request_returns_message_on_cap_error() {
+        // L2 linearity condition: the original message must be
+        // returned inside the error variant.
+        let (tx, _rx) = std::sync::mpsc::sync_channel(16);
+        let handle = ServiceHandle::<TestProto>::with_channel(0, tx);
+
+        let mut dispatch = Dispatch::<TestHandler>::new();
+        dispatch.set_request_cap(0); // unlimited — won't trigger cap
+                                     // Actually set cap=0 means unlimited. Set to 1 and fill it.
+        dispatch.set_request_cap(1);
+        let mut ctx = DispatchCtx::new(&mut dispatch, PeerScope(1));
+
+        // Fill the cap
+        let _cancel = handle
+            .try_send_request::<TestHandler, TestReply>(
+                &mut ctx,
+                TestMsg::Ping,
+                |_: &mut TestHandler, _, _: TestReply| Flow::Continue,
+                |_: &mut TestHandler, _| Flow::Continue,
+            )
+            .expect("first succeeds");
+
+        // Try again — cap exceeded
+        let result = handle.try_send_request::<TestHandler, TestReply>(
+            &mut ctx,
+            TestMsg::Ping,
+            |_: &mut TestHandler, _, _: TestReply| Flow::Continue,
+            |_: &mut TestHandler, _| Flow::Continue,
+        );
+        assert!(
+            matches!(result, Err((TestMsg::Ping, Backpressure::CapExceeded))),
+            "must return original message (L2)"
+        );
+    }
+
+    #[test]
+    fn try_send_request_returns_message_on_channel_full() {
+        // L2: message returned on ChannelFull path too.
+        let (tx, _rx) = std::sync::mpsc::sync_channel(1);
+        let handle = ServiceHandle::<TestProto>::with_channel(0, tx);
+
+        let mut dispatch = Dispatch::<TestHandler>::new();
+        let mut ctx = DispatchCtx::new(&mut dispatch, PeerScope(1));
+
+        // Fill channel
+        let _cancel = handle
+            .try_send_request::<TestHandler, TestReply>(
+                &mut ctx,
+                TestMsg::Ping,
+                |_: &mut TestHandler, _, _: TestReply| Flow::Continue,
+                |_: &mut TestHandler, _| Flow::Continue,
+            )
+            .expect("first succeeds");
+
+        // Try again — channel full
+        let result = handle.try_send_request::<TestHandler, TestReply>(
+            &mut ctx,
+            TestMsg::Ping,
+            |_: &mut TestHandler, _, _: TestReply| Flow::Continue,
+            |_: &mut TestHandler, _| Flow::Continue,
+        );
+        assert!(
+            matches!(result, Err((TestMsg::Ping, Backpressure::ChannelFull))),
+            "must return original message (L2)"
+        );
+    }
+
+    #[test]
+    fn send_request_increments_counter() {
+        let (tx, _rx) = std::sync::mpsc::sync_channel(16);
+        let handle = ServiceHandle::<TestProto>::with_channel(5, tx);
+
+        let mut dispatch = Dispatch::<TestHandler>::new();
+        assert_eq!(dispatch.outstanding_requests(), 0);
+
+        let mut ctx = DispatchCtx::new(&mut dispatch, PeerScope(1));
+        let _cancel = handle.send_request::<TestHandler, TestReply>(
+            &mut ctx,
+            TestMsg::Ping,
+            |_: &mut TestHandler, _, _: TestReply| Flow::Continue,
+            |_: &mut TestHandler, _| Flow::Continue,
+        );
+        assert_eq!(dispatch.outstanding_requests(), 1);
+    }
+
+    #[test]
+    #[should_panic(expected = "max_outstanding_requests cap exceeded")]
+    fn send_request_panics_on_cap_exceeded() {
+        let (tx, _rx) = std::sync::mpsc::sync_channel(16);
+        let handle = ServiceHandle::<TestProto>::with_channel(5, tx);
+
+        let mut dispatch = Dispatch::<TestHandler>::new();
+        dispatch.set_request_cap(1);
+        let mut ctx = DispatchCtx::new(&mut dispatch, PeerScope(1));
+
+        // First succeeds
+        let _cancel = handle.send_request::<TestHandler, TestReply>(
+            &mut ctx,
+            TestMsg::Ping,
+            |_: &mut TestHandler, _, _: TestReply| Flow::Continue,
+            |_: &mut TestHandler, _| Flow::Continue,
+        );
+
+        // Second panics — cap exceeded
+        let _cancel = handle.send_request::<TestHandler, TestReply>(
+            &mut ctx,
+            TestMsg::Ping,
+            |_: &mut TestHandler, _, _: TestReply| Flow::Continue,
+            |_: &mut TestHandler, _| Flow::Continue,
+        );
+    }
+
+    #[test]
+    fn send_request_unlimited_cap_no_panic() {
+        // cap=0 means unlimited — should never panic
+        let (tx, _rx) = std::sync::mpsc::sync_channel(16);
+        let handle = ServiceHandle::<TestProto>::with_channel(5, tx);
+
+        let mut dispatch = Dispatch::<TestHandler>::new();
+        // cap stays 0 (default)
+        let mut ctx = DispatchCtx::new(&mut dispatch, PeerScope(1));
+
+        for _ in 0..10 {
+            let _cancel = handle.send_request::<TestHandler, TestReply>(
+                &mut ctx,
+                TestMsg::Ping,
+                |_: &mut TestHandler, _, _: TestReply| Flow::Continue,
+                |_: &mut TestHandler, _| Flow::Continue,
+            );
+        }
+        assert_eq!(dispatch.outstanding_requests(), 10);
+    }
+
+    // ── try_send_notification ────────────────────────────────
+
+    #[test]
+    fn try_send_notification_succeeds() {
+        let (tx, rx) = std::sync::mpsc::sync_channel(16);
+        let handle = ServiceHandle::<TestProto>::with_channel(3, tx);
+
+        let result = handle.try_send_notification(TestMsg::Ping);
+        assert!(result.is_ok());
+
+        let (session_id, payload) = rx.recv().expect("expected frame");
+        assert_eq!(session_id, 3);
+
+        let frame: ServiceFrame =
+            postcard::from_bytes(&payload).expect("ServiceFrame deserialization failed");
+        assert!(matches!(frame, ServiceFrame::Notification { .. }));
+    }
+
+    #[test]
+    fn try_send_notification_channel_full() {
+        let (tx, _rx) = std::sync::mpsc::sync_channel(1);
+        let handle = ServiceHandle::<TestProto>::with_channel(3, tx);
+
+        // Fill channel
+        handle.send_notification(TestMsg::Ping);
+
+        // Try again — channel full
+        let result = handle.try_send_notification(TestMsg::Ping);
+        match result {
+            Err((msg, bp)) => {
+                assert!(matches!(msg, TestMsg::Ping), "original message returned");
+                assert_eq!(bp, Backpressure::ChannelFull);
+            }
+            Ok(()) => panic!("should have failed with ChannelFull"),
+        }
+    }
+
+    #[test]
+    fn try_send_notification_connection_closing() {
+        let (tx, rx) = std::sync::mpsc::sync_channel(16);
+        let handle = ServiceHandle::<TestProto>::with_channel(3, tx);
+
+        // Close the receiving end
+        drop(rx);
+
+        let result = handle.try_send_notification(TestMsg::Ping);
+        match result {
+            Err((_msg, bp)) => {
+                assert_eq!(bp, Backpressure::ConnectionClosing);
+            }
+            Ok(()) => panic!("should have failed with ConnectionClosing"),
         }
     }
 }

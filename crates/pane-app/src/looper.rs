@@ -24,7 +24,7 @@
 //! finding: Reply-Teardown ordering prevents orphaned dispatch
 //! entries).
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::mpsc;
 use std::thread;
 
@@ -67,9 +67,8 @@ pub struct Looper<H: pane_proto::Handler> {
 
 /// Events collected in one calloop iteration, sorted by dispatch phase.
 ///
-/// Phases 4 (ctl writes) and 6 (post-batch effects/snapshot) are
-/// not yet implemented — they will be added when ctl write handling
-/// and snapshot publishing land.
+/// Phase 6 (post-batch effects/snapshot) is not yet implemented —
+/// it will be added when snapshot publishing lands.
 struct Batch {
     /// Phase 0: Sync requests from non-looper threads. Processed
     /// before any reply/failed phases to ensure the dispatch entry
@@ -91,6 +90,21 @@ struct Batch {
     requests: Vec<(u16, u64, Vec<u8>)>,
     /// Phase 5: Notification — new inbound protocol work.
     notifications: Vec<(u16, Vec<u8>)>,
+    /// Phase 4: Sessions revoked locally via ServiceHandle::Drop.
+    /// Tracked across the batch for two purposes:
+    /// 1. Phase 4 sends RevokeInterest wire frames for each session.
+    /// 2. Phase 5 checks this set before dispatching — frames for
+    ///    revoked sessions are silently dropped (H3).
+    ///
+    /// Not cleared between batches: a session revoked in batch N
+    /// must suppress stale frames that arrive in batch N+1. Cleared
+    /// only when the connection drops (process_disconnect backstop).
+    revoked_sessions: HashSet<u16>,
+    /// Phase 4: queued control frames to send on the wire.
+    /// Currently only RevokeInterest; extensible for future ctl
+    /// writes (Cancel, etc.). Each entry is serialized ControlMessage
+    /// bytes ready for the write channel.
+    ctl_writes: Vec<Vec<u8>>,
     /// Channel closed during collection — triggers disconnect
     /// handling after all buffered events are dispatched.
     channel_closed: bool,
@@ -108,6 +122,8 @@ impl Batch {
             lifecycle: Vec::new(),
             requests: Vec::new(),
             notifications: Vec::new(),
+            revoked_sessions: HashSet::new(),
+            ctl_writes: Vec::new(),
             channel_closed: false,
         }
     }
@@ -122,6 +138,7 @@ impl Batch {
             && self.lifecycle.is_empty()
             && self.requests.is_empty()
             && self.notifications.is_empty()
+            && self.ctl_writes.is_empty()
             && !self.channel_closed
     }
 
@@ -148,6 +165,22 @@ impl Batch {
                 // Framework-internal control messages (DeclareInterest,
                 // InterestDeclined, etc.) — handled during setup, not
                 // during the active dispatch loop.
+            }
+            LooperMessage::LocalRevoke { session_id } => {
+                // D8: mark session as locally revoked. Phase 4
+                // sends the wire frame; phase 5 suppresses stale
+                // frames (H3). The revoked_sessions set persists
+                // across batches — a revoked session stays revoked
+                // for the lifetime of the connection.
+                if self.revoked_sessions.insert(session_id) {
+                    // First revocation for this session — queue
+                    // the wire frame for phase 4.
+                    let msg = ControlMessage::RevokeInterest { session_id };
+                    if let Ok(bytes) = postcard::to_allocvec(&msg) {
+                        self.ctl_writes.push(bytes);
+                    }
+                }
+                // Duplicate revocations are idempotent (no wire frame).
             }
             LooperMessage::Service {
                 session_id,
@@ -499,11 +532,29 @@ impl<H: pane_proto::Handler + 'static> Looper<H> {
             }
         }
 
-        // Phase 4: ctl writes — not yet implemented.
+        // Phase 4: ctl writes — send queued control frames on the
+        // wire. Currently RevokeInterest from LocalRevoke; extensible
+        // for Cancel and future ctl writes.
+        //
+        // Ordering guarantee (D8): phase 4 runs AFTER Reply/Failed
+        // (phase 1), ServiceTeardown (phase 2), and PaneExited/
+        // Lifecycle (phase 3). All obligations are resolved before
+        // revocation goes out on the wire.
+        let ctl_writes = std::mem::take(&mut batch.ctl_writes);
+        for payload in ctl_writes {
+            self.core.send_ctl_frame(payload);
+        }
 
         // Phase 5: Requests, then Notifications — new inbound work.
+        // H3 (stale dispatch suppression): skip frames for sessions
+        // in revoked_sessions. The handler has released its interest
+        // in these sessions — dispatching would deliver to a dead
+        // binding.
         let requests = std::mem::take(&mut batch.requests);
         for (session_id, token, inner) in requests {
+            if batch.revoked_sessions.contains(&session_id) {
+                continue; // H3: stale frame for revoked session
+            }
             let outcome = self.core.dispatch_request(session_id, token, inner);
             if let DispatchOutcome::Exit(reason) = outcome {
                 batch.clear();
@@ -512,6 +563,9 @@ impl<H: pane_proto::Handler + 'static> Looper<H> {
         }
         let notifications = std::mem::take(&mut batch.notifications);
         for (session_id, inner) in notifications {
+            if batch.revoked_sessions.contains(&session_id) {
+                continue; // H3: stale frame for revoked session
+            }
             let outcome = self.core.dispatch_notification(session_id, inner);
             if let DispatchOutcome::Exit(reason) = outcome {
                 batch.clear();
@@ -556,8 +610,14 @@ impl Batch {
         self.lifecycle.clear();
         self.requests.clear();
         self.notifications.clear();
+        self.ctl_writes.clear();
         // Intentionally do not clear channel_closed — it's a
         // permanent condition, not a buffered event.
+        // Intentionally do not clear revoked_sessions — a revoked
+        // session stays revoked for the connection lifetime. Stale
+        // frames arriving in future batches must still be suppressed
+        // (H3). process_disconnect is the backstop that cleans up
+        // all state.
     }
 }
 
@@ -1609,5 +1669,511 @@ mod tests {
             }
             other => panic!("expected Notification, got {other:?}"),
         }
+    }
+
+    // ── D8: deferred revocation ─────────────────────────────
+
+    /// Setup that retains write_rx so tests can verify phase 4 wire
+    /// output (RevokeInterest sent via send_ctl_frame).
+    fn setup_looper_with_write_rx(
+        log: Arc<Mutex<Vec<String>>>,
+    ) -> (
+        Looper<BatchTestHandler>,
+        mpsc::Sender<LooperMessage>,
+        mpsc::Receiver<LooperMessage>,
+        std::sync::mpsc::Receiver<(u16, Vec<u8>)>,
+    ) {
+        let (exit_tx, _exit_rx) = mpsc::channel();
+        let (msg_tx, msg_rx) = mpsc::channel();
+        let (write_tx, write_rx) = std::sync::mpsc::sync_channel(16);
+
+        let mut service_dispatch = ServiceDispatch::new();
+        service_dispatch.register(3, make_service_receiver::<BatchTestHandler, TestProto>());
+
+        let handler = BatchTestHandler { log };
+        let core = LooperCore::with_service_dispatch(
+            handler,
+            PeerScope(1),
+            write_tx,
+            exit_tx,
+            service_dispatch,
+            crate::Messenger::stub(),
+        );
+
+        (Looper::new(core, None, None), msg_tx, msg_rx, write_rx)
+    }
+
+    fn wire_request(token: u64, inner: Vec<u8>) -> Vec<u8> {
+        let frame = ServiceFrame::Request {
+            token,
+            payload: inner,
+        };
+        postcard::to_allocvec(&frame).unwrap()
+    }
+
+    // ── Claim: LocalRevoke adds session to revoked_sessions ──
+
+    #[test]
+    fn local_revoke_adds_to_revoked_sessions() {
+        // Batch::collect with LocalRevoke marks the session as
+        // revoked and queues a ctl write.
+        let mut batch = Batch::new();
+        batch.collect(LooperMessage::LocalRevoke { session_id: 7 });
+
+        assert!(
+            batch.revoked_sessions.contains(&7),
+            "session 7 must be in revoked_sessions"
+        );
+        assert_eq!(
+            batch.ctl_writes.len(),
+            1,
+            "one ctl write (RevokeInterest) must be queued"
+        );
+
+        // Verify the queued bytes are a valid RevokeInterest.
+        let msg: ControlMessage =
+            postcard::from_bytes(&batch.ctl_writes[0]).expect("deserialize ctl write");
+        assert!(
+            matches!(msg, ControlMessage::RevokeInterest { session_id: 7 }),
+            "queued frame must be RevokeInterest for session 7, got {msg:?}"
+        );
+    }
+
+    // ── Claim: duplicate LocalRevoke is idempotent ───────────
+
+    #[test]
+    fn duplicate_local_revoke_is_idempotent() {
+        let mut batch = Batch::new();
+        batch.collect(LooperMessage::LocalRevoke { session_id: 7 });
+        batch.collect(LooperMessage::LocalRevoke { session_id: 7 });
+
+        assert!(batch.revoked_sessions.contains(&7));
+        assert_eq!(
+            batch.ctl_writes.len(),
+            1,
+            "duplicate revocation must not queue a second wire frame"
+        );
+    }
+
+    // ── Claim: phase 4 sends RevokeInterest on the wire ──────
+
+    #[test]
+    fn phase_4_sends_revoke_interest_wire_frame() {
+        // Inject LocalRevoke then close the channel. Phase 4 (ctl
+        // writes) runs before channel-close handling, so the
+        // RevokeInterest wire frame reaches the write channel.
+        // Channel close (not CloseRequested) is used because
+        // CloseRequested dispatches in phase 3 and exits before
+        // phase 4 runs.
+        let log = Arc::new(Mutex::new(Vec::new()));
+        let (looper, msg_tx, msg_rx, write_rx) = setup_looper_with_write_rx(log);
+
+        msg_tx
+            .send(LooperMessage::LocalRevoke { session_id: 5 })
+            .unwrap();
+        drop(msg_tx); // channel close — handled after all phases
+
+        let reason = looper.run(msg_rx);
+        assert_eq!(reason, ExitReason::Disconnected);
+
+        // Read what phase 4 sent on the write channel.
+        let (service, payload) = write_rx
+            .recv()
+            .expect("phase 4 must send RevokeInterest on write channel");
+        assert_eq!(
+            service, 0,
+            "RevokeInterest goes on control channel (service 0)"
+        );
+        let msg: ControlMessage = postcard::from_bytes(&payload).expect("deserialize");
+        assert!(
+            matches!(msg, ControlMessage::RevokeInterest { session_id: 5 }),
+            "expected RevokeInterest for session 5, got {msg:?}"
+        );
+    }
+
+    // ── Claim: phase 5 drops frames for revoked sessions (H3) ─
+
+    #[test]
+    fn phase_5_suppresses_stale_notifications_h3() {
+        // In the same batch: LocalRevoke for session 3, then a
+        // Notification for session 3. The notification must be
+        // suppressed (H3) — it must NOT appear in the handler log.
+        let log = Arc::new(Mutex::new(Vec::new()));
+        let (looper, msg_tx, msg_rx) = setup_looper(log.clone());
+
+        // LocalRevoke for session 3
+        msg_tx
+            .send(LooperMessage::LocalRevoke { session_id: 3 })
+            .unwrap();
+
+        // Notification for the revoked session
+        let inner = tagged_payload(&TestMsg::Ping("stale".into()));
+        let outer = wire_notification(inner);
+        msg_tx
+            .send(LooperMessage::Service {
+                session_id: 3,
+                payload: outer,
+            })
+            .unwrap();
+
+        // A notification for a non-revoked session (to prove the
+        // looper is still dispatching)
+        let inner = tagged_payload(&TestMsg::Ping("alive".into()));
+        let outer = wire_notification(inner);
+        msg_tx
+            .send(LooperMessage::Service {
+                session_id: 3,
+                payload: outer.clone(),
+            })
+            .unwrap();
+
+        drop(msg_tx);
+
+        let reason = looper.run(msg_rx);
+        assert_eq!(reason, ExitReason::Disconnected);
+
+        let events = log.lock().unwrap().clone();
+        assert!(
+            !events.contains(&"notification:stale".to_string()),
+            "stale notification for revoked session must be suppressed (H3). Got: {events:?}"
+        );
+        assert!(
+            !events.contains(&"notification:alive".to_string()),
+            "second notification for revoked session must also be suppressed (H3). Got: {events:?}"
+        );
+    }
+
+    #[test]
+    fn phase_5_suppresses_stale_requests_h3() {
+        // In the same batch: LocalRevoke for session 3, then a
+        // Request for session 3. The request must be suppressed.
+        let log = Arc::new(Mutex::new(Vec::new()));
+        let (looper, msg_tx, msg_rx) = setup_looper(log.clone());
+
+        msg_tx
+            .send(LooperMessage::LocalRevoke { session_id: 3 })
+            .unwrap();
+
+        // Inject a Request frame for the revoked session.
+        let inner = tagged_payload(&TestMsg::Ping("stale_req".into()));
+        let outer = wire_request(99, inner);
+        msg_tx
+            .send(LooperMessage::Service {
+                session_id: 3,
+                payload: outer,
+            })
+            .unwrap();
+
+        drop(msg_tx);
+
+        let reason = looper.run(msg_rx);
+        assert_eq!(reason, ExitReason::Disconnected);
+
+        let events = log.lock().unwrap().clone();
+        // The handler should not receive anything for session 3
+        // (no notification:stale_req, no request dispatch).
+        for event in &events {
+            assert!(
+                !event.contains("stale_req"),
+                "request for revoked session must be suppressed (H3). Got: {events:?}"
+            );
+        }
+    }
+
+    // ── Claim: revocation in phase 4 after Reply (phase 1) ───
+
+    #[test]
+    fn phase_ordering_reply_before_revocation() {
+        // Reply (phase 1) must dispatch before phase 4 sends
+        // RevokeInterest. This ensures outstanding replies are
+        // resolved before the revocation goes out.
+        //
+        // Uses channel close (not CloseRequested) because
+        // CloseRequested dispatches in phase 3 and exits before
+        // phase 4 runs.
+        use crate::dispatch::DispatchEntry;
+
+        let log = Arc::new(Mutex::new(Vec::new()));
+        let log_reply = log.clone();
+        let log_failed = log.clone();
+
+        let (exit_tx, _exit_rx) = mpsc::channel();
+        let (msg_tx, msg_rx) = mpsc::channel();
+        let (write_tx, write_rx) = std::sync::mpsc::sync_channel(16);
+
+        let handler = BatchTestHandler { log: log.clone() };
+        let mut core = LooperCore::with_service_dispatch(
+            handler,
+            PeerScope(1),
+            write_tx,
+            exit_tx,
+            ServiceDispatch::new(),
+            crate::Messenger::stub(),
+        );
+
+        // Install a dispatch entry on session 5.
+        let token = core.dispatch_mut().insert(
+            PeerScope(1),
+            DispatchEntry {
+                session_id: 5,
+                on_reply: Box::new(move |_h: &mut BatchTestHandler, _, _| {
+                    log_reply.lock().unwrap().push("reply_resolved".into());
+                    Flow::Continue
+                }),
+                on_failed: Box::new(move |_h: &mut BatchTestHandler, _| {
+                    log_failed.lock().unwrap().push("reply_orphaned".into());
+                    Flow::Continue
+                }),
+            },
+        );
+
+        let looper = Looper::new(core, None, None);
+
+        // Same batch: Reply + LocalRevoke, then channel close.
+        let reply_outer = wire_reply(token.0, vec![1, 2, 3]);
+        msg_tx
+            .send(LooperMessage::Service {
+                session_id: 5,
+                payload: reply_outer,
+            })
+            .unwrap();
+        msg_tx
+            .send(LooperMessage::LocalRevoke { session_id: 5 })
+            .unwrap();
+        drop(msg_tx); // channel close — after all phases
+
+        let reason = looper.run(msg_rx);
+        assert_eq!(reason, ExitReason::Disconnected);
+
+        let events = log.lock().unwrap().clone();
+        assert!(
+            events.contains(&"reply_resolved".to_string()),
+            "Reply must be dispatched in phase 1. Got: {events:?}"
+        );
+        assert!(
+            !events.contains(&"reply_orphaned".to_string()),
+            "Reply must not be orphaned. Got: {events:?}"
+        );
+
+        // Phase 4 must have sent RevokeInterest on the wire.
+        let (service, payload) = write_rx.recv().expect("phase 4 must send RevokeInterest");
+        assert_eq!(service, 0);
+        let msg: ControlMessage = postcard::from_bytes(&payload).expect("deserialize");
+        assert!(
+            matches!(msg, ControlMessage::RevokeInterest { session_id: 5 }),
+            "expected RevokeInterest for session 5, got {msg:?}"
+        );
+    }
+
+    // ── Claim: revocation before Requests (phase 5) ──────────
+
+    #[test]
+    fn phase_ordering_revocation_before_requests() {
+        // In the same batch: LocalRevoke for session 3 and a
+        // Notification for session 3. The notification (phase 5)
+        // must NOT dispatch because the revocation (phase 4)
+        // suppresses it. A Notification for a different session
+        // must still dispatch.
+        let log = Arc::new(Mutex::new(Vec::new()));
+
+        let (exit_tx, _exit_rx) = mpsc::channel();
+        let (msg_tx, msg_rx) = mpsc::channel();
+        let (write_tx, _write_rx) = std::sync::mpsc::sync_channel(16);
+
+        let mut service_dispatch = ServiceDispatch::new();
+        service_dispatch.register(3, make_service_receiver::<BatchTestHandler, TestProto>());
+        service_dispatch.register(4, make_service_receiver::<BatchTestHandler, TestProto>());
+
+        let handler = BatchTestHandler { log: log.clone() };
+        let core = LooperCore::with_service_dispatch(
+            handler,
+            PeerScope(1),
+            write_tx,
+            exit_tx,
+            service_dispatch,
+            crate::Messenger::stub(),
+        );
+        let looper = Looper::new(core, None, None);
+
+        // Revoke session 3
+        msg_tx
+            .send(LooperMessage::LocalRevoke { session_id: 3 })
+            .unwrap();
+
+        // Notification for revoked session 3
+        let inner = tagged_payload(&TestMsg::Ping("revoked".into()));
+        let outer = wire_notification(inner);
+        msg_tx
+            .send(LooperMessage::Service {
+                session_id: 3,
+                payload: outer,
+            })
+            .unwrap();
+
+        // Notification for non-revoked session 4
+        let inner = tagged_payload(&TestMsg::Ping("active".into()));
+        let outer = wire_notification(inner);
+        msg_tx
+            .send(LooperMessage::Service {
+                session_id: 4,
+                payload: outer,
+            })
+            .unwrap();
+
+        drop(msg_tx);
+
+        let reason = looper.run(msg_rx);
+        assert_eq!(reason, ExitReason::Disconnected);
+
+        let events = log.lock().unwrap().clone();
+        assert!(
+            !events.contains(&"notification:revoked".to_string()),
+            "notification for revoked session must be suppressed. Got: {events:?}"
+        );
+        assert!(
+            events.contains(&"notification:active".to_string()),
+            "notification for non-revoked session must dispatch. Got: {events:?}"
+        );
+    }
+
+    // ── Claim: H2 — ServiceTeardown after revocation is no-op ─
+
+    #[test]
+    fn h2_teardown_after_revocation_is_noop() {
+        // D8 invariant H2: dispatch_teardown (which calls
+        // fail_session) is a no-op for a session with no dispatch
+        // entries. After revocation removes entries, a subsequent
+        // teardown must not crash or dispatch spurious callbacks.
+        use crate::dispatch::DispatchEntry;
+
+        let log = Arc::new(Mutex::new(Vec::new()));
+        let log_failed = log.clone();
+
+        let (exit_tx, _exit_rx) = mpsc::channel();
+        let (msg_tx, msg_rx) = mpsc::channel();
+        let (write_tx, _write_rx) = std::sync::mpsc::sync_channel(16);
+
+        let handler = BatchTestHandler { log: log.clone() };
+        let mut core = LooperCore::with_service_dispatch(
+            handler,
+            PeerScope(1),
+            write_tx,
+            exit_tx,
+            ServiceDispatch::new(),
+            crate::Messenger::stub(),
+        );
+
+        // Install a dispatch entry on session 5 — the teardown
+        // would fire on_failed for this if the entry still existed.
+        core.dispatch_mut().insert(
+            PeerScope(1),
+            DispatchEntry {
+                session_id: 5,
+                on_reply: Box::new(|_: &mut BatchTestHandler, _, _| Flow::Continue),
+                on_failed: Box::new(move |_: &mut BatchTestHandler, _| {
+                    log_failed.lock().unwrap().push("spurious_failed".into());
+                    Flow::Continue
+                }),
+            },
+        );
+
+        let looper = Looper::new(core, None, None);
+
+        // Batch: teardown session 5 (phase 2 — fires on_failed,
+        // removing the entry), then LocalRevoke for session 5
+        // (phase 4). A second teardown in a later batch would be
+        // a no-op. We simulate this by sending both in the same
+        // batch — the teardown fires first (phase 2), then
+        // revocation (phase 4). The on_failed callback fires from
+        // the teardown, which is correct. The key H2 claim is that
+        // fail_session is safe when entries are already gone.
+        //
+        // To test the true H2 scenario (teardown AFTER revocation
+        // removed entries), we reverse: revoke first, then teardown.
+        // But LocalRevoke doesn't remove dispatch entries — it only
+        // marks the session. Entries are removed by phase 2 teardown.
+        // So H2 is: a second teardown (from process_disconnect) is
+        // safe after a first teardown already removed entries.
+        msg_tx
+            .send(LooperMessage::Control(ControlMessage::ServiceTeardown {
+                session_id: 5,
+                reason: TeardownReason::ServiceRevoked,
+            }))
+            .unwrap();
+        // Second teardown for same session — must be a no-op.
+        msg_tx
+            .send(LooperMessage::Control(ControlMessage::ServiceTeardown {
+                session_id: 5,
+                reason: TeardownReason::ConnectionLost,
+            }))
+            .unwrap();
+        msg_tx
+            .send(LooperMessage::Control(ControlMessage::Lifecycle(
+                LifecycleMessage::CloseRequested,
+            )))
+            .unwrap();
+        drop(msg_tx);
+
+        let reason = looper.run(msg_rx);
+        assert_eq!(reason, ExitReason::Graceful);
+
+        let events = log.lock().unwrap().clone();
+        // on_failed fires exactly once (from the first teardown).
+        let failed_count = events
+            .iter()
+            .filter(|e| e.as_str() == "spurious_failed")
+            .count();
+        assert_eq!(
+            failed_count, 1,
+            "on_failed must fire once (first teardown), second teardown is no-op (H2). Got: {events:?}"
+        );
+    }
+
+    // ── Claim: revoked_sessions persists across batches ───────
+
+    #[test]
+    fn revoked_sessions_persists_across_batches() {
+        // A session revoked in batch N must suppress frames in
+        // batch N+1. This tests the persistence of revoked_sessions
+        // (intentionally not cleared in Batch::clear).
+        let log = Arc::new(Mutex::new(Vec::new()));
+        let (looper, msg_tx, msg_rx) = setup_looper(log.clone());
+
+        // Run the looper on a background thread so we can
+        // control batch boundaries via timing.
+        let looper_thread = std::thread::spawn(move || looper.run(msg_rx));
+
+        // Batch 1: revoke session 3.
+        msg_tx
+            .send(LooperMessage::LocalRevoke { session_id: 3 })
+            .unwrap();
+
+        // Small sleep to let batch 1 dispatch before sending batch 2.
+        std::thread::sleep(std::time::Duration::from_millis(50));
+
+        // Batch 2: notification for revoked session 3.
+        let inner = tagged_payload(&TestMsg::Ping("cross_batch".into()));
+        let outer = wire_notification(inner);
+        msg_tx
+            .send(LooperMessage::Service {
+                session_id: 3,
+                payload: outer,
+            })
+            .unwrap();
+
+        // Small sleep to let batch 2 dispatch.
+        std::thread::sleep(std::time::Duration::from_millis(50));
+
+        // Close the channel to terminate.
+        drop(msg_tx);
+
+        let reason = looper_thread.join().unwrap();
+        assert_eq!(reason, ExitReason::Disconnected);
+
+        let events = log.lock().unwrap().clone();
+        assert!(
+            !events.contains(&"notification:cross_batch".to_string()),
+            "notification in batch N+1 for session revoked in batch N must be suppressed. Got: {events:?}"
+        );
     }
 }

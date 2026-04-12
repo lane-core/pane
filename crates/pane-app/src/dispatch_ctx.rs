@@ -60,6 +60,20 @@ impl<'a, H> DispatchCtx<'a, H> {
     pub fn connection(&self) -> PeerScope {
         self.connection
     }
+
+    /// Cancel an entry without firing callbacks. Used by
+    /// try_send_request to roll back the DispatchEntry when the
+    /// wire send fails (session-type-consultant requirement:
+    /// orphaned entries must not persist).
+    pub(crate) fn cancel(&mut self, token: Token) -> bool {
+        self.dispatch.cancel(self.connection, token)
+    }
+
+    /// Whether sending another request would exceed the
+    /// negotiated max_outstanding_requests cap (D9).
+    pub(crate) fn would_exceed_cap(&self) -> bool {
+        self.dispatch.would_exceed_cap()
+    }
 }
 
 #[cfg(test)]

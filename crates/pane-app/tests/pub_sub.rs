@@ -339,10 +339,7 @@ fn push_fan_out_to_multiple_subscribers() {
             payload: payload.clone(),
         },
     );
-    publisher.send_service(
-        pub_session_b,
-        &ServiceFrame::Notification { payload },
-    );
+    publisher.send_service(pub_session_b, &ServiceFrame::Notification { payload });
 
     // Both receive
     let (_, frame_a) = sub_a.read_service();

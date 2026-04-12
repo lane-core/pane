@@ -283,6 +283,15 @@ impl<H: Handler> PaneBuilder<H> {
                     session_id,
                     payload,
                 } => core.dispatch_service(session_id, &payload),
+                LooperMessage::LocalRevoke { session_id } => {
+                    // During drain of buffered messages: send
+                    // RevokeInterest directly on the wire.
+                    let msg = pane_proto::control::ControlMessage::RevokeInterest { session_id };
+                    if let Ok(bytes) = postcard::to_allocvec(&msg) {
+                        core.send_ctl_frame(bytes);
+                    }
+                    DispatchOutcome::Continue
+                }
                 LooperMessage::Control(_) => {
                     // Non-lifecycle control messages during setup —
                     // framework-internal, skip.

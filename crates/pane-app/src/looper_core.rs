@@ -239,6 +239,17 @@ impl<H: pane_proto::Handler> LooperCore<H> {
         drop(self);
     }
 
+    /// Send a pre-serialized control frame on the wire (service 0).
+    /// Used by phase 4 (ctl writes) to send RevokeInterest and
+    /// future control frames in batch-ordered position.
+    ///
+    /// Best-effort: if the write channel is full or closed, the
+    /// frame is silently dropped — process_disconnect is the
+    /// backstop for cleanup.
+    pub(crate) fn send_ctl_frame(&self, payload: Vec<u8>) {
+        let _ = self.write_tx.try_send((0, payload));
+    }
+
     /// Process a synchronous request from a non-looper thread.
     ///
     /// Installs a dispatch entry whose on_reply/on_failed closures
@@ -580,6 +591,15 @@ impl<H: pane_proto::Handler> LooperCore<H> {
                     // Non-lifecycle ControlMessage — framework-internal.
                     // Service negotiation messages handled by PaneBuilder
                     // during setup.
+                }
+                Ok(LooperMessage::LocalRevoke { session_id }) => {
+                    // Non-batched fallback: send RevokeInterest
+                    // directly. The calloop Looper handles this via
+                    // Batch (phase 4 wire send + phase 5 suppression).
+                    let msg = ControlMessage::RevokeInterest { session_id };
+                    if let Ok(bytes) = postcard::to_allocvec(&msg) {
+                        self.send_ctl_frame(bytes);
+                    }
                 }
                 Ok(LooperMessage::Service {
                     session_id,

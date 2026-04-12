@@ -756,8 +756,7 @@ fn stress_backpressure_slow_subscriber() {
     publisher.expect_ready();
 
     // Fast subscriber
-    let (fast_sub, fast_session, fast_pub_session, fast_conn) =
-        subscribe(&server, &mut publisher);
+    let (fast_sub, fast_session, fast_pub_session, fast_conn) = subscribe(&server, &mut publisher);
     let fast_received = Arc::new(AtomicUsize::new(0));
     let fast_done = Arc::new(AtomicBool::new(false));
 
@@ -781,8 +780,7 @@ fn stress_backpressure_slow_subscriber() {
     });
 
     // Slow subscriber — reads with delay
-    let (slow_sub, slow_session, slow_pub_session, slow_conn) =
-        subscribe(&server, &mut publisher);
+    let (slow_sub, slow_session, slow_pub_session, slow_conn) = subscribe(&server, &mut publisher);
     let slow_received = Arc::new(AtomicUsize::new(0));
 
     let slow_received2 = Arc::clone(&slow_received);
@@ -819,10 +817,7 @@ fn stress_backpressure_slow_subscriber() {
                 payload: payload.clone(),
             },
         );
-        publisher.send_service(
-            slow_pub_session,
-            &ServiceFrame::Notification { payload },
-        );
+        publisher.send_service(slow_pub_session, &ServiceFrame::Notification { payload });
     }
     let elapsed = start.elapsed();
 

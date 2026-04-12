@@ -53,6 +53,19 @@ pub enum LooperMessage {
     /// Service frame: session_id + raw payload (ServiceFrame bytes).
     /// The looper parses ServiceFrame and routes by variant.
     Service { session_id: u16, payload: Vec<u8> },
+    /// Local revocation: a ServiceHandle was dropped, releasing
+    /// interest in the given session. Posted to the looper's input
+    /// channel so revocation participates in batch ordering (D8).
+    /// Phase 4 (ctl writes) sends the wire RevokeInterest; phase 5
+    /// suppresses stale frames for the revoked session (H3).
+    ///
+    /// Currently not wired from ServiceHandle::Drop — ServiceHandle
+    /// lacks access to the looper's input channel (it only holds
+    /// write_tx). The variant is exercised by batch-side machinery
+    /// and will be connected when ConnectionSource (C4) restructures
+    /// the channel topology. Until then, ServiceHandle::Drop sends
+    /// RevokeInterest directly via try_send on the data channel.
+    LocalRevoke { session_id: u16 },
 }
 
 /// Write-side message: (service_id, payload bytes).
