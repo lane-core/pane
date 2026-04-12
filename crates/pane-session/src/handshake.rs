@@ -56,6 +56,20 @@ pub struct ServiceProvision {
 pub struct Hello {
     pub version: u32,
     pub max_message_size: u32,
+    /// Proposed cap on in-flight requests (D9). Server may reduce
+    /// but never increase. 0 = unlimited (wire default for
+    /// backwards compatibility).
+    ///
+    /// Design heritage: Plan 9 Tversion's msize was the only
+    /// negotiated parameter (version(5),
+    /// reference/plan9/man/5/version:19-48) — client proposed,
+    /// server could reduce. pane adds a second knob for request
+    /// concurrency. Haiku's port capacity was receiver-unilateral
+    /// (B_LOOPER_PORT_DEFAULT_CAPACITY = 200); pane negotiates
+    /// because cross-process IPC requires both sides to agree on
+    /// flow control.
+    #[serde(default)]
+    pub max_outstanding_requests: u16,
     pub interests: Vec<ServiceInterest>,
     /// Services this pane provides for others.
     pub provides: Vec<ServiceProvision>,
@@ -67,6 +81,10 @@ pub struct Welcome {
     pub version: u32,
     pub instance_id: String,
     pub max_message_size: u32,
+    /// Effective cap on in-flight requests — at most the client's
+    /// proposed value. 0 = unlimited.
+    #[serde(default)]
+    pub max_outstanding_requests: u16,
     pub bindings: Vec<ServiceBinding>,
 }
 
@@ -104,4 +122,51 @@ pub enum RejectReason {
     Unauthorized,
     ServerFull,
     ServiceUnavailable,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn hello_roundtrip_with_max_outstanding_requests() {
+        let hello = Hello {
+            version: 1,
+            max_message_size: 16 * 1024 * 1024,
+            max_outstanding_requests: 128,
+            interests: vec![],
+            provides: vec![],
+        };
+        let bytes = postcard::to_allocvec(&hello).expect("serialize");
+        let decoded: Hello = postcard::from_bytes(&bytes).expect("deserialize");
+        assert_eq!(decoded.max_outstanding_requests, 128);
+    }
+
+    #[test]
+    fn welcome_roundtrip_with_max_outstanding_requests() {
+        let welcome = Welcome {
+            version: 1,
+            instance_id: "test-server".into(),
+            max_message_size: 16 * 1024 * 1024,
+            max_outstanding_requests: 64,
+            bindings: vec![],
+        };
+        let bytes = postcard::to_allocvec(&welcome).expect("serialize");
+        let decoded: Welcome = postcard::from_bytes(&bytes).expect("deserialize");
+        assert_eq!(decoded.max_outstanding_requests, 64);
+    }
+
+    #[test]
+    fn hello_zero_means_unlimited() {
+        let hello = Hello {
+            version: 1,
+            max_message_size: 16 * 1024 * 1024,
+            max_outstanding_requests: 0,
+            interests: vec![],
+            provides: vec![],
+        };
+        let bytes = postcard::to_allocvec(&hello).expect("serialize");
+        let decoded: Hello = postcard::from_bytes(&bytes).expect("deserialize");
+        assert_eq!(decoded.max_outstanding_requests, 0);
+    }
 }

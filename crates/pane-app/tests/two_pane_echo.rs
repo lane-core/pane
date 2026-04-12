@@ -138,6 +138,7 @@ fn two_pane_echo_roundtrip() {
         Hello {
             version: 1,
             max_message_size: 16 * 1024 * 1024,
+            max_outstanding_requests: 0,
             interests: vec![],
             provides: vec![ServiceProvision {
                 service: echo_id,
@@ -157,6 +158,7 @@ fn two_pane_echo_roundtrip() {
         Hello {
             version: 1,
             max_message_size: 16 * 1024 * 1024,
+            max_outstanding_requests: 0,
             interests: vec![],
             provides: vec![],
         },
@@ -263,6 +265,7 @@ fn connection_drop_delivers_service_teardown_to_peer() {
         Hello {
             version: 1,
             max_message_size: 16 * 1024 * 1024,
+            max_outstanding_requests: 0,
             interests: vec![],
             provides: vec![ServiceProvision {
                 service: echo_id,
@@ -281,6 +284,7 @@ fn connection_drop_delivers_service_teardown_to_peer() {
         Hello {
             version: 1,
             max_message_size: 16 * 1024 * 1024,
+            max_outstanding_requests: 0,
             interests: vec![],
             provides: vec![],
         },
@@ -337,6 +341,7 @@ fn self_provide_interest_declined() {
         Hello {
             version: 1,
             max_message_size: 16 * 1024 * 1024,
+            max_outstanding_requests: 0,
             interests: vec![],
             provides: vec![ServiceProvision {
                 service: echo_id,
@@ -375,6 +380,7 @@ fn declare_interest_no_provider_declined() {
         Hello {
             version: 1,
             max_message_size: 16 * 1024 * 1024,
+            max_outstanding_requests: 0,
             interests: vec![],
             provides: vec![],
         },
@@ -413,6 +419,7 @@ fn notification_round_trip() {
         Hello {
             version: 1,
             max_message_size: 16 * 1024 * 1024,
+            max_outstanding_requests: 0,
             interests: vec![],
             provides: vec![ServiceProvision {
                 service: echo_id,
@@ -430,6 +437,7 @@ fn notification_round_trip() {
         Hello {
             version: 1,
             max_message_size: 16 * 1024 * 1024,
+            max_outstanding_requests: 0,
             interests: vec![],
             provides: vec![],
         },

@@ -56,6 +56,7 @@ fn main() {
         Hello {
             version: 1,
             max_message_size: 16 * 1024 * 1024,
+            max_outstanding_requests: 0,
             interests: vec![],
             provides: vec![],
         },

@@ -622,6 +622,7 @@ mod tests {
                 version: 1,
                 instance_id: "write-test-server".into(),
                 max_message_size: 16 * 1024 * 1024,
+                max_outstanding_requests: 0,
                 bindings: vec![],
             });
             let bytes = postcard::to_allocvec(&decision).unwrap();
@@ -651,6 +652,7 @@ mod tests {
             Hello {
                 version: 1,
                 max_message_size: 16 * 1024 * 1024,
+                max_outstanding_requests: 0,
                 interests: vec![],
                 provides: vec![],
             },
@@ -676,6 +678,7 @@ mod tests {
         let client = client.send(Hello {
             version: 1,
             max_message_size: 16 * 1024 * 1024,
+            max_outstanding_requests: 0,
             interests: vec![],
             provides: vec![],
         });
@@ -687,6 +690,7 @@ mod tests {
             version: 1,
             instance_id: "ada-server".into(),
             max_message_size: 16 * 1024 * 1024,
+            max_outstanding_requests: 0,
             bindings: vec![],
         }));
 
@@ -705,6 +709,7 @@ mod tests {
         let client = client.send(Hello {
             version: 99,
             max_message_size: 16 * 1024 * 1024,
+            max_outstanding_requests: 0,
             interests: vec![],
             provides: vec![],
         });
@@ -761,6 +766,7 @@ mod tests {
                 version: 1,
                 instance_id: "test-server".into(),
                 max_message_size: 16 * 1024 * 1024,
+                max_outstanding_requests: 0,
                 bindings: vec![],
             });
             let bytes = postcard::to_allocvec(&decision).unwrap();
@@ -779,6 +785,7 @@ mod tests {
             Hello {
                 version: 1,
                 max_message_size: 16 * 1024 * 1024,
+                max_outstanding_requests: 0,
                 interests: vec![],
                 provides: vec![],
             },
@@ -817,6 +824,7 @@ mod tests {
             Hello {
                 version: 99,
                 max_message_size: 16 * 1024 * 1024,
+                max_outstanding_requests: 0,
                 interests: vec![],
                 provides: vec![],
             },
@@ -854,6 +862,7 @@ mod tests {
                 version: 1,
                 instance_id: "msg-server".into(),
                 max_message_size: 16 * 1024 * 1024,
+                max_outstanding_requests: 0,
                 bindings: vec![],
             };
             let decision: Result<Welcome, Rejection> = Ok(welcome);
@@ -877,6 +886,7 @@ mod tests {
             Hello {
                 version: 1,
                 max_message_size: 16 * 1024 * 1024,
+                max_outstanding_requests: 0,
                 interests: vec![],
                 provides: vec![],
             },

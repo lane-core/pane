@@ -42,6 +42,17 @@ pub enum SendAndWaitError {
     Failed,
     /// The request message could not be serialized.
     SerializationError,
+    /// The request was cancelled via `CancelHandle::cancel()`.
+    /// The DispatchEntry was removed, dropping the oneshot Sender
+    /// and unblocking the caller. Distinct from Disconnected: the
+    /// looper is still alive, the request was explicitly withdrawn.
+    ///
+    /// Design heritage: Plan 9 Tflush(oldtag) (flush(5),
+    /// reference/plan9/man/5/flush) cancelled a pending request;
+    /// the blocked caller in mountio() woke with Eintr
+    /// (devmnt.c:803-826). pane distinguishes cancel from
+    /// disconnect so callers can retry or propagate appropriately.
+    Cancelled,
 }
 
 impl std::fmt::Display for SendAndWaitError {
@@ -51,6 +62,7 @@ impl std::fmt::Display for SendAndWaitError {
             SendAndWaitError::Disconnected => write!(f, "looper shut down while blocked"),
             SendAndWaitError::Failed => write!(f, "remote handler dropped ReplyPort"),
             SendAndWaitError::SerializationError => write!(f, "request serialization failed"),
+            SendAndWaitError::Cancelled => write!(f, "request cancelled"),
         }
     }
 }
@@ -78,4 +90,35 @@ pub(crate) struct SyncRequest {
     /// Oneshot sender for delivering the raw reply bytes (or error)
     /// back to the blocked caller.
     pub reply_tx: std_mpsc::SyncSender<SyncReplyResult>,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn cancelled_is_distinct_from_disconnected() {
+        assert_ne!(SendAndWaitError::Cancelled, SendAndWaitError::Disconnected);
+        assert_ne!(SendAndWaitError::Cancelled, SendAndWaitError::Timeout);
+        assert_ne!(SendAndWaitError::Cancelled, SendAndWaitError::Failed);
+        assert_ne!(
+            SendAndWaitError::Cancelled,
+            SendAndWaitError::SerializationError
+        );
+    }
+
+    #[test]
+    fn cancelled_display_message() {
+        let err = SendAndWaitError::Cancelled;
+        assert_eq!(err.to_string(), "request cancelled");
+    }
+
+    #[test]
+    fn cancelled_implements_error_trait() {
+        let err: &dyn std::error::Error = &SendAndWaitError::Cancelled;
+        // Verify the Error trait is implemented — the assertion
+        // just confirms the Display output is reachable through
+        // the trait object.
+        assert!(!err.to_string().is_empty());
+    }
 }

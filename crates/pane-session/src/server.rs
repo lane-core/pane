@@ -603,6 +603,9 @@ impl ProtocolServer {
             version: 1,
             instance_id: "pane-server".into(),
             max_message_size: hello.max_message_size,
+            // Server may reduce but never increase the client's proposal.
+            // For now, echo back (no reduction policy in Phase 1).
+            max_outstanding_requests: hello.max_outstanding_requests,
             bindings: vec![],
         };
 
@@ -944,6 +947,7 @@ mod tests {
             let hello = Hello {
                 version: 1,
                 max_message_size: 16 * 1024 * 1024,
+                max_outstanding_requests: 0,
                 interests: vec![],
                 provides: vec![],
             };

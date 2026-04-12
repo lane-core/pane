@@ -9,6 +9,7 @@
 //! Design heritage: BeOS BLooper (sequential dispatch, one thread
 //! per actor). Formalized by Fowler et al.'s EAct.
 
+pub mod backpressure;
 pub mod builder;
 pub mod dispatch;
 pub mod dispatch_ctx;
@@ -24,6 +25,7 @@ pub mod service_handle;
 pub mod timer;
 pub(crate) mod watchdog;
 
+pub use backpressure::Backpressure;
 pub use builder::PaneBuilder;
 pub use dispatch_ctx::DispatchCtx;
 pub use exit_reason::ExitReason;

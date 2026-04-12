@@ -1174,6 +1174,7 @@ mod tests {
                 version: 1,
                 instance_id: "vertical-slice-server".into(),
                 max_message_size: 16 * 1024 * 1024,
+                max_outstanding_requests: 0,
                 bindings: vec![],
             });
             let bytes = postcard::to_allocvec(&decision).unwrap();
@@ -1197,6 +1198,7 @@ mod tests {
             Hello {
                 version: 1,
                 max_message_size: 16 * 1024 * 1024,
+                max_outstanding_requests: 0,
                 interests: vec![],
                 provides: vec![],
             },
@@ -1279,6 +1281,7 @@ mod tests {
                 version: 1,
                 instance_id: "drop-server".into(),
                 max_message_size: 16 * 1024 * 1024,
+                max_outstanding_requests: 0,
                 bindings: vec![],
             });
             let bytes = postcard::to_allocvec(&decision).unwrap();
@@ -1299,6 +1302,7 @@ mod tests {
             Hello {
                 version: 1,
                 max_message_size: 16 * 1024 * 1024,
+                max_outstanding_requests: 0,
                 interests: vec![],
                 provides: vec![],
             },

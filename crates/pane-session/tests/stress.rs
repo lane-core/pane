@@ -348,6 +348,7 @@ fn revoke_interest_request_race_reply_dropped() {
         Hello {
             version: 1,
             max_message_size: 16 * 1024 * 1024,
+            max_outstanding_requests: 0,
             interests: vec![],
             provides: vec![ServiceProvision {
                 service: echo_id,
@@ -366,6 +367,7 @@ fn revoke_interest_request_race_reply_dropped() {
         Hello {
             version: 1,
             max_message_size: 16 * 1024 * 1024,
+            max_outstanding_requests: 0,
             interests: vec![],
             provides: vec![],
         },
@@ -475,6 +477,7 @@ fn revoke_interest_no_stale_routing_entries() {
         Hello {
             version: 1,
             max_message_size: 16 * 1024 * 1024,
+            max_outstanding_requests: 0,
             interests: vec![],
             provides: vec![ServiceProvision {
                 service: echo_id,
@@ -493,6 +496,7 @@ fn revoke_interest_no_stale_routing_entries() {
         Hello {
             version: 1,
             max_message_size: 16 * 1024 * 1024,
+            max_outstanding_requests: 0,
             interests: vec![],
             provides: vec![],
         },
@@ -583,6 +587,7 @@ fn actor_saturation_64_clients() {
         Hello {
             version: 1,
             max_message_size: 16 * 1024 * 1024,
+            max_outstanding_requests: 0,
             interests: vec![],
             provides: vec![ServiceProvision {
                 service: echo_id,
@@ -617,6 +622,7 @@ fn actor_saturation_64_clients() {
                 Hello {
                     version: 1,
                     max_message_size: 16 * 1024 * 1024,
+                    max_outstanding_requests: 0,
                     interests: vec![],
                     provides: vec![],
                 },
@@ -717,6 +723,7 @@ fn rapid_connect_disconnect_no_leak() {
             let hello = Hello {
                 version: 1,
                 max_message_size: 16 * 1024 * 1024,
+                max_outstanding_requests: 0,
                 interests: vec![],
                 provides: vec![],
             };
@@ -749,6 +756,7 @@ fn rapid_connect_disconnect_no_leak() {
             Hello {
                 version: 1,
                 max_message_size: 16 * 1024 * 1024,
+                max_outstanding_requests: 0,
                 interests: vec![],
                 provides: vec![],
             },
@@ -826,6 +834,7 @@ fn teardown_cascade_8_connections_barrier() {
                 Hello {
                     version: 1,
                     max_message_size: 16 * 1024 * 1024,
+                    max_outstanding_requests: 0,
                     interests: vec![],
                     provides,
                 },
@@ -908,6 +917,7 @@ fn provider_disappears_mid_route_consumer_gets_teardown() {
         Hello {
             version: 1,
             max_message_size: 16 * 1024 * 1024,
+            max_outstanding_requests: 0,
             interests: vec![],
             provides: vec![ServiceProvision {
                 service: echo_id,
@@ -925,6 +935,7 @@ fn provider_disappears_mid_route_consumer_gets_teardown() {
         Hello {
             version: 1,
             max_message_size: 16 * 1024 * 1024,
+            max_outstanding_requests: 0,
             interests: vec![],
             provides: vec![],
         },
@@ -1012,6 +1023,7 @@ fn session_exhaustion_no_recycling() {
         Hello {
             version: 1,
             max_message_size: 16 * 1024 * 1024,
+            max_outstanding_requests: 0,
             interests: vec![],
             provides: vec![ServiceProvision {
                 service: echo_id,
@@ -1030,6 +1042,7 @@ fn session_exhaustion_no_recycling() {
         Hello {
             version: 1,
             max_message_size: 16 * 1024 * 1024,
+            max_outstanding_requests: 0,
             interests: vec![],
             provides: vec![],
         },
@@ -1143,6 +1156,7 @@ fn per_connection_frame_ordering_under_burst() {
         Hello {
             version: 1,
             max_message_size: 16 * 1024 * 1024,
+            max_outstanding_requests: 0,
             interests: vec![],
             provides: vec![ServiceProvision {
                 service: echo_id,
@@ -1172,6 +1186,7 @@ fn per_connection_frame_ordering_under_burst() {
             Hello {
                 version: 1,
                 max_message_size: 16 * 1024 * 1024,
+                max_outstanding_requests: 0,
                 interests: vec![],
                 provides: vec![],
             },
@@ -1545,6 +1560,7 @@ fn randomized_declare_revoke_race() {
         Hello {
             version: 1,
             max_message_size: 16 * 1024 * 1024,
+            max_outstanding_requests: 0,
             interests: vec![],
             provides: vec![ServiceProvision {
                 service: echo_id,
@@ -1563,6 +1579,7 @@ fn randomized_declare_revoke_race() {
         Hello {
             version: 1,
             max_message_size: 16 * 1024 * 1024,
+            max_outstanding_requests: 0,
             interests: vec![],
             provides: vec![],
         },
@@ -1685,6 +1702,7 @@ fn unix_stream_handshake() {
     let hello = Hello {
         version: 1,
         max_message_size: 16 * 1024 * 1024,
+        max_outstanding_requests: 0,
         interests: vec![],
         provides: vec![],
     };
@@ -1760,6 +1778,7 @@ fn unix_stream_service_frame_exchange() {
         Hello {
             version: 1,
             max_message_size: 16 * 1024 * 1024,
+            max_outstanding_requests: 0,
             interests: vec![],
             provides: vec![ServiceProvision {
                 service: echo_id,
@@ -1783,6 +1802,7 @@ fn unix_stream_service_frame_exchange() {
         Hello {
             version: 1,
             max_message_size: 16 * 1024 * 1024,
+            max_outstanding_requests: 0,
             interests: vec![],
             provides: vec![],
         },
@@ -1873,6 +1893,7 @@ fn unix_stream_provider_disconnect_teardown() {
         Hello {
             version: 1,
             max_message_size: 16 * 1024 * 1024,
+            max_outstanding_requests: 0,
             interests: vec![],
             provides: vec![ServiceProvision {
                 service: echo_id,
@@ -1895,6 +1916,7 @@ fn unix_stream_provider_disconnect_teardown() {
         Hello {
             version: 1,
             max_message_size: 16 * 1024 * 1024,
+            max_outstanding_requests: 0,
             interests: vec![],
             provides: vec![],
         },
@@ -1976,6 +1998,7 @@ fn unix_stream_rapid_connect_disconnect() {
                 let hello = Hello {
                     version: 1,
                     max_message_size: 16 * 1024 * 1024,
+                    max_outstanding_requests: 0,
                     interests: vec![],
                     provides: vec![],
                 };
@@ -2004,6 +2027,7 @@ fn unix_stream_rapid_connect_disconnect() {
         let hello = Hello {
             version: 1,
             max_message_size: 16 * 1024 * 1024,
+            max_outstanding_requests: 0,
             interests: vec![],
             provides: vec![],
         };
@@ -2071,6 +2095,7 @@ fn sustained_load_4_clients_5000_frames_each() {
         Hello {
             version: 1,
             max_message_size: 16 * 1024 * 1024,
+            max_outstanding_requests: 0,
             interests: vec![],
             provides: vec![ServiceProvision {
                 service: echo_id,
@@ -2099,6 +2124,7 @@ fn sustained_load_4_clients_5000_frames_each() {
             Hello {
                 version: 1,
                 max_message_size: 16 * 1024 * 1024,
+                max_outstanding_requests: 0,
                 interests: vec![],
                 provides: vec![],
             },
@@ -2265,6 +2291,7 @@ fn no_backpressure_unbounded_channel_fill() {
         Hello {
             version: 1,
             max_message_size: 16 * 1024 * 1024,
+            max_outstanding_requests: 0,
             interests: vec![],
             provides: vec![ServiceProvision {
                 service: echo_id,
@@ -2283,6 +2310,7 @@ fn no_backpressure_unbounded_channel_fill() {
         Hello {
             version: 1,
             max_message_size: 16 * 1024 * 1024,
+            max_outstanding_requests: 0,
             interests: vec![],
             provides: vec![],
         },

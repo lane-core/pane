@@ -128,6 +128,7 @@ fn open_service_via_protocol_server() {
         Hello {
             version: 1,
             max_message_size: 16 * 1024 * 1024,
+            max_outstanding_requests: 0,
             interests: vec![],
             provides: vec![ServiceProvision {
                 service: echo_service_id(),
@@ -222,6 +223,7 @@ fn revoke_interest_end_to_end() {
         Hello {
             version: 1,
             max_message_size: 16 * 1024 * 1024,
+            max_outstanding_requests: 0,
             interests: vec![],
             provides: vec![ServiceProvision {
                 service: echo_service_id(),
@@ -291,6 +293,7 @@ fn ready_buffered_during_open_service_delivered_by_run_with() {
         Hello {
             version: 1,
             max_message_size: 16 * 1024 * 1024,
+            max_outstanding_requests: 0,
             interests: vec![],
             provides: vec![ServiceProvision {
                 service: echo_service_id(),
@@ -414,6 +417,7 @@ fn multiple_open_service_sequential() {
         Hello {
             version: 1,
             max_message_size: 16 * 1024 * 1024,
+            max_outstanding_requests: 0,
             interests: vec![],
             provides: vec![
                 ServiceProvision {
