@@ -13,14 +13,18 @@ agents: [all]
 
 ## Where we are
 
-Six crates, 349 regular tests + 36 stress + 6 benchmarks. All
-invariants verified or detection-enforced (22 of 22).
+Six crates, 356 regular tests + 48 stress/adversarial + 6 benchmarks.
+All invariants verified or detection-enforced (22 of 22 + N1-N4
+identified, extraction pending).
+
+**Next session priority:** pane-session MPST foundation extraction.
+Read `decision/pane_session_mpst_foundation` first.
 
 | Crate | Role | Tests |
 |---|---|---|
 | pane-proto | Protocol vocabulary, no IO | 99 |
 | pane-session | Session-typed IPC, transport, framing, server | 58 + 21 stress |
-| pane-app | Actor framework, dispatch, looper | 171 + 12 stress + 14 integration |
+| pane-app | Actor framework, dispatch, looper | 178 + 12 stress + 12 adversarial + 14 integration + 6 bench |
 | pane-fs | Filesystem namespace | 5 |
 | pane-hello | First running pane app (binary) | 0 |
 | pane-notify | Filesystem notification abstraction | preserved from prototype |
@@ -42,6 +46,20 @@ invariants verified or detection-enforced (22 of 22).
   UnixStream: notification throughput (201K msg/sec at 64B, 20×
   D-Bus), request/reply latency (20.3μs P50), fan-out (155K at
   N=50), direct write path (+18% vs mpsc).
+- **Write batching + batch limit** (`9d97def`) — contiguous Vec<u8>
+  write buffer replacing VecDeque<Vec<u8>> (eliminates per-frame
+  allocation), 2KB watermark flush. Phase 5 batch limit (64 msgs /
+  8ms). Post-optimization: 900K msg/sec direct path, 18μs P50.
+- **Adversarial stress suite** (`1afaa7f`) — 12 tests: thundering
+  herd (100 subs), message flood (100K to non-reader), rapid
+  connect/disconnect (1000 cycles), cancel storm (500 req+cancel),
+  shutdown during traffic, half-close socket, malformed frames,
+  max connections (500), dispatch stall, concurrent teardown+send,
+  backpressure cascade isolation, boundary messages.
+- **MPST foundation decision** (`4e36122`) — pane mapped onto
+  Fowler-Hu EAct formalism. N1-N4 invariants derived. pane-session
+  extraction plan: NonBlockingSend, FlowControl, RequestCorrelator,
+  ActiveSession, FrameReader. See `decision/pane_session_mpst_foundation`.
 
 ### Landed since 2026-04-11
 
@@ -140,6 +158,21 @@ try_send_request. Counter monotonic within batch phases.
 
 ## What's next
 
+### IMMEDIATE: pane-session MPST extraction
+
+Extract protocol-layer abstractions from pane-app to pane-session,
+grounded in Fowler-Hu EAct formalism. See
+`decision/pane_session_mpst_foundation` for full plan. Key items:
+- NonBlockingSend trait (N1 — makes blocking sends unrepresentable)
+- FlowControl (N2 — per-session credit tracking)
+- RequestCorrelator (token alloc + matching, from Dispatch)
+- ActiveSession state (post-handshake params, session map)
+- FrameReader extraction (N4 — from connection_source.rs to frame.rs)
+- Failure cascade (N3 — transport error → ServiceTeardown)
+
+Three adversarial bugs (bidirectional deadlock, partial-frame hang,
+HoL blocking) become impossible by construction through N1-N4.
+
 ### Phase 1 — Core (in progress)
 
 **ConnectionSource C1-C6 landed.** ConnectionSource exists as a
@@ -178,6 +211,21 @@ Session suspension / resumption, streaming (Queue pattern),
 Handles<Routing>.
 
 ## Known open questions
+
+- **pane-session MPST foundation** — the highest priority open
+  item. Adversarial testing exposed that session type discipline
+  drops after handshake. N1-N4 invariants identified but not yet
+  extracted to pane-session. See `decision/pane_session_mpst_foundation`.
+- **Server version/msize validation** — server.rs doesn't validate
+  Hello.version or enforce max_message_size reduction. Exposed by
+  Plan9 heritage test audit (T6, T8). Real protocol bugs.
+- **Three adversarial bugs** — bidirectional buffer deadlock,
+  partial-frame hang on server reader, HoL during queue fill.
+  All addressed by N1-N4 extraction. Tests currently work around
+  them; the extraction makes them impossible by construction.
+- **Haiku test suite port** — 25 tests identified for porting
+  (be-systems-engineer audit). 32 novel tests proposed (session-type).
+  24 Plan9 heritage tests proposed. 5 optic law tests proposed.
 
 - **Notification-triggers-request** — a notification handler
   cannot send requests (no DispatchCtx access). Deferred to
