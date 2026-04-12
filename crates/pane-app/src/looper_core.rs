@@ -601,6 +601,13 @@ impl<H: pane_proto::Handler> LooperCore<H> {
                         self.send_ctl_frame(bytes);
                     }
                 }
+                Ok(LooperMessage::NewConnection { ack, .. }) => {
+                    // C5 stub: NewConnection in the non-calloop
+                    // message loop. The calloop Looper handles this
+                    // via Batch (phase 3.5). Here, drop the ack —
+                    // bridge thread receives RecvError.
+                    drop(ack);
+                }
                 Ok(LooperMessage::Service {
                     session_id,
                     payload,

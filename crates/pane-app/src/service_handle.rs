@@ -135,8 +135,26 @@ impl<P: Protocol> ServiceHandle<P> {
             let _ = tx.send((self.session_id, outer_payload));
         }
 
-        // Stub: real cancel sends Cancel{token} on control channel
-        CancelHandle::new(|| {})
+        // CancelHandle sends Cancel{token} on the control channel (D5/D10).
+        // Advisory, fire-and-forget: server MAY ignore. The DispatchEntry
+        // stays until Reply/Failed/Teardown clears it — cancel is a hint
+        // to the server, not local cleanup. Plan 9 Tflush(oldtag) analog.
+        let cancel_tx = self.write_tx.clone();
+        let cancel_token = token.0;
+        CancelHandle::new(move || {
+            if let Some(tx) = cancel_tx {
+                let cancel_msg = pane_proto::control::ControlMessage::Cancel {
+                    token: cancel_token,
+                };
+                if let Ok(bytes) = postcard::to_allocvec(&cancel_msg) {
+                    // D7: cancel is infallible, best-effort. let _ = try_send
+                    // is intentional — if the channel is full or closed, the
+                    // cancel is lost. The server handles cancel-if-present
+                    // (D10): unknown tokens are no-ops.
+                    let _ = tx.try_send((0, bytes));
+                }
+            }
+        })
     }
 
     /// Fallible variant of `send_request`. Checks backpressure
@@ -221,8 +239,20 @@ impl<P: Protocol> ServiceHandle<P> {
             }
         }
 
-        // Stub: real cancel sends Cancel{token} on control channel
-        Ok(CancelHandle::new(|| {}))
+        // CancelHandle sends Cancel{token} on the control channel (D5/D10).
+        // Same wiring as send_request — see comment there.
+        let cancel_tx = self.write_tx.clone();
+        let cancel_token = token.0;
+        Ok(CancelHandle::new(move || {
+            if let Some(tx) = cancel_tx {
+                let cancel_msg = pane_proto::control::ControlMessage::Cancel {
+                    token: cancel_token,
+                };
+                if let Ok(bytes) = postcard::to_allocvec(&cancel_msg) {
+                    let _ = tx.try_send((0, bytes));
+                }
+            }
+        }))
     }
 
     /// Send a fire-and-forget notification through this service binding.
@@ -981,5 +1011,212 @@ mod tests {
             }
             Ok(()) => panic!("should have failed with ConnectionClosing"),
         }
+    }
+
+    // ── CancelHandle wire cancel (D5/D10) ─────────────────────
+
+    #[test]
+    fn cancel_handle_sends_cancel_on_wire() {
+        // CancelHandle::cancel() sends ControlMessage::Cancel { token }
+        // on the control channel (service 0).
+        let (tx, rx) = std::sync::mpsc::sync_channel(16);
+        let handle = ServiceHandle::<TestProto>::with_channel(5, tx);
+
+        let mut dispatch = Dispatch::<TestHandler>::new();
+        let mut ctx = DispatchCtx::new(&mut dispatch, PeerScope(1));
+
+        let cancel = handle.send_request::<TestHandler, TestReply>(
+            &mut ctx,
+            TestMsg::Ping,
+            |_: &mut TestHandler, _, _: TestReply| Flow::Continue,
+            |_: &mut TestHandler, _| Flow::Continue,
+        );
+
+        // Drain the Request frame from the channel
+        let (svc_id, _) = rx.recv().expect("expected Request frame");
+        assert_eq!(svc_id, 5);
+
+        // Cancel the request
+        cancel.cancel();
+
+        // The Cancel message should be on the control channel (service 0)
+        let (svc_id, payload) = rx.recv().expect("expected Cancel frame");
+        assert_eq!(svc_id, 0, "Cancel goes on control channel (service 0)");
+
+        let msg: pane_proto::control::ControlMessage =
+            postcard::from_bytes(&payload).expect("deserialize Cancel");
+        match msg {
+            pane_proto::control::ControlMessage::Cancel { token } => {
+                // Token 0: first token allocated by Dispatch
+                assert_eq!(token, 0);
+            }
+            other => panic!("expected Cancel, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn cancel_handle_from_try_send_sends_cancel_on_wire() {
+        // Same test for the try_send_request path.
+        let (tx, rx) = std::sync::mpsc::sync_channel(16);
+        let handle = ServiceHandle::<TestProto>::with_channel(5, tx);
+
+        let mut dispatch = Dispatch::<TestHandler>::new();
+        let mut ctx = DispatchCtx::new(&mut dispatch, PeerScope(1));
+
+        let cancel = handle
+            .try_send_request::<TestHandler, TestReply>(
+                &mut ctx,
+                TestMsg::Ping,
+                |_: &mut TestHandler, _, _: TestReply| Flow::Continue,
+                |_: &mut TestHandler, _| Flow::Continue,
+            )
+            .expect("should succeed");
+
+        // Drain the Request frame
+        let _ = rx.recv().expect("expected Request frame");
+
+        cancel.cancel();
+
+        let (svc_id, payload) = rx.recv().expect("expected Cancel frame");
+        assert_eq!(svc_id, 0);
+
+        let msg: pane_proto::control::ControlMessage =
+            postcard::from_bytes(&payload).expect("deserialize Cancel");
+        assert!(matches!(
+            msg,
+            pane_proto::control::ControlMessage::Cancel { token: 0 }
+        ));
+    }
+
+    #[test]
+    fn reply_still_deliverable_after_cancel() {
+        // D10: cancel is advisory. A Reply for a cancelled token's
+        // DispatchEntry still fires — the entry is not removed by
+        // CancelHandle (only the wire Cancel is sent).
+        let (tx, rx) = std::sync::mpsc::sync_channel(16);
+        let handle = ServiceHandle::<TestProto>::with_channel(5, tx);
+
+        let mut dispatch = Dispatch::<TestHandler>::new();
+        let conn = PeerScope(1);
+        let mut ctx = DispatchCtx::new(&mut dispatch, conn);
+
+        let cancel = handle.send_request::<TestHandler, TestReply>(
+            &mut ctx,
+            TestMsg::Ping,
+            |_h: &mut TestHandler, _, _: TestReply| Flow::Continue,
+            |_: &mut TestHandler, _| Flow::Continue,
+        );
+
+        // Drain Request + Cancel
+        let _ = rx.recv().expect("Request frame");
+        cancel.cancel();
+        let _ = rx.recv().expect("Cancel frame");
+
+        // DispatchEntry is still present — cancel does not remove it
+        assert_eq!(
+            dispatch.len(),
+            1,
+            "entry must still be present after cancel"
+        );
+
+        // Simulate a Reply arriving for that token. The on_reply
+        // callback downcasts to Vec<u8> and deserializes TestReply,
+        // so we must pass valid serialized bytes.
+        let reply_bytes = postcard::to_allocvec(&TestReply(99)).unwrap();
+        let mut handler = TestHandler;
+        let messenger = Messenger::stub();
+        let flow = dispatch.fire_reply(
+            conn,
+            crate::dispatch::Token(0),
+            &mut handler,
+            &messenger,
+            Box::new(reply_bytes),
+        );
+        assert_eq!(flow, Some(Flow::Continue), "reply should fire normally");
+        assert_eq!(dispatch.len(), 0, "entry consumed by reply");
+    }
+
+    #[test]
+    fn cancel_handle_drop_does_not_send_cancel() {
+        // Dropping a CancelHandle without calling .cancel() must NOT
+        // send anything on the wire — request completes normally.
+        let (tx, rx) = std::sync::mpsc::sync_channel(16);
+        let handle = ServiceHandle::<TestProto>::with_channel(5, tx);
+
+        let mut dispatch = Dispatch::<TestHandler>::new();
+        let mut ctx = DispatchCtx::new(&mut dispatch, PeerScope(1));
+
+        let cancel = handle.send_request::<TestHandler, TestReply>(
+            &mut ctx,
+            TestMsg::Ping,
+            |_: &mut TestHandler, _, _: TestReply| Flow::Continue,
+            |_: &mut TestHandler, _| Flow::Continue,
+        );
+
+        // Drain the Request frame
+        let _ = rx.recv().expect("Request frame");
+
+        // Drop without cancelling
+        drop(cancel);
+
+        // Channel should be empty — no Cancel sent
+        assert!(
+            rx.try_recv().is_err(),
+            "dropping CancelHandle must not send Cancel"
+        );
+    }
+
+    #[test]
+    fn cancel_handle_best_effort_on_closed_channel() {
+        // D7: cancel is infallible. If the write channel is closed,
+        // CancelHandle::cancel() silently drops the Cancel frame
+        // (let _ = try_send). No panic.
+        let (tx, rx) = std::sync::mpsc::sync_channel(16);
+        let handle = ServiceHandle::<TestProto>::with_channel(5, tx);
+
+        let mut dispatch = Dispatch::<TestHandler>::new();
+        let mut ctx = DispatchCtx::new(&mut dispatch, PeerScope(1));
+
+        let cancel = handle.send_request::<TestHandler, TestReply>(
+            &mut ctx,
+            TestMsg::Ping,
+            |_: &mut TestHandler, _, _: TestReply| Flow::Continue,
+            |_: &mut TestHandler, _| Flow::Continue,
+        );
+
+        // Close the receiving end
+        drop(rx);
+
+        // Cancel should not panic even though the channel is closed
+        cancel.cancel();
+    }
+
+    #[test]
+    fn cancel_does_not_decrement_outstanding_counter() {
+        // CancelHandle does not remove the DispatchEntry (D10:
+        // advisory, entry stays until Reply/Failed/Teardown).
+        // The outstanding request counter should NOT decrement
+        // when cancel() is called — only when the entry is consumed.
+        let (tx, _rx) = std::sync::mpsc::sync_channel(16);
+        let handle = ServiceHandle::<TestProto>::with_channel(5, tx);
+
+        let mut dispatch = Dispatch::<TestHandler>::new();
+        let mut ctx = DispatchCtx::new(&mut dispatch, PeerScope(1));
+
+        let cancel = handle.send_request::<TestHandler, TestReply>(
+            &mut ctx,
+            TestMsg::Ping,
+            |_: &mut TestHandler, _, _: TestReply| Flow::Continue,
+            |_: &mut TestHandler, _| Flow::Continue,
+        );
+
+        assert_eq!(dispatch.outstanding_requests(), 1);
+
+        cancel.cancel();
+
+        // Counter unchanged — CancelHandle only sends wire Cancel,
+        // does not touch Dispatch.
+        assert_eq!(dispatch.outstanding_requests(), 1);
+        assert_eq!(dispatch.len(), 1);
     }
 }

@@ -52,6 +52,13 @@ pub enum SendAndWaitError {
     /// the blocked caller in mountio() woke with Eintr
     /// (devmnt.c:803-826). pane distinguishes cancel from
     /// disconnect so callers can retry or propagate appropriately.
+    ///
+    /// Gap (Phase 1): send_and_wait does not return a CancelHandle
+    /// (the caller is blocked, so external cancel requires a second
+    /// thread). Full cancel-unblocks-waiter requires the looper to
+    /// process a LooperMessage::CancelEntry { token } and resolve
+    /// the oneshot with Cancelled. Currently, the only path to this
+    /// variant is if the looper explicitly sends it through reply_tx.
     Cancelled,
 }
 

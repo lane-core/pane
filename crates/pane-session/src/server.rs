@@ -347,7 +347,17 @@ impl ServerState {
                 // Unknown session_id = no-op (defensive, per session-type analysis)
             }
             ControlMessage::Cancel { token: _ } => {
-                // TODO: forward to provider side
+                // D10: advisory, cancel-if-present, no ack.
+                // Phase 1: server no-op. The client's CancelHandle
+                // sends this as a hint, but the server does not track
+                // individual request tokens (it forwards ServiceFrames
+                // opaquely between routed connections). The DispatchEntry
+                // cleanup happens client-side when Reply/Failed/Teardown
+                // arrives, or on connection close (fail_connection).
+                //
+                // Phase 2: forward Cancel to the provider connection
+                // so long-running handlers can abort in-progress work.
+                // The provider would send Failed back to the consumer.
             }
             ControlMessage::Watch { target } => {
                 // Resolve target to a ConnectionId. If the target
@@ -1174,5 +1184,62 @@ mod tests {
         let addr = state.conn_addresses.get(&conn).unwrap();
         assert_eq!(addr.pane_id, 42);
         assert!(addr.is_local());
+    }
+
+    // -- Cancel tests (D10) --
+
+    #[test]
+    fn cancel_unknown_token_is_noop() {
+        // D10: cancel-if-present. Cancel for an unknown token is
+        // silently ignored — no panic, no state change.
+        let mut state = ServerState::new();
+        let conn = ConnectionId(1);
+        state.next_session.insert(conn, 1);
+
+        // Process Cancel with a token the server has never seen.
+        // Server doesn't track tokens — this is a no-op by design.
+        let cancel = ControlMessage::Cancel { token: 0xDEAD };
+        let payload = postcard::to_allocvec(&cancel).expect("serialize Cancel");
+
+        // Should not panic
+        state.process_control(conn, payload);
+
+        // State unchanged — nothing to assert beyond "no panic".
+        // The server's routing table, watch table, etc. are all empty
+        // and remain empty.
+        assert!(state.routing_table.is_empty());
+        assert!(state.watch_table.is_empty());
+    }
+
+    #[test]
+    fn cancel_with_active_routes_does_not_affect_routing() {
+        // Cancel is advisory (D10) — it does not remove routes or
+        // affect service forwarding. The routing table is untouched.
+        let mut state = ServerState::new();
+        let service = ServiceId::new("com.pane.echo");
+
+        state.register_provides(
+            ConnectionId(1),
+            &[ServiceProvision {
+                service,
+                version: 1,
+            }],
+        );
+        state.next_session.insert(ConnectionId(1), 1);
+        state.next_session.insert(ConnectionId(2), 1);
+
+        let _ = state.handle_declare_interest(ConnectionId(2), service, 1);
+        assert_eq!(state.routing_table.len(), 2);
+
+        // Send Cancel — should not affect routes
+        let cancel = ControlMessage::Cancel { token: 42 };
+        let payload = postcard::to_allocvec(&cancel).expect("serialize Cancel");
+        state.process_control(ConnectionId(2), payload);
+
+        assert_eq!(
+            state.routing_table.len(),
+            2,
+            "Cancel must not affect routing table"
+        );
     }
 }

@@ -3,7 +3,7 @@ type: status
 status: current
 supersedes: [archive/status/2026-04-06, pane/current_state]
 created: 2026-04-10
-last_updated: 2026-04-11
+last_updated: 2026-04-11T2
 importance: high
 keywords: [status, crates, tests, calloop, looper, invariants, send_and_wait, watchdog, NLnet]
 agents: [all]
@@ -13,7 +13,7 @@ agents: [all]
 
 ## Where we are
 
-Six crates, 251 regular tests + 28 stress + 5 integration. All
+Six crates, 274 regular tests + 28 stress + 5 integration. All
 invariants verified or detection-enforced (19 of 19).
 
 | Crate | Role | Tests |
@@ -22,13 +22,20 @@ invariants verified or detection-enforced (19 of 19).
 
 ### Landed since 2026-04-10
 
+- **ConnectionSource** (`66a6316`) — calloop EventSource wrapping
+  a post-handshake UnixStream fd. Non-blocking FrameReader (byte-
+  level WouldBlock state machine replacing FrameCodec's blocking
+  read_exact), FrameWriter with partial write tracking, dynamic
+  interest management (READ always, BOTH when write queue non-empty),
+  transitional mpsc write channel integration. Replaces bridge's
+  reader thread + forwarding thread per connection. 23 new tests.
 - **Provider-side API** (`da75432`) — SubscriberSender<P> type
   (sending-only, no lifecycle ownership), Handler callbacks
   subscriber_connected/subscriber_disconnected, batch routing
   of InterestAccepted (phase 3) and ServiceTeardown (phase 2),
   Messenger::subscriber_sender<P>() factory. 9 new tests.
 | pane-session | Session-typed IPC, transport, framing, server | 51 + 21 stress |
-| pane-app | Actor framework, dispatch, looper | 96 + 7 stress + 5 integration |
+| pane-app | Actor framework, dispatch, looper | 119 + 7 stress + 5 integration |
 | pane-fs | Filesystem namespace | 5 |
 | pane-hello | First running pane app (binary) | 0 |
 | pane-notify | Filesystem notification abstraction | preserved from prototype |
@@ -86,8 +93,8 @@ notifications_last).
 
 ### Phase 1 — Core (in progress)
 
-Highest priority: **ConnectionSource** — calloop EventSource for a
-single Connection, enables real Messenger / ServiceHandle routing.
+**ConnectionSource** landed (C4, `66a6316`). Next: C5 — wire
+ConnectionSource into the Looper, replacing the forwarding thread.
 
 Other Phase 1:
 

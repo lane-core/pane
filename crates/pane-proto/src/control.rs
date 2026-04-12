@@ -10,8 +10,8 @@
 //!
 //! Lifecycle dispatches to Handler methods. DeclareInterest,
 //! InterestAccepted/Declined, RevokeInterest, and ServiceTeardown
-//! are handled by the server and PaneBuilder. Cancel is defined
-//! for wire format stability and will be connected later.
+//! are handled by the server and PaneBuilder. Cancel is sent by
+//! CancelHandle and handled as advisory no-op server-side (D10).
 //!
 //! Design heritage: Plan 9 9P used a type byte to discriminate
 //! message kinds (Tversion=100, Tread=116, etc.) in a flat
