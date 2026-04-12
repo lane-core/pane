@@ -9,7 +9,6 @@
 //! Design heritage: BeOS BLooper (sequential dispatch, one thread
 //! per actor). Formalized by Fowler et al.'s EAct.
 
-pub mod backpressure;
 pub mod builder;
 pub mod connection_source;
 pub mod dispatch;
@@ -27,7 +26,8 @@ pub mod subscriber_sender;
 pub mod timer;
 pub(crate) mod watchdog;
 
-pub use backpressure::Backpressure;
+// Re-export value types from pane-session so downstream crates
+// that depend on pane-app don't need a direct pane-session dep.
 pub use builder::PaneBuilder;
 pub use connection_source::ConnectionSource;
 pub use dispatch_ctx::DispatchCtx;
@@ -36,6 +36,7 @@ pub use handles_request::HandlesRequest;
 pub use looper::Looper;
 pub use messenger::Messenger;
 pub use pane::Pane;
+pub use pane_session::Backpressure;
 pub use send_and_wait::SendAndWaitError;
 pub use service_handle::{wire_reply_port, ServiceHandle};
 pub use subscriber_sender::SubscriberSender;

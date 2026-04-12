@@ -14,12 +14,12 @@
 //! semantics (stable after open) with typed protocol constraint
 //! (Handles<P> at compile time, which BMessenger lacked).
 
-use crate::backpressure::Backpressure;
 use crate::dispatch::DispatchEntry;
 use crate::dispatch_ctx::DispatchCtx;
 use crate::Messenger;
 use pane_proto::obligation::{CancelHandle, ReplyPort};
 use pane_proto::{Address, Flow, Protocol, ServiceFrame};
+use pane_session::Backpressure;
 use std::marker::PhantomData;
 use std::sync::mpsc::TrySendError;
 

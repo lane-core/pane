@@ -23,16 +23,8 @@
 use pane_proto::Flow;
 use std::collections::HashMap;
 
-/// Scopes dispatch entries by peer. Distinct from the server's
-/// ConnectionId — this is looper-internal, the server never sees it.
-/// Named PeerScope (not ConnectionId) to avoid confusion with
-/// pane-session's server-side ConnectionId.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub struct PeerScope(pub u64);
-
-/// Request token. Unique per Dispatch instance (monotonic counter).
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub struct Token(pub u64);
+// Re-export so existing `use crate::dispatch::{PeerScope, Token}` paths work.
+pub use pane_session::{PeerScope, Token};
 
 /// A one-shot dispatch entry for a pending request/reply.
 /// Type-erased at storage time; the callbacks capture the

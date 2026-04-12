@@ -9,12 +9,16 @@
 
 pub use par;
 
+pub mod backpressure;
 pub mod bridge;
+pub mod correlator;
 pub mod frame;
 pub mod handshake;
 pub mod peer_cred;
 pub mod server;
 pub mod transport;
 
+pub use backpressure::Backpressure;
+pub use correlator::{PeerScope, Token};
 pub use frame::{FrameReader, FrameWriter, WRITE_HIGHWATER_BYTES};
 pub use transport::Transport;

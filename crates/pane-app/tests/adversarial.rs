@@ -29,7 +29,6 @@ use serde::{Deserialize, Serialize};
 
 // ── Constants ────────────────────────────────────────────────────
 
-
 // ── Wire helpers ─────────────────────────────────────────────────
 
 /// Wire helper for UnixStream connections. All adversarial tests
@@ -181,12 +180,7 @@ fn connect_socket(
 fn subscribe_socket(
     server: &Arc<ProtocolServer>,
     publisher: &mut SocketConn,
-) -> (
-    SocketConn,
-    u16,
-    u16,
-    pane_session::server::ConnectionHandle,
-) {
+) -> (SocketConn, u16, u16, pane_session::server::ConnectionHandle) {
     let topic_id = topic_service_id();
     let (sub, handle) = connect_socket(server, make_hello(vec![]));
     let mut sub = sub;
@@ -303,7 +297,7 @@ fn thundering_herd() {
                             }
                         }
                     }
-                    Ok(_) => {} // service frames (shouldn't happen)
+                    Ok(_) => {}      // service frames (shouldn't happen)
                     Err(_) => break, // EOF or error
                 }
             }
@@ -456,14 +450,14 @@ fn message_flood_no_reader() {
                 // Periodically check if we got ServiceTeardown
                 // (non-blocking: set read timeout briefly)
                 if seq % 1000 == 999 {
-                    let _ = publisher.stream.set_read_timeout(Some(Duration::from_millis(1)));
+                    let _ = publisher
+                        .stream
+                        .set_read_timeout(Some(Duration::from_millis(1)));
                     if let Some(ControlMessage::ServiceTeardown { .. }) =
                         publisher.try_read_control()
                     {
                         teardown_received = true;
-                        eprintln!(
-                            "message_flood_no_reader: ServiceTeardown at seq {seq}"
-                        );
+                        eprintln!("message_flood_no_reader: ServiceTeardown at seq {seq}");
                         break;
                     }
                     let _ = publisher.stream.set_read_timeout(None);
@@ -499,14 +493,13 @@ fn message_flood_no_reader() {
             // Verify by sending a control message (DeclareInterest
             // for a non-existent service — we just want to see if
             // the write succeeds).
-            let pub_alive =
-                std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                    publisher.send_control(&ControlMessage::DeclareInterest {
-                        service: ServiceId::new("com.pane.adversarial.nonexistent"),
-                        expected_version: 1,
-                    });
-                }))
-                .is_ok();
+            let pub_alive = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                publisher.send_control(&ControlMessage::DeclareInterest {
+                    service: ServiceId::new("com.pane.adversarial.nonexistent"),
+                    expected_version: 1,
+                });
+            }))
+            .is_ok();
 
             assert!(
                 pub_alive,
@@ -599,26 +592,24 @@ fn rapid_connect_disconnect() {
                 });
 
                 // Full handshake
-                let connect_result =
-                    std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                        let (mut conn, _) =
-                            SocketConn::connect(client_sock, make_hello(vec![]));
+                let connect_result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                    let (mut conn, _) = SocketConn::connect(client_sock, make_hello(vec![]));
 
-                        // Read Ready
-                        conn.expect_ready();
+                    // Read Ready
+                    conn.expect_ready();
 
-                        // DeclareInterest
-                        conn.send_control(&ControlMessage::DeclareInterest {
-                            service: topic_service_id(),
-                            expected_version: 1,
-                        });
+                    // DeclareInterest
+                    conn.send_control(&ControlMessage::DeclareInterest {
+                        service: topic_service_id(),
+                        expected_version: 1,
+                    });
 
-                        // Read response (InterestAccepted or InterestDeclined)
-                        let _ = conn.read_control();
+                    // Read response (InterestAccepted or InterestDeclined)
+                    let _ = conn.read_control();
 
-                        // Immediately drop — triggers disconnect
-                        drop(conn);
-                    }));
+                    // Immediately drop — triggers disconnect
+                    drop(conn);
+                }));
 
                 if connect_result.is_err() {
                     eprintln!("rapid_connect_disconnect: iteration {i} panicked");
@@ -633,11 +624,12 @@ fn rapid_connect_disconnect() {
             let server_ref = Arc::clone(&server);
             let accept_handle = thread::spawn(move || {
                 let writer = server_sock.try_clone().expect("try_clone");
-                server_ref.accept(server_sock, writer).expect("final accept")
+                server_ref
+                    .accept(server_sock, writer)
+                    .expect("final accept")
             });
 
-            let (mut final_conn, _) =
-                SocketConn::connect(client_sock, make_hello(vec![]));
+            let (mut final_conn, _) = SocketConn::connect(client_sock, make_hello(vec![]));
             let final_handle = accept_handle.join().unwrap();
             final_conn.expect_ready();
 
@@ -650,9 +642,9 @@ fn rapid_connect_disconnect() {
                 ControlMessage::InterestAccepted { .. } => {
                     eprintln!("rapid_connect_disconnect: final DeclareInterest accepted");
                 }
-                other => panic!(
-                    "rapid_connect_disconnect: final DeclareInterest failed: {other:?}"
-                ),
+                other => {
+                    panic!("rapid_connect_disconnect: final DeclareInterest failed: {other:?}")
+                }
             }
 
             drop(final_conn);
@@ -702,8 +694,7 @@ fn cancel_storm() {
         let (mut publisher, conn_pub) = connect_socket(&server, make_publisher_hello());
 
         // Subscriber (consumer that sends requests)
-        let (sub, sub_session, pub_session, conn_sub) =
-            subscribe_socket(&server, &mut publisher);
+        let (sub, sub_session, pub_session, conn_sub) = subscribe_socket(&server, &mut publisher);
 
         // Keep a shutdown handle so we can force the subscriber's
         // blocking read to fail from the main thread.
@@ -720,17 +711,13 @@ fn cancel_storm() {
                         match sf {
                             ServiceFrame::Request { token, payload } => {
                                 // Reply may fail if connection is shutting down
-                                let _ = std::panic::catch_unwind(
-                                    std::panic::AssertUnwindSafe(|| {
+                                let _ =
+                                    std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
                                         sub.send_service(
                                             sub_session,
-                                            &ServiceFrame::Reply {
-                                                token,
-                                                payload,
-                                            },
+                                            &ServiceFrame::Reply { token, payload },
                                         );
-                                    }),
-                                );
+                                    }));
                                 replies_sent += 1;
                             }
                             ServiceFrame::Notification { .. } => {}
@@ -795,7 +782,10 @@ fn cancel_storm() {
                         _ => {}
                     }
                 }
-                Ok(Frame::Message { service: 0, payload }) => {
+                Ok(Frame::Message {
+                    service: 0,
+                    payload,
+                }) => {
                     // Control messages (InterestAccepted, ServiceTeardown, etc.)
                     let _msg: Result<ControlMessage, _> = postcard::from_bytes(&payload);
                 }
@@ -928,14 +918,13 @@ fn shutdown_during_traffic() {
 
             // Publisher should still be alive
             let _ = publisher.stream.set_read_timeout(None);
-            let pub_alive =
-                std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                    publisher.send_control(&ControlMessage::DeclareInterest {
-                        service: ServiceId::new("com.pane.adversarial.probe"),
-                        expected_version: 1,
-                    });
-                }))
-                .is_ok();
+            let pub_alive = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                publisher.send_control(&ControlMessage::DeclareInterest {
+                    service: ServiceId::new("com.pane.adversarial.probe"),
+                    expected_version: 1,
+                });
+            }))
+            .is_ok();
 
             assert!(
                 pub_alive,
@@ -970,8 +959,7 @@ fn half_close_socket() {
 
         let (mut publisher, conn_pub) = connect_socket(&server, make_publisher_hello());
 
-        let (sub, _sub_session, pub_session, _conn_sub) =
-            subscribe_socket(&server, &mut publisher);
+        let (sub, _sub_session, pub_session, _conn_sub) = subscribe_socket(&server, &mut publisher);
 
         // Half-close: shut down the subscriber's write side.
         // The server's reader thread will get EOF when reading from
@@ -983,16 +971,15 @@ fn half_close_socket() {
         thread::sleep(Duration::from_millis(100));
 
         // Publisher sends a notification to the (half-dead) subscriber
-        let send_ok =
-            std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                publisher.send_service(
-                    pub_session,
-                    &ServiceFrame::Notification {
-                        payload: serialize_payload(0),
-                    },
-                );
-            }))
-            .is_ok();
+        let send_ok = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            publisher.send_service(
+                pub_session,
+                &ServiceFrame::Notification {
+                    payload: serialize_payload(0),
+                },
+            );
+        }))
+        .is_ok();
 
         assert!(
             send_ok,
@@ -1174,9 +1161,8 @@ fn malformed_frames() {
         }
         let _ = good_pub.stream.set_read_timeout(None);
 
-        let pub_session = pub_session.expect(
-            "malformed_frames: publisher never got InterestAccepted for canary"
-        );
+        let pub_session =
+            pub_session.expect("malformed_frames: publisher never got InterestAccepted for canary");
 
         sub.register_session(sub_session);
         good_pub.send_service(
@@ -1574,13 +1560,10 @@ fn backpressure_cascade_isolation() {
             // reads on the subscriber threads won't exit on their own
             // after ServiceTeardown (that tears down the route, not
             // the connection).
-            let (sub_a, sub_a_sess, pub_a_sess, conn_a) =
-                subscribe_socket(&server, &mut publisher);
-            let (sub_b, sub_b_sess, pub_b_sess, conn_b) =
-                subscribe_socket(&server, &mut publisher);
+            let (sub_a, sub_a_sess, pub_a_sess, conn_a) = subscribe_socket(&server, &mut publisher);
+            let (sub_b, sub_b_sess, pub_b_sess, conn_b) = subscribe_socket(&server, &mut publisher);
             let sub_b_shutdown = sub_b.stream.try_clone().unwrap();
-            let (sub_c, sub_c_sess, pub_c_sess, conn_c) =
-                subscribe_socket(&server, &mut publisher);
+            let (sub_c, sub_c_sess, pub_c_sess, conn_c) = subscribe_socket(&server, &mut publisher);
 
             // Subscriber A: fast reader
             let a_handle = thread::spawn(move || {
@@ -1713,9 +1696,7 @@ fn backpressure_cascade_isolation() {
             // that, so B should be cut off by overflow or by publisher
             // EOF. The exact count depends on OS buffer sizes + server
             // channel capacity.
-            eprintln!(
-                "backpressure_cascade: B read {b_count} msgs before disconnection"
-            );
+            eprintln!("backpressure_cascade: B read {b_count} msgs before disconnection");
 
             // D12 isolation check: A and C should finish in reasonable time.
             // If B's slowness cascaded, A and C would take minutes.
@@ -1803,15 +1784,10 @@ fn zero_length_and_boundary_messages() {
 
             // Size 1: empty payload (0 bytes)
             {
-                let sf = ServiceFrame::Notification {
-                    payload: vec![],
-                };
+                let sf = ServiceFrame::Notification { payload: vec![] };
                 let bytes = postcard::to_allocvec(&sf).unwrap();
                 publisher.send_service(pub_session, &sf);
-                eprintln!(
-                    "boundary: empty payload → {} wire bytes",
-                    bytes.len()
-                );
+                eprintln!("boundary: empty payload → {} wire bytes", bytes.len());
             }
 
             // Size 2: 1-byte payload

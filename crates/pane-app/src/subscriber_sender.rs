@@ -21,8 +21,8 @@
 //! DeclareInterest-as-subscription mirrors open-as-subscribe:
 //! the service binding lifecycle IS the subscription lifecycle.
 
-use crate::backpressure::Backpressure;
 use pane_proto::{Protocol, ServiceFrame};
+use pane_session::Backpressure;
 use std::marker::PhantomData;
 use std::sync::mpsc::TrySendError;
 
@@ -234,7 +234,7 @@ mod tests {
                     matches!(msg, TestMsg::Update(s) if s == "second"),
                     "original message returned"
                 );
-                assert_eq!(bp, crate::backpressure::Backpressure::ChannelFull);
+                assert_eq!(bp, Backpressure::ChannelFull);
             }
             Ok(()) => panic!("should have failed with ChannelFull"),
         }
@@ -251,7 +251,7 @@ mod tests {
         let result = sender.try_send_notification(TestMsg::Update("gone".into()));
         match result {
             Err((_msg, bp)) => {
-                assert_eq!(bp, crate::backpressure::Backpressure::ConnectionClosing);
+                assert_eq!(bp, Backpressure::ConnectionClosing);
             }
             Ok(()) => panic!("should have failed with ConnectionClosing"),
         }
