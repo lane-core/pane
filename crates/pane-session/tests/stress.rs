@@ -44,7 +44,9 @@ impl ClientConn {
     fn connect(mut transport: MemoryTransport, hello: Hello) -> (Self, Welcome) {
         let codec = FrameCodec::new(HANDSHAKE_MAX_MESSAGE_SIZE);
 
-        let bytes = postcard::to_allocvec(&hello).unwrap();
+        // Handshake uses CBOR (D11)
+        let mut bytes = Vec::new();
+        ciborium::ser::into_writer(&hello, &mut bytes).unwrap();
         codec.write_frame(&mut transport, 0, &bytes).unwrap();
 
         let frame = codec.read_frame(&mut transport).unwrap();
@@ -55,7 +57,8 @@ impl ClientConn {
             } => payload,
             other => panic!("unexpected frame: {other:?}"),
         };
-        let decision: Result<Welcome, Rejection> = postcard::from_bytes(&payload).unwrap();
+        let decision: Result<Welcome, Rejection> =
+            ciborium::de::from_reader(payload.as_slice()).unwrap();
         let welcome = decision.expect("rejected");
 
         let mut codec = codec;
@@ -135,7 +138,9 @@ impl<T: std::io::Read + std::io::Write> GenericClientConn<T> {
     fn connect(mut transport: T, hello: Hello) -> (Self, Welcome) {
         let codec = FrameCodec::new(HANDSHAKE_MAX_MESSAGE_SIZE);
 
-        let bytes = postcard::to_allocvec(&hello).unwrap();
+        // Handshake uses CBOR (D11)
+        let mut bytes = Vec::new();
+        ciborium::ser::into_writer(&hello, &mut bytes).unwrap();
         codec.write_frame(&mut transport, 0, &bytes).unwrap();
 
         let frame = codec.read_frame(&mut transport).unwrap();
@@ -146,7 +151,8 @@ impl<T: std::io::Read + std::io::Write> GenericClientConn<T> {
             } => payload,
             other => panic!("unexpected frame: {other:?}"),
         };
-        let decision: Result<Welcome, Rejection> = postcard::from_bytes(&payload).unwrap();
+        let decision: Result<Welcome, Rejection> =
+            ciborium::de::from_reader(payload.as_slice()).unwrap();
         let welcome = decision.expect("rejected");
 
         let mut codec = codec;
@@ -727,7 +733,8 @@ fn rapid_connect_disconnect_no_leak() {
                 interests: vec![],
                 provides: vec![],
             };
-            let bytes = postcard::to_allocvec(&hello).unwrap();
+            let mut bytes = Vec::new();
+            ciborium::ser::into_writer(&hello, &mut bytes).unwrap();
             // Some iterations: send Hello then drop
             // Some iterations: drop without sending anything
             if i % 3 != 0 {
@@ -1706,10 +1713,11 @@ fn unix_stream_handshake() {
         interests: vec![],
         provides: vec![],
     };
-    let bytes = postcard::to_allocvec(&hello).unwrap();
+    let mut bytes = Vec::new();
+    ciborium::ser::into_writer(&hello, &mut bytes).unwrap();
     codec.write_frame(&mut transport, 0, &bytes).unwrap();
 
-    // Read Welcome
+    // Read Welcome (CBOR)
     let frame = codec.read_frame(&mut transport).unwrap();
     let payload = match frame {
         Frame::Message {
@@ -1718,7 +1726,8 @@ fn unix_stream_handshake() {
         } => payload,
         other => panic!("expected Welcome frame, got {other:?}"),
     };
-    let decision: Result<Welcome, Rejection> = postcard::from_bytes(&payload).unwrap();
+    let decision: Result<Welcome, Rejection> =
+        ciborium::de::from_reader(payload.as_slice()).unwrap();
     let welcome = decision.expect("expected Welcome, got Rejection");
     assert_eq!(welcome.version, 1);
 
@@ -2002,7 +2011,8 @@ fn unix_stream_rapid_connect_disconnect() {
                     interests: vec![],
                     provides: vec![],
                 };
-                let bytes = postcard::to_allocvec(&hello).unwrap();
+                let mut bytes = Vec::new();
+                ciborium::ser::into_writer(&hello, &mut bytes).unwrap();
                 let mut transport = client_sock;
                 let _ = codec.write_frame(&mut transport, 0, &bytes);
                 drop(transport);
@@ -2031,7 +2041,8 @@ fn unix_stream_rapid_connect_disconnect() {
             interests: vec![],
             provides: vec![],
         };
-        let bytes = postcard::to_allocvec(&hello).unwrap();
+        let mut bytes = Vec::new();
+        ciborium::ser::into_writer(&hello, &mut bytes).unwrap();
         let mut transport = client_sock;
         codec.write_frame(&mut transport, 0, &bytes).unwrap();
 

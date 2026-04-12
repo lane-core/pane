@@ -10,7 +10,15 @@
 //! the par session. Not par's `choose` mechanism.
 //!
 //! Protocol types defined with par. Executed over a Transport
-//! via the bridge module.
+//! via the bridge module. Serialized as CBOR (self-describing)
+//! for forward compatibility: new fields with `#[serde(default)]`
+//! deserialize from older payloads that omit them. Data-plane
+//! frames after the handshake use postcard (compact, positional).
+//!
+//! Design heritage: Haiku converged on the same two-phase format
+//! split — BMessage (self-describing) for AS_GET_DESKTOP handshake
+//! (src/servers/app/Desktop.cpp), link protocol (positional binary)
+//! for data plane (headers/private/app/LinkSender.h:36-40).
 //!
 //! Design heritage: Plan 9 Tversion/Rversion negotiated protocol
 //! version and max message size (version(5),
@@ -128,6 +136,18 @@ pub enum RejectReason {
 mod tests {
     use super::*;
 
+    /// Helper: serialize a value to CBOR bytes (handshake format).
+    fn cbor_serialize<T: serde::Serialize>(val: &T) -> Vec<u8> {
+        let mut buf = Vec::new();
+        ciborium::ser::into_writer(val, &mut buf).expect("CBOR serialize");
+        buf
+    }
+
+    /// Helper: deserialize a value from CBOR bytes.
+    fn cbor_deserialize<T: serde::de::DeserializeOwned>(bytes: &[u8]) -> T {
+        ciborium::de::from_reader(bytes).expect("CBOR deserialize")
+    }
+
     #[test]
     fn hello_roundtrip_with_max_outstanding_requests() {
         let hello = Hello {
@@ -137,8 +157,8 @@ mod tests {
             interests: vec![],
             provides: vec![],
         };
-        let bytes = postcard::to_allocvec(&hello).expect("serialize");
-        let decoded: Hello = postcard::from_bytes(&bytes).expect("deserialize");
+        let bytes = cbor_serialize(&hello);
+        let decoded: Hello = cbor_deserialize(&bytes);
         assert_eq!(decoded.max_outstanding_requests, 128);
     }
 
@@ -151,8 +171,8 @@ mod tests {
             max_outstanding_requests: 64,
             bindings: vec![],
         };
-        let bytes = postcard::to_allocvec(&welcome).expect("serialize");
-        let decoded: Welcome = postcard::from_bytes(&bytes).expect("deserialize");
+        let bytes = cbor_serialize(&welcome);
+        let decoded: Welcome = cbor_deserialize(&bytes);
         assert_eq!(decoded.max_outstanding_requests, 64);
     }
 
@@ -165,8 +185,71 @@ mod tests {
             interests: vec![],
             provides: vec![],
         };
-        let bytes = postcard::to_allocvec(&hello).expect("serialize");
-        let decoded: Hello = postcard::from_bytes(&bytes).expect("deserialize");
+        let bytes = cbor_serialize(&hello);
+        let decoded: Hello = cbor_deserialize(&bytes);
+        assert_eq!(decoded.max_outstanding_requests, 0);
+    }
+
+    /// Forward-compatibility: a Hello serialized WITHOUT
+    /// max_outstanding_requests (simulating an older client)
+    /// deserializes into the current Hello struct with the field
+    /// defaulting to 0. This is the whole point of D11 — CBOR's
+    /// self-describing format makes #[serde(default)] functional.
+    /// With postcard (positional binary), this would fail with
+    /// "hit the end of buffer, expected more data."
+    #[test]
+    fn hello_forward_compat_missing_field_defaults_to_zero() {
+        // Simulate a V1 Hello that lacks max_outstanding_requests.
+        // CBOR encodes as a map with named keys, so omitting a key
+        // is meaningful — the deserializer hits #[serde(default)].
+        #[derive(Debug, serde::Serialize)]
+        struct HelloV1 {
+            version: u32,
+            max_message_size: u32,
+            interests: Vec<ServiceInterest>,
+            provides: Vec<ServiceProvision>,
+        }
+
+        let old_hello = HelloV1 {
+            version: 1,
+            max_message_size: 16 * 1024 * 1024,
+            interests: vec![],
+            provides: vec![],
+        };
+
+        let bytes = cbor_serialize(&old_hello);
+        let decoded: Hello = cbor_deserialize(&bytes);
+
+        assert_eq!(decoded.version, 1);
+        assert_eq!(decoded.max_message_size, 16 * 1024 * 1024);
+        // The missing field defaults to 0 (unlimited).
+        assert_eq!(decoded.max_outstanding_requests, 0);
+    }
+
+    /// Same forward-compatibility test for Welcome.
+    #[test]
+    fn welcome_forward_compat_missing_field_defaults_to_zero() {
+        #[derive(Debug, serde::Serialize)]
+        struct WelcomeV1 {
+            version: u32,
+            instance_id: String,
+            max_message_size: u32,
+            bindings: Vec<ServiceBinding>,
+        }
+
+        let old_welcome = WelcomeV1 {
+            version: 1,
+            instance_id: "old-server".into(),
+            max_message_size: 16 * 1024 * 1024,
+            bindings: vec![],
+        };
+
+        let bytes = cbor_serialize(&old_welcome);
+        let decoded: Welcome = cbor_deserialize(&bytes);
+
+        assert_eq!(decoded.version, 1);
+        assert_eq!(decoded.instance_id, "old-server");
+        assert_eq!(decoded.max_message_size, 16 * 1024 * 1024);
         assert_eq!(decoded.max_outstanding_requests, 0);
     }
 }

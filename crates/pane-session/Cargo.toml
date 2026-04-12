@@ -11,6 +11,7 @@ futures = { version = "0.3", default-features = false, features = ["executor"] }
 pane-proto = { path = "../pane-proto" }
 serde = { version = "1", features = ["derive"] }
 postcard = { version = "1", features = ["alloc"] }
+ciborium = "0.2"
 uuid = { version = "1", features = ["v5", "serde"] }
 rustix = { version = "1.1.4", features = ["net", "process"] }
 

@@ -13,5 +13,6 @@ postcard = { version = "1", features = ["alloc"] }
 serde = { version = "1" }
 
 [dev-dependencies]
+ciborium = "0.2"
 serde = { version = "1", features = ["derive"] }
 uuid = { version = "1", features = ["v5", "serde"] }

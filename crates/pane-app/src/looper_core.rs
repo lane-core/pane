@@ -1167,9 +1167,9 @@ mod tests {
                 } => payload,
                 _ => panic!("expected Control frame"),
             };
-            let _hello: Hello = postcard::from_bytes(&payload).unwrap();
+            let _hello: Hello = ciborium::de::from_reader(payload.as_slice()).unwrap();
 
-            // Send Welcome
+            // Send Welcome (CBOR — handshake phase)
             let decision: Result<Welcome, Rejection> = Ok(Welcome {
                 version: 1,
                 instance_id: "vertical-slice-server".into(),
@@ -1177,7 +1177,8 @@ mod tests {
                 max_outstanding_requests: 0,
                 bindings: vec![],
             });
-            let bytes = postcard::to_allocvec(&decision).unwrap();
+            let mut bytes = Vec::new();
+            ciborium::ser::into_writer(&decision, &mut bytes).unwrap();
             codec.write_frame(&mut st, 0, &bytes).unwrap();
 
             // Active phase: send Ready then CloseRequested
@@ -1275,7 +1276,7 @@ mod tests {
                 } => payload,
                 _ => panic!("expected Control frame"),
             };
-            let _hello: Hello = postcard::from_bytes(&payload).unwrap();
+            let _hello: Hello = ciborium::de::from_reader(payload.as_slice()).unwrap();
 
             let decision: Result<Welcome, Rejection> = Ok(Welcome {
                 version: 1,
@@ -1284,7 +1285,8 @@ mod tests {
                 max_outstanding_requests: 0,
                 bindings: vec![],
             });
-            let bytes = postcard::to_allocvec(&decision).unwrap();
+            let mut bytes = Vec::new();
+            ciborium::ser::into_writer(&decision, &mut bytes).unwrap();
             codec.write_frame(&mut st, 0, &bytes).unwrap();
 
             // Send Ready, then drop — simulates a server that

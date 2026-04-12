@@ -12,8 +12,9 @@
 //!   Handler ←→ par oneshot ←→ Bridge thread ←→ FrameCodec ←→ wire
 //!
 //! The handler uses par's Send::send() and Recv::recv() directly.
-//! The bridge thread serializes (postcard + FrameCodec) between
-//! par's channels and the transport.
+//! The bridge thread serializes between par's channels and the
+//! transport: CBOR for the handshake (Hello/Welcome), postcard +
+//! FrameCodec for data-plane frames after handshake.
 //!
 //! After the handshake succeeds, the bridge thread splits the
 //! transport and spawns a reader loop (feeding LooperMessages to
@@ -102,7 +103,9 @@ pub fn bridge_client_handshake(mut transport: impl Transport) -> ClientHandshake
             let (hello, server): (Hello, _) = futures::executor::block_on(server.recv());
 
             // Write Hello as a framed Control message (service 0).
-            let bytes = postcard::to_allocvec(&hello).expect("bridge: Hello serialization failed");
+            let mut bytes = Vec::new();
+            ciborium::ser::into_writer(&hello, &mut bytes)
+                .expect("bridge: Hello serialization failed");
             codec
                 .write_frame(&mut transport, 0, &bytes)
                 .expect("bridge: Hello write failed");
@@ -119,8 +122,9 @@ pub fn bridge_client_handshake(mut transport: impl Transport) -> ClientHandshake
                 Frame::Abort => panic!("bridge: server sent ProtocolAbort during handshake"),
                 other => panic!("bridge: unexpected frame during handshake: {other:?}"),
             };
-            let decision: Result<Welcome, Rejection> = postcard::from_bytes(&payload)
-                .expect("bridge: handshake response deserialization failed");
+            let decision: Result<Welcome, Rejection> =
+                ciborium::de::from_reader(payload.as_slice())
+                    .expect("bridge: handshake response deserialization failed");
 
             server.send1(decision);
         });
@@ -145,8 +149,8 @@ pub fn bridge_server_handshake(mut transport: impl Transport) -> ServerHandshake
                 Frame::Abort => panic!("bridge: client sent ProtocolAbort during handshake"),
                 other => panic!("bridge: unexpected frame during handshake: {other:?}"),
             };
-            let hello: Hello =
-                postcard::from_bytes(&payload).expect("bridge: Hello deserialization failed");
+            let hello: Hello = ciborium::de::from_reader(payload.as_slice())
+                .expect("bridge: Hello deserialization failed");
 
             let client = client.send(hello);
 
@@ -154,7 +158,8 @@ pub fn bridge_server_handshake(mut transport: impl Transport) -> ServerHandshake
                 futures::executor::block_on(client.recv());
 
             // Write the decision as a framed Control message.
-            let bytes = postcard::to_allocvec(&decision)
+            let mut bytes = Vec::new();
+            ciborium::ser::into_writer(&decision, &mut bytes)
                 .expect("bridge: handshake response serialization failed");
             codec
                 .write_frame(&mut transport, 0, &bytes)
@@ -275,14 +280,25 @@ fn run_client_bridge(
 
     // -- Handshake: write Hello, read Welcome (before split) --
 
-    let bytes = match postcard::to_allocvec(&hello) {
-        Ok(b) => b,
-        Err(e) => {
-            let _ = result_tx.send(Err(ConnectError::Transport(std::io::Error::new(
-                std::io::ErrorKind::InvalidData,
-                e.to_string(),
-            ))));
-            return;
+    // Handshake uses CBOR (self-describing) for forward compatibility:
+    // new fields with #[serde(default)] deserialize from old payloads.
+    // Data-plane frames after handshake stay postcard (compact, positional).
+    //
+    // Design heritage: Haiku converged on the same two-phase format split —
+    // BMessage (self-describing) for AS_GET_DESKTOP handshake, link protocol
+    // (positional binary) for data plane (src/kits/app/Application.cpp:1402,
+    // headers/private/app/LinkSender.h:36-40).
+    let bytes = {
+        let mut buf = Vec::new();
+        match ciborium::ser::into_writer(&hello, &mut buf) {
+            Ok(()) => buf,
+            Err(e) => {
+                let _ = result_tx.send(Err(ConnectError::Transport(std::io::Error::new(
+                    std::io::ErrorKind::InvalidData,
+                    e.to_string(),
+                ))));
+                return;
+            }
         }
     };
     if let Err(e) = codec.write_frame(&mut transport, 0, &bytes) {
@@ -321,7 +337,7 @@ fn run_client_bridge(
         }
     };
 
-    let decision: Result<Welcome, Rejection> = match postcard::from_bytes(&payload) {
+    let decision: Result<Welcome, Rejection> = match ciborium::de::from_reader(payload.as_slice()) {
         Ok(d) => d,
         Err(e) => {
             let _ = result_tx.send(Err(ConnectError::Transport(std::io::Error::new(
@@ -415,7 +431,7 @@ fn run_server_bridge(
         }
     };
 
-    let hello: Hello = match postcard::from_bytes(&payload) {
+    let hello: Hello = match ciborium::de::from_reader(payload.as_slice()) {
         Ok(h) => h,
         Err(e) => {
             let _ = result_tx.send(Err(ConnectError::Transport(std::io::Error::new(
@@ -430,14 +446,17 @@ fn run_server_bridge(
     let decision = decide(hello.clone());
 
     // Write the decision as a framed Control message.
-    let bytes = match postcard::to_allocvec(&decision) {
-        Ok(b) => b,
-        Err(e) => {
-            let _ = result_tx.send(Err(ConnectError::Transport(std::io::Error::new(
-                std::io::ErrorKind::InvalidData,
-                e.to_string(),
-            ))));
-            return;
+    let bytes = {
+        let mut buf = Vec::new();
+        match ciborium::ser::into_writer(&decision, &mut buf) {
+            Ok(()) => buf,
+            Err(e) => {
+                let _ = result_tx.send(Err(ConnectError::Transport(std::io::Error::new(
+                    std::io::ErrorKind::InvalidData,
+                    e.to_string(),
+                ))));
+                return;
+            }
         }
     };
     if let Err(e) = codec.write_frame(&mut transport, 0, &bytes) {
@@ -615,9 +634,9 @@ mod tests {
                 } => payload,
                 _ => panic!("expected Control frame"),
             };
-            let _hello: Hello = postcard::from_bytes(&payload).unwrap();
+            let _hello: Hello = ciborium::de::from_reader(payload.as_slice()).unwrap();
 
-            // Send Welcome
+            // Send Welcome (CBOR — handshake phase)
             let decision: Result<Welcome, Rejection> = Ok(Welcome {
                 version: 1,
                 instance_id: "write-test-server".into(),
@@ -625,7 +644,8 @@ mod tests {
                 max_outstanding_requests: 0,
                 bindings: vec![],
             });
-            let bytes = postcard::to_allocvec(&decision).unwrap();
+            let mut bytes = Vec::new();
+            ciborium::ser::into_writer(&decision, &mut bytes).unwrap();
             codec.write_frame(&mut st, 0, &bytes).unwrap();
 
             // Active phase: read what the client sends via write_tx
@@ -758,10 +778,10 @@ mod tests {
                 } => payload,
                 _ => panic!("expected Control frame"),
             };
-            let hello: Hello = postcard::from_bytes(&payload).unwrap();
+            let hello: Hello = ciborium::de::from_reader(payload.as_slice()).unwrap();
             assert_eq!(hello.version, 1);
 
-            // Send Welcome
+            // Send Welcome (CBOR — handshake phase)
             let decision: Result<Welcome, Rejection> = Ok(Welcome {
                 version: 1,
                 instance_id: "test-server".into(),
@@ -769,10 +789,11 @@ mod tests {
                 max_outstanding_requests: 0,
                 bindings: vec![],
             });
-            let bytes = postcard::to_allocvec(&decision).unwrap();
+            let mut bytes = Vec::new();
+            ciborium::ser::into_writer(&decision, &mut bytes).unwrap();
             codec.write_frame(&mut st, 0, &bytes).unwrap();
 
-            // Send a Ready lifecycle message
+            // Send a Ready lifecycle message (postcard — active phase)
             let msg = ControlMessage::Lifecycle(LifecycleMessage::Ready);
             let bytes = postcard::to_allocvec(&msg).unwrap();
             codec.write_frame(&mut st, 0, &bytes).unwrap();
@@ -855,9 +876,9 @@ mod tests {
                 } => payload,
                 _ => panic!("expected Control frame"),
             };
-            let _hello: Hello = postcard::from_bytes(&payload).unwrap();
+            let _hello: Hello = ciborium::de::from_reader(payload.as_slice()).unwrap();
 
-            // Send Welcome
+            // Send Welcome (CBOR — handshake phase)
             let welcome = Welcome {
                 version: 1,
                 instance_id: "msg-server".into(),
@@ -866,10 +887,11 @@ mod tests {
                 bindings: vec![],
             };
             let decision: Result<Welcome, Rejection> = Ok(welcome);
-            let bytes = postcard::to_allocvec(&decision).unwrap();
+            let mut bytes = Vec::new();
+            ciborium::ser::into_writer(&decision, &mut bytes).unwrap();
             codec.write_frame(&mut st, 0, &bytes).unwrap();
 
-            // Active phase: send lifecycle messages as Control frames
+            // Active phase: send lifecycle messages as Control frames (postcard)
             let ready = ControlMessage::Lifecycle(LifecycleMessage::Ready);
             let bytes = postcard::to_allocvec(&ready).unwrap();
             codec.write_frame(&mut st, 0, &bytes).unwrap();

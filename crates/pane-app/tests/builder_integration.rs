@@ -52,7 +52,9 @@ struct ClientConn {
 impl ClientConn {
     fn connect(mut transport: MemoryTransport, hello: Hello) -> (Self, Welcome) {
         let codec = FrameCodec::new(HANDSHAKE_MAX_MESSAGE_SIZE);
-        let bytes = postcard::to_allocvec(&hello).unwrap();
+        // Handshake uses CBOR (D11)
+        let mut bytes = Vec::new();
+        ciborium::ser::into_writer(&hello, &mut bytes).unwrap();
         codec.write_frame(&mut transport, 0, &bytes).unwrap();
         let frame = codec.read_frame(&mut transport).unwrap();
         let payload = match frame {
@@ -62,7 +64,8 @@ impl ClientConn {
             } => payload,
             other => panic!("unexpected frame: {other:?}"),
         };
-        let decision: Result<Welcome, Rejection> = postcard::from_bytes(&payload).unwrap();
+        let decision: Result<Welcome, Rejection> =
+            ciborium::de::from_reader(payload.as_slice()).unwrap();
         let welcome = decision.expect("rejected");
         let mut codec = codec;
         codec.set_max_message_size(welcome.max_message_size);

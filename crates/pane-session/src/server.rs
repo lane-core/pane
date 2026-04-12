@@ -583,7 +583,10 @@ impl ProtocolServer {
             }
         };
 
-        let hello: Hello = postcard::from_bytes(&payload).map_err(|e| {
+        // Handshake uses CBOR for forward compatibility (D11):
+        // new fields with #[serde(default)] deserialize from older
+        // payloads that omit them. Data-plane frames stay postcard.
+        let hello: Hello = ciborium::de::from_reader(payload.as_slice()).map_err(|e| {
             AcceptError::Transport(std::io::Error::new(
                 std::io::ErrorKind::InvalidData,
                 e.to_string(),
@@ -610,7 +613,8 @@ impl ProtocolServer {
         };
 
         let decision: Result<Welcome, Rejection> = Ok(welcome.clone());
-        let bytes = postcard::to_allocvec(&decision).expect("Welcome serialization failed");
+        let mut bytes = Vec::new();
+        ciborium::ser::into_writer(&decision, &mut bytes).expect("Welcome serialization failed");
 
         // Send Welcome
         codec
@@ -951,7 +955,9 @@ mod tests {
                 interests: vec![],
                 provides: vec![],
             };
-            let bytes = postcard::to_allocvec(&hello).unwrap();
+            // Handshake uses CBOR
+            let mut bytes = Vec::new();
+            ciborium::ser::into_writer(&hello, &mut bytes).unwrap();
             codec.write_frame(&mut transport, 0, &bytes).unwrap();
 
             let frame = codec.read_frame(&mut transport).unwrap();
@@ -962,7 +968,8 @@ mod tests {
                 } => payload,
                 other => panic!("expected Control frame, got {:?}", other),
             };
-            let decision: Result<Welcome, Rejection> = postcard::from_bytes(&payload).unwrap();
+            let decision: Result<Welcome, Rejection> =
+                ciborium::de::from_reader(payload.as_slice()).unwrap();
             let welcome = decision.expect("expected welcome");
             assert_eq!(welcome.version, 1);
 
