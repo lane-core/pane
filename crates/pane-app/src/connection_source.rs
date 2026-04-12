@@ -25,9 +25,11 @@
 //! thread-per-direction model with poll-based multiplexing on a
 //! single thread — the looper thread.
 
+use std::cell::RefCell;
 use std::collections::VecDeque;
 use std::io::{self, Read, Write};
 use std::os::unix::net::UnixStream;
+use std::rc::Rc;
 
 use calloop::generic::Generic;
 use calloop::{EventSource, Interest, Mode, Poll, PostAction, Readiness, Token, TokenFactory};
@@ -304,6 +306,57 @@ impl FrameWriter {
     }
 }
 
+/// Shared write queue for looper-thread direct writes (D12 Part 2).
+///
+/// Wraps `Rc<RefCell<FrameWriter>>` — single-threaded shared
+/// mutability is correct because both enqueue (from handler dispatch)
+/// and flush (from ConnectionSource::process_events) happen on the
+/// looper thread (I6 single-thread guarantee). RefCell enforces this
+/// at runtime.
+///
+/// Two write paths:
+/// - **Looper-thread (90%):** `ServiceHandle::send_request` →
+///   `DispatchCtx::enqueue_frame` → `SharedWriter::enqueue` →
+///   `FrameWriter::enqueue` → fd. Direct, no synchronization.
+/// - **Cross-thread (10%):** `send_and_wait` / external
+///   `SubscriberSender` → mpsc → `ConnectionSource::drain_write_channel`
+///   → `FrameWriter::enqueue` → fd. Bounded channel for genuinely
+///   cross-thread sends.
+///
+/// Design heritage: Haiku BDirectMessageTarget bypassed the port for
+/// same-process sends — message went directly to BMessageQueue
+/// (unbounded linked list), port got a zero-byte poke to wake the
+/// looper. Same principle: trust your own thread, bound your neighbors.
+/// Plan 9 mountio wrote directly to the kernel pipe — one buffer, no
+/// intermediate channels.
+#[derive(Clone)]
+pub struct SharedWriter {
+    inner: Rc<RefCell<FrameWriter>>,
+}
+
+impl SharedWriter {
+    fn new(writer: FrameWriter) -> Self {
+        SharedWriter {
+            inner: Rc::new(RefCell::new(writer)),
+        }
+    }
+
+    /// Enqueue a frame for writing. Wire-encodes the frame (length
+    /// prefix + service + payload) into the shared queue.
+    ///
+    /// Called from handler dispatch on the looper thread. The frame
+    /// will be flushed to the fd during the next
+    /// `ConnectionSource::process_events` call.
+    pub fn enqueue(&self, service: u16, payload: &[u8]) {
+        self.inner.borrow_mut().enqueue(service, payload);
+    }
+
+    /// Whether the write queue has pending data.
+    pub fn has_pending(&self) -> bool {
+        !self.inner.borrow().is_empty()
+    }
+}
+
 /// A calloop EventSource wrapping a single post-handshake connection fd.
 ///
 /// Produces `LooperMessage` events by reading frames from the
@@ -325,13 +378,15 @@ pub struct ConnectionSource {
     fd: Generic<UnixStream>,
     /// Incremental frame decoder for non-blocking reads.
     reader: FrameReader,
-    /// Incremental frame encoder/writer for non-blocking writes.
-    writer: FrameWriter,
-    /// Receiver for outbound frames from ServiceHandle/SubscriberSender.
-    /// Transitional: keeps the existing mpsc channel interface so
-    /// that ServiceHandle/SubscriberSender don't need to change.
-    /// A future optimization can bypass the channel and write
-    /// directly to the queue.
+    /// Shared write queue (D12): accessible from both the
+    /// EventSource (for flushing) and DispatchCtx (for direct
+    /// looper-thread enqueue). The Rc<RefCell<FrameWriter>> is
+    /// safe because both paths run on the looper thread (I6).
+    shared_writer: SharedWriter,
+    /// Receiver for outbound frames from cross-thread senders.
+    /// Used by send_and_wait (non-looper threads) and external
+    /// SubscriberSender. Looper-thread sends bypass this channel
+    /// and write directly to shared_writer (D12 Part 2).
     write_rx: std::sync::mpsc::Receiver<WriteMessage>,
     /// Whether write interest is currently registered. Tracked to
     /// avoid unnecessary reregistration when nothing changed.
@@ -370,12 +425,22 @@ impl ConnectionSource {
         Ok(ConnectionSource {
             fd: Generic::new(stream, Interest::READ, Mode::Level),
             reader: FrameReader::new(max_message_size, true), // permissive (D2: born Active)
-            writer: FrameWriter::new(),
+            shared_writer: SharedWriter::new(FrameWriter::new()),
             write_rx,
             write_interest: false,
             connection_id,
             registered_token: None,
         })
+    }
+
+    /// Get the shared writer for looper-thread direct writes (D12).
+    ///
+    /// The returned SharedWriter is `Rc`-based (not Send) — it can
+    /// only be used from the looper thread. This is by design:
+    /// looper-thread sends bypass the mpsc channel and write directly
+    /// to the shared queue.
+    pub fn shared_writer(&self) -> SharedWriter {
+        self.shared_writer.clone()
     }
 
     /// Drain pending messages from the write channel into the
@@ -397,14 +462,23 @@ impl ConnectionSource {
         // (WouldBlock), so pulling more from the channel just moves
         // the buffer from bounded (mpsc) to unbounded (VecDeque).
         const WRITE_QUEUE_HIGHWATER: usize = 8;
-        if self.writer.queue_len() >= WRITE_QUEUE_HIGHWATER {
-            return;
+        {
+            let writer = self.shared_writer.inner.borrow();
+            if writer.queue_len() >= WRITE_QUEUE_HIGHWATER {
+                return;
+            }
         }
 
-        while self.writer.queue_len() < WRITE_QUEUE_HIGHWATER {
+        loop {
+            {
+                let writer = self.shared_writer.inner.borrow();
+                if writer.queue_len() >= WRITE_QUEUE_HIGHWATER {
+                    break;
+                }
+            }
             match self.write_rx.try_recv() {
                 Ok((service, payload)) => {
-                    self.writer.enqueue(service, &payload);
+                    self.shared_writer.enqueue(service, &payload);
                 }
                 Err(_) => break,
             }
@@ -517,7 +591,7 @@ impl EventSource for ConnectionSource {
 
         // --- Write path ---
         if readiness.writable {
-            match self.writer.try_flush(stream) {
+            match self.shared_writer.inner.borrow_mut().try_flush(stream) {
                 Ok(true) => {
                     // Queue drained — remove write interest.
                     if self.write_interest {
@@ -537,7 +611,7 @@ impl EventSource for ConnectionSource {
         }
 
         // If we have pending writes and no write interest, add it.
-        if !self.writer.is_empty() && !self.write_interest {
+        if self.shared_writer.has_pending() && !self.write_interest {
             self.write_interest = true;
             self.fd.interest = Interest::BOTH;
             action = PostAction::Reregister;
@@ -594,13 +668,13 @@ impl EventSource for ConnectionSource {
         // try_recv. This avoids unbounded buffering: most writes
         // stay in the bounded mpsc channel until process_events
         // runs, preserving backpressure to the sender.
-        if self.writer.is_empty() {
+        if !self.shared_writer.has_pending() {
             if let Ok((service, payload)) = self.write_rx.try_recv() {
-                self.writer.enqueue(service, &payload);
+                self.shared_writer.enqueue(service, &payload);
             }
         }
 
-        if !self.writer.is_empty() {
+        if self.shared_writer.has_pending() {
             if let Some(token) = self.registered_token {
                 return Ok(Some((
                     Readiness {
@@ -899,10 +973,15 @@ mod tests {
 
         // Drain and flush directly (unit test, no calloop).
         source.drain_write_channel();
-        assert!(!source.writer.is_empty());
+        assert!(source.shared_writer.has_pending());
 
         let stream = unsafe { source.fd.get_mut() };
-        let drained = source.writer.try_flush(stream).unwrap();
+        let drained = source
+            .shared_writer
+            .inner
+            .borrow_mut()
+            .try_flush(stream)
+            .unwrap();
         assert!(drained);
 
         // Read from the peer using FrameCodec.
@@ -930,7 +1009,12 @@ mod tests {
 
         source.drain_write_channel();
         let stream = unsafe { source.fd.get_mut() };
-        let drained = source.writer.try_flush(stream).unwrap();
+        let drained = source
+            .shared_writer
+            .inner
+            .borrow_mut()
+            .try_flush(stream)
+            .unwrap();
         assert!(drained);
 
         let codec = FrameCodec::permissive(16 * 1024 * 1024);

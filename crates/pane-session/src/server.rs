@@ -37,6 +37,24 @@ use crate::handshake::{Hello, Rejection, ServiceProvision, Welcome};
 use pane_proto::control::ControlMessage;
 use pane_proto::protocol::ServiceId;
 
+/// Default capacity for per-connection writer thread channels.
+///
+/// Sized to absorb routing bursts without unbounded growth. The
+/// actor thread uses `try_send` (non-blocking) — when the channel
+/// is full, the connection is torn down (D12: not frame drop).
+/// Session-type analysis says dropping individual Request/Reply
+/// frames creates phantom DispatchEntries outside the failure
+/// model's scope.
+///
+/// 4096 is large enough to absorb sustained bursts from multiple
+/// concurrent senders without premature teardown, while still
+/// bounding per-connection memory. With 4KB max message size,
+/// worst case is ~16MB per slow connection.
+///
+/// Phase 2: derive from negotiated `max_outstanding_requests ×
+/// max_message_size` (D9) instead of a static constant.
+const WRITER_CHANNEL_CAPACITY: usize = 4096;
+
 /// Opaque connection identifier assigned by the server.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct ConnectionId(pub u64);
@@ -64,29 +82,80 @@ enum ServerEvent {
 // -- Write handle: leaf mutex, one per connection --
 
 /// Write handle to a connection. Server-internal — not exposed
-/// to clients. The writer is behind its own Mutex; only the actor
-/// thread writes, so contention is minimal. Leaf lock: never held
-/// while acquiring another lock.
+/// to clients.
 ///
-/// Distinct from the client-side write path (SyncSender<WriteMessage>
-/// in ClientConnection/ServiceHandle) because the server owns the
-/// raw transport writer directly. The client sends write requests
-/// through a bounded channel to a writer thread; the server's actor
-/// writes through this handle on the actor thread itself. Both
-/// paths use FrameCodec for wire encoding but differ in ownership:
-/// the client's writer thread owns the transport half, while this
-/// handle wraps it in Arc<Mutex> for the actor's sequential access.
+/// D12 Part 1: the actor thread enqueues frames into a bounded
+/// channel. A per-connection writer thread owns the fd write half
+/// and drains the channel. The actor thread never blocks on I/O —
+/// if a target client is slow, only its writer thread stalls.
+///
+/// Queue overflow policy: connection teardown (`fail_connection`),
+/// not frame drop. Session-type analysis ([FH] Theorems 6-8):
+/// dropping individual Request/Reply frames creates phantom
+/// DispatchEntries outside the failure model's scope. The only
+/// sound overflow response is cascading failure via E-RaiseS.
+///
+/// Design heritage: Haiku app_server SendMessageToClient used
+/// write_port_etc(timeout=0) — non-blocking, drop on full, server
+/// never stalls (ServerWindow.cpp:4406-4407). Plan 9 lib9p worker
+/// threads each wrote their own reply — per-request writer, never
+/// a shared routing thread doing writes.
 #[derive(Clone)]
 struct WriteHandle {
-    writer: Arc<Mutex<Box<dyn Write + Send>>>,
+    /// Bounded channel to the per-connection writer thread.
+    /// Each entry is a fully-encoded wire frame (length prefix +
+    /// service + payload).
+    tx: std::sync::mpsc::SyncSender<Vec<u8>>,
     codec: Arc<FrameCodec>,
 }
 
 impl WriteHandle {
-    fn write_frame(&self, service: u16, payload: &[u8]) -> std::io::Result<()> {
-        let mut w = self.writer.lock().expect("write lock poisoned");
-        self.codec.write_frame(&mut *w, service, payload)
+    /// Enqueue a frame for the writer thread. Returns Ok on success,
+    /// Err if the channel is full (slow client) or closed (dead
+    /// connection).
+    fn enqueue(&self, service: u16, payload: &[u8]) -> Result<(), ()> {
+        // Encode the wire frame in the actor thread — cheap, no I/O.
+        let frame = self.codec.encode_frame(service, payload);
+        self.tx.try_send(frame).map_err(|_| ())
     }
+}
+
+/// Spawn a per-connection writer thread that owns the fd write
+/// half and drains frames from the channel.
+///
+/// Returns a WriteHandle for the actor thread to enqueue frames.
+/// The writer thread exits when the channel closes (connection
+/// torn down by actor) or on write error (fd dead — reader side
+/// will detect disconnect).
+fn spawn_writer_thread(
+    writer: Box<dyn Write + Send>,
+    codec: Arc<FrameCodec>,
+    capacity: usize,
+) -> WriteHandle {
+    let (tx, rx) = std::sync::mpsc::sync_channel::<Vec<u8>>(capacity);
+
+    std::thread::spawn(move || {
+        writer_thread_loop(writer, rx);
+    });
+
+    WriteHandle { tx, codec }
+}
+
+/// Writer thread main loop. Receives pre-encoded wire frames and
+/// writes them to the fd. Exits on channel close or write error.
+fn writer_thread_loop(mut writer: Box<dyn Write + Send>, rx: std::sync::mpsc::Receiver<Vec<u8>>) {
+    while let Ok(frame) = rx.recv() {
+        let mut pos = 0;
+        while pos < frame.len() {
+            match writer.write(&frame[pos..]) {
+                Ok(0) => return, // broken pipe
+                Ok(n) => pos += n,
+                Err(e) if e.kind() == std::io::ErrorKind::Interrupted => continue,
+                Err(_) => return, // fd dead
+            }
+        }
+    }
+    // Channel closed — connection torn down, exit cleanly.
 }
 
 // -- Routing state: owned exclusively by the actor thread --
@@ -134,6 +203,11 @@ struct ServerState {
     /// Reverse index: watcher ConnectionId → set of watched ConnectionIds.
     /// For efficient cleanup when the watcher disconnects.
     watcher_reverse: HashMap<ConnectionId, HashSet<ConnectionId>>,
+
+    /// Connections whose writer channel overflowed (D12: queue full →
+    /// connection teardown, not frame drop). Collected during event
+    /// processing and torn down after the current event completes.
+    overflow_teardown: Vec<ConnectionId>,
 }
 
 impl ServerState {
@@ -146,6 +220,19 @@ impl ServerState {
             conn_addresses: HashMap::new(),
             watch_table: HashMap::new(),
             watcher_reverse: HashMap::new(),
+            overflow_teardown: Vec::new(),
+        }
+    }
+
+    /// Enqueue a frame for delivery to a connection. On channel
+    /// overflow, marks the connection for teardown (D12: not frame
+    /// drop). The caller should check `overflow_teardown` after
+    /// processing an event and call `process_disconnect` for each.
+    fn try_enqueue(&mut self, conn: ConnectionId, service: u16, payload: &[u8]) {
+        if let Some(wh) = self.writers.get(&conn) {
+            if wh.enqueue(service, payload).is_err() {
+                self.overflow_teardown.push(conn);
+            }
         }
     }
 
@@ -283,9 +370,7 @@ impl ServerState {
                     Ok((accepted, provider_conn, provider_session)) => {
                         // Send InterestAccepted to consumer
                         if let Ok(bytes) = postcard::to_allocvec(&accepted) {
-                            if let Some(wh) = self.writers.get(&conn_id) {
-                                let _ = wh.write_frame(0, &bytes);
-                            }
+                            self.try_enqueue(conn_id, 0, &bytes);
                         }
                         // Notify provider
                         let provider_notify = ControlMessage::InterestAccepted {
@@ -294,9 +379,7 @@ impl ServerState {
                             version: 1,
                         };
                         if let Ok(bytes) = postcard::to_allocvec(&provider_notify) {
-                            if let Some(wh) = self.writers.get(&provider_conn) {
-                                let _ = wh.write_frame(0, &bytes);
-                            }
+                            self.try_enqueue(provider_conn, 0, &bytes);
                         }
                     }
                     Err(reason) => {
@@ -305,9 +388,7 @@ impl ServerState {
                             reason,
                         };
                         if let Ok(bytes) = postcard::to_allocvec(&declined) {
-                            if let Some(wh) = self.writers.get(&conn_id) {
-                                let _ = wh.write_frame(0, &bytes);
-                            }
+                            self.try_enqueue(conn_id, 0, &bytes);
                         }
                     }
                 }
@@ -327,9 +408,7 @@ impl ServerState {
                         reason: pane_proto::control::TeardownReason::ServiceRevoked,
                     };
                     if let Ok(bytes) = postcard::to_allocvec(&peer_teardown) {
-                        if let Some(wh) = self.writers.get(&peer_conn) {
-                            let _ = wh.write_frame(0, &bytes);
-                        }
+                        self.try_enqueue(peer_conn, 0, &bytes);
                     }
                     // Echo teardown to the revoker so its looper can
                     // fail outstanding dispatch entries for this session
@@ -339,9 +418,7 @@ impl ServerState {
                         reason: pane_proto::control::TeardownReason::ServiceRevoked,
                     };
                     if let Ok(bytes) = postcard::to_allocvec(&revoker_teardown) {
-                        if let Some(wh) = self.writers.get(&conn_id) {
-                            let _ = wh.write_frame(0, &bytes);
-                        }
+                        self.try_enqueue(conn_id, 0, &bytes);
                     }
                 }
                 // Unknown session_id = no-op (defensive, per session-type analysis)
@@ -381,9 +458,7 @@ impl ServerState {
                             reason: pane_proto::ExitReason::Disconnected,
                         };
                         if let Ok(bytes) = postcard::to_allocvec(&exited) {
-                            if let Some(wh) = self.writers.get(&conn_id) {
-                                let _ = wh.write_frame(0, &bytes);
-                            }
+                            self.try_enqueue(conn_id, 0, &bytes);
                         }
                     }
                 }
@@ -416,9 +491,7 @@ impl ServerState {
             } else {
                 (route.consumer_conn, route.consumer_session)
             };
-            if let Some(wh) = self.writers.get(&target_conn) {
-                let _ = wh.write_frame(target_session, &payload);
-            }
+            self.try_enqueue(target_conn, target_session, &payload);
         }
         // Missing route on incoming Reply = Cancel/Reply race, not an error.
     }
@@ -438,9 +511,7 @@ impl ServerState {
                 };
                 if let Ok(bytes) = postcard::to_allocvec(&exited) {
                     for watcher_conn in &watchers {
-                        if let Some(wh) = self.writers.get(watcher_conn) {
-                            let _ = wh.write_frame(0, &bytes);
-                        }
+                        self.try_enqueue(*watcher_conn, 0, &bytes);
                         // Clean up reverse index
                         if let Some(watched_set) = self.watcher_reverse.get_mut(watcher_conn) {
                             watched_set.remove(&conn_id);
@@ -477,9 +548,7 @@ impl ServerState {
                 reason: pane_proto::control::TeardownReason::ConnectionLost,
             };
             if let Ok(bytes) = postcard::to_allocvec(&teardown) {
-                if let Some(wh) = self.writers.get(&peer_conn) {
-                    let _ = wh.write_frame(0, &bytes);
-                }
+                self.try_enqueue(peer_conn, 0, &bytes);
             }
         }
     }
@@ -646,11 +715,12 @@ impl ProtocolServer {
         codec.set_max_message_size(welcome.max_message_size);
         let codec = Arc::new(codec);
 
-        // Build write handle
-        let write_handle = WriteHandle {
-            writer: Arc::new(Mutex::new(Box::new(writer))),
-            codec: codec.clone(),
-        };
+        // D12: spawn a per-connection writer thread that owns the
+        // fd write half. The actor enqueues frames into a bounded
+        // channel; the writer thread drains to the fd. The actor
+        // never blocks on I/O.
+        let write_handle =
+            spawn_writer_thread(Box::new(writer), codec.clone(), WRITER_CHANNEL_CAPACITY);
 
         // Register with the actor (provides + writer).
         // This goes through the same event channel as frames,
@@ -713,6 +783,20 @@ fn actor_loop(event_rx: mpsc::Receiver<ServerEvent>) {
             Err(_) => {
                 // All senders dropped — server shutting down.
                 break;
+            }
+        }
+
+        // D12: tear down connections whose writer channel overflowed.
+        // Processed after each event to avoid modifying routing state
+        // during event processing. Dedup: a connection may overflow
+        // on multiple frames within one event.
+        if !state.overflow_teardown.is_empty() {
+            let overflowed: Vec<ConnectionId> = state.overflow_teardown.drain(..).collect();
+            let mut seen = HashSet::new();
+            for conn_id in overflowed {
+                if seen.insert(conn_id) {
+                    state.process_disconnect(conn_id);
+                }
             }
         }
     }

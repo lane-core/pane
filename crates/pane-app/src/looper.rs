@@ -441,6 +441,7 @@ impl<H: pane_proto::Handler + 'static> Looper<H> {
             batch: Batch::new(),
             exit_reason: None,
             timers: HashMap::new(),
+            shared_writer: None,
         };
 
         // Main loop: block for at least one event, drain any
@@ -477,7 +478,7 @@ impl<H: pane_proto::Handler + 'static> Looper<H> {
 
             // Dispatch the batch in phase order.
             if !state.batch.is_empty() {
-                if let Some(reason) = self.dispatch_batch(&mut state.batch, &handle) {
+                if let Some(reason) = self.dispatch_batch(&mut state, &handle) {
                     state.exit_reason = Some(reason);
                 }
             }
@@ -501,7 +502,7 @@ impl<H: pane_proto::Handler + 'static> Looper<H> {
     /// (ConnectionSource from NewConnection handoff in phase 3/4).
     fn dispatch_batch(
         &mut self,
-        batch: &mut Batch,
+        state: &mut LoopState,
         loop_handle: &calloop::LoopHandle<'_, LoopState>,
     ) -> Option<ExitReason> {
         // Phase 0: Sync requests — install dispatch entries and
@@ -509,26 +510,26 @@ impl<H: pane_proto::Handler + 'static> Looper<H> {
         // Must run before Reply/Failed so entries are installed
         // before any reply in a future batch could match them.
         // Does not touch the handler (no catch_unwind needed).
-        let sync_reqs = std::mem::take(&mut batch.sync_requests);
+        let sync_reqs = std::mem::take(&mut state.batch.sync_requests);
         for req in sync_reqs {
             self.core.process_sync_request(req);
         }
 
         // Phase 1: Reply and Failed — resolve pending obligations
         // before teardown can fail remaining entries.
-        let replies = std::mem::take(&mut batch.replies);
+        let replies = std::mem::take(&mut state.batch.replies);
         for (session_id, token, reply_bytes) in replies {
             let outcome = self.core.dispatch_reply(session_id, token, reply_bytes);
             if let DispatchOutcome::Exit(reason) = outcome {
-                batch.clear();
+                state.batch.clear();
                 return Some(reason);
             }
         }
-        let failed = std::mem::take(&mut batch.failed);
+        let failed = std::mem::take(&mut state.batch.failed);
         for (session_id, token) in failed {
             let outcome = self.core.dispatch_failed(session_id, token);
             if let DispatchOutcome::Exit(reason) = outcome {
-                batch.clear();
+                state.batch.clear();
                 return Some(reason);
             }
         }
@@ -536,41 +537,41 @@ impl<H: pane_proto::Handler + 'static> Looper<H> {
         // Phase 2: ServiceTeardown — fail remaining entries for
         // torn-down sessions, then notify the handler (provider-side
         // subscriber_disconnected).
-        let teardowns = std::mem::take(&mut batch.teardowns);
+        let teardowns = std::mem::take(&mut state.batch.teardowns);
         for (session_id, reason) in teardowns {
             self.core.dispatch_teardown(session_id, reason.clone());
             let outcome = self
                 .core
                 .dispatch_subscriber_disconnected(session_id, reason);
             if let DispatchOutcome::Exit(reason) = outcome {
-                batch.clear();
+                state.batch.clear();
                 return Some(reason);
             }
         }
 
         // Phase 3: PaneExited, then SubscriberConnected, then
         // Lifecycle — framework control.
-        let pane_exited = std::mem::take(&mut batch.pane_exited);
+        let pane_exited = std::mem::take(&mut state.batch.pane_exited);
         for (address, reason) in pane_exited {
             let outcome = self.core.dispatch_pane_exited(address, reason);
             if let DispatchOutcome::Exit(reason) = outcome {
-                batch.clear();
+                state.batch.clear();
                 return Some(reason);
             }
         }
-        let subscriber_connected = std::mem::take(&mut batch.subscriber_connected);
+        let subscriber_connected = std::mem::take(&mut state.batch.subscriber_connected);
         for session_id in subscriber_connected {
             let outcome = self.core.dispatch_subscriber_connected(session_id);
             if let DispatchOutcome::Exit(reason) = outcome {
-                batch.clear();
+                state.batch.clear();
                 return Some(reason);
             }
         }
-        let lifecycle = std::mem::take(&mut batch.lifecycle);
+        let lifecycle = std::mem::take(&mut state.batch.lifecycle);
         for msg in lifecycle {
             let outcome = self.core.dispatch_lifecycle(msg);
             if let DispatchOutcome::Exit(reason) = outcome {
-                batch.clear();
+                state.batch.clear();
                 return Some(reason);
             }
         }
@@ -584,8 +585,12 @@ impl<H: pane_proto::Handler + 'static> Looper<H> {
         // (phase 4): the handler has received Ready/lifecycle
         // events, and ctl writes for the new connection can
         // proceed in the same batch's phase 4.
-        if let Some(conn) = batch.new_connection.take() {
-            self.register_connection_source(conn, loop_handle);
+        if let Some(conn) = state.batch.new_connection.take() {
+            if let Some(sw) = self.register_connection_source(conn, loop_handle) {
+                // D12 Part 2: store the SharedWriter so phase 5
+                // request dispatch can pass it to LooperCore.
+                state.shared_writer = Some(sw);
+            }
         }
 
         // Phase 4: ctl writes — send queued control frames on the
@@ -596,7 +601,7 @@ impl<H: pane_proto::Handler + 'static> Looper<H> {
         // (phase 1), ServiceTeardown (phase 2), and PaneExited/
         // Lifecycle (phase 3). All obligations are resolved before
         // revocation goes out on the wire.
-        let ctl_writes = std::mem::take(&mut batch.ctl_writes);
+        let ctl_writes = std::mem::take(&mut state.batch.ctl_writes);
         for payload in ctl_writes {
             self.core.send_ctl_frame(payload);
         }
@@ -606,25 +611,33 @@ impl<H: pane_proto::Handler + 'static> Looper<H> {
         // in revoked_sessions. The handler has released its interest
         // in these sessions — dispatching would deliver to a dead
         // binding.
-        let requests = std::mem::take(&mut batch.requests);
+        let requests = std::mem::take(&mut state.batch.requests);
         for (session_id, token, inner) in requests {
-            if batch.revoked_sessions.contains(&session_id) {
+            if state.batch.revoked_sessions.contains(&session_id) {
                 continue; // H3: stale frame for revoked session
             }
-            let outcome = self.core.dispatch_request(session_id, token, inner);
+            // D12 Part 2: pass the shared writer so dispatch_request
+            // creates DispatchCtx::with_writer for direct looper-thread
+            // sends.
+            let outcome = self.core.dispatch_request_with_writer(
+                session_id,
+                token,
+                inner,
+                state.shared_writer.as_ref(),
+            );
             if let DispatchOutcome::Exit(reason) = outcome {
-                batch.clear();
+                state.batch.clear();
                 return Some(reason);
             }
         }
-        let notifications = std::mem::take(&mut batch.notifications);
+        let notifications = std::mem::take(&mut state.batch.notifications);
         for (session_id, inner) in notifications {
-            if batch.revoked_sessions.contains(&session_id) {
+            if state.batch.revoked_sessions.contains(&session_id) {
                 continue; // H3: stale frame for revoked session
             }
             let outcome = self.core.dispatch_notification(session_id, inner);
             if let DispatchOutcome::Exit(reason) = outcome {
-                batch.clear();
+                state.batch.clear();
                 return Some(reason);
             }
         }
@@ -632,8 +645,8 @@ impl<H: pane_proto::Handler + 'static> Looper<H> {
         // Phase 6: post-batch effects/snapshot — not yet implemented.
 
         // Channel closed — handle after all buffered events.
-        if batch.channel_closed {
-            batch.channel_closed = false;
+        if state.batch.channel_closed {
+            state.batch.channel_closed = false;
             let outcome = self.core.connection_lost();
             match outcome {
                 DispatchOutcome::Exit(reason) => return Some(reason),
@@ -658,11 +671,12 @@ impl<H: pane_proto::Handler + 'static> Looper<H> {
     /// SyncSender. If registration fails, the ack sender is
     /// dropped (bridge receives RecvError) and the stream is
     /// closed (connection dies).
+    /// Returns the SharedWriter if registration succeeds (D12).
     fn register_connection_source(
         &self,
         conn: NewConnectionData,
         loop_handle: &calloop::LoopHandle<'_, LoopState>,
-    ) {
+    ) -> Option<crate::connection_source::SharedWriter> {
         let NewConnectionData {
             welcome,
             stream,
@@ -682,9 +696,13 @@ impl<H: pane_proto::Handler + 'static> Looper<H> {
             Err(_) => {
                 // Failed to set non-blocking — drop ack, bridge gets
                 // RecvError. Connection dies.
-                return;
+                return None;
             }
         };
+
+        // D12 Part 2: extract the SharedWriter before registration
+        // moves the source into calloop.
+        let shared_writer = source.shared_writer();
 
         // Register as a calloop event source. The callback feeds
         // events into the batch — same pattern as the calloop
@@ -696,13 +714,14 @@ impl<H: pane_proto::Handler + 'static> Looper<H> {
             .is_err()
         {
             // Registration failed — connection dies.
-            return;
+            return None;
         }
 
         // Ack the bridge: ConnectionSource is live. The bridge
         // retains write_tx and returns it to the caller for
         // ServiceHandle construction.
         let _ = ack.send(pane_session::bridge::Registered);
+        Some(shared_writer)
     }
 }
 
@@ -740,12 +759,20 @@ impl Batch {
 /// Shared state for the calloop event loop.
 /// Not parameterized on H — the batch is type-erased (raw bytes).
 /// calloop's EventLoop<LoopState> passes this to event callbacks.
+///
+/// Created on the looper thread and never moved — Rc-based fields
+/// (SharedWriter) are safe.
 struct LoopState {
     batch: Batch,
     exit_reason: Option<ExitReason>,
     /// Active timer registrations, keyed by TimerId.
     /// Used to remove calloop Timer sources on cancel.
     timers: HashMap<TimerId, RegistrationToken>,
+    /// D12 Part 2: direct write path for looper-thread sends.
+    /// Rc-based (!Send) — set when a ConnectionSource is registered
+    /// on the looper thread. Passed through dispatch_batch to
+    /// LooperCore::dispatch_request_with_writer.
+    shared_writer: Option<crate::connection_source::SharedWriter>,
 }
 
 #[cfg(test)]

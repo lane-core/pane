@@ -24,17 +24,27 @@
 //! Chen/Balzer/Toninho ECOOP 2022, §4.2 — protocol fidelity
 //! requires every send-receive pair is matched).
 
+use crate::connection_source::SharedWriter;
 use crate::dispatch::{Dispatch, DispatchEntry, PeerScope, Token};
 
 /// Scoped dispatch context provided to request handlers.
 ///
-/// Carries `&mut Dispatch<H>` and `PeerScope` for the active
-/// connection. The lifetime `'a` ties the context to the
-/// LooperCore's dispatch cycle — it cannot outlive the handler
-/// call.
+/// Carries `&mut Dispatch<H>`, `PeerScope`, and an optional
+/// `SharedWriter` for the active connection. The lifetime `'a`
+/// ties the context to the LooperCore's dispatch cycle — it
+/// cannot outlive the handler call.
+///
+/// D12 Part 2: when a SharedWriter is present, `send_request`
+/// writes directly to the shared queue instead of going through
+/// the mpsc channel. This eliminates the cross-thread primitive
+/// overhead for looper-thread sends (90% of all sends).
 pub struct DispatchCtx<'a, H> {
     dispatch: &'a mut Dispatch<H>,
     connection: PeerScope,
+    /// Direct write path for looper-thread sends (D12).
+    /// None when the context is created without a ConnectionSource
+    /// (e.g., unit tests, or the pre-ConnectionSource code path).
+    writer: Option<&'a SharedWriter>,
 }
 
 impl<'a, H> DispatchCtx<'a, H> {
@@ -42,6 +52,32 @@ impl<'a, H> DispatchCtx<'a, H> {
         DispatchCtx {
             dispatch,
             connection,
+            writer: None,
+        }
+    }
+
+    /// Create a DispatchCtx with a direct write path (D12).
+    pub(crate) fn with_writer(
+        dispatch: &'a mut Dispatch<H>,
+        connection: PeerScope,
+        writer: &'a SharedWriter,
+    ) -> Self {
+        DispatchCtx {
+            dispatch,
+            connection,
+            writer: Some(writer),
+        }
+    }
+
+    /// Enqueue a frame for writing via the direct path (D12).
+    /// Returns true if the frame was enqueued directly, false if
+    /// the caller should fall back to the mpsc channel.
+    pub(crate) fn enqueue_frame(&self, service: u16, payload: &[u8]) -> bool {
+        if let Some(writer) = self.writer {
+            writer.enqueue(service, payload);
+            true
+        } else {
+            false
         }
     }
 

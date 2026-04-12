@@ -249,6 +249,29 @@ impl FrameCodec {
         Ok(())
     }
 
+    /// Encode a frame into a byte buffer without writing to a stream.
+    ///
+    /// Used by the server's per-connection writer threads (D12):
+    /// the actor thread encodes frames, enqueues the bytes, and the
+    /// writer thread writes them to the fd.
+    ///
+    /// # Panics
+    ///
+    /// Panics if `service` is 0xFFFF (reserved for ProtocolAbort).
+    pub fn encode_frame(&self, service: u16, payload: &[u8]) -> Vec<u8> {
+        assert!(
+            service != 0xFFFF,
+            "service 0xFFFF is reserved for ProtocolAbort"
+        );
+
+        let length = 2u32 + payload.len() as u32;
+        let mut buf = Vec::with_capacity(4 + length as usize);
+        buf.extend_from_slice(&length.to_le_bytes());
+        buf.extend_from_slice(&service.to_le_bytes());
+        buf.extend_from_slice(payload);
+        buf
+    }
+
     /// Write a ProtocolAbort frame. Best-effort — does not panic on
     /// write failure.
     pub fn write_abort(&self, writer: &mut impl Write) -> io::Result<()> {

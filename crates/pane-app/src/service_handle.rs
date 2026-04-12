@@ -130,9 +130,15 @@ impl<P: Protocol> ServiceHandle<P> {
         let outer_payload =
             postcard::to_allocvec(&frame).expect("service frame serialization failed");
 
-        // 3. Wire send AFTER entry installed
-        if let Some(ref tx) = self.write_tx {
-            let _ = tx.send((self.session_id, outer_payload));
+        // 3. Wire send AFTER entry installed.
+        // D12 Part 2: looper-thread sends go directly to the shared
+        // write queue, bypassing the mpsc channel. Falls back to the
+        // channel if no direct writer is available (pre-ConnectionSource
+        // code path or tests).
+        if !ctx.enqueue_frame(self.session_id, &outer_payload) {
+            if let Some(ref tx) = self.write_tx {
+                let _ = tx.send((self.session_id, outer_payload));
+            }
         }
 
         // CancelHandle sends Cancel{token} on the control channel (D5/D10).
@@ -222,19 +228,24 @@ impl<P: Protocol> ServiceHandle<P> {
         let outer_payload =
             postcard::to_allocvec(&frame).expect("service frame serialization failed");
 
-        // 3. Wire send — try_send to avoid blocking.
-        // On failure, roll back the DispatchEntry (session-type-
-        // consultant requirement: orphaned entries must not persist).
-        if let Some(ref tx) = self.write_tx {
-            match tx.try_send((self.session_id, outer_payload)) {
-                Ok(()) => {}
-                Err(TrySendError::Full(_)) => {
-                    ctx.cancel(token);
-                    return Err((msg, Backpressure::ChannelFull));
-                }
-                Err(TrySendError::Disconnected(_)) => {
-                    ctx.cancel(token);
-                    return Err((msg, Backpressure::ConnectionClosing));
+        // 3. Wire send — D12 Part 2: looper-thread sends go directly
+        // to the shared write queue, bypassing the mpsc channel.
+        // Falls back to try_send on the channel if no direct writer
+        // is available. On failure, roll back the DispatchEntry
+        // (session-type-consultant requirement: orphaned entries
+        // must not persist).
+        if !ctx.enqueue_frame(self.session_id, &outer_payload) {
+            if let Some(ref tx) = self.write_tx {
+                match tx.try_send((self.session_id, outer_payload)) {
+                    Ok(()) => {}
+                    Err(TrySendError::Full(_)) => {
+                        ctx.cancel(token);
+                        return Err((msg, Backpressure::ChannelFull));
+                    }
+                    Err(TrySendError::Disconnected(_)) => {
+                        ctx.cancel(token);
+                        return Err((msg, Backpressure::ConnectionClosing));
+                    }
                 }
             }
         }

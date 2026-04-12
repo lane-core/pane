@@ -41,6 +41,7 @@
 use std::panic::{catch_unwind, AssertUnwindSafe};
 use std::sync::mpsc;
 
+use crate::connection_source::SharedWriter;
 use crate::dispatch::{Dispatch, PeerScope, Token};
 use crate::dispatch_ctx::DispatchCtx;
 use crate::exit_reason::ExitReason;
@@ -407,6 +408,23 @@ impl<H: pane_proto::Handler> LooperCore<H> {
         token: u64,
         inner: Vec<u8>,
     ) -> DispatchOutcome {
+        self.dispatch_request_with_writer(session_id, token, inner, None)
+    }
+
+    /// Dispatch a request with an optional direct write path (D12).
+    ///
+    /// When `shared_writer` is Some, the DispatchCtx carries the
+    /// direct writer so send_request can bypass the mpsc channel
+    /// for looper-thread sends. The SharedWriter is Rc-based (!Send)
+    /// and lives on the Looper (created on the looper thread), not
+    /// on LooperCore (which must be Send for thread::spawn).
+    pub(crate) fn dispatch_request_with_writer(
+        &mut self,
+        session_id: u16,
+        token: u64,
+        inner: Vec<u8>,
+        shared_writer: Option<&SharedWriter>,
+    ) -> DispatchOutcome {
         // catch_unwind: the request receiver closure may panic
         // (handler panic in receive_request). The ReplyPort
         // constructed inside the closure will be dropped during
@@ -419,7 +437,11 @@ impl<H: pane_proto::Handler> LooperCore<H> {
         let service_dispatch = &self.service_dispatch;
         let messenger = &self.messenger;
         let write_tx = &self.write_tx;
-        let mut ctx = DispatchCtx::new(&mut self.dispatch, self.primary_connection);
+        // D12 Part 2: create DispatchCtx with direct writer when available.
+        let mut ctx = match shared_writer {
+            Some(sw) => DispatchCtx::with_writer(&mut self.dispatch, self.primary_connection, sw),
+            None => DispatchCtx::new(&mut self.dispatch, self.primary_connection),
+        };
         let result = catch_unwind(AssertUnwindSafe(|| {
             service_dispatch.dispatch_request(
                 session_id, handler, messenger, &inner, token, write_tx, &mut ctx,
