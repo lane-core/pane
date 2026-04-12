@@ -16,4 +16,5 @@ pub mod peer_cred;
 pub mod server;
 pub mod transport;
 
+pub use frame::{FrameReader, FrameWriter, WRITE_HIGHWATER_BYTES};
 pub use transport::Transport;

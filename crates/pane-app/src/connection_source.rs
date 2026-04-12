@@ -26,7 +26,7 @@
 //! single thread — the looper thread.
 
 use std::cell::RefCell;
-use std::io::{self, Read, Write};
+use std::io;
 use std::os::unix::net::UnixStream;
 use std::rc::Rc;
 
@@ -35,7 +35,7 @@ use calloop::{EventSource, Interest, Mode, Poll, PostAction, Readiness, Token, T
 
 use pane_proto::control::ControlMessage;
 use pane_session::bridge::{LooperMessage, WriteMessage};
-use pane_session::frame::Frame;
+use pane_session::frame::{Frame, FrameError, FrameReader, FrameWriter, WRITE_HIGHWATER_BYTES};
 
 /// Errors from ConnectionSource's event processing.
 #[derive(Debug)]
@@ -70,260 +70,23 @@ impl From<io::Error> for ConnectionError {
     }
 }
 
-/// State machine for incremental frame decoding from a non-blocking
-/// source. Handles WouldBlock at the byte level, accumulating partial
-/// reads across poll iterations.
-///
-/// Frame wire format: [length: u32 LE][service: u16 LE][payload]
-/// Length counts service + payload (minimum 2).
-struct FrameReader {
-    /// Maximum message size for this connection (negotiated in Welcome).
-    max_message_size: u32,
-    /// Whether all service discriminants are accepted (server-side).
-    permissive: bool,
-    /// Accumulated bytes for the current frame. Once we have enough
-    /// bytes for a complete frame, we decode and emit it.
-    buf: Vec<u8>,
-    /// How many bytes we've read into buf so far.
-    filled: usize,
-    /// Current parse state.
-    state: ReadState,
-}
-
-/// Parse state for incremental frame reading.
-#[derive(Clone, Copy)]
-enum ReadState {
-    /// Reading the 4-byte length prefix.
-    Length,
-    /// Reading the body (service + payload). The field holds the
-    /// declared body length from the length prefix.
-    Body { body_len: u32 },
-}
-
-impl FrameReader {
-    fn new(max_message_size: u32, permissive: bool) -> Self {
-        FrameReader {
-            max_message_size,
-            permissive,
-            buf: vec![0u8; 4], // start with length prefix buffer
-            filled: 0,
-            state: ReadState::Length,
-        }
-    }
-
-    /// Try to read one complete frame from the source.
-    ///
-    /// Returns:
-    /// - `Ok(Some(frame))` — a complete frame was decoded
-    /// - `Ok(None)` — WouldBlock, no complete frame yet
-    /// - `Err(ConnectionError)` — fatal error (EOF, protocol violation)
-    fn try_read_frame(&mut self, source: &mut impl Read) -> Result<Option<Frame>, ConnectionError> {
-        loop {
-            match self.state {
-                ReadState::Length => {
-                    // Try to fill the 4-byte length prefix.
-                    match read_into(&mut self.buf, &mut self.filled, source) {
-                        ReadProgress::Complete => {}
-                        ReadProgress::WouldBlock => return Ok(None),
-                        ReadProgress::Eof => {
-                            if self.filled == 0 {
-                                // Clean EOF at frame boundary — connection closed.
-                                return Err(ConnectionError::Io(io::Error::new(
-                                    io::ErrorKind::UnexpectedEof,
-                                    "connection closed",
-                                )));
-                            }
-                            // Partial length prefix — truncated stream.
-                            return Err(ConnectionError::Io(io::Error::new(
-                                io::ErrorKind::UnexpectedEof,
-                                "connection closed mid-frame (partial length prefix)",
-                            )));
-                        }
-                        ReadProgress::Error(e) => return Err(ConnectionError::Io(e)),
-                    }
-
-                    let length =
-                        u32::from_le_bytes([self.buf[0], self.buf[1], self.buf[2], self.buf[3]]);
-
-                    // Validate length.
-                    if length < 2 {
-                        return Err(ConnectionError::Protocol(format!(
-                            "frame too short: declared length {length}, minimum is 2"
-                        )));
-                    }
-                    if length > self.max_message_size {
-                        return Err(ConnectionError::Protocol(format!(
-                            "frame too large: {length} bytes (limit {})",
-                            self.max_message_size
-                        )));
-                    }
-
-                    // Transition to body state.
-                    self.buf.resize(length as usize, 0);
-                    self.filled = 0;
-                    self.state = ReadState::Body { body_len: length };
-                }
-                ReadState::Body { body_len } => {
-                    match read_into(&mut self.buf, &mut self.filled, source) {
-                        ReadProgress::Complete => {}
-                        ReadProgress::WouldBlock => return Ok(None),
-                        ReadProgress::Eof => {
-                            return Err(ConnectionError::Io(io::Error::new(
-                                io::ErrorKind::UnexpectedEof,
-                                "connection closed mid-frame (partial body)",
-                            )));
-                        }
-                        ReadProgress::Error(e) => return Err(ConnectionError::Io(e)),
-                    }
-
-                    let service = u16::from_le_bytes([self.buf[0], self.buf[1]]);
-                    let frame = if service == 0xFFFF {
-                        Frame::Abort
-                    } else if !self.permissive && service != 0 {
-                        // Non-permissive mode: only service 0 is
-                        // accepted without explicit registration.
-                        // ConnectionSource uses permissive mode
-                        // (same as the existing reader loop) because
-                        // session_ids are dynamically allocated by
-                        // DeclareInterest.
-                        return Err(ConnectionError::Protocol(format!(
-                            "unknown service discriminant: 0x{service:04X}"
-                        )));
-                    } else {
-                        let payload = self.buf[2..body_len as usize].to_vec();
-                        Frame::Message { service, payload }
-                    };
-
-                    // Reset for next frame.
-                    self.buf.resize(4, 0);
-                    self.filled = 0;
-                    self.state = ReadState::Length;
-
-                    return Ok(Some(frame));
-                }
+impl From<FrameError> for ConnectionError {
+    fn from(e: FrameError) -> Self {
+        match e {
+            FrameError::Transport(io_err) => ConnectionError::Io(io_err),
+            FrameError::Oversized { declared, limit } => ConnectionError::Protocol(format!(
+                "frame too large: {declared} bytes (limit {limit})"
+            )),
+            FrameError::TooShort { declared } => ConnectionError::Protocol(format!(
+                "frame too short: declared length {declared}, minimum is 2"
+            )),
+            FrameError::UnknownService(s) => {
+                ConnectionError::Protocol(format!("unknown service discriminant: 0x{s:04X}"))
+            }
+            FrameError::Poisoned => {
+                ConnectionError::Protocol("codec poisoned by prior error".into())
             }
         }
-    }
-}
-
-/// Outcome of a partial read into a fixed-size buffer.
-enum ReadProgress {
-    /// The buffer is now full.
-    Complete,
-    /// Got WouldBlock — come back later.
-    WouldBlock,
-    /// Got EOF (0 bytes read).
-    Eof,
-    /// Got a real I/O error.
-    Error(io::Error),
-}
-
-/// Read bytes into `buf[filled..]` from `source`, advancing `filled`.
-/// Returns once the buffer is full, or on WouldBlock/EOF/error.
-fn read_into(buf: &mut [u8], filled: &mut usize, source: &mut impl Read) -> ReadProgress {
-    while *filled < buf.len() {
-        match source.read(&mut buf[*filled..]) {
-            Ok(0) => return ReadProgress::Eof,
-            Ok(n) => *filled += n,
-            Err(e) if e.kind() == io::ErrorKind::WouldBlock => return ReadProgress::WouldBlock,
-            Err(e) if e.kind() == io::ErrorKind::Interrupted => continue,
-            Err(e) => return ReadProgress::Error(e),
-        }
-    }
-    ReadProgress::Complete
-}
-
-/// Contiguous write buffer for non-blocking frame output.
-///
-/// Frames are encoded directly into a single `Vec<u8>` (length
-/// prefix + service + payload as contiguous bytes). Flush writes
-/// the entire pending region in one `write()` syscall, reducing
-/// syscall overhead compared to per-frame writes.
-///
-/// Haiku precedent: LinkSender used a contiguous buffer with a
-/// kWatermark flush trigger (src/kits/app/LinkSender.cpp). pane
-/// adopts the contiguous buffer layout; watermark-gated write
-/// interest registration is a future optimization (currently,
-/// write interest is registered whenever any bytes are pending).
-struct FrameWriter {
-    /// Contiguous wire bytes for all pending frames.
-    buf: Vec<u8>,
-    /// How far into buf we've flushed. Bytes in `buf[..flush_pos]`
-    /// have been written to the fd; bytes in `buf[flush_pos..]` are
-    /// pending. When fully flushed, both buf and flush_pos reset to
-    /// zero.
-    flush_pos: usize,
-}
-
-/// Byte-based highwater cap for the write buffer. When the buffer
-/// holds this many unflushed bytes, `drain_write_channel` stops
-/// pulling from the mpsc. This preserves backpressure: socket-level
-/// WouldBlock keeps the buffer full, which keeps the bounded mpsc
-/// full, which stalls cross-thread senders. Without this cap, the
-/// buffer would absorb unbounded data and the sender would never
-/// block.
-///
-/// 16KB is ~4 max-sized control frames or ~16 typical 1KB messages —
-/// enough for batch efficiency without absorbing the entire channel
-/// capacity.
-const WRITE_HIGHWATER_BYTES: usize = 16 * 1024;
-
-impl FrameWriter {
-    fn new() -> Self {
-        FrameWriter {
-            buf: Vec::new(),
-            flush_pos: 0,
-        }
-    }
-
-    /// Encode a frame directly into the contiguous buffer.
-    ///
-    /// Wire format: [length: u32 LE][service: u16 LE][payload]
-    /// where length = 2 + payload.len() (counts service + payload).
-    fn enqueue(&mut self, service: u16, payload: &[u8]) {
-        let frame_len = 2 + payload.len();
-        self.buf
-            .extend_from_slice(&(frame_len as u32).to_le_bytes());
-        self.buf.extend_from_slice(&service.to_le_bytes());
-        self.buf.extend_from_slice(payload);
-    }
-
-    /// Whether the buffer has no pending data.
-    fn is_empty(&self) -> bool {
-        self.flush_pos >= self.buf.len()
-    }
-
-    /// Number of unflushed bytes in the buffer.
-    fn pending_bytes(&self) -> usize {
-        self.buf.len() - self.flush_pos
-    }
-
-    /// Drain the buffer to the sink in as few write() calls as
-    /// possible.
-    ///
-    /// Returns:
-    /// - `Ok(true)` — buffer fully drained
-    /// - `Ok(false)` — WouldBlock, more to write later
-    /// - `Err(e)` — fatal write error
-    fn try_flush(&mut self, sink: &mut impl Write) -> Result<bool, io::Error> {
-        while self.flush_pos < self.buf.len() {
-            match sink.write(&self.buf[self.flush_pos..]) {
-                Ok(0) => {
-                    return Err(io::Error::new(
-                        io::ErrorKind::WriteZero,
-                        "write returned 0 bytes",
-                    ));
-                }
-                Ok(n) => self.flush_pos += n,
-                Err(e) if e.kind() == io::ErrorKind::WouldBlock => return Ok(false),
-                Err(e) if e.kind() == io::ErrorKind::Interrupted => continue,
-                Err(e) => return Err(e),
-            }
-        }
-        // All flushed — reclaim buffer memory.
-        self.buf.clear();
-        self.flush_pos = 0;
-        Ok(true)
     }
 }
 
@@ -593,7 +356,9 @@ impl EventSource for ConnectionSource {
                         }
                     },
                     Ok(None) => break, // WouldBlock — no more data
-                    Err(ConnectionError::Io(ref e)) if e.kind() == io::ErrorKind::UnexpectedEof => {
+                    Err(FrameError::Transport(ref e))
+                        if e.kind() == io::ErrorKind::UnexpectedEof =>
+                    {
                         // EOF — connection closed.
                         return Ok(PostAction::Remove);
                     }
@@ -715,7 +480,6 @@ mod tests {
     use super::*;
     use pane_proto::control::ControlMessage;
     use pane_proto::protocols::lifecycle::LifecycleMessage;
-    use pane_proto::ServiceFrame;
     use pane_session::bridge::WRITE_CHANNEL_CAPACITY;
     use pane_session::frame::FrameCodec;
     use std::os::unix::net::UnixStream;
@@ -737,347 +501,7 @@ mod tests {
         codec.write_frame(peer, service, payload).unwrap();
     }
 
-    /// Helper: encode a wire frame into a byte buffer for Cursor-based
-    /// unit tests (no fd needed).
-    fn encode_frame(service: u16, payload: &[u8]) -> Vec<u8> {
-        let length = 2u32 + payload.len() as u32;
-        let mut buf = Vec::with_capacity(4 + length as usize);
-        buf.extend_from_slice(&length.to_le_bytes());
-        buf.extend_from_slice(&service.to_le_bytes());
-        buf.extend_from_slice(payload);
-        buf
-    }
-
-    // ── FrameReader unit tests ─────────────────────────────────
-
-    #[test]
-    fn frame_reader_decodes_control_frame() {
-        let mut reader = FrameReader::new(16 * 1024 * 1024, true);
-
-        let msg = ControlMessage::Lifecycle(LifecycleMessage::Ready);
-        let payload = postcard::to_allocvec(&msg).unwrap();
-        let wire = encode_frame(0, &payload);
-        let mut cursor = io::Cursor::new(wire);
-
-        let frame = reader.try_read_frame(&mut cursor).unwrap().unwrap();
-        let looper_msg = classify_frame(frame).unwrap().unwrap();
-        assert!(matches!(
-            looper_msg,
-            LooperMessage::Control(ControlMessage::Lifecycle(LifecycleMessage::Ready))
-        ));
-    }
-
-    #[test]
-    fn frame_reader_decodes_service_frame() {
-        let mut reader = FrameReader::new(16 * 1024 * 1024, true);
-
-        let inner = ServiceFrame::Notification {
-            payload: postcard::to_allocvec(&"hello").unwrap(),
-        };
-        let payload = postcard::to_allocvec(&inner).unwrap();
-        let wire = encode_frame(5, &payload);
-        let mut cursor = io::Cursor::new(wire);
-
-        let frame = reader.try_read_frame(&mut cursor).unwrap().unwrap();
-        let looper_msg = classify_frame(frame).unwrap().unwrap();
-        assert!(matches!(
-            looper_msg,
-            LooperMessage::Service { session_id: 5, .. }
-        ));
-    }
-
-    #[test]
-    fn frame_reader_decodes_multiple_frames() {
-        let mut reader = FrameReader::new(16 * 1024 * 1024, true);
-
-        let mut wire = Vec::new();
-
-        let msg1 = ControlMessage::Lifecycle(LifecycleMessage::Ready);
-        wire.extend_from_slice(&encode_frame(0, &postcard::to_allocvec(&msg1).unwrap()));
-
-        let msg2 = ControlMessage::Lifecycle(LifecycleMessage::CloseRequested);
-        wire.extend_from_slice(&encode_frame(0, &postcard::to_allocvec(&msg2).unwrap()));
-
-        let inner = ServiceFrame::Notification {
-            payload: postcard::to_allocvec(&42u32).unwrap(),
-        };
-        wire.extend_from_slice(&encode_frame(7, &postcard::to_allocvec(&inner).unwrap()));
-
-        let mut cursor = io::Cursor::new(wire);
-        let mut events = Vec::new();
-        loop {
-            match reader.try_read_frame(&mut cursor) {
-                Ok(Some(frame)) => {
-                    if let Ok(Some(msg)) = classify_frame(frame) {
-                        events.push(msg);
-                    }
-                }
-                // Cursor returns EOF (not WouldBlock) when exhausted.
-                Ok(None) => break,
-                Err(_) => break,
-            }
-        }
-
-        assert_eq!(events.len(), 3);
-        assert!(matches!(
-            &events[0],
-            LooperMessage::Control(ControlMessage::Lifecycle(LifecycleMessage::Ready))
-        ));
-        assert!(matches!(
-            &events[1],
-            LooperMessage::Control(ControlMessage::Lifecycle(LifecycleMessage::CloseRequested))
-        ));
-        assert!(matches!(
-            &events[2],
-            LooperMessage::Service { session_id: 7, .. }
-        ));
-    }
-
-    #[test]
-    fn frame_reader_detects_abort() {
-        let mut reader = FrameReader::new(1024, true);
-
-        // ProtocolAbort: length=2, service=0xFFFF.
-        let wire = vec![0x02, 0x00, 0x00, 0x00, 0xFF, 0xFF];
-        let mut cursor = io::Cursor::new(wire);
-
-        let frame = reader.try_read_frame(&mut cursor).unwrap().unwrap();
-        assert!(matches!(frame, Frame::Abort));
-        assert!(matches!(classify_frame(frame), Ok(None)));
-    }
-
-    #[test]
-    fn frame_reader_oversized_frame_rejected() {
-        let mut reader = FrameReader::new(100, true);
-
-        let data = 101u32.to_le_bytes();
-        let mut cursor = io::Cursor::new(data.to_vec());
-
-        let result = reader.try_read_frame(&mut cursor);
-        assert!(matches!(result, Err(ConnectionError::Protocol(_))));
-    }
-
-    #[test]
-    fn frame_reader_too_short_rejected() {
-        let mut reader = FrameReader::new(1024, true);
-
-        let data = 1u32.to_le_bytes();
-        let mut cursor = io::Cursor::new(data.to_vec());
-
-        let result = reader.try_read_frame(&mut cursor);
-        assert!(matches!(result, Err(ConnectionError::Protocol(_))));
-    }
-
-    #[test]
-    fn frame_reader_zero_length_rejected() {
-        let mut reader = FrameReader::new(1024, true);
-
-        let data = 0u32.to_le_bytes();
-        let mut cursor = io::Cursor::new(data.to_vec());
-
-        let result = reader.try_read_frame(&mut cursor);
-        assert!(matches!(result, Err(ConnectionError::Protocol(_))));
-    }
-
-    #[test]
-    fn frame_reader_eof_at_frame_boundary_is_error() {
-        let mut reader = FrameReader::new(1024, true);
-
-        // Empty input — EOF before any bytes.
-        let mut cursor = io::Cursor::new(Vec::new());
-        let result = reader.try_read_frame(&mut cursor);
-        assert!(matches!(result, Err(ConnectionError::Io(_))));
-    }
-
-    #[test]
-    fn frame_reader_eof_mid_body_is_error() {
-        let mut reader = FrameReader::new(1024, true);
-
-        // Length says 10 bytes, but only 3 body bytes follow.
-        let mut wire = Vec::new();
-        wire.extend_from_slice(&10u32.to_le_bytes());
-        wire.extend_from_slice(&[0x00, 0x00, 0xAA]); // 3 of 10
-        let mut cursor = io::Cursor::new(wire);
-
-        let result = reader.try_read_frame(&mut cursor);
-        assert!(matches!(result, Err(ConnectionError::Io(_))));
-    }
-
-    // ── FrameWriter unit tests ─────────────────────────────────
-
-    #[test]
-    fn frame_writer_encodes_correctly() {
-        let mut writer = FrameWriter::new();
-        writer.enqueue(0, &[0x01, 0x02]);
-
-        let mut buf = Vec::new();
-        let drained = writer.try_flush(&mut buf).unwrap();
-        assert!(drained);
-
-        // Wire: [length=4 LE][service=0 LE][0x01, 0x02]
-        assert_eq!(buf, vec![0x04, 0x00, 0x00, 0x00, 0x00, 0x00, 0x01, 0x02]);
-    }
-
-    #[test]
-    fn frame_writer_encodes_multiple() {
-        let mut writer = FrameWriter::new();
-        writer.enqueue(1, &[0xAA]);
-        writer.enqueue(2, &[0xBB, 0xCC]);
-
-        let mut buf = Vec::new();
-        let drained = writer.try_flush(&mut buf).unwrap();
-        assert!(drained);
-
-        // First frame: [length=3 LE][service=1 LE][0xAA]
-        // Second frame: [length=4 LE][service=2 LE][0xBB, 0xCC]
-        let expected = vec![
-            0x03, 0x00, 0x00, 0x00, 0x01, 0x00, 0xAA, // frame 1
-            0x04, 0x00, 0x00, 0x00, 0x02, 0x00, 0xBB, 0xCC, // frame 2
-        ];
-        assert_eq!(buf, expected);
-    }
-
-    #[test]
-    fn frame_writer_handles_partial_write() {
-        let mut writer = FrameWriter::new();
-        writer.enqueue(0, &[0xAA, 0xBB, 0xCC]);
-
-        // A writer that only accepts 3 bytes at a time.
-        struct SlowWriter {
-            buf: Vec<u8>,
-        }
-        impl Write for SlowWriter {
-            fn write(&mut self, data: &[u8]) -> io::Result<usize> {
-                let n = data.len().min(3);
-                self.buf.extend_from_slice(&data[..n]);
-                Ok(n)
-            }
-            fn flush(&mut self) -> io::Result<()> {
-                Ok(())
-            }
-        }
-
-        let mut slow = SlowWriter { buf: Vec::new() };
-        let drained = writer.try_flush(&mut slow).unwrap();
-        // try_flush loops, so it drains completely even with slow writes.
-        assert!(drained);
-
-        // Wire: [length=5 LE][service=0 LE][0xAA, 0xBB, 0xCC]
-        assert_eq!(
-            slow.buf,
-            vec![0x05, 0x00, 0x00, 0x00, 0x00, 0x00, 0xAA, 0xBB, 0xCC]
-        );
-    }
-
-    #[test]
-    fn frame_writer_empty_is_noop() {
-        let mut writer = FrameWriter::new();
-        assert!(writer.is_empty());
-
-        let mut buf = Vec::new();
-        let drained = writer.try_flush(&mut buf).unwrap();
-        assert!(drained);
-        assert!(buf.is_empty());
-    }
-
-    #[test]
-    fn frame_writer_contiguous_buffer_layout() {
-        // Multiple enqueues produce one contiguous buffer — no
-        // per-frame allocation boundaries visible in the internal
-        // state.
-        let mut writer = FrameWriter::new();
-        writer.enqueue(1, &[0xAA]);
-        writer.enqueue(2, &[0xBB, 0xCC]);
-
-        // Internal buffer contains both frames contiguously.
-        let expected = vec![
-            0x03, 0x00, 0x00, 0x00, 0x01, 0x00, 0xAA, // frame 1
-            0x04, 0x00, 0x00, 0x00, 0x02, 0x00, 0xBB, 0xCC, // frame 2
-        ];
-        assert_eq!(writer.buf, expected);
-        assert_eq!(writer.flush_pos, 0);
-        assert_eq!(writer.pending_bytes(), expected.len());
-    }
-
-    #[test]
-    fn frame_writer_partial_flush_resumes_on_wouldblock() {
-        // Simulate a sink that accepts a few bytes then returns
-        // WouldBlock. After the first partial flush, enqueue more
-        // data, then resume flushing. The buffer state must be
-        // consistent across the resume.
-        let mut writer = FrameWriter::new();
-        writer.enqueue(0, &[0x01, 0x02]); // 8 bytes wire
-
-        // Sink that accepts 3 bytes then WouldBlock.
-        struct WouldBlockAfter {
-            buf: Vec<u8>,
-            remaining: usize,
-        }
-        impl Write for WouldBlockAfter {
-            fn write(&mut self, data: &[u8]) -> io::Result<usize> {
-                if self.remaining == 0 {
-                    return Err(io::Error::new(io::ErrorKind::WouldBlock, "blocked"));
-                }
-                let n = data.len().min(self.remaining);
-                self.buf.extend_from_slice(&data[..n]);
-                self.remaining -= n;
-                Ok(n)
-            }
-            fn flush(&mut self) -> io::Result<()> {
-                Ok(())
-            }
-        }
-
-        let mut sink = WouldBlockAfter {
-            buf: Vec::new(),
-            remaining: 3,
-        };
-
-        // First flush: writes 3 bytes, then WouldBlock.
-        let drained = writer.try_flush(&mut sink).unwrap();
-        assert!(!drained);
-        assert_eq!(writer.flush_pos, 3);
-        assert_eq!(writer.pending_bytes(), 5); // 8 - 3
-
-        // Enqueue a second frame while partially flushed.
-        writer.enqueue(1, &[0xAA]);
-
-        // Resume flush with fresh capacity.
-        sink.remaining = 100;
-        let drained = writer.try_flush(&mut sink).unwrap();
-        assert!(drained);
-
-        // Sink received all bytes from both frames.
-        let expected = vec![
-            0x04, 0x00, 0x00, 0x00, 0x00, 0x00, 0x01, 0x02, // frame 1
-            0x03, 0x00, 0x00, 0x00, 0x01, 0x00, 0xAA, // frame 2
-        ];
-        assert_eq!(sink.buf, expected);
-        assert_eq!(writer.pending_bytes(), 0);
-        assert!(writer.is_empty());
-    }
-
-    #[test]
-    fn frame_writer_pending_bytes_tracks_correctly() {
-        let mut writer = FrameWriter::new();
-        assert_eq!(writer.pending_bytes(), 0);
-        assert!(writer.is_empty());
-
-        // Enqueue: 4 (length) + 2 (service) + 3 (payload) = 9 bytes
-        writer.enqueue(0, &[0x01, 0x02, 0x03]);
-        assert_eq!(writer.pending_bytes(), 9);
-        assert!(!writer.is_empty());
-
-        // Enqueue another: 4 + 2 + 1 = 7 bytes
-        writer.enqueue(1, &[0xFF]);
-        assert_eq!(writer.pending_bytes(), 16);
-
-        // Flush all.
-        let mut buf = Vec::new();
-        writer.try_flush(&mut buf).unwrap();
-        assert_eq!(writer.pending_bytes(), 0);
-        assert!(writer.is_empty());
-    }
+    // ── Highwater cap ─────────────────────────────────────────
 
     #[test]
     fn frame_writer_highwater_cap_stops_drain() {
@@ -1188,7 +612,7 @@ mod tests {
 
         let mut stream = stream;
         let result = reader.try_read_frame(&mut stream);
-        assert!(matches!(result, Err(ConnectionError::Io(_))));
+        assert!(matches!(result, Err(FrameError::Transport(_))));
     }
 
     #[test]
