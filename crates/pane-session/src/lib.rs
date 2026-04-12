@@ -20,7 +20,7 @@ pub mod server;
 pub mod transport;
 
 pub use backpressure::Backpressure;
-pub use correlator::{PeerScope, Token};
+pub use correlator::{PeerScope, RequestCorrelator, Token};
 pub use frame::{FrameReader, FrameWriter, WRITE_HIGHWATER_BYTES};
 pub use send::NonBlockingSend;
 pub use transport::Transport;
