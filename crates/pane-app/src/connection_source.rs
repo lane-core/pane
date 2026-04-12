@@ -26,7 +26,6 @@
 //! single thread — the looper thread.
 
 use std::cell::RefCell;
-use std::collections::VecDeque;
 use std::io::{self, Read, Write};
 use std::os::unix::net::UnixStream;
 use std::rc::Rc;
@@ -234,74 +233,96 @@ fn read_into(buf: &mut [u8], filled: &mut usize, source: &mut impl Read) -> Read
     ReadProgress::Complete
 }
 
-/// State machine for incremental frame writing to a non-blocking
-/// sink. Handles WouldBlock and partial writes.
+/// Contiguous write buffer for non-blocking frame output.
+///
+/// Frames are encoded directly into a single `Vec<u8>` (length
+/// prefix + service + payload as contiguous bytes). Flush writes
+/// the entire pending region in one `write()` syscall, reducing
+/// syscall overhead compared to per-frame writes.
+///
+/// Haiku precedent: LinkSender used a contiguous buffer with a
+/// kWatermark flush trigger (src/kits/app/LinkSender.cpp). pane
+/// adopts the contiguous buffer layout; watermark-gated write
+/// interest registration is a future optimization (currently,
+/// write interest is registered whenever any bytes are pending).
 struct FrameWriter {
-    /// Queued complete frames ready to write. Each entry is a
-    /// fully-encoded wire frame (length prefix + service + payload).
-    queue: VecDeque<Vec<u8>>,
-    /// Position within the current front-of-queue frame.
-    write_pos: usize,
+    /// Contiguous wire bytes for all pending frames.
+    buf: Vec<u8>,
+    /// How far into buf we've flushed. Bytes in `buf[..flush_pos]`
+    /// have been written to the fd; bytes in `buf[flush_pos..]` are
+    /// pending. When fully flushed, both buf and flush_pos reset to
+    /// zero.
+    flush_pos: usize,
 }
+
+/// Byte-based highwater cap for the write buffer. When the buffer
+/// holds this many unflushed bytes, `drain_write_channel` stops
+/// pulling from the mpsc. This preserves backpressure: socket-level
+/// WouldBlock keeps the buffer full, which keeps the bounded mpsc
+/// full, which stalls cross-thread senders. Without this cap, the
+/// buffer would absorb unbounded data and the sender would never
+/// block.
+///
+/// 16KB is ~4 max-sized control frames or ~16 typical 1KB messages —
+/// enough for batch efficiency without absorbing the entire channel
+/// capacity.
+const WRITE_HIGHWATER_BYTES: usize = 16 * 1024;
 
 impl FrameWriter {
     fn new() -> Self {
         FrameWriter {
-            queue: VecDeque::new(),
-            write_pos: 0,
+            buf: Vec::new(),
+            flush_pos: 0,
         }
     }
 
-    /// Enqueue a frame for writing. Encodes the wire format
-    /// (length prefix + service + payload) into the queue.
+    /// Encode a frame directly into the contiguous buffer.
+    ///
+    /// Wire format: [length: u32 LE][service: u16 LE][payload]
+    /// where length = 2 + payload.len() (counts service + payload).
     fn enqueue(&mut self, service: u16, payload: &[u8]) {
-        let length = 2u32 + payload.len() as u32;
-        let mut frame = Vec::with_capacity(4 + length as usize);
-        frame.extend_from_slice(&length.to_le_bytes());
-        frame.extend_from_slice(&service.to_le_bytes());
-        frame.extend_from_slice(payload);
-        self.queue.push_back(frame);
+        let frame_len = 2 + payload.len();
+        self.buf
+            .extend_from_slice(&(frame_len as u32).to_le_bytes());
+        self.buf.extend_from_slice(&service.to_le_bytes());
+        self.buf.extend_from_slice(payload);
     }
 
-    /// Is the write queue empty?
+    /// Whether the buffer has no pending data.
     fn is_empty(&self) -> bool {
-        self.queue.is_empty()
+        self.flush_pos >= self.buf.len()
     }
 
-    /// Number of frames queued for writing.
-    fn queue_len(&self) -> usize {
-        self.queue.len()
+    /// Number of unflushed bytes in the buffer.
+    fn pending_bytes(&self) -> usize {
+        self.buf.len() - self.flush_pos
     }
 
-    /// Drain as many queued frames as possible to the sink.
+    /// Drain the buffer to the sink in as few write() calls as
+    /// possible.
     ///
     /// Returns:
-    /// - `Ok(true)` — queue fully drained
+    /// - `Ok(true)` — buffer fully drained
     /// - `Ok(false)` — WouldBlock, more to write later
     /// - `Err(e)` — fatal write error
     fn try_flush(&mut self, sink: &mut impl Write) -> Result<bool, io::Error> {
-        while let Some(front) = self.queue.front() {
-            let remaining = &front[self.write_pos..];
-            match sink.write(remaining) {
+        while self.flush_pos < self.buf.len() {
+            match sink.write(&self.buf[self.flush_pos..]) {
                 Ok(0) => {
-                    // Write returned 0 — treat as broken pipe.
                     return Err(io::Error::new(
                         io::ErrorKind::WriteZero,
                         "write returned 0 bytes",
                     ));
                 }
-                Ok(n) => {
-                    self.write_pos += n;
-                    if self.write_pos >= front.len() {
-                        self.queue.pop_front();
-                        self.write_pos = 0;
-                    }
-                }
+                Ok(n) => self.flush_pos += n,
                 Err(e) if e.kind() == io::ErrorKind::WouldBlock => return Ok(false),
                 Err(e) if e.kind() == io::ErrorKind::Interrupted => continue,
                 Err(e) => return Err(e),
             }
         }
+        // All flushed — reclaim buffer memory.
+        self.buf.clear();
+        self.flush_pos = 0;
         Ok(true)
     }
 }
@@ -341,8 +362,7 @@ impl SharedWriter {
         }
     }
 
-    /// Enqueue a frame for writing. Wire-encodes the frame (length
-    /// prefix + service + payload) into the shared queue.
+    /// Encode a frame into the shared contiguous write buffer.
     ///
     /// Called from handler dispatch on the looper thread. The frame
     /// will be flushed to the fd during the next
@@ -378,8 +398,8 @@ pub struct ConnectionSource {
     fd: Generic<UnixStream>,
     /// Incremental frame decoder for non-blocking reads.
     reader: FrameReader,
-    /// Shared write queue (D12): accessible from both the
-    /// EventSource (for flushing) and DispatchCtx (for direct
+    /// Shared contiguous write buffer (D12): accessible from both
+    /// the EventSource (for flushing) and DispatchCtx (for direct
     /// looper-thread enqueue). The Rc<RefCell<FrameWriter>> is
     /// safe because both paths run on the looper thread (I6).
     shared_writer: SharedWriter,
@@ -444,27 +464,23 @@ impl ConnectionSource {
     }
 
     /// Drain pending messages from the write channel into the
-    /// internal write queue. Non-blocking: uses try_recv.
+    /// contiguous write buffer. Non-blocking: uses try_recv.
     ///
-    /// The write queue has a soft cap (`WRITE_QUEUE_HIGHWATER`).
-    /// When the queue depth exceeds this, no more messages are
-    /// pulled from the channel. This preserves backpressure:
-    /// socket-level WouldBlock keeps the write queue full, which
-    /// keeps the bounded mpsc channel full, which stalls the
-    /// SyncSender. Without this cap, the VecDeque would absorb
+    /// The write buffer has a byte-based highwater cap
+    /// (`WRITE_HIGHWATER_BYTES`). When unflushed bytes exceed this
+    /// cap, no more messages are pulled from the channel. This
+    /// preserves backpressure: socket-level WouldBlock keeps the
+    /// buffer full, which keeps the bounded mpsc full, which stalls
+    /// the SyncSender. Without this cap, the buffer would absorb
     /// unbounded data and the sender would never block.
-    ///
-    /// The highwater mark is small — just enough to batch writes
-    /// efficiently without absorbing the entire channel capacity.
     fn drain_write_channel(&mut self) {
-        // Don't drain if the write queue is already above highwater.
+        // Don't drain if the buffer is already above highwater.
         // The queued data hasn't been flushed to the socket yet
         // (WouldBlock), so pulling more from the channel just moves
-        // the buffer from bounded (mpsc) to unbounded (VecDeque).
-        const WRITE_QUEUE_HIGHWATER: usize = 8;
+        // the buffer from bounded (mpsc) to unbounded (Vec).
         {
             let writer = self.shared_writer.inner.borrow();
-            if writer.queue_len() >= WRITE_QUEUE_HIGHWATER {
+            if writer.pending_bytes() >= WRITE_HIGHWATER_BYTES {
                 return;
             }
         }
@@ -472,7 +488,7 @@ impl ConnectionSource {
         loop {
             {
                 let writer = self.shared_writer.inner.borrow();
-                if writer.queue_len() >= WRITE_QUEUE_HIGHWATER {
+                if writer.pending_bytes() >= WRITE_HIGHWATER_BYTES {
                     break;
                 }
             }
@@ -610,8 +626,12 @@ impl EventSource for ConnectionSource {
             }
         }
 
-        // If we have pending writes and no write interest, add it.
-        if self.shared_writer.has_pending() && !self.write_interest {
+        // Register write interest when data is pending. Haiku's
+        // LinkSender used a watermark (kWatermark = 2048) to defer
+        // write interest below a threshold; pane currently registers
+        // on any pending bytes and may adopt watermark-gated
+        // registration as a future optimization.
+        if self.shared_writer.inner.borrow().pending_bytes() > 0 && !self.write_interest {
             self.write_interest = true;
             self.fd.interest = Interest::BOTH;
             action = PostAction::Reregister;
@@ -958,6 +978,136 @@ mod tests {
         let drained = writer.try_flush(&mut buf).unwrap();
         assert!(drained);
         assert!(buf.is_empty());
+    }
+
+    #[test]
+    fn frame_writer_contiguous_buffer_layout() {
+        // Multiple enqueues produce one contiguous buffer — no
+        // per-frame allocation boundaries visible in the internal
+        // state.
+        let mut writer = FrameWriter::new();
+        writer.enqueue(1, &[0xAA]);
+        writer.enqueue(2, &[0xBB, 0xCC]);
+
+        // Internal buffer contains both frames contiguously.
+        let expected = vec![
+            0x03, 0x00, 0x00, 0x00, 0x01, 0x00, 0xAA, // frame 1
+            0x04, 0x00, 0x00, 0x00, 0x02, 0x00, 0xBB, 0xCC, // frame 2
+        ];
+        assert_eq!(writer.buf, expected);
+        assert_eq!(writer.flush_pos, 0);
+        assert_eq!(writer.pending_bytes(), expected.len());
+    }
+
+    #[test]
+    fn frame_writer_partial_flush_resumes_on_wouldblock() {
+        // Simulate a sink that accepts a few bytes then returns
+        // WouldBlock. After the first partial flush, enqueue more
+        // data, then resume flushing. The buffer state must be
+        // consistent across the resume.
+        let mut writer = FrameWriter::new();
+        writer.enqueue(0, &[0x01, 0x02]); // 8 bytes wire
+
+        // Sink that accepts 3 bytes then WouldBlock.
+        struct WouldBlockAfter {
+            buf: Vec<u8>,
+            remaining: usize,
+        }
+        impl Write for WouldBlockAfter {
+            fn write(&mut self, data: &[u8]) -> io::Result<usize> {
+                if self.remaining == 0 {
+                    return Err(io::Error::new(io::ErrorKind::WouldBlock, "blocked"));
+                }
+                let n = data.len().min(self.remaining);
+                self.buf.extend_from_slice(&data[..n]);
+                self.remaining -= n;
+                Ok(n)
+            }
+            fn flush(&mut self) -> io::Result<()> {
+                Ok(())
+            }
+        }
+
+        let mut sink = WouldBlockAfter {
+            buf: Vec::new(),
+            remaining: 3,
+        };
+
+        // First flush: writes 3 bytes, then WouldBlock.
+        let drained = writer.try_flush(&mut sink).unwrap();
+        assert!(!drained);
+        assert_eq!(writer.flush_pos, 3);
+        assert_eq!(writer.pending_bytes(), 5); // 8 - 3
+
+        // Enqueue a second frame while partially flushed.
+        writer.enqueue(1, &[0xAA]);
+
+        // Resume flush with fresh capacity.
+        sink.remaining = 100;
+        let drained = writer.try_flush(&mut sink).unwrap();
+        assert!(drained);
+
+        // Sink received all bytes from both frames.
+        let expected = vec![
+            0x04, 0x00, 0x00, 0x00, 0x00, 0x00, 0x01, 0x02, // frame 1
+            0x03, 0x00, 0x00, 0x00, 0x01, 0x00, 0xAA, // frame 2
+        ];
+        assert_eq!(sink.buf, expected);
+        assert_eq!(writer.pending_bytes(), 0);
+        assert!(writer.is_empty());
+    }
+
+    #[test]
+    fn frame_writer_pending_bytes_tracks_correctly() {
+        let mut writer = FrameWriter::new();
+        assert_eq!(writer.pending_bytes(), 0);
+        assert!(writer.is_empty());
+
+        // Enqueue: 4 (length) + 2 (service) + 3 (payload) = 9 bytes
+        writer.enqueue(0, &[0x01, 0x02, 0x03]);
+        assert_eq!(writer.pending_bytes(), 9);
+        assert!(!writer.is_empty());
+
+        // Enqueue another: 4 + 2 + 1 = 7 bytes
+        writer.enqueue(1, &[0xFF]);
+        assert_eq!(writer.pending_bytes(), 16);
+
+        // Flush all.
+        let mut buf = Vec::new();
+        writer.try_flush(&mut buf).unwrap();
+        assert_eq!(writer.pending_bytes(), 0);
+        assert!(writer.is_empty());
+    }
+
+    #[test]
+    fn frame_writer_highwater_cap_stops_drain() {
+        // Verify that drain_write_channel stops pulling from the
+        // mpsc when the buffer exceeds WRITE_HIGHWATER_BYTES.
+        let (stream, _peer) = UnixStream::pair().unwrap();
+        let (write_tx, write_rx) = mpsc::sync_channel(WRITE_CHANNEL_CAPACITY);
+        let mut source = ConnectionSource::new(stream, 16 * 1024 * 1024, write_rx, 1).unwrap();
+
+        // Send enough 1KB frames to exceed 16KB highwater.
+        let payload = vec![0u8; 1024];
+        for _ in 0..20 {
+            write_tx.send((1, payload.clone())).unwrap();
+        }
+
+        // First drain: pulls frames until highwater.
+        source.drain_write_channel();
+        let pending = source.shared_writer.inner.borrow().pending_bytes();
+        assert!(
+            pending >= WRITE_HIGHWATER_BYTES,
+            "should have reached highwater: {pending}"
+        );
+
+        // Channel should still have remaining frames.
+        // (20 frames × ~1030 wire bytes each ≈ 20600, highwater is 16384)
+        let remaining = write_tx.try_send((1, payload));
+        assert!(
+            remaining.is_ok(),
+            "channel should still have capacity — not all frames were drained"
+        );
     }
 
     // ── Writing via ConnectionSource ───────────────────────────

@@ -27,6 +27,7 @@
 use std::collections::{HashMap, HashSet};
 use std::sync::mpsc;
 use std::thread;
+use std::time::Instant;
 
 use calloop::channel::{self as calloop_channel, Channel};
 use calloop::timer::{TimeoutAction, Timer};
@@ -44,6 +45,20 @@ use pane_session::bridge::LooperMessage;
 /// Default watchdog timeout: 5 seconds. A handler callback that
 /// hasn't returned in this time is presumed stuck (I2/I3).
 const DEFAULT_WATCHDOG_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
+
+/// Maximum Phase 5 messages dispatched per batch tick before
+/// yielding to the calloop event loop. Prevents a burst of
+/// inbound requests/notifications from starving I/O processing
+/// (read, write flush, timer events).
+///
+/// Haiku precedent: ServerWindow capped at 70 msgs / 10ms
+/// (src/servers/app/ServerWindow.cpp:573). pane uses 64 msgs /
+/// 8ms — slightly tighter for 120fps headroom.
+const DEFAULT_BATCH_MSG_LIMIT: usize = 64;
+
+/// Maximum wall time for Phase 5 dispatch per batch tick.
+/// Checked between individual request/notification dispatches.
+const DEFAULT_BATCH_TIME_LIMIT: std::time::Duration = std::time::Duration::from_millis(8);
 
 /// Calloop-backed event loop with batch-ordered dispatch.
 ///
@@ -143,6 +158,13 @@ impl Batch {
             new_connection: None,
             channel_closed: false,
         }
+    }
+
+    /// Whether Phase 5 messages remain from a batch-limit yield.
+    /// Used by the main loop to decide between blocking and
+    /// non-blocking poll.
+    fn has_pending_phase5(&self) -> bool {
+        !self.requests.is_empty() || !self.notifications.is_empty()
     }
 
     fn is_empty(&self) -> bool {
@@ -463,8 +485,16 @@ impl<H: pane_proto::Handler + 'static> Looper<H> {
             // processing), not time waiting for events.
             heartbeat.beat();
 
-            // Block until at least one event is available.
-            if event_loop.dispatch(None, &mut state).is_err() {
+            // If the batch has leftover Phase 5 messages from a
+            // previous tick's batch limit, do a non-blocking poll
+            // to collect new events (I/O, timers) without blocking.
+            // Otherwise, block until at least one event arrives.
+            let timeout = if state.batch.has_pending_phase5() {
+                Some(std::time::Duration::ZERO)
+            } else {
+                None // block
+            };
+            if event_loop.dispatch(timeout, &mut state).is_err() {
                 self.core.run_destruction_reason(ExitReason::InfraError);
                 self.core.shutdown();
                 return ExitReason::InfraError;
@@ -607,15 +637,37 @@ impl<H: pane_proto::Handler + 'static> Looper<H> {
         }
 
         // Phase 5: Requests, then Notifications — new inbound work.
+        //
+        // Batch limit (Haiku precedent: ServerWindow 70 msgs / 10ms):
+        // after dispatching DEFAULT_BATCH_MSG_LIMIT messages or
+        // DEFAULT_BATCH_TIME_LIMIT wall time, stop and leave
+        // remaining messages in the batch for the next event loop
+        // iteration. This prevents a burst of inbound work from
+        // starving I/O processing (read, write flush, timer events).
+        //
+        // The limit applies to Phase 5 only — framework phases 0-4
+        // are typically small (replies, teardowns, lifecycle) and
+        // always complete to preserve ordering guarantees.
+        //
         // H3 (stale dispatch suppression): skip frames for sessions
-        // in revoked_sessions. The handler has released its interest
-        // in these sessions — dispatching would deliver to a dead
-        // binding.
-        let requests = std::mem::take(&mut state.batch.requests);
-        for (session_id, token, inner) in requests {
+        // in revoked_sessions. Skipped frames do not count toward
+        // the batch limit (they're free).
+        let mut dispatched: usize = 0;
+        let tick_start = Instant::now();
+
+        let mut requests = std::mem::take(&mut state.batch.requests);
+        let mut req_idx = 0;
+        while req_idx < requests.len() {
+            let session_id = requests[req_idx].0;
             if state.batch.revoked_sessions.contains(&session_id) {
-                continue; // H3: stale frame for revoked session
+                req_idx += 1;
+                continue; // H3: stale frame — free skip
             }
+
+            // Take inner bytes out of the vec entry to avoid clone.
+            let token = requests[req_idx].1;
+            let inner = std::mem::take(&mut requests[req_idx].2);
+
             // D12 Part 2: pass the shared writer so dispatch_request
             // creates DispatchCtx::with_writer for direct looper-thread
             // sends.
@@ -625,21 +677,60 @@ impl<H: pane_proto::Handler + 'static> Looper<H> {
                 inner,
                 state.shared_writer.as_ref(),
             );
+            req_idx += 1;
+            dispatched += 1;
+
             if let DispatchOutcome::Exit(reason) = outcome {
                 state.batch.clear();
                 return Some(reason);
+            }
+
+            // Check batch limit after each dispatch.
+            if dispatched >= DEFAULT_BATCH_MSG_LIMIT
+                || tick_start.elapsed() >= DEFAULT_BATCH_TIME_LIMIT
+            {
+                break;
             }
         }
-        let notifications = std::mem::take(&mut state.batch.notifications);
-        for (session_id, inner) in notifications {
+        // Return undispatched requests to the batch.
+        if req_idx < requests.len() {
+            requests.drain(..req_idx);
+            state.batch.requests = requests;
+            // Skip notifications this tick — requests have priority
+            // within Phase 5 (wire FIFO), and we've hit the limit.
+            return None;
+        }
+
+        let mut notifications = std::mem::take(&mut state.batch.notifications);
+        let mut notif_idx = 0;
+        while notif_idx < notifications.len() {
+            let session_id = notifications[notif_idx].0;
             if state.batch.revoked_sessions.contains(&session_id) {
-                continue; // H3: stale frame for revoked session
+                notif_idx += 1;
+                continue; // H3: stale frame — free skip
             }
+
+            let inner = std::mem::take(&mut notifications[notif_idx].1);
             let outcome = self.core.dispatch_notification(session_id, inner);
+            notif_idx += 1;
+            dispatched += 1;
+
             if let DispatchOutcome::Exit(reason) = outcome {
                 state.batch.clear();
                 return Some(reason);
             }
+
+            if dispatched >= DEFAULT_BATCH_MSG_LIMIT
+                || tick_start.elapsed() >= DEFAULT_BATCH_TIME_LIMIT
+            {
+                break;
+            }
+        }
+        // Return undispatched notifications to the batch.
+        if notif_idx < notifications.len() {
+            notifications.drain(..notif_idx);
+            state.batch.notifications = notifications;
+            return None;
         }
 
         // Phase 6: post-batch effects/snapshot — not yet implemented.
@@ -2578,5 +2669,127 @@ mod tests {
             pulse_events.len() >= 2,
             "timers must work alongside ConnectionSource. Got: {events:?}"
         );
+    }
+
+    // ── Batch limit tests ───────────────────────────────────
+
+    // ── Claim: all messages dispatch even when exceeding batch limit
+
+    #[test]
+    fn batch_limit_all_messages_dispatched() {
+        // Send > DEFAULT_BATCH_MSG_LIMIT (64) notifications in a
+        // single burst. The batch limit splits them across multiple
+        // ticks, but all must eventually dispatch. Channel close
+        // terminates after all messages are delivered.
+        let log = Arc::new(Mutex::new(Vec::new()));
+        let (looper, msg_tx, msg_rx) = setup_looper(log.clone());
+
+        let count = DEFAULT_BATCH_MSG_LIMIT + 20; // 84 messages
+        for i in 0..count {
+            let inner = tagged_payload(&TestMsg::Ping(format!("msg_{i}")));
+            let outer = wire_notification(inner);
+            msg_tx
+                .send(LooperMessage::Service {
+                    session_id: 3,
+                    payload: outer,
+                })
+                .unwrap();
+        }
+        drop(msg_tx);
+
+        let reason = looper.run(msg_rx);
+        assert_eq!(reason, ExitReason::Disconnected);
+
+        let events = log.lock().unwrap().clone();
+        let notif_events: Vec<_> = events
+            .iter()
+            .filter(|e| e.starts_with("notification:msg_"))
+            .collect();
+        assert_eq!(
+            notif_events.len(),
+            count,
+            "all {count} notifications must dispatch (batch limit splits \
+             across ticks, not drops). Got {}: {notif_events:?}",
+            notif_events.len(),
+        );
+    }
+
+    // ── Claim: framework phases complete before batch limit applies
+
+    #[test]
+    fn batch_limit_framework_phases_always_complete() {
+        // Send a Lifecycle(Ready) (phase 3) alongside a burst of
+        // notifications (phase 5) exceeding the batch limit. Ready
+        // must dispatch before any notification, and all notifications
+        // must eventually dispatch.
+        let log = Arc::new(Mutex::new(Vec::new()));
+        let (looper, msg_tx, msg_rx) = setup_looper(log.clone());
+
+        // Phase 3 event.
+        msg_tx
+            .send(LooperMessage::Control(ControlMessage::Lifecycle(
+                LifecycleMessage::Ready,
+            )))
+            .unwrap();
+
+        // Phase 5: > limit notifications.
+        let count = DEFAULT_BATCH_MSG_LIMIT + 10;
+        for i in 0..count {
+            let inner = tagged_payload(&TestMsg::Ping(format!("n_{i}")));
+            let outer = wire_notification(inner);
+            msg_tx
+                .send(LooperMessage::Service {
+                    session_id: 3,
+                    payload: outer,
+                })
+                .unwrap();
+        }
+        drop(msg_tx);
+
+        let reason = looper.run(msg_rx);
+        assert_eq!(reason, ExitReason::Disconnected);
+
+        let events = log.lock().unwrap().clone();
+
+        // Ready (phase 3) must dispatch before any notification.
+        let ready_pos = events
+            .iter()
+            .position(|e| e == "ready")
+            .expect("ready must dispatch");
+        let first_notif_pos = events
+            .iter()
+            .position(|e| e.starts_with("notification:n_"))
+            .expect("at least one notification must dispatch");
+        assert!(
+            ready_pos < first_notif_pos,
+            "Ready (phase 3) must dispatch before Phase 5. Got: {events:?}"
+        );
+
+        // All notifications dispatched.
+        let notif_count = events
+            .iter()
+            .filter(|e| e.starts_with("notification:n_"))
+            .count();
+        assert_eq!(
+            notif_count, count,
+            "all notifications must eventually dispatch"
+        );
+    }
+
+    // ── Claim: batch has_pending_phase5 tracks correctly
+
+    #[test]
+    fn batch_has_pending_phase5() {
+        let mut batch = Batch::new();
+        assert!(!batch.has_pending_phase5());
+
+        batch.requests.push((1, 0, vec![]));
+        assert!(batch.has_pending_phase5());
+
+        batch.requests.clear();
+        assert!(!batch.has_pending_phase5());
+
+        batch.notifications.push((1, vec![]));
+        assert!(batch.has_pending_phase5());
     }
 }
