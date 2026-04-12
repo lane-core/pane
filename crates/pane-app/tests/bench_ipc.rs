@@ -343,10 +343,8 @@ fn run_request_reply_latency() {
             assert_eq!(session, provider_session);
             match frame {
                 ServiceFrame::Request { token, payload } => {
-                    provider.send_service(
-                        provider_session,
-                        &ServiceFrame::Reply { token, payload },
-                    );
+                    provider
+                        .send_service(provider_session, &ServiceFrame::Reply { token, payload });
                 }
                 other => panic!("provider: expected Request, got {other:?}"),
             }
@@ -646,8 +644,7 @@ fn run_connection_source_write_paths() {
     let direct_result = {
         let (source_stream, mut peer_stream) = UnixStream::pair().unwrap();
         // The direct path still needs a write_rx, but we won't use it.
-        let (_write_tx, write_rx) =
-            mpsc::sync_channel::<pane_session::bridge::WriteMessage>(1);
+        let (_write_tx, write_rx) = mpsc::sync_channel::<pane_session::bridge::WriteMessage>(1);
 
         let source = ConnectionSource::new(source_stream, 16 * 1024 * 1024, write_rx, 2).unwrap();
         let shared_writer = source.shared_writer();

@@ -88,9 +88,7 @@ Analysis clusters are hub-and-spokes. Start at the hub, descend to spokes.
 - [`analysis/duploid/_hub`](analysis/duploid/_hub.md) — polarity structure, non-associativity, writer monad + mixed optic, shift operator
 - [`analysis/verification/_hub`](analysis/verification/_hub.md) — invariant audits (I1–I13, S1–S6), spec fidelity, test coverage, fs scripting validation, namespace testing
 
-Standalone analysis:
-
-- [`analysis/shell_sequent_calculus`](analysis/shell_sequent_calculus.md) — sequent calculus grounding for pane-terminal / psh integration (Phase 2+)
+Standalone analysis:\n\n- [`analysis/plan9_test_heritage`](analysis/plan9_test_heritage.md) — 24 Plan 9-derived tests (T1–T24): Tflush/Cancel, Tversion/handshake, fid/ServiceHandle, freefidpool/disconnect, walk/DeclareInterest\n\n- [`analysis/performance_plan9_precedents`](analysis/performance_plan9_precedents.md) — dispatch threading, routing hop, write batching: Plan 9 precedents + pane recommendations\n- [`analysis/shell_sequent_calculus`](analysis/shell_sequent_calculus.md) — sequent calculus grounding for pane-terminal / psh integration (Phase 2+)
 
 ## When citing Haiku / BeOS reference
 

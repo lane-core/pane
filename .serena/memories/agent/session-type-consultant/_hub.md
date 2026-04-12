@@ -75,6 +75,12 @@ The `reference_eact_paper` content is at
 this folder is provenance only.
 
 Recent analysis:
+- `eact_mpst_pane_session_analysis` — CRITICAL. Maps pane onto
+  EAct formalism, defines active-phase global type, specifies
+  pane-session's five abstractions (ActiveSession, NonBlockingSend,
+  per-session flow control, failure cascade, session lifecycle),
+  shows three bugs impossible by construction, scopes par to
+  handshake only. Four new invariants: N1-N4.
 - `architecture_abc_analysis` — verdict: Architecture C
   (looper-first + non-blocking server) sound, only D2 amend.
   Frame drop policy, write path simplification, D1-D11 compat.

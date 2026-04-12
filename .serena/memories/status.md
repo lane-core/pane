@@ -3,18 +3,18 @@ type: status
 status: current
 supersedes: [archive/status/2026-04-06, pane/current_state]
 created: 2026-04-10
-last_updated: 2026-04-11T3
+last_updated: 2026-04-12
 importance: high
 keywords: [status, crates, tests, calloop, looper, invariants, send_and_wait, watchdog, NLnet]
 agents: [all]
 ---
 
-# Status (2026-04-11)
+# Status (2026-04-12)
 
 ## Where we are
 
-Six crates, 349 regular tests + 33 stress. All
-invariants verified or detection-enforced (19 of 19).
+Six crates, 349 regular tests + 36 stress + 6 benchmarks. All
+invariants verified or detection-enforced (22 of 22).
 
 | Crate | Role | Tests |
 |---|---|---|
@@ -24,6 +24,24 @@ invariants verified or detection-enforced (19 of 19).
 | pane-fs | Filesystem namespace | 5 |
 | pane-hello | First running pane app (binary) | 0 |
 | pane-notify | Filesystem notification abstraction | preserved from prototype |
+
+### Landed since 2026-04-12
+
+- **D12: Non-blocking write architecture** (`bdf130e`) — Server
+  per-connection writer threads (actor enqueues via try_send, never
+  blocks, overflow → connection teardown). Direct FrameWriter for
+  looper-thread sends (SharedWriter Rc<RefCell<FrameWriter>> shared
+  between dispatch and EventSource, 18% faster than mpsc). Builder
+  channel verified unbounded.
+- **ConnectionSource before_sleep + write highwater** (`a33dcf5`)
+  — calloop lifecycle hook flushes write channel between polls.
+  VecDeque highwater cap (8 frames) enables backpressure propagation.
+  Bridge wireup stress test: 200×4KB frames, publisher measurably
+  stalled at 738ms (backpressure confirmed).
+- **IPC benchmark suite** (`0e6cb65`) — 4 benchmarks over real
+  UnixStream: notification throughput (201K msg/sec at 64B, 20×
+  D-Bus), request/reply latency (20.3μs P50), fan-out (155K at
+  N=50), direct write path (+18% vs mpsc).
 
 ### Landed since 2026-04-11
 
@@ -176,7 +194,8 @@ Handles<Routing>.
 
 ```
 cargo test --workspace          # 349 regular tests
-cargo test -- --ignored         # 33 stress tests
+cargo test -- --ignored         # 36 stress tests
+cargo test --test bench_ipc --release -- --ignored --nocapture bench_all  # benchmarks
 cargo fmt
 cargo clippy --workspace        # zero warnings
 cargo run -p pane-hello         # canonical app
