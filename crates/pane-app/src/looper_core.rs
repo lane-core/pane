@@ -493,6 +493,33 @@ impl<H: pane_proto::Handler> LooperCore<H> {
             .fail_session(session_id, &mut self.handler, &self.messenger);
     }
 
+    /// Notify the handler that a subscriber connected to a provided
+    /// service. Dispatched in phase 3 (Lifecycle) after teardowns.
+    ///
+    /// Design heritage: Haiku's WatchingService registered watchers
+    /// on InterestAccepted
+    /// (src/servers/registrar/WatchingService.cpp:66-228).
+    /// Plan 9's plumber registered fids on open
+    /// (reference/plan9/man/4/plumber).
+    pub(crate) fn dispatch_subscriber_connected(&mut self, session_id: u16) -> DispatchOutcome {
+        self.dispatch(|h| h.subscriber_connected(session_id))
+    }
+
+    /// Notify the handler that a subscriber disconnected from a
+    /// provided service. Dispatched in phase 2 after fail_session.
+    ///
+    /// Design heritage: Haiku's WatchingService detected dead
+    /// watchers reactively on send failure
+    /// (src/servers/registrar/Watcher.cpp:56-93). pane notifies
+    /// the provider proactively via this callback.
+    pub(crate) fn dispatch_subscriber_disconnected(
+        &mut self,
+        session_id: u16,
+        reason: pane_proto::control::TeardownReason,
+    ) -> DispatchOutcome {
+        self.dispatch(|h| h.subscriber_disconnected(session_id, reason))
+    }
+
     /// Dispatch a PaneExited death notification to the handler.
     pub(crate) fn dispatch_pane_exited(
         &mut self,

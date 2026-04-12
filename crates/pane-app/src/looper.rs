@@ -83,6 +83,8 @@ struct Batch {
     teardowns: Vec<(u16, TeardownReason)>,
     /// Phase 3: PaneExited — death notifications.
     pane_exited: Vec<(Address, ExitReason)>,
+    /// Phase 3: SubscriberConnected — provider-side interest acceptance.
+    subscriber_connected: Vec<u16>,
     /// Phase 3: Lifecycle — framework control.
     lifecycle: Vec<pane_proto::protocols::lifecycle::LifecycleMessage>,
     /// Phase 5: Request — new inbound protocol work.
@@ -102,6 +104,7 @@ impl Batch {
             failed: Vec::new(),
             teardowns: Vec::new(),
             pane_exited: Vec::new(),
+            subscriber_connected: Vec::new(),
             lifecycle: Vec::new(),
             requests: Vec::new(),
             notifications: Vec::new(),
@@ -115,6 +118,7 @@ impl Batch {
             && self.failed.is_empty()
             && self.teardowns.is_empty()
             && self.pane_exited.is_empty()
+            && self.subscriber_connected.is_empty()
             && self.lifecycle.is_empty()
             && self.requests.is_empty()
             && self.notifications.is_empty()
@@ -133,9 +137,16 @@ impl Batch {
             LooperMessage::Control(ControlMessage::PaneExited { address, reason }) => {
                 self.pane_exited.push((address, reason));
             }
+            LooperMessage::Control(ControlMessage::InterestAccepted { session_id, .. }) => {
+                // Provider-side: a subscriber connected to one of our
+                // provided services. Consumer-side InterestAccepted is
+                // consumed by PaneBuilder during setup — any that reach
+                // the active dispatch loop are for the provider.
+                self.subscriber_connected.push(session_id);
+            }
             LooperMessage::Control(_) => {
                 // Framework-internal control messages (DeclareInterest,
-                // InterestAccepted, etc.) — handled during setup, not
+                // InterestDeclined, etc.) — handled during setup, not
                 // during the active dispatch loop.
             }
             LooperMessage::Service {
@@ -447,17 +458,33 @@ impl<H: pane_proto::Handler + 'static> Looper<H> {
         }
 
         // Phase 2: ServiceTeardown — fail remaining entries for
-        // torn-down sessions. Must happen after Reply/Failed so
-        // that replies in transit are not prematurely failed.
+        // torn-down sessions, then notify the handler (provider-side
+        // subscriber_disconnected).
         let teardowns = std::mem::take(&mut batch.teardowns);
         for (session_id, reason) in teardowns {
-            self.core.dispatch_teardown(session_id, reason);
+            self.core.dispatch_teardown(session_id, reason.clone());
+            let outcome = self
+                .core
+                .dispatch_subscriber_disconnected(session_id, reason);
+            if let DispatchOutcome::Exit(reason) = outcome {
+                batch.clear();
+                return Some(reason);
+            }
         }
 
-        // Phase 3: PaneExited, then Lifecycle — framework control.
+        // Phase 3: PaneExited, then SubscriberConnected, then
+        // Lifecycle — framework control.
         let pane_exited = std::mem::take(&mut batch.pane_exited);
         for (address, reason) in pane_exited {
             let outcome = self.core.dispatch_pane_exited(address, reason);
+            if let DispatchOutcome::Exit(reason) = outcome {
+                batch.clear();
+                return Some(reason);
+            }
+        }
+        let subscriber_connected = std::mem::take(&mut batch.subscriber_connected);
+        for session_id in subscriber_connected {
+            let outcome = self.core.dispatch_subscriber_connected(session_id);
             if let DispatchOutcome::Exit(reason) = outcome {
                 batch.clear();
                 return Some(reason);
@@ -525,6 +552,7 @@ impl Batch {
         self.failed.clear();
         self.teardowns.clear();
         self.pane_exited.clear();
+        self.subscriber_connected.clear();
         self.lifecycle.clear();
         self.requests.clear();
         self.notifications.clear();
@@ -597,6 +625,22 @@ mod tests {
                 .lock()
                 .unwrap()
                 .push(format!("pane_exited:{}", address.pane_id));
+            Flow::Continue
+        }
+
+        fn subscriber_connected(&mut self, session_id: u16) -> Flow {
+            self.log
+                .lock()
+                .unwrap()
+                .push(format!("subscriber_connected:{session_id}"));
+            Flow::Continue
+        }
+
+        fn subscriber_disconnected(&mut self, session_id: u16, reason: TeardownReason) -> Flow {
+            self.log
+                .lock()
+                .unwrap()
+                .push(format!("subscriber_disconnected:{session_id}:{reason:?}"));
             Flow::Continue
         }
     }
@@ -967,7 +1011,8 @@ mod tests {
         let (timer_tx, timer_rx) = calloop_channel::channel::<TimerControl>();
         let (sync_tx, _sync_rx) = calloop_channel::channel::<crate::send_and_wait::SyncRequest>();
         let looper_thread = std::sync::Arc::new(std::sync::OnceLock::new());
-        let messenger = crate::Messenger::new(timer_tx.clone(), sync_tx, looper_thread);
+        let messenger =
+            crate::Messenger::new(timer_tx.clone(), sync_tx, write_tx.clone(), looper_thread);
 
         let handler = PulseTestHandler {
             log,
@@ -1118,7 +1163,7 @@ mod tests {
         let (timer_tx, _timer_rx) = calloop_channel::channel::<TimerControl>();
         let (sync_tx, sync_rx) = calloop_channel::channel::<crate::send_and_wait::SyncRequest>();
         let looper_thread = std::sync::Arc::new(std::sync::OnceLock::new());
-        let messenger = crate::Messenger::new(timer_tx, sync_tx, looper_thread);
+        let messenger = crate::Messenger::new(timer_tx, sync_tx, write_tx.clone(), looper_thread);
 
         let log = Arc::new(Mutex::new(Vec::new()));
         let handler = BatchTestHandler { log };
@@ -1213,9 +1258,9 @@ mod tests {
         let (sync_tx, _) = calloop_channel::channel::<crate::send_and_wait::SyncRequest>();
         let looper_thread = std::sync::Arc::new(std::sync::OnceLock::new());
         looper_thread.set(thread::current().id()).unwrap();
-        let messenger = crate::Messenger::new(timer_tx, sync_tx, looper_thread);
-
         let (write_tx, _write_rx) = std::sync::mpsc::sync_channel(16);
+        let messenger = crate::Messenger::new(timer_tx, sync_tx, write_tx.clone(), looper_thread);
+
         let handle = ServiceHandle::<SawProto>::with_channel(1, write_tx);
 
         let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
@@ -1359,7 +1404,9 @@ mod tests {
         let (timer_tx, _) = calloop_channel::channel::<TimerControl>();
         let (sync_tx, sync_rx) = calloop_channel::channel::<crate::send_and_wait::SyncRequest>();
         let looper_thread_lock = std::sync::Arc::new(std::sync::OnceLock::new());
-        let messenger = crate::Messenger::new(timer_tx, sync_tx, looper_thread_lock);
+        let (write_tx, _write_rx) = std::sync::mpsc::sync_channel(16);
+        let messenger =
+            crate::Messenger::new(timer_tx, sync_tx, write_tx.clone(), looper_thread_lock);
 
         // Drop the receiver to close the channel.
         drop(sync_rx);
@@ -1374,5 +1421,193 @@ mod tests {
         );
 
         assert_eq!(result.unwrap_err(), SendAndWaitError::Disconnected);
+    }
+
+    // ── Provider-side subscriber callbacks ───────────────────
+
+    #[test]
+    fn interest_accepted_triggers_subscriber_connected() {
+        // InterestAccepted arriving during the active dispatch loop
+        // (after setup) is for the provider. It must trigger
+        // handler.subscriber_connected with the session_id.
+        let log = Arc::new(Mutex::new(Vec::new()));
+        let (looper, msg_tx, msg_rx) = setup_looper(log.clone());
+
+        msg_tx
+            .send(LooperMessage::Control(ControlMessage::InterestAccepted {
+                service_uuid: uuid::Uuid::nil(),
+                session_id: 42,
+                version: 1,
+            }))
+            .unwrap();
+        msg_tx
+            .send(LooperMessage::Control(ControlMessage::Lifecycle(
+                LifecycleMessage::CloseRequested,
+            )))
+            .unwrap();
+        drop(msg_tx);
+
+        let reason = looper.run(msg_rx);
+        assert_eq!(reason, ExitReason::Graceful);
+
+        let events = log.lock().unwrap().clone();
+        assert!(
+            events.contains(&"subscriber_connected:42".to_string()),
+            "InterestAccepted must trigger subscriber_connected. Got: {events:?}"
+        );
+    }
+
+    #[test]
+    fn service_teardown_triggers_subscriber_disconnected() {
+        // ServiceTeardown must trigger subscriber_disconnected
+        // with the session_id and TeardownReason.
+        let log = Arc::new(Mutex::new(Vec::new()));
+        let (looper, msg_tx, msg_rx) = setup_looper(log.clone());
+
+        msg_tx
+            .send(LooperMessage::Control(ControlMessage::ServiceTeardown {
+                session_id: 7,
+                reason: TeardownReason::ServiceRevoked,
+            }))
+            .unwrap();
+        msg_tx
+            .send(LooperMessage::Control(ControlMessage::Lifecycle(
+                LifecycleMessage::CloseRequested,
+            )))
+            .unwrap();
+        drop(msg_tx);
+
+        let reason = looper.run(msg_rx);
+        assert_eq!(reason, ExitReason::Graceful);
+
+        let events = log.lock().unwrap().clone();
+        assert!(
+            events.contains(&"subscriber_disconnected:7:ServiceRevoked".to_string()),
+            "ServiceTeardown must trigger subscriber_disconnected. Got: {events:?}"
+        );
+    }
+
+    #[test]
+    fn subscriber_connected_dispatches_in_phase_3() {
+        // subscriber_connected (phase 3) must dispatch after
+        // teardowns (phase 2) and before notifications (phase 5).
+        // Use channel close for exit (not CloseRequested, which
+        // exits in phase 3 before notifications in phase 5).
+        let log = Arc::new(Mutex::new(Vec::new()));
+        let (looper, msg_tx, msg_rx) = setup_looper(log.clone());
+
+        let inner = tagged_payload(&TestMsg::Ping("after_connect".into()));
+        let outer = wire_notification(inner);
+        msg_tx
+            .send(LooperMessage::Control(ControlMessage::InterestAccepted {
+                service_uuid: uuid::Uuid::nil(),
+                session_id: 10,
+                version: 1,
+            }))
+            .unwrap();
+        msg_tx
+            .send(LooperMessage::Service {
+                session_id: 3,
+                payload: outer,
+            })
+            .unwrap();
+        // Channel close terminates the loop after all phases.
+        drop(msg_tx);
+
+        let reason = looper.run(msg_rx);
+        assert_eq!(reason, ExitReason::Disconnected);
+
+        let events = log.lock().unwrap().clone();
+        let connect_pos = events
+            .iter()
+            .position(|e| e == "subscriber_connected:10")
+            .expect("subscriber_connected must be logged");
+        let notif_pos = events
+            .iter()
+            .position(|e| e == "notification:after_connect")
+            .expect("notification must be logged");
+        assert!(
+            connect_pos < notif_pos,
+            "subscriber_connected (phase 3) must dispatch before \
+             notification (phase 5). Got: {events:?}"
+        );
+    }
+
+    #[test]
+    fn teardown_dispatches_subscriber_disconnected_before_subscriber_connected() {
+        // In the same batch: teardown (phase 2) dispatches
+        // subscriber_disconnected before InterestAccepted (phase 3)
+        // dispatches subscriber_connected.
+        let log = Arc::new(Mutex::new(Vec::new()));
+        let (looper, msg_tx, msg_rx) = setup_looper(log.clone());
+
+        msg_tx
+            .send(LooperMessage::Control(ControlMessage::ServiceTeardown {
+                session_id: 5,
+                reason: TeardownReason::ConnectionLost,
+            }))
+            .unwrap();
+        msg_tx
+            .send(LooperMessage::Control(ControlMessage::InterestAccepted {
+                service_uuid: uuid::Uuid::nil(),
+                session_id: 6,
+                version: 1,
+            }))
+            .unwrap();
+        msg_tx
+            .send(LooperMessage::Control(ControlMessage::Lifecycle(
+                LifecycleMessage::CloseRequested,
+            )))
+            .unwrap();
+        drop(msg_tx);
+
+        let reason = looper.run(msg_rx);
+        assert_eq!(reason, ExitReason::Graceful);
+
+        let events = log.lock().unwrap().clone();
+        let disconnect_pos = events
+            .iter()
+            .position(|e| e == "subscriber_disconnected:5:ConnectionLost")
+            .expect("subscriber_disconnected must be logged");
+        let connect_pos = events
+            .iter()
+            .position(|e| e == "subscriber_connected:6")
+            .expect("subscriber_connected must be logged");
+        assert!(
+            disconnect_pos < connect_pos,
+            "subscriber_disconnected (phase 2) must dispatch before \
+             subscriber_connected (phase 3). Got: {events:?}"
+        );
+    }
+
+    #[test]
+    fn subscriber_sender_push_via_messenger() {
+        // Full loop: provider gets subscriber_connected, constructs
+        // SubscriberSender via Messenger, pushes notification through
+        // it. The notification bytes arrive on the write channel.
+        let (write_tx, write_rx) = std::sync::mpsc::sync_channel(16);
+        let messenger = {
+            let (timer_tx, _) = calloop_channel::channel::<TimerControl>();
+            let (sync_tx, _) = calloop_channel::channel::<crate::send_and_wait::SyncRequest>();
+            let looper_thread = std::sync::Arc::new(std::sync::OnceLock::new());
+            crate::Messenger::new(timer_tx, sync_tx, write_tx, looper_thread)
+        };
+
+        let sender: crate::SubscriberSender<TestProto> = messenger.subscriber_sender(42);
+        sender.send_notification(TestMsg::Ping("pushed".into()));
+
+        let (session_id, payload) = write_rx.recv().expect("expected frame");
+        assert_eq!(session_id, 42);
+
+        let frame: ServiceFrame = postcard::from_bytes(&payload).expect("ServiceFrame deser");
+        match frame {
+            ServiceFrame::Notification { payload } => {
+                let expected_tag = TestProto::service_id().tag();
+                assert_eq!(payload[0], expected_tag);
+                let msg: TestMsg = postcard::from_bytes(&payload[1..]).expect("inner deser");
+                assert!(matches!(msg, TestMsg::Ping(s) if s == "pushed"));
+            }
+            other => panic!("expected Notification, got {other:?}"),
+        }
     }
 }

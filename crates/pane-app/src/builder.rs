@@ -257,7 +257,12 @@ impl<H: Handler> PaneBuilder<H> {
         // (for I8 checks) and Looper (which sets it during run()).
         let looper_thread = std::sync::Arc::new(std::sync::OnceLock::new());
 
-        let messenger = crate::Messenger::new(timer_tx, sync_tx, looper_thread);
+        let messenger = crate::Messenger::new(
+            timer_tx,
+            sync_tx,
+            write_tx_for_looper.clone(),
+            looper_thread,
+        );
 
         let mut core = LooperCore::with_service_dispatch(
             handler,

@@ -10,6 +10,7 @@
 //! keeps this as quit_requested(&self) -> bool.
 
 use crate::address::Address;
+use crate::control::TeardownReason;
 use crate::exit_reason::ExitReason;
 use crate::flow::Flow;
 use crate::handles::Handles;
@@ -49,6 +50,50 @@ pub trait Handler: Send + 'static {
     /// `WatchingService::NotifyWatchers()`
     /// (src/servers/registrar/WatchingService.cpp:204-228).
     fn pane_exited(&mut self, _pane: Address, _reason: ExitReason) -> Flow {
+        Flow::Continue
+    }
+
+    /// Called when a subscriber connects to a service this pane
+    /// provides. The session_id identifies the subscriber's
+    /// service session.
+    ///
+    /// Override to track subscribers for push-based notification
+    /// patterns — construct a `SubscriberSender<P>` via
+    /// `Messenger::subscriber_sender()` and store it.
+    ///
+    /// Default: continues the event loop.
+    ///
+    /// # Haiku
+    ///
+    /// `WatchingService` registered watchers on `InterestAccepted`
+    /// (src/servers/registrar/WatchingService.cpp:66-228).
+    ///
+    /// # Plan 9
+    ///
+    /// The plumber's `open` on a port file registered the fid as
+    /// a subscriber (reference/plan9/man/4/plumber). pane's
+    /// `DeclareInterest` is the `open` equivalent.
+    fn subscriber_connected(&mut self, _session_id: u16) -> Flow {
+        Flow::Continue
+    }
+
+    /// Called when a subscriber disconnects from a provided service
+    /// (revoked interest or connection lost).
+    ///
+    /// Override to clean up subscriber state (e.g., remove a
+    /// stored `SubscriberSender`). The reason distinguishes
+    /// voluntary revocation (`ServiceRevoked`) from connection
+    /// failure (`ConnectionLost`).
+    ///
+    /// Default: continues the event loop.
+    ///
+    /// # Haiku
+    ///
+    /// `WatchingService` detected dead watchers reactively on
+    /// send failure and cleaned up
+    /// (src/servers/registrar/Watcher.cpp:56-93). pane notifies
+    /// the provider proactively via this callback.
+    fn subscriber_disconnected(&mut self, _session_id: u16, _reason: TeardownReason) -> Flow {
         Flow::Continue
     }
 
@@ -105,6 +150,11 @@ mod tests {
         assert_eq!(h.pulse(), Flow::Continue);
         assert_eq!(
             h.pane_exited(crate::Address::local(1), crate::ExitReason::Graceful,),
+            Flow::Continue,
+        );
+        assert_eq!(h.subscriber_connected(1), Flow::Continue);
+        assert_eq!(
+            h.subscriber_disconnected(1, TeardownReason::ServiceRevoked),
             Flow::Continue,
         );
         assert!(h.quit_requested());

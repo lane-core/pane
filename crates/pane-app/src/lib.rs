@@ -22,6 +22,7 @@ pub mod pane;
 pub mod send_and_wait;
 pub mod service_dispatch;
 pub mod service_handle;
+pub mod subscriber_sender;
 pub mod timer;
 pub(crate) mod watchdog;
 
@@ -35,6 +36,7 @@ pub use messenger::Messenger;
 pub use pane::Pane;
 pub use send_and_wait::SendAndWaitError;
 pub use service_handle::{wire_reply_port, ServiceHandle};
+pub use subscriber_sender::SubscriberSender;
 pub use timer::TimerToken;
 
 // Re-export pane-proto types for convenience

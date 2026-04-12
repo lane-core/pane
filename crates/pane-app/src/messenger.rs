@@ -39,6 +39,9 @@ pub struct Messenger {
     /// The looper installs dispatch entries and sends wire frames
     /// on behalf of the blocked caller.
     sync_tx: calloop::channel::Sender<SyncRequest>,
+    /// Write channel to the connection's writer thread. Used by
+    /// subscriber_sender() to construct SubscriberSender<P> handles.
+    write_tx: std::sync::mpsc::SyncSender<(u16, Vec<u8>)>,
     /// The looper thread's ThreadId, set during Looper::run().
     /// Used by send_and_wait for I8 enforcement: callers on the
     /// looper thread must not block (deadlock).
@@ -46,29 +49,32 @@ pub struct Messenger {
 }
 
 impl Messenger {
-    /// Construct a Messenger with real timer and sync channels.
+    /// Construct a Messenger with real timer, sync, and write channels.
     /// Called by the builder during setup.
     pub(crate) fn new(
         timer_tx: calloop::channel::Sender<TimerControl>,
         sync_tx: calloop::channel::Sender<SyncRequest>,
+        write_tx: std::sync::mpsc::SyncSender<(u16, Vec<u8>)>,
         looper_thread: Arc<OnceLock<ThreadId>>,
     ) -> Self {
         Messenger {
             self_address: Address::local(0),
             timer_tx,
             sync_tx,
+            write_tx,
             looper_thread,
         }
     }
 
     /// Test-only constructor with dummy channels.
-    /// Timer and sync sends silently fail — correct for tests
-    /// that don't exercise those paths.
+    /// Timer, sync, and write sends silently fail — correct for
+    /// tests that don't exercise those paths.
     #[doc(hidden)]
     pub fn stub() -> Self {
         let (timer_tx, _) = calloop::channel::channel::<TimerControl>();
         let (sync_tx, _) = calloop::channel::channel::<SyncRequest>();
-        Self::new(timer_tx, sync_tx, Arc::new(OnceLock::new()))
+        let (write_tx, _) = std::sync::mpsc::sync_channel(1);
+        Self::new(timer_tx, sync_tx, write_tx, Arc::new(OnceLock::new()))
     }
 
     /// This pane's address. Extractable, sendable to others
@@ -137,6 +143,20 @@ impl Messenger {
     /// during run() before entering the event loop.
     pub(crate) fn looper_thread_lock(&self) -> &Arc<OnceLock<ThreadId>> {
         &self.looper_thread
+    }
+
+    /// Construct a provider-side notification sender for the given
+    /// subscriber session. Call this from `subscriber_connected` to
+    /// obtain a handle for pushing notifications to the subscriber.
+    ///
+    /// The returned sender shares the connection's write channel.
+    /// It becomes invalid when the subscriber disconnects — sends
+    /// are best-effort after that point.
+    pub fn subscriber_sender<P: pane_proto::Protocol>(
+        &self,
+        session_id: u16,
+    ) -> crate::subscriber_sender::SubscriberSender<P> {
+        crate::subscriber_sender::SubscriberSender::new(session_id, self.write_tx.clone())
     }
 }
 
