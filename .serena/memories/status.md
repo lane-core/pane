@@ -3,7 +3,7 @@ type: status
 status: current
 supersedes: [archive/status/2026-04-06, pane/current_state]
 created: 2026-04-10
-last_updated: 2026-04-10
+last_updated: 2026-04-11
 importance: high
 keywords: [status, crates, tests, calloop, looper, invariants, send_and_wait, watchdog, NLnet]
 agents: [all]
@@ -13,14 +13,22 @@ agents: [all]
 
 ## Where we are
 
-Six crates, 246 regular tests + 28 stress + 5 integration. All
+Six crates, 251 regular tests + 28 stress + 5 integration. All
 invariants verified or detection-enforced (19 of 19).
 
 | Crate | Role | Tests |
 |---|---|---|
 | pane-proto | Protocol vocabulary, no IO | 99 |
+
+### Landed since 2026-04-10
+
+- **Provider-side API** (`da75432`) — SubscriberSender<P> type
+  (sending-only, no lifecycle ownership), Handler callbacks
+  subscriber_connected/subscriber_disconnected, batch routing
+  of InterestAccepted (phase 3) and ServiceTeardown (phase 2),
+  Messenger::subscriber_sender<P>() factory. 9 new tests.
 | pane-session | Session-typed IPC, transport, framing, server | 51 + 21 stress |
-| pane-app | Actor framework, dispatch, looper | 91 + 7 stress + 5 integration |
+| pane-app | Actor framework, dispatch, looper | 96 + 7 stress + 5 integration |
 | pane-fs | Filesystem namespace | 5 |
 | pane-hello | First running pane app (binary) | 0 |
 | pane-notify | Filesystem notification abstraction | preserved from prototype |
