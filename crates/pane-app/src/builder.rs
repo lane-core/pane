@@ -297,6 +297,14 @@ impl<H: Handler> PaneBuilder<H> {
                     // framework-internal, skip.
                     DispatchOutcome::Continue
                 }
+                LooperMessage::NewConnection { ack, .. } => {
+                    // C5 stub: NewConnection during buffered drain
+                    // should not happen (handshake completes after
+                    // looper starts). Drop the ack sender — bridge
+                    // thread receives RecvError (failed registration).
+                    drop(ack);
+                    DispatchOutcome::Continue
+                }
             };
             if let DispatchOutcome::Exit(reason) = outcome {
                 core.shutdown();

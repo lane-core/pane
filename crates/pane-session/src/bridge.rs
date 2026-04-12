@@ -29,6 +29,8 @@
 //! the Tversion...Tattach sequence was the handshake over a
 //! verified fd.
 
+use std::os::unix::net::UnixStream;
+
 use crate::frame::{Frame, FrameCodec};
 use crate::handshake::{ClientHandshake, Hello, Rejection, ServerHandshake, Welcome};
 use crate::transport::{ConnectError, Transport};
@@ -66,7 +68,51 @@ pub enum LooperMessage {
     /// the channel topology. Until then, ServiceHandle::Drop sends
     /// RevokeInterest directly via try_send on the data channel.
     LocalRevoke { session_id: u16 },
+    /// Handshake completed on a bridge thread — hand the live
+    /// connection to the Looper for registration as a calloop
+    /// EventSource (D2 Option A handoff).
+    ///
+    /// The bridge thread runs the handshake synchronously on the
+    /// unsplit UnixStream, then sends this variant through the
+    /// existing mpsc channel. The Looper constructs a
+    /// ConnectionSource, registers it on its calloop EventLoop,
+    /// and sends Registered back through `ack`. The bridge thread
+    /// blocks on `ack` until registration completes.
+    ///
+    /// No ServiceHandle has been handed out during the window
+    /// between sending NewConnection and receiving Registered —
+    /// user code cannot observe a partially-wired connection (D2
+    /// session-type concern closure).
+    ///
+    /// Design heritage: Plan 9 devmnt.c mntversion → mntattach
+    /// had no partial-mount code path — a mount fd that exists
+    /// is a session that speaks the protocol. ConnectionSource
+    /// inherits: a ConnectionSource that exists is a session
+    /// that speaks the protocol.
+    NewConnection {
+        welcome: Welcome,
+        stream: UnixStream,
+        write_rx: std::sync::mpsc::Receiver<WriteMessage>,
+        ack: std::sync::mpsc::SyncSender<Registered>,
+    },
 }
+
+/// Acknowledgment sent from the Looper back to the bridge thread
+/// after a ConnectionSource has been registered on the calloop
+/// EventLoop (D2 handshake handoff step 4).
+///
+/// The bridge thread blocks on its paired Receiver until this
+/// arrives, ensuring the ConnectionSource is wired before any
+/// ServiceHandle<P> is constructed.
+///
+/// Currently a unit ack: the bridge retains the write_tx when it
+/// creates the write channel pair. The Looper receives write_rx
+/// via NewConnection, constructs ConnectionSource with it, and
+/// sends Registered back as confirmation. The bridge then returns
+/// its retained write_tx to the caller for ServiceHandle
+/// construction.
+#[derive(Debug)]
+pub struct Registered;
 
 /// Write-side message: (service_id, payload bytes).
 pub type WriteMessage = (u16, Vec<u8>);

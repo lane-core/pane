@@ -105,9 +105,25 @@ struct Batch {
     /// writes (Cancel, etc.). Each entry is serialized ControlMessage
     /// bytes ready for the write channel.
     ctl_writes: Vec<Vec<u8>>,
+    /// Phase 3/4: A new connection handed off from the bridge
+    /// thread after handshake (D2 Option A). At most one per batch.
+    /// The Looper constructs a ConnectionSource and registers it
+    /// on the calloop EventLoop during dispatch, then acks the
+    /// bridge through the SyncSender.
+    new_connection: Option<NewConnectionData>,
     /// Channel closed during collection — triggers disconnect
     /// handling after all buffered events are dispatched.
     channel_closed: bool,
+}
+
+/// Data for a pending NewConnection handoff. Separated from the
+/// LooperMessage variant so Batch::collect can move the pieces
+/// out of the enum without requiring Clone on Receiver.
+struct NewConnectionData {
+    welcome: pane_session::handshake::Welcome,
+    stream: std::os::unix::net::UnixStream,
+    write_rx: std::sync::mpsc::Receiver<pane_session::bridge::WriteMessage>,
+    ack: std::sync::mpsc::SyncSender<pane_session::bridge::Registered>,
 }
 
 impl Batch {
@@ -124,6 +140,7 @@ impl Batch {
             notifications: Vec::new(),
             revoked_sessions: HashSet::new(),
             ctl_writes: Vec::new(),
+            new_connection: None,
             channel_closed: false,
         }
     }
@@ -139,6 +156,7 @@ impl Batch {
             && self.requests.is_empty()
             && self.notifications.is_empty()
             && self.ctl_writes.is_empty()
+            && self.new_connection.is_none()
             && !self.channel_closed
     }
 
@@ -181,6 +199,24 @@ impl Batch {
                     }
                 }
                 // Duplicate revocations are idempotent (no wire frame).
+            }
+            LooperMessage::NewConnection {
+                welcome,
+                stream,
+                write_rx,
+                ack,
+            } => {
+                // D2: store the handoff data for phase 3/4 dispatch.
+                // At most one NewConnection per batch — if a second
+                // arrives (protocol bug), the first is overwritten and
+                // its ack sender drops, unblocking the bridge with
+                // RecvError.
+                self.new_connection = Some(NewConnectionData {
+                    welcome,
+                    stream,
+                    write_rx,
+                    ack,
+                });
             }
             LooperMessage::Service {
                 session_id,
@@ -441,7 +477,7 @@ impl<H: pane_proto::Handler + 'static> Looper<H> {
 
             // Dispatch the batch in phase order.
             if !state.batch.is_empty() {
-                if let Some(reason) = self.dispatch_batch(&mut state.batch) {
+                if let Some(reason) = self.dispatch_batch(&mut state.batch, &handle) {
                     state.exit_reason = Some(reason);
                 }
             }
@@ -460,7 +496,14 @@ impl<H: pane_proto::Handler + 'static> Looper<H> {
     /// Each phase takes ownership of its events via std::mem::take
     /// before iterating, so an early exit cleanly drops the remaining
     /// events without double-borrow issues on the batch.
-    fn dispatch_batch(&mut self, batch: &mut Batch) -> Option<ExitReason> {
+    ///
+    /// The `loop_handle` is used to register new event sources
+    /// (ConnectionSource from NewConnection handoff in phase 3/4).
+    fn dispatch_batch(
+        &mut self,
+        batch: &mut Batch,
+        loop_handle: &calloop::LoopHandle<'_, LoopState>,
+    ) -> Option<ExitReason> {
         // Phase 0: Sync requests — install dispatch entries and
         // send wire frames for blocked send_and_wait callers.
         // Must run before Reply/Failed so entries are installed
@@ -532,6 +575,19 @@ impl<H: pane_proto::Handler + 'static> Looper<H> {
             }
         }
 
+        // Phase 3.5: NewConnection handoff — register a
+        // ConnectionSource on the calloop EventLoop for a
+        // connection that completed its handshake on a bridge
+        // thread (D2 Option A).
+        //
+        // Placed after Lifecycle (phase 3) and before ctl writes
+        // (phase 4): the handler has received Ready/lifecycle
+        // events, and ctl writes for the new connection can
+        // proceed in the same batch's phase 4.
+        if let Some(conn) = batch.new_connection.take() {
+            self.register_connection_source(conn, loop_handle);
+        }
+
         // Phase 4: ctl writes — send queued control frames on the
         // wire. Currently RevokeInterest from LocalRevoke; extensible
         // for Cancel and future ctl writes.
@@ -592,6 +648,62 @@ impl<H: pane_proto::Handler + 'static> Looper<H> {
 
         None
     }
+
+    /// Register a ConnectionSource on the calloop EventLoop from a
+    /// NewConnection handoff (D2 Option A step 3).
+    ///
+    /// Creates the ConnectionSource from the stream and write_rx,
+    /// registers it as a calloop event source that feeds events
+    /// into the batch, and acks the bridge thread through the
+    /// SyncSender. If registration fails, the ack sender is
+    /// dropped (bridge receives RecvError) and the stream is
+    /// closed (connection dies).
+    fn register_connection_source(
+        &self,
+        conn: NewConnectionData,
+        loop_handle: &calloop::LoopHandle<'_, LoopState>,
+    ) {
+        let NewConnectionData {
+            welcome,
+            stream,
+            write_rx,
+            ack,
+        } = conn;
+
+        // ConnectionSource::new sets non-blocking mode on the stream.
+        // connection_id is 1 for single-connection Phase 1 topology.
+        let source = match crate::connection_source::ConnectionSource::new(
+            stream,
+            welcome.max_message_size,
+            write_rx,
+            1, // connection_id — Phase 1 star topology has one connection
+        ) {
+            Ok(s) => s,
+            Err(_) => {
+                // Failed to set non-blocking — drop ack, bridge gets
+                // RecvError. Connection dies.
+                return;
+            }
+        };
+
+        // Register as a calloop event source. The callback feeds
+        // events into the batch — same pattern as the calloop
+        // channel source for the forwarding thread.
+        if loop_handle
+            .insert_source(source, |msg, _, state: &mut LoopState| {
+                state.batch.collect(msg);
+            })
+            .is_err()
+        {
+            // Registration failed — connection dies.
+            return;
+        }
+
+        // Ack the bridge: ConnectionSource is live. The bridge
+        // retains write_tx and returns it to the caller for
+        // ServiceHandle construction.
+        let _ = ack.send(pane_session::bridge::Registered);
+    }
 }
 
 impl Batch {
@@ -611,6 +723,10 @@ impl Batch {
         self.requests.clear();
         self.notifications.clear();
         self.ctl_writes.clear();
+        // NewConnection: dropping the data drops the ack sender,
+        // which unblocks the bridge thread with RecvError. The
+        // bridge interprets this as a failed registration.
+        self.new_connection = None;
         // Intentionally do not clear channel_closed — it's a
         // permanent condition, not a buffered event.
         // Intentionally do not clear revoked_sessions — a revoked
@@ -2174,6 +2290,266 @@ mod tests {
         assert!(
             !events.contains(&"notification:cross_batch".to_string()),
             "notification in batch N+1 for session revoked in batch N must be suppressed. Got: {events:?}"
+        );
+    }
+
+    // ── C5: NewConnection → ConnectionSource registration ────
+
+    #[test]
+    fn new_connection_registers_connection_source() {
+        // Inject a NewConnection through the forwarding channel.
+        // The Looper must construct a ConnectionSource, register
+        // it on calloop, and ack the bridge.
+        use pane_session::bridge::{Registered, WRITE_CHANNEL_CAPACITY};
+        use std::os::unix::net::UnixStream;
+
+        let log = Arc::new(Mutex::new(Vec::new()));
+        let (looper, msg_tx, msg_rx) = setup_looper(log.clone());
+
+        let (stream, _peer) = UnixStream::pair().unwrap();
+        let (write_tx, write_rx) = std::sync::mpsc::sync_channel(WRITE_CHANNEL_CAPACITY);
+        let (ack_tx, ack_rx) = std::sync::mpsc::sync_channel(1);
+
+        let welcome = pane_session::handshake::Welcome {
+            version: 1,
+            instance_id: "test-cs".into(),
+            max_message_size: 16 * 1024 * 1024,
+            max_outstanding_requests: 0,
+            bindings: vec![],
+        };
+
+        // Run the looper on a background thread.
+        let looper_thread = std::thread::spawn(move || looper.run(msg_rx));
+
+        // Send NewConnection.
+        msg_tx
+            .send(LooperMessage::NewConnection {
+                welcome,
+                stream,
+                write_rx,
+                ack: ack_tx,
+            })
+            .unwrap();
+
+        // The Looper must ack registration.
+        let _registered: Registered = ack_rx
+            .recv_timeout(std::time::Duration::from_secs(5))
+            .expect("Looper must ack NewConnection registration");
+
+        // Clean shutdown.
+        drop(write_tx);
+        drop(msg_tx);
+        let reason = looper_thread.join().unwrap();
+        assert_eq!(reason, ExitReason::Disconnected);
+    }
+
+    #[test]
+    fn new_connection_frames_arrive_through_connection_source() {
+        // After registering a ConnectionSource via NewConnection,
+        // frames written by the peer must arrive through the
+        // ConnectionSource's calloop callback and dispatch to the
+        // handler — not through the forwarding thread.
+        use pane_session::bridge::WRITE_CHANNEL_CAPACITY;
+        use pane_session::frame::FrameCodec;
+        use std::os::unix::net::UnixStream;
+
+        let log = Arc::new(Mutex::new(Vec::new()));
+
+        // Need a looper with session 3 registered for TestProto.
+        let (exit_tx, _exit_rx) = mpsc::channel();
+        let (msg_tx, msg_rx) = mpsc::channel();
+        let (looper_write_tx, _looper_write_rx) = std::sync::mpsc::sync_channel(16);
+
+        let mut service_dispatch = ServiceDispatch::new();
+        service_dispatch.register(3, make_service_receiver::<BatchTestHandler, TestProto>());
+
+        let handler = BatchTestHandler { log: log.clone() };
+        let core = LooperCore::with_service_dispatch(
+            handler,
+            PeerScope(1),
+            looper_write_tx,
+            exit_tx,
+            service_dispatch,
+            crate::Messenger::stub(),
+        );
+        let looper = Looper::new(core, None, None);
+
+        let (stream, mut peer) = UnixStream::pair().unwrap();
+        let (_write_tx, write_rx) = std::sync::mpsc::sync_channel(WRITE_CHANNEL_CAPACITY);
+        let (ack_tx, ack_rx) = std::sync::mpsc::sync_channel(1);
+
+        let welcome = pane_session::handshake::Welcome {
+            version: 1,
+            instance_id: "frame-test".into(),
+            max_message_size: 16 * 1024 * 1024,
+            max_outstanding_requests: 0,
+            bindings: vec![],
+        };
+
+        // Run the looper on a background thread.
+        let looper_thread = std::thread::spawn(move || looper.run(msg_rx));
+
+        // Register the connection.
+        msg_tx
+            .send(LooperMessage::NewConnection {
+                welcome,
+                stream,
+                write_rx,
+                ack: ack_tx,
+            })
+            .unwrap();
+
+        ack_rx
+            .recv_timeout(std::time::Duration::from_secs(5))
+            .expect("Looper must ack");
+
+        // Write a service frame from the peer side.
+        let inner = tagged_payload(&TestMsg::Ping("via_cs".into()));
+        let frame = ServiceFrame::Notification { payload: inner };
+        let payload = postcard::to_allocvec(&frame).unwrap();
+
+        let codec = FrameCodec::new(16 * 1024 * 1024);
+        codec.write_frame(&mut peer, 3, &payload).unwrap();
+
+        // Give the looper time to process the event.
+        std::thread::sleep(std::time::Duration::from_millis(100));
+
+        // Close channel to trigger exit.
+        drop(peer);
+        drop(msg_tx);
+
+        let reason = looper_thread.join().unwrap();
+        assert_eq!(reason, ExitReason::Disconnected);
+
+        let events = log.lock().unwrap().clone();
+        assert!(
+            events.contains(&"notification:via_cs".to_string()),
+            "frame from peer must arrive via ConnectionSource. Got: {events:?}"
+        );
+    }
+
+    #[test]
+    fn new_connection_ack_blocks_bridge() {
+        // The bridge thread must block on ack_rx until the Looper
+        // sends Registered. Simulate this by checking that the ack
+        // arrives only after the looper processes the batch.
+        use pane_session::bridge::WRITE_CHANNEL_CAPACITY;
+        use std::os::unix::net::UnixStream;
+        use std::sync::atomic::{AtomicBool, Ordering};
+
+        let log = Arc::new(Mutex::new(Vec::new()));
+        let (looper, msg_tx, msg_rx) = setup_looper(log);
+
+        let (stream, _peer) = UnixStream::pair().unwrap();
+        let (_write_tx, write_rx) = std::sync::mpsc::sync_channel(WRITE_CHANNEL_CAPACITY);
+        let (ack_tx, ack_rx) = std::sync::mpsc::sync_channel(1);
+
+        let welcome = pane_session::handshake::Welcome {
+            version: 1,
+            instance_id: "ack-test".into(),
+            max_message_size: 16 * 1024 * 1024,
+            max_outstanding_requests: 0,
+            bindings: vec![],
+        };
+
+        let ack_received = Arc::new(AtomicBool::new(false));
+        let ack_received_clone = ack_received.clone();
+
+        // Run the looper.
+        let looper_thread = std::thread::spawn(move || looper.run(msg_rx));
+
+        // Simulate a bridge thread blocking on ack.
+        let bridge_thread = std::thread::spawn(move || {
+            ack_rx.recv().expect("must receive ack");
+            ack_received_clone.store(true, Ordering::Release);
+        });
+
+        // Before sending NewConnection, ack has not been received.
+        assert!(
+            !ack_received.load(Ordering::Acquire),
+            "ack must not arrive before NewConnection is sent"
+        );
+
+        // Send the NewConnection.
+        msg_tx
+            .send(LooperMessage::NewConnection {
+                welcome,
+                stream,
+                write_rx,
+                ack: ack_tx,
+            })
+            .unwrap();
+
+        // Wait for the bridge thread to unblock.
+        bridge_thread.join().unwrap();
+        assert!(
+            ack_received.load(Ordering::Acquire),
+            "bridge must receive ack after Looper registers ConnectionSource"
+        );
+
+        // Clean shutdown.
+        drop(msg_tx);
+        let reason = looper_thread.join().unwrap();
+        assert_eq!(reason, ExitReason::Disconnected);
+    }
+
+    #[test]
+    fn existing_functionality_works_alongside_connection_source() {
+        // Register a ConnectionSource, then verify timers and
+        // lifecycle messages still work on the same calloop.
+        use pane_session::bridge::WRITE_CHANNEL_CAPACITY;
+        use std::os::unix::net::UnixStream;
+
+        let log = Arc::new(Mutex::new(Vec::new()));
+        let pulse_count = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let (looper, msg_tx, msg_rx, timer_tx) =
+            setup_looper_with_timers(log.clone(), pulse_count.clone(), 2);
+
+        let (stream, _peer) = UnixStream::pair().unwrap();
+        let (_write_tx, write_rx) = std::sync::mpsc::sync_channel(WRITE_CHANNEL_CAPACITY);
+        let (ack_tx, ack_rx) = std::sync::mpsc::sync_channel(1);
+
+        let welcome = pane_session::handshake::Welcome {
+            version: 1,
+            instance_id: "coexist-test".into(),
+            max_message_size: 16 * 1024 * 1024,
+            max_outstanding_requests: 0,
+            bindings: vec![],
+        };
+
+        // Run the looper.
+        let looper_thread = std::thread::spawn(move || looper.run(msg_rx));
+
+        // Register ConnectionSource.
+        msg_tx
+            .send(LooperMessage::NewConnection {
+                welcome,
+                stream,
+                write_rx,
+                ack: ack_tx,
+            })
+            .unwrap();
+
+        ack_rx
+            .recv_timeout(std::time::Duration::from_secs(5))
+            .expect("Looper must ack");
+
+        // Start a timer. PulseTestHandler exits after 2 pulses.
+        timer_tx
+            .send(crate::timer::TimerControl::SetPulse {
+                id: crate::timer::TimerId(42),
+                interval: std::time::Duration::from_millis(10),
+            })
+            .unwrap();
+
+        let reason = looper_thread.join().unwrap();
+        assert_eq!(reason, ExitReason::Graceful);
+
+        let events = log.lock().unwrap().clone();
+        let pulse_events: Vec<_> = events.iter().filter(|e| e.starts_with("pulse:")).collect();
+        assert!(
+            pulse_events.len() >= 2,
+            "timers must work alongside ConnectionSource. Got: {events:?}"
         );
     }
 }
