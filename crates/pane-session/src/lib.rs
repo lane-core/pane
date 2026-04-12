@@ -18,6 +18,7 @@ pub mod handshake;
 pub mod peer_cred;
 pub mod send;
 pub mod server;
+pub mod teardown;
 pub mod transport;
 
 pub use active_session::ActiveSession;
@@ -25,4 +26,5 @@ pub use backpressure::Backpressure;
 pub use correlator::{PeerScope, RequestCorrelator, Token};
 pub use frame::{FrameReader, FrameWriter, WRITE_HIGHWATER_BYTES};
 pub use send::NonBlockingSend;
+pub use teardown::TeardownSet;
 pub use transport::Transport;

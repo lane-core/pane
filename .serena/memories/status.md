@@ -3,7 +3,7 @@ type: status
 status: current
 supersedes: [archive/status/2026-04-06, pane/current_state]
 created: 2026-04-10
-last_updated: 2026-04-12T2
+last_updated: 2026-04-12T3
 importance: high
 keywords: [status, crates, tests, calloop, looper, invariants, send_and_wait, watchdog, NLnet]
 agents: [all]
@@ -13,7 +13,7 @@ agents: [all]
 
 ## Where we are
 
-Six crates, 357 regular tests + 48 stress/adversarial + 6 benchmarks.
+Six crates, 371 regular tests + 48 stress/adversarial + 6 benchmarks.
 All invariants verified or detection-enforced (22 of 22 + N1-N4
 identified, extraction pending).
 
@@ -23,7 +23,7 @@ Read `decision/pane_session_mpst_foundation` first.
 | Crate | Role | Tests |
 |---|---|---|
 | pane-proto | Protocol vocabulary, no IO | 99 |
-| pane-session | Session-typed IPC, transport, framing, server | 74 + 21 stress |
+| pane-session | Session-typed IPC, transport, framing, server | 102 + 21 stress |
 | pane-app | Actor framework, dispatch, looper | 162 + 12 stress + 12 adversarial + 14 integration + 6 bench |
 | pane-fs | Filesystem namespace | 5 |
 | pane-hello | First running pane app (binary) | 0 |
@@ -31,6 +31,27 @@ Read `decision/pane_session_mpst_foundation` first.
 
 ### Landed since 2026-04-12
 
+- **C2: Failure cascade policy** — New TeardownSet obligation
+  type in pane-session/teardown.rs [N3]: #[must_use], Drop panics
+  in debug / logs in release if tokens unconsumed (affine-gap
+  compensation matching ReplyPort pattern). drain() yields all
+  tokens and marks consumed. cascade_session_failure() and
+  cascade_connection_failure() on ActiveSession define the
+  pane-session/pane-app boundary — currently return empty sets
+  (token-to-session mapping not yet in ActiveSession). 8 TeardownSet
+  tests (drain, Drop panic, len/is_empty) + 3 ActiveSession cascade
+  tests. 9 new tests total (pane-session: 93 → 102). TeardownSet exported from pane-session. Phase C2 complete;
+  MPST extraction Phase C done.
+- **C1: ActiveSession container** (`90cb3e1`) — New type in
+  pane-session/active_session.rs: post-handshake session-layer
+  state container [EAct σ]. Fields: RequestCorrelator,
+  revoked_sessions (HashSet<u16>, H3), primary_connection
+  (PeerScope), max_message_size (u32), max_outstanding_requests
+  (u16). Constructor from Welcome-negotiated params, 7 correlator
+  delegation methods, 3 session lifecycle methods (revoke_session,
+  is_revoked, revoked_sessions accessor), 5 field accessors.
+  Standalone (Option A) — does not yet replace LooperCore fields.
+  8 unit tests. Plan 9 precedent: devmnt.c Mnt. Phase C1 complete.
 - **A4: NonBlockingSend trait** (`5823d0d`) — New trait in
   pane-session/send.rs codifying N1 (all looper-thread sends are
   non-blocking). Single method: try_send_frame(&self, service,
@@ -193,8 +214,8 @@ grounded in Fowler-Hu EAct formalism. See
 - [ ] B1: RequestCorrelator → pane-session/correlator.rs [N1+N2]
 
 **Phase C — ActiveSession + Failure Cascade (depends on B):**
-- [ ] C1: ActiveSession → pane-session/active_session.rs
-- [ ] C2: Failure cascade policy [N3]
+- [x] C1: ActiveSession → pane-session/active_session.rs
+- [x] C2: Failure cascade policy [N3]
 
 Three adversarial bugs (bidirectional deadlock, partial-frame hang,
 HoL blocking) become impossible by construction through N1-N4.

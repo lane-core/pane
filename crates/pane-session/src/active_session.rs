@@ -7,9 +7,11 @@
 //! not application-layer state.
 //!
 //! The type exists as a named product (Iso: scattered fields ↔
-//! named product). It is defined before failure cascade methods
+//! named product). It was defined before failure cascade methods
 //! (C2) because the cascade is a *consumer* of session state, not
-//! a contributor to its shape.
+//! a contributor to its shape. C2 adds the cascade policy methods
+//! (`cascade_session_failure`, `cascade_connection_failure`) that
+//! return `TeardownSet` — the obligation type for N3.
 //!
 //! Design heritage: Plan 9 `Mnt` struct in devmnt.c
 //! (reference/plan9/src/sys/src/9/port/devmnt.c) — per-mount,
@@ -32,6 +34,7 @@
 use std::collections::HashSet;
 
 use crate::correlator::RequestCorrelator;
+use crate::teardown::TeardownSet;
 use crate::PeerScope;
 use crate::Token;
 
@@ -171,6 +174,47 @@ impl ActiveSession {
     pub fn revoked_sessions(&self) -> &HashSet<u16> {
         &self.revoked_sessions
     }
+
+    // --- Failure cascade policy [N3] ---
+
+    /// N3: Enumerate all tokens that should be failed due to a
+    /// session-level failure (e.g., ServiceTeardown received).
+    ///
+    /// Returns a `TeardownSet` containing all outstanding tokens
+    /// for the given session. The caller must fire `on_failed` for
+    /// every token in the set.
+    ///
+    /// Currently returns an empty set — the actual token
+    /// enumeration requires knowledge of which tokens belong to
+    /// which session, which `Dispatch<H>` tracks (via
+    /// `DispatchEntry.session_id`) but `RequestCorrelator` does
+    /// not. The method signature defines the pane-session/pane-app
+    /// boundary for N3; real enumeration comes when `LooperCore`
+    /// is refactored to use `ActiveSession` for token-to-session
+    /// tracking.
+    ///
+    /// Reference: [FH] §4 (E-RaiseS — raise failure to session).
+    pub fn cascade_session_failure(&mut self, _session_id: u16) -> TeardownSet {
+        TeardownSet::new(vec![])
+    }
+
+    /// N3: Enumerate all tokens that should be failed due to a
+    /// connection-level failure (transport death).
+    ///
+    /// Returns a `TeardownSet` containing ALL outstanding tokens
+    /// across all sessions on this connection. The caller must
+    /// fire `on_failed` for every token in the set.
+    ///
+    /// Currently returns an empty set — same caveat as
+    /// `cascade_session_failure`. The correlator tracks the
+    /// outstanding count but not which tokens are outstanding;
+    /// that mapping lives in `Dispatch<H>.entries`.
+    ///
+    /// Reference: [FH] §4 (E-CancelMsg — cancel outstanding
+    /// messages on connection failure).
+    pub fn cascade_connection_failure(&mut self) -> TeardownSet {
+        TeardownSet::new(vec![])
+    }
 }
 
 #[cfg(test)]
@@ -281,5 +325,52 @@ mod tests {
 
         session.allocate_token();
         assert!(session.would_exceed_cap());
+    }
+
+    // --- Failure cascade policy [N3] ---
+
+    #[test]
+    fn cascade_session_failure_returns_teardown_set() {
+        let mut session = ActiveSession::new(PeerScope(1), 8192, 0);
+        // Currently returns empty — the method signature is the
+        // important part, establishing the pane-session/pane-app
+        // boundary for N3.
+        let mut set = session.cascade_session_failure(5);
+        assert!(set.is_empty());
+        assert_eq!(set.len(), 0);
+        let drained: Vec<_> = set.drain().collect();
+        assert!(drained.is_empty());
+    }
+
+    #[test]
+    fn cascade_connection_failure_returns_teardown_set() {
+        let mut session = ActiveSession::new(PeerScope(1), 8192, 0);
+        let mut set = session.cascade_connection_failure();
+        assert!(set.is_empty());
+        assert_eq!(set.len(), 0);
+        let drained: Vec<_> = set.drain().collect();
+        assert!(drained.is_empty());
+    }
+
+    #[test]
+    fn cascade_after_allocations_still_empty() {
+        // Even with outstanding tokens, the cascade currently
+        // returns empty because token-to-session mapping is not
+        // yet tracked in ActiveSession. This test documents the
+        // expected future behavior change: once ActiveSession
+        // tracks mappings, this test should be updated to verify
+        // non-empty TeardownSets.
+        let mut session = ActiveSession::new(PeerScope(1), 8192, 0);
+        session.allocate_token();
+        session.allocate_token();
+        assert_eq!(session.outstanding_requests(), 2);
+
+        let mut set = session.cascade_session_failure(0);
+        assert!(set.is_empty());
+        let _: Vec<_> = set.drain().collect();
+
+        let mut set = session.cascade_connection_failure();
+        assert!(set.is_empty());
+        let _: Vec<_> = set.drain().collect();
     }
 }
