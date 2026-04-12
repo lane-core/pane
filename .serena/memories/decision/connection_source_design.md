@@ -655,6 +655,107 @@ now while touching the handshake format. Deferred to Lane's call.
 optics-theorist inline analysis. Empirical postcard test at
 `/tmp/pc_test`.)
 
+### D12 — Unified non-blocking write architecture
+
+Three-part architecture eliminating head-of-line blocking at the
+server, intra-thread channel overhead on the client, and the builder
+ordering concern. Decided 2026-04-12 after roundtable (all four
+agents, strong convergence). Lane explicitly rejected phased
+approach — this is one architecture, not incremental scaffolding.
+
+**Part 1: Server per-connection writer threads.**
+
+Replace synchronous `WriteHandle::write_frame` (blocks actor thread
+on slow subscriber) with `WriteHandle::enqueue` (append to
+per-connection `VecDeque`). One writer thread per connection owns
+the fd and drains the queue. Actor thread enqueues and returns
+immediately — never blocks on I/O.
+
+Queue overflow policy: **connection teardown** (`fail_connection`),
+not frame drop. Session-type analysis ([FH] Theorems 6-8):
+dropping individual Request/Reply frames creates phantom
+DispatchEntries outside the failure model's scope. The only sound
+overflow response is cascading failure via E-RaiseS. Notification
+drops are safe per E-CancelMsg but distinguishing at the routing
+layer breaks server opacity.
+
+Queue highwater: derive from `max_outstanding_requests ×
+max_message_size` (D9). With 128 requests and 4KB messages, 512KB
+per slow connection — bounded and acceptable.
+
+Haiku precedent: app_server `SendMessageToClient` used
+`write_port_etc(timeout=0)` — non-blocking, drop on full, server
+never stalls (`ServerWindow.cpp:4406-4407`). Plan 9 precedent:
+lib9p worker threads each wrote their own reply — per-request
+writer, never a shared routing thread doing writes.
+
+**Part 2: Eliminate intra-thread mpsc for looper-thread sends.**
+
+Current path: `ServiceHandle → SyncSender(128) → ConnectionSource
+VecDeque(highwater 8) → FrameWriter → fd`. The SyncSender is a
+cross-thread primitive used for same-thread communication — pure
+overhead (lock acquisition, memory fence, artificial 128-slot
+backpressure boundary).
+
+Fix: extract `FrameWriter` from ConnectionSource into
+`RefCell<FrameWriter>` shared between dispatch context and the
+EventSource. Two-tier write model:
+
+- **Looper-thread (90%):** `ServiceHandle → FrameWriter → fd`.
+  One application buffer. Direct, no synchronization.
+- **Cross-thread (10%):** `external thread → mpsc → FrameWriter
+  → fd`. Bounded channel for genuinely cross-thread sends
+  (send_and_wait, external SubscriberSender).
+
+Single-threaded execution (I6) guarantees no concurrent access to
+FrameWriter from the looper thread. RefCell enforces this at
+runtime. Install-before-wire (I4) and session FIFO preserved by
+sequential execution.
+
+Haiku precedent: `BDirectMessageTarget` bypassed the port for
+same-process sends — message went directly to `BMessageQueue`
+(unbounded linked list), port got a zero-byte poke to wake the
+looper. Same principle: trust your own thread, bound your
+neighbors. Plan 9 precedent: `mountio` wrote directly to the
+kernel pipe — one buffer, no intermediate channels.
+
+**Part 3: Builder lifecycle — already correct.**
+
+The current PaneBuilder pattern maps to Be's lifecycle:
+- `PaneBuilder::connect()` = BApplication constructor
+  (synchronous handshake, pre-loop)
+- `open_service()` = setup between constructor and Run()
+- `run_with()` = BApplication::Run() (starts event loop)
+- `Handler::ready()` = BApplication::ReadyToRun() (first dispatch)
+
+`connect()` before `run_with()` works because the mpsc channel
+buffers `NewConnection`. The Looper processes it on its first
+iteration, constructs ConnectionSource, registers it, sends ack.
+Bridge thread unblocks. No restructuring needed.
+
+**Fix needed:** verify the NewConnection channel is unbounded
+(`mpsc::channel`, not `sync_channel`) so multiple pre-`run()`
+connects don't deadlock.
+
+NewConnection + ack (D2) is for runtime connections added to a
+running system (Phase 2 multi-connection). The primary connection
+uses the builder's pre-loop buffering.
+
+**D2 amendment:** handshake from looper thread is acceptable for
+Phase 1 local sockets (microsecond-scale, [FH] E-Init is session
+establishment, not handler dispatch — outside I2 scope). Phase 2
+remote connections keep bridge-thread handshake.
+
+**Optics (optics-theorist):** non-blocking routing factors into
+pure routing (AffineTraversal lookup in Set) + effectful delivery
+(Kleisli arrow into bounded queue). The queue is a sink, not an
+optic. Good separation: routing decides, queue acts.
+
+(Sources: `agent/session-type-consultant/architecture_abc_analysis`,
+`agent/be-systems-engineer/server_routing_lifecycle`,
+`agent/plan9-systems-engineer/server_hol_blocking_analysis`,
+optics-theorist inline analysis.)
+
 ## Open items (blocking or near-blocking Phase 1)
 
 ### O1 — Whole-system two-function design (RESOLVED → D7)
@@ -803,6 +904,12 @@ verification that postcard `#[serde(default)]` fails on short
 input. All four agents consulted; plan9's Option A falsified by
 test. Lane approved.
 
-**All blocking opens resolved (D1-D11).** O3/O4/O6 are non-blocking
-doc/audit tasks. pane-architect can dispatch ConnectionSource
-implementation.
+D12 (unified non-blocking write architecture) added 2026-04-12
+after stress test exposed head-of-line blocking at the server.
+Roundtable produced strong convergence on three-part solution:
+per-connection writer threads, direct FrameWriter for looper-thread
+sends, builder lifecycle already correct. Lane rejected phased
+approach — architecture is one coherent design.
+
+**All blocking opens resolved (D1-D12).** O3/O4/O6 are non-blocking
+doc/audit tasks.

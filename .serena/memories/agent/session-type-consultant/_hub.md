@@ -73,3 +73,8 @@ Recent additions:
 The `reference_eact_paper` content is at
 `reference/papers/eact_sections` (Phase 3d); the copy in
 this folder is provenance only.
+
+Recent analysis:
+- `architecture_abc_analysis` — verdict: Architecture C
+  (looper-first + non-blocking server) sound, only D2 amend.
+  Frame drop policy, write path simplification, D1-D11 compat.
