@@ -11,6 +11,7 @@
 
 pub mod backpressure;
 pub mod builder;
+pub mod connection_source;
 pub mod dispatch;
 pub mod dispatch_ctx;
 pub mod exit_reason;
@@ -28,6 +29,7 @@ pub(crate) mod watchdog;
 
 pub use backpressure::Backpressure;
 pub use builder::PaneBuilder;
+pub use connection_source::ConnectionSource;
 pub use dispatch_ctx::DispatchCtx;
 pub use exit_reason::ExitReason;
 pub use handles_request::HandlesRequest;
