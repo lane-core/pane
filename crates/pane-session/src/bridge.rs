@@ -297,7 +297,121 @@ pub fn accept_and_run(
     })?
 }
 
-/// Result of a successful client connection.
+/// Connect a UnixStream client via D2 Option A (ConnectionSource path).
+///
+/// Performs the handshake synchronously on the blocking stream, then
+/// creates a bounded write channel and sends `NewConnection` through
+/// the looper's input channel. Blocks until the Looper registers
+/// the ConnectionSource and sends `Registered` back.
+///
+/// No reader or writer threads are spawned. The Looper's
+/// ConnectionSource handles both read and write on the looper
+/// thread via calloop.
+///
+/// `looper_tx` is the Sender end of the mpsc channel that feeds
+/// into the looper (via the forwarding thread → calloop channel).
+///
+/// Design heritage: Plan 9 devmnt.c mntversion → mntattach had
+/// no partial-mount code path. A ConnectionSource that exists is
+/// a session that speaks the protocol (D2).
+pub fn connect_unix(
+    mut stream: UnixStream,
+    hello: Hello,
+    looper_tx: std::sync::mpsc::Sender<LooperMessage>,
+) -> Result<UnixConnection, ConnectError> {
+    let codec = FrameCodec::new(HANDSHAKE_MAX_MESSAGE_SIZE);
+
+    // -- Handshake: write Hello, read Welcome (blocking stream) --
+
+    let bytes = {
+        let mut buf = Vec::new();
+        ciborium::ser::into_writer(&hello, &mut buf).map_err(|e| {
+            ConnectError::Transport(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                e.to_string(),
+            ))
+        })?;
+        buf
+    };
+    codec
+        .write_frame(&mut stream, 0, &bytes)
+        .map_err(ConnectError::Transport)?;
+
+    let frame = codec.read_frame(&mut stream).map_err(|e| {
+        ConnectError::Transport(std::io::Error::new(
+            std::io::ErrorKind::ConnectionAborted,
+            e.to_string(),
+        ))
+    })?;
+    let payload = match frame {
+        Frame::Message {
+            service: 0,
+            payload,
+        } => payload,
+        Frame::Abort => {
+            return Err(ConnectError::Transport(std::io::Error::new(
+                std::io::ErrorKind::ConnectionAborted,
+                "server sent ProtocolAbort",
+            )));
+        }
+        _ => {
+            return Err(ConnectError::Transport(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                "unexpected frame during handshake",
+            )));
+        }
+    };
+
+    let decision: Result<Welcome, Rejection> = ciborium::de::from_reader(payload.as_slice())
+        .map_err(|e| {
+            ConnectError::Transport(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                e.to_string(),
+            ))
+        })?;
+
+    let welcome = match decision {
+        Ok(w) => w,
+        Err(rejection) => return Err(ConnectError::Rejected(rejection)),
+    };
+
+    // -- D2 handoff: send stream to Looper for ConnectionSource registration --
+
+    let (write_tx, write_rx) = std::sync::mpsc::sync_channel(WRITE_CHANNEL_CAPACITY);
+    let (ack_tx, ack_rx) = std::sync::mpsc::sync_channel(1);
+
+    // Send the stream through the looper's input channel.
+    // The forwarding thread picks this up and sends it into calloop,
+    // which delivers it to Batch::collect → dispatch_batch phase 3.5.
+    looper_tx
+        .send(LooperMessage::NewConnection {
+            welcome: welcome.clone(),
+            stream,
+            write_rx,
+            ack: ack_tx,
+        })
+        .map_err(|_| {
+            ConnectError::Transport(std::io::Error::new(
+                std::io::ErrorKind::ConnectionAborted,
+                "looper channel closed during ConnectionSource handoff",
+            ))
+        })?;
+
+    // Block until the Looper registers the ConnectionSource.
+    // D2 session-type concern closure: no ServiceHandle has been
+    // handed out, so user code cannot observe a partially-wired
+    // connection.
+    ack_rx.recv().map_err(|_| {
+        ConnectError::Transport(std::io::Error::new(
+            std::io::ErrorKind::ConnectionAborted,
+            "looper failed to register ConnectionSource",
+        ))
+    })?;
+
+    Ok(UnixConnection { welcome, write_tx })
+}
+
+/// Result of a successful client connection (thread-per-direction path).
 ///
 /// Bidirectional: holds both the read channel (rx, for the looper)
 /// and the write channel (write_tx, for ServiceHandle/PaneBuilder).
@@ -309,10 +423,28 @@ pub fn accept_and_run(
 /// bridge owns both reader and writer threads, while the server
 /// bridge hands the writer to the ProtocolServer actor (which
 /// manages writes centrally via WriteHandle).
+///
+/// Used by MemoryTransport connections. UnixStream connections use
+/// `connect_unix` which hands the fd to ConnectionSource instead.
 #[derive(Debug)]
 pub struct ClientConnection {
     pub welcome: Welcome,
     pub rx: std::sync::mpsc::Receiver<LooperMessage>,
+    pub write_tx: std::sync::mpsc::SyncSender<WriteMessage>,
+}
+
+/// Result of a successful UnixStream connection (D2 Option A path).
+///
+/// The handshake ran on the blocking UnixStream. The stream and
+/// write_rx were sent to the Looper via NewConnection for
+/// ConnectionSource registration. The caller retains write_tx
+/// for ServiceHandle construction.
+///
+/// No reader or writer threads are spawned — ConnectionSource on
+/// the looper thread handles both directions.
+#[derive(Debug)]
+pub struct UnixConnection {
+    pub welcome: Welcome,
     pub write_tx: std::sync::mpsc::SyncSender<WriteMessage>,
 }
 

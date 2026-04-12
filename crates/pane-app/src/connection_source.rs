@@ -266,6 +266,11 @@ impl FrameWriter {
         self.queue.is_empty()
     }
 
+    /// Number of frames queued for writing.
+    fn queue_len(&self) -> usize {
+        self.queue.len()
+    }
+
     /// Drain as many queued frames as possible to the sink.
     ///
     /// Returns:
@@ -333,6 +338,14 @@ pub struct ConnectionSource {
     write_interest: bool,
     /// Connection identifier for PeerScope addressing.
     connection_id: u16,
+    /// Token assigned by calloop during registration. Saved for
+    /// `before_sleep` synthetic event generation — when the write
+    /// channel has pending data between poll iterations,
+    /// `before_sleep` returns a synthetic writable event using this
+    /// token to trigger process_events and flush the write queue.
+    /// Without this, writes arriving between poll iterations when
+    /// the fd has no read readiness would never be flushed.
+    registered_token: Option<Token>,
 }
 
 impl ConnectionSource {
@@ -361,14 +374,40 @@ impl ConnectionSource {
             write_rx,
             write_interest: false,
             connection_id,
+            registered_token: None,
         })
     }
 
     /// Drain pending messages from the write channel into the
     /// internal write queue. Non-blocking: uses try_recv.
+    ///
+    /// The write queue has a soft cap (`WRITE_QUEUE_HIGHWATER`).
+    /// When the queue depth exceeds this, no more messages are
+    /// pulled from the channel. This preserves backpressure:
+    /// socket-level WouldBlock keeps the write queue full, which
+    /// keeps the bounded mpsc channel full, which stalls the
+    /// SyncSender. Without this cap, the VecDeque would absorb
+    /// unbounded data and the sender would never block.
+    ///
+    /// The highwater mark is small — just enough to batch writes
+    /// efficiently without absorbing the entire channel capacity.
     fn drain_write_channel(&mut self) {
-        while let Ok((service, payload)) = self.write_rx.try_recv() {
-            self.writer.enqueue(service, &payload);
+        // Don't drain if the write queue is already above highwater.
+        // The queued data hasn't been flushed to the socket yet
+        // (WouldBlock), so pulling more from the channel just moves
+        // the buffer from bounded (mpsc) to unbounded (VecDeque).
+        const WRITE_QUEUE_HIGHWATER: usize = 8;
+        if self.writer.queue_len() >= WRITE_QUEUE_HIGHWATER {
+            return;
+        }
+
+        while self.writer.queue_len() < WRITE_QUEUE_HIGHWATER {
+            match self.write_rx.try_recv() {
+                Ok((service, payload)) => {
+                    self.writer.enqueue(service, &payload);
+                }
+                Err(_) => break,
+            }
         }
     }
 
@@ -411,15 +450,29 @@ impl EventSource for ConnectionSource {
     type Ret = ();
     type Error = ConnectionError;
 
+    // Opt into before_sleep/before_handle_events lifecycle.
+    // before_sleep drains the write channel and generates a
+    // synthetic writable event when writes are pending. Without
+    // this, writes arriving between poll iterations when the fd
+    // has no read readiness would never be flushed — the mpsc
+    // channel is invisible to calloop's polling.
+    const NEEDS_EXTRA_LIFECYCLE_EVENTS: bool = true;
+
     fn process_events<F>(
         &mut self,
         readiness: Readiness,
-        _token: Token,
+        token: Token,
         mut callback: F,
     ) -> Result<PostAction, Self::Error>
     where
         F: FnMut(Self::Event, &mut Self::Metadata) -> Self::Ret,
     {
+        // Save the token on first call for before_sleep synthetic
+        // event generation.
+        if self.registered_token.is_none() {
+            self.registered_token = Some(token);
+        }
+
         // Before processing I/O, drain the write channel into the
         // internal queue. This picks up any frames enqueued by
         // handlers since the last poll.
@@ -511,6 +564,55 @@ impl EventSource for ConnectionSource {
 
     fn unregister(&mut self, poll: &mut Poll) -> calloop::Result<()> {
         self.fd.unregister(poll)
+    }
+
+    /// Check for pending writes before calloop polls.
+    ///
+    /// The write channel (std::sync::mpsc) is invisible to calloop's
+    /// polling — data can arrive between poll iterations without any
+    /// fd event. Without this hook, writes enqueued after the last
+    /// process_events call would sit in the channel until a read
+    /// event happens to wake the source.
+    ///
+    /// This drains the write channel into the internal queue and, if
+    /// writes are pending, returns a synthetic writable event. calloop
+    /// sets the poll timeout to zero and calls process_events with
+    /// the synthetic readiness, which flushes the write queue to the
+    /// socket.
+    ///
+    /// Design heritage: calloop's own Channel source uses Ping (pipe
+    /// write) to wake the poll when a sender pushes data.
+    /// ConnectionSource avoids adding a pipe fd by using the
+    /// before_sleep lifecycle instead — same result, one fewer fd.
+    fn before_sleep(&mut self) -> calloop::Result<Option<(Readiness, Token)>> {
+        // Check for pending writes without greedy drain. If the write
+        // queue already has data, return a synthetic writable event
+        // immediately — process_events will drain more from the
+        // channel and flush to the socket.
+        //
+        // If the queue is empty, peek at the channel with one
+        // try_recv. This avoids unbounded buffering: most writes
+        // stay in the bounded mpsc channel until process_events
+        // runs, preserving backpressure to the sender.
+        if self.writer.is_empty() {
+            if let Ok((service, payload)) = self.write_rx.try_recv() {
+                self.writer.enqueue(service, &payload);
+            }
+        }
+
+        if !self.writer.is_empty() {
+            if let Some(token) = self.registered_token {
+                return Ok(Some((
+                    Readiness {
+                        readable: false,
+                        writable: true,
+                        error: false,
+                    },
+                    token,
+                )));
+            }
+        }
+        Ok(None)
     }
 }
 
