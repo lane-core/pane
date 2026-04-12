@@ -130,7 +130,7 @@ Read-everywhere, write-only-to-own-folder discipline applies.
 - [`agent/plan9-systems-engineer/_hub`](agent/plan9-systems-engineer/_hub.md)
 - [`agent/be-systems-engineer/_hub`](agent/be-systems-engineer/_hub.md)
 - [`agent/optics-theorist/_hub`](agent/optics-theorist/_hub.md) + [`linearity_gap`](agent/optics-theorist/linearity_gap.md)
-- [`agent/session-type-consultant/_hub`](agent/session-type-consultant/_hub.md) + [`feedback_mailbox_type_retraction`](agent/session-type-consultant/feedback_mailbox_type_retraction.md)
+- [`agent/session-type-consultant/_hub`](agent/session-type-consultant/_hub.md) + [`feedback_mailbox_type_retraction`](agent/session-type-consultant/feedback_mailbox_type_retraction.md) + [`backpressure_tier_review`](agent/session-type-consultant/backpressure_tier_review.md)
 - [`agent/formal-verifier/_hub`](agent/formal-verifier/_hub.md)
 - [`agent/pane-architect/_hub`](agent/pane-architect/_hub.md)
 
