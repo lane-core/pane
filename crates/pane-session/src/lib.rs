@@ -9,6 +9,7 @@
 
 pub use par;
 
+pub mod active_session;
 pub mod backpressure;
 pub mod bridge;
 pub mod correlator;
@@ -19,6 +20,7 @@ pub mod send;
 pub mod server;
 pub mod transport;
 
+pub use active_session::ActiveSession;
 pub use backpressure::Backpressure;
 pub use correlator::{PeerScope, RequestCorrelator, Token};
 pub use frame::{FrameReader, FrameWriter, WRITE_HIGHWATER_BYTES};
