@@ -858,11 +858,14 @@ fn stress_backpressure_slow_subscriber() {
 
 /// Wire helper for UnixStream connections. Same interface as ClientConn
 /// but backed by real OS sockets with finite buffers.
+/// Scaffolded for future full-stack pub/sub stress tests over real sockets.
+#[allow(dead_code)]
 struct SocketConn {
     stream: UnixStream,
     codec: FrameCodec,
 }
 
+#[allow(dead_code)]
 impl SocketConn {
     fn connect(mut stream: UnixStream, hello: Hello) -> (Self, Welcome) {
         let codec = FrameCodec::new(HANDSHAKE_MAX_MESSAGE_SIZE);
@@ -935,6 +938,7 @@ impl SocketConn {
     }
 }
 
+#[allow(dead_code)]
 fn accept_unix_on_thread(
     server: &Arc<ProtocolServer>,
     stream: UnixStream,
@@ -948,6 +952,7 @@ fn accept_unix_on_thread(
 
 /// Subscribe a SocketConn to the publisher's topic. Returns
 /// (subscriber, sub_session, pub_session, conn_handle).
+#[allow(dead_code)]
 fn subscribe_socket(
     server: &Arc<ProtocolServer>,
     publisher: &mut SocketConn,
