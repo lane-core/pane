@@ -4,7 +4,7 @@ status: decided
 created: 2026-04-11
 last_updated: 2026-04-11
 importance: high
-keywords: [ConnectionSource, round2, Inv_RW, Inv_CS1, determinism, backpressure, two_function_split, universal_cancel, handshake_option_a, phase_1, tier_classification, RevokeInterest, hybrid_revocation, deferred_leave]
+keywords: [ConnectionSource, round2, Inv_RW, Inv_CS1, determinism, backpressure, two_function_split, universal_cancel, handshake_option_a, phase_1, tier_classification, RevokeInterest, hybrid_revocation, deferred_leave, CBOR, handshake_format, wire_extensibility]
 related: [agent/plan9-systems-engineer/project_connectionsource_review, agent/plan9-systems-engineer/project_connectionsource_review_r2, agent/plan9-systems-engineer/dlfactris_reverification_flag, agent/session-type-consultant/project_connectionsource_review_r2, decision/server_actor_model, decision/messenger_addressing, architecture/looper, architecture/session, architecture/app, status]
 agents: [pane-architect, formal-verifier, session-type-consultant, plan9-systems-engineer, be-systems-engineer, optics-theorist]
 ---
@@ -544,6 +544,117 @@ is pure upside over Be's design.
 `agent/be-systems-engineer/o2_o5_haiku_precedent`,
 `agent/optics-theorist/o1_whole_system_backpressure_analysis`.)
 
+### D11 — Handshake format: CBOR for Hello/Welcome, postcard for data plane
+
+Self-describing serialization for handshake messages only. Decided
+2026-04-11 after targeted roundtable (all four agents) plus
+empirical verification of postcard behavior.
+
+**The problem:** postcard is positional binary. Adding a field to
+Hello/Welcome (e.g., `max_outstanding_requests` from D9) is a
+breaking wire change. `#[serde(default)]` is dead code with
+postcard — empirically verified:
+
+```
+V1→V2 (old client, new server): FAIL
+  "Hit the end of buffer, expected more data"
+V2→V1 (new client, old server): OK
+  (trailing bytes silently ignored)
+```
+
+The annotation only works in one direction, and it's the wrong
+direction (the server being newer than the client is the common
+upgrade path).
+
+**The decision:** Use CBOR (RFC 8949) for Hello and Welcome
+payloads. Use postcard for all data-plane frames (ServiceFrame,
+ControlMessage after handshake). The format boundary is the
+handshake completion point — after Welcome is received,
+everything switches to postcard.
+
+**Why CBOR, not JSON or msgpack:**
+
+- Binary framing (no need for separate length-prefix layer)
+- Deterministic canonical form (RFC 8949 §4.2)
+- Still self-describing (tagged field types, map keys)
+- Diagnostic notation is human-readable for debugging
+- `ciborium` crate: mature, serde-compatible — existing
+  `#[derive(Serialize, Deserialize)]` on Hello/Welcome works
+  unchanged
+- Smaller on the wire than JSON (not that it matters for
+  handshake, but free)
+
+**Why not Option A (version-gated postcard):**
+
+- Empirically falsified: `#[serde(default)]` does not work on
+  short postcard input. Plan9 agent's claim that trailing
+  defaulted fields would deserialize from shorter input was
+  tested and failed.
+- Version-gated schema requires `HelloV1`/`HelloV2`/... struct
+  proliferation or raw-bytes dispatch. Scales poorly.
+- 9P's Tversion worked because its version field was a
+  human-readable string in a fixed-layout message — not
+  positional binary with varint encoding.
+
+**Why not Option C (extension map):**
+
+- `HashMap<String, Vec<u8>>` inside postcard is fighting the
+  format. Double encoding (extension values need their own
+  format per key). Must-be-last policy not type-enforced.
+- Builds a worse BMessage on top of a format optimized for not
+  being BMessage (be-systems-engineer).
+
+**Session-type grounding (session-type-consultant):**
+
+- Payload encoding is invisible to session types — [FH] Remark 1
+  (Session Fidelity) is agnostic to byte layout.
+- The handshake→data-plane format transition is a phase boundary
+  between two sequential sessions sharing a transport. [FH]
+  Theorem 4 covers sequential composition with different
+  value-level encodings.
+- Self-describing format restores **session subtyping** ([Gay &
+  Hole 2005]) at the handshake: a newer Hello with additional
+  `#[serde(default)]` fields is a width subtype of an older
+  Hello. Positional encoding destroys this.
+
+**Optics grounding (optics-theorist):**
+
+- Named-field access = row-polymorphic lens (parametric over
+  extensions). Positional = rigid product projection. CBOR gives
+  handshake fields the row-polymorphic access semantics that
+  make evolution compositional.
+
+**Haiku precedent (be-systems-engineer):**
+
+- Haiku already converged on this split: BMessage
+  (self-describing) for `AS_GET_DESKTOP` handshake, link protocol
+  (positional binary) for data plane. The two-phase format split
+  was the empirical answer to the same problem.
+
+**Implementation:**
+
+- Add `ciborium` dependency to pane-session.
+- In `bridge.rs`: handshake serialization/deserialization uses
+  `ciborium::ser::into_writer` / `ciborium::de::from_reader`
+  instead of `postcard::to_allocvec` / `postcard::from_bytes`
+  for Hello/Welcome only.
+- `FrameCodec` (post-handshake) stays postcard.
+- `#[serde(default)]` on `max_outstanding_requests` becomes
+  functional.
+
+**Version range (be-systems-engineer suggestion):** Consider
+changing `version: u32` to `min_version: u32, max_version: u32`
+in Hello. Server picks highest supported version within range.
+Enables graceful downgrade when v2 client connects to v1 server.
+Not blocking Phase 1 (only one version exists) but worth adding
+now while touching the handshake format. Deferred to Lane's call.
+
+(Sources: `agent/session-type-consultant/handshake_wire_extensibility_analysis`,
+`agent/be-systems-engineer/handshake_wire_extensibility`,
+`agent/plan9-systems-engineer/handshake_wire_extensibility_analysis`,
+optics-theorist inline analysis. Empirical postcard test at
+`/tmp/pc_test`.)
+
 ## Open items (blocking or near-blocking Phase 1)
 
 ### O1 — Whole-system two-function design (RESOLVED → D7)
@@ -687,6 +798,11 @@ roundtable (all four on cancel-by-token) ran same day. Session-type
 corrected O2 to count send_request only, not notifications.
 Unanimous on both. Lane approved → D9, D10.
 
-**All blocking opens resolved.** O3/O4/O6 are non-blocking
+D11 (CBOR handshake format) added same day after empirical
+verification that postcard `#[serde(default)]` fails on short
+input. All four agents consulted; plan9's Option A falsified by
+test. Lane approved.
+
+**All blocking opens resolved (D1-D11).** O3/O4/O6 are non-blocking
 doc/audit tasks. pane-architect can dispatch ConnectionSource
 implementation.

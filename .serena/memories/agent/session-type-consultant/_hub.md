@@ -64,6 +64,12 @@ recommended mailbox types for the coprocess channel, then
 retracted after Lane pointed out per-tag binary sessions are
 the right model.
 
+Recent additions:
+- `handshake_wire_extensibility_analysis` — Option B
+  (self-describing handshake, binary data plane) endorsed.
+  Session subtyping argument, format-boundary-as-session-
+  boundary, affine gap neutral.
+
 The `reference_eact_paper` content is at
 `reference/papers/eact_sections` (Phase 3d); the copy in
 this folder is provenance only.
