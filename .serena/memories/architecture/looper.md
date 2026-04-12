@@ -74,7 +74,16 @@ Tested: `batch_ordering_reply_before_teardown`,
 `batch_ordering_lifecycle_after_teardown`,
 `batch_ordering_notifications_last`.
 
-### Forwarding thread
+**Phase 2 TODO (O4, `decision/connection_source_design`):**
+Per-source phase 4 ctl drain — the scenario where C₁ frame
+dispatch triggers a ctl write to C₂ in the same iteration — is
+deferred. Does not exist in Phase 1 star topology (single
+connection). Spec'ing before the first callsite risks writing a
+rule that will be wrong when Phase 2 multi-connection is real.
+be-systems-engineer recommended deferral; session-type-consultant
+confirmed [FH] Lemma 1 permits any cross-actor ordering.
+
+### Forwarding thread (being replaced by ConnectionSource)
 
 The bridge's reader loop spawns a thread that forwards transport
 frames into the Looper's input channel. The Looper itself runs on
@@ -83,6 +92,15 @@ only place pane-app uses an extra OS thread. The forwarding thread
 is unconditional — calloop has no async I/O for arbitrary
 file-descriptor-backed transports, so the forwarding is the
 adapter.
+
+**Transition (C1-C6, `decision/connection_source_design`):**
+ConnectionSource (calloop EventSource, non-blocking FrameReader)
+is the replacement for the forwarding thread per connection.
+Looper-side registration works (C5, `LooperMessage::NewConnection`
+handoff). Bridge-side integration — wiring real connections
+through ConnectionSource instead of bridge threads — is the
+remaining task. Once complete, the forwarding thread is eliminated
+and the Looper reads directly from fds via calloop's poll loop.
 
 ### TimerToken / set_pulse_rate
 

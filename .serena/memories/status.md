@@ -3,43 +3,65 @@ type: status
 status: current
 supersedes: [archive/status/2026-04-06, pane/current_state]
 created: 2026-04-10
-last_updated: 2026-04-11T2
+last_updated: 2026-04-11T3
 importance: high
 keywords: [status, crates, tests, calloop, looper, invariants, send_and_wait, watchdog, NLnet]
 agents: [all]
 ---
 
-# Status (2026-04-10)
+# Status (2026-04-11)
 
 ## Where we are
 
-Six crates, 274 regular tests + 28 stress + 5 integration. All
+Six crates, 349 regular tests + 33 stress. All
 invariants verified or detection-enforced (19 of 19).
 
 | Crate | Role | Tests |
 |---|---|---|
 | pane-proto | Protocol vocabulary, no IO | 99 |
-
-### Landed since 2026-04-10
-
-- **ConnectionSource** (`66a6316`) — calloop EventSource wrapping
-  a post-handshake UnixStream fd. Non-blocking FrameReader (byte-
-  level WouldBlock state machine replacing FrameCodec's blocking
-  read_exact), FrameWriter with partial write tracking, dynamic
-  interest management (READ always, BOTH when write queue non-empty),
-  transitional mpsc write channel integration. Replaces bridge's
-  reader thread + forwarding thread per connection. 23 new tests.
-- **Provider-side API** (`da75432`) — SubscriberSender<P> type
-  (sending-only, no lifecycle ownership), Handler callbacks
-  subscriber_connected/subscriber_disconnected, batch routing
-  of InterestAccepted (phase 3) and ServiceTeardown (phase 2),
-  Messenger::subscriber_sender<P>() factory. 9 new tests.
-| pane-session | Session-typed IPC, transport, framing, server | 51 + 21 stress |
-| pane-app | Actor framework, dispatch, looper | 119 + 7 stress + 5 integration |
+| pane-session | Session-typed IPC, transport, framing, server | 58 + 21 stress |
+| pane-app | Actor framework, dispatch, looper | 171 + 12 stress + 14 integration |
 | pane-fs | Filesystem namespace | 5 |
 | pane-hello | First running pane app (binary) | 0 |
 | pane-notify | Filesystem notification abstraction | preserved from prototype |
 
+### Landed since 2026-04-11
+
+- **C1: Wire vocabulary** (`bece2bb`) — CBOR handshake format
+  (D11), `max_outstanding_requests` in Hello/Welcome, ciborium
+  dependency, `#[serde(default)]` functional for extensibility.
+- **C2: Two-function send API** (`10d84a2`) — Backpressure cap
+  tracking, `send_request` / `try_send_request` (D1/D7),
+  `send_notification` / `try_send_notification`, outstanding
+  request counter checked against negotiated cap. New module:
+  `backpressure.rs`.
+- **C3: Deferred revocation** (in C4) — `RevokeInterest` hybrid
+  pattern (D8): local mark + looper-batched wire send, H1/H2/H3
+  invariants tested.
+- **C4: ConnectionSource EventSource** (`66a6316`) — calloop
+  EventSource wrapping a post-handshake UnixStream fd. Non-blocking
+  FrameReader (byte-level WouldBlock state machine replacing
+  FrameCodec's blocking read_exact), FrameWriter with partial
+  write tracking, dynamic interest management (READ always, BOTH
+  when write queue non-empty), transitional mpsc write channel
+  integration. 23 new tests. New module: `connection_source.rs`.
+- **C5: Handshake handoff** (`9cc5d50`) — `LooperMessage::NewConnection`
+  variant, Looper-side ConnectionSource registration via
+  `LoopHandle::insert_source`, oneshot ack. Bridge-side integration
+  (replacing bridge threads with ConnectionSource for real
+  connections) documented as follow-up.
+- **C6: CancelHandle wiring** (`0553563`) — CancelHandle closure
+  captures ctl channel sender (D7/D10), server-side cancel-if-present
+  semantics, `SendAndWaitError::Cancelled` variant.
+- **Provider-side API** (`da75432`) — SubscriberSender<P> type
+  (sending-only, no lifecycle ownership), Handler callbacks
+  subscriber_connected/subscriber_disconnected, batch routing
+  of InterestAccepted (phase 3) and ServiceTeardown (phase 2),
+  Messenger::subscriber_sender<P>() factory. New module:
+  `subscriber_sender.rs`. 9 new tests.
+- **Pub/sub integration tests** (`e7802b3`, `dd3a0d6`) — push
+  and long-poll patterns, fan-out, churn, mixed, backpressure
+  stress tests. 4 regular + 5 stress tests.
 ### Landed since 2026-04-06
 
 - **Calloop Looper** (commits `bbc7026`, `a3aedff`) — six-phase
@@ -66,7 +88,7 @@ invariants verified or detection-enforced (19 of 19).
 - **NLnet GenAI compliance** (`1b396a9`, `6a375a5`, `93f38a2`) —
   commit format, git notes, log archive, GENAI.md rewrite.
 
-### Invariant status (19 of 19)
+### Invariant status (19 of 19 + 3 new)
 
 I1 (panic=unwind), I4 (typestate handles), I5 (Clone-safe Messages),
 I6 (sequential single-thread dispatch), I7 (service dispatch fn
@@ -89,12 +111,24 @@ S3 (six-phase batch ordering): implemented in Looper, three batch
 ordering tests (reply_before_teardown, lifecycle_after_teardown,
 notifications_last).
 
+H1 (Looper liveness after local mark), H2 (idempotent cleanup —
+process_disconnect skips already-revoked sessions), H3 (stale
+dispatch suppression via revoked_sessions set): all tested (D8
+deferred revocation invariants).
+
+Outstanding request counter: tested against negotiated cap (D9).
+Cap-and-abort on overflow (send_request), Backpressure return on
+try_send_request. Counter monotonic within batch phases.
+
 ## What's next
 
 ### Phase 1 — Core (in progress)
 
-**ConnectionSource** landed (C4, `66a6316`). Next: C5 — wire
-ConnectionSource into the Looper, replacing the forwarding thread.
+**ConnectionSource C1-C6 landed.** ConnectionSource exists as a
+calloop EventSource (C4). Looper-side registration works (C5).
+Bridge-side integration — replacing bridge reader/writer threads
+with ConnectionSource for real connections — is the remaining
+integration task before ConnectionSource is fully operational.
 
 Other Phase 1:
 
@@ -141,8 +175,8 @@ Handles<Routing>.
 ## Dev workflow
 
 ```
-cargo test --workspace          # 246 regular tests
-cargo test -- --ignored         # 28 stress tests
+cargo test --workspace          # 349 regular tests
+cargo test -- --ignored         # 33 stress tests
 cargo fmt
 cargo clippy --workspace        # zero warnings
 cargo run -p pane-hello         # canonical app

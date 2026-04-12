@@ -47,7 +47,21 @@ pane-app is the runtime layer translating pane-proto's type contracts into a wor
 
 **Message routing:** Transport frames arrive as LooperMessage (from pane-session bridge), decoded to service_id + payload + token (if request). ServiceDispatch routes by session_id to the pre-registered receiver closure (registered during PaneBuilder setup). The closure deserializes P::Message (or P::Message + ReplyPort<P::Reply> for requests) and calls Handles<P>::receive or HandlesRequest<P>::receive_request.
 
-**Request/reply protocol:** send_request on ServiceHandle<P> does three things atomically (install-before-wire — Plan 9 devmnt.c:786-790): (1) construct DispatchEntry with on_reply + on_failed closures, (2) insert into Dispatch<H> via DispatchCtx.insert() to get Token, (3) serialize with the token and send to wire. Reply/Failed frames arrive later, routed by (PeerScope, Token) to the installed entry. fire_reply/fire_failed consume the entry and invoke the callback. Sessions send Failed automatically for unregistered session_ids (totality: every Request gets a reply or failure on the wire, preventing orphaned dispatch entries).
+**Request/reply protocol:** send_request on ServiceHandle<P> does three things atomically (install-before-wire — Plan 9 devmnt.c:786-790): (1) construct DispatchEntry with on_reply + on_failed closures, (2) insert into Dispatch<H> via DispatchCtx.insert() to get Token, (3) serialize with the token and send to wire.
+
+**Linearity condition (D1, `decision/connection_source_design`,
+non-negotiable):** `try_send_request` MUST return
+`Result<CancelHandle, (Req, Backpressure)>` — not just
+`Result<CancelHandle, Backpressure>`. The request message must be
+returned inside the error variant because the obligation handle
+(I4 typestate) is consumed on the error path otherwise. If the
+caller's `Req` is moved into `try_send_request` and the send
+fails, the caller has lost ownership of the request with no way
+to retry or drop it cleanly. Same semantics as
+`std::sync::mpsc::SyncSender::try_send`. On the error path,
+`try_send_request` must also call `Dispatch::cancel(conn, token)`
+to remove the orphaned DispatchEntry that was installed in step
+(2) above. Source: session-type-consultant analysis, D1/D7/L2. Reply/Failed frames arrive later, routed by (PeerScope, Token) to the installed entry. fire_reply/fire_failed consume the entry and invoke the callback. Sessions send Failed automatically for unregistered session_ids (totality: every Request gets a reply or failure on the wire, preventing orphaned dispatch entries).
 
 **Destruction sequence:** When the looper exits (panic in dispatch or Flow::Stop), LooperCore::shutdown() (1) calls dispatch.fail_connection(primary) to fire all on_failed callbacks for pending requests, (2) dispatch.clear() drops remaining entries, (3) handler dropped (obligation handles' Drop compensation fires), (4) exit_tx notified. This sequence is load-bearing: fail_connection before clear ensures callbacks have a chance to clean up (S4, I9). Catch_unwind wraps each phase (I1, I9 fix commit 6e0130b).
 
@@ -65,7 +79,9 @@ Per decision/messenger_addressing:
 - **Messenger** — inbound self-reference, cloneable, carries self_address and framework APIs (set_pulse_rate, address(), set_content stub, watch/unwatch stub). Passed to dispatch callbacks for self-targeting.
 - **ServiceHandle<P>** — outbound service binding, protocol-scoped, owns send_request. Not cloneable (once-bound handle semantics).
 
-**Stub vs real:** Messenger.set_content, watch/unwatch are stubbed (TODO comments, crates/pane-app/src/messenger.rs:81–100). Real implementation requires write_tx on Messenger and ControlMessage wire send, deferred to Phase 1 (PLAN.md line 61). ServiceHandle.send_request and send_and_wait are real. ServiceHandle.Drop sends RevokeInterest frame (stubbed on wire, PLAN.md line 62 — ConnectionSource highest priority).
+**Stub vs real:** Messenger.set_content, watch/unwatch are stubbed (TODO comments, crates/pane-app/src/messenger.rs:81–100). Real implementation requires write_tx on Messenger and ControlMessage wire send, deferred to Phase 1 (PLAN.md line 61). ServiceHandle.send_request and send_and_wait are real. ServiceHandle.Drop sends RevokeInterest via hybrid deferred
+revocation (D8): local mark + looper-batched wire send. H1/H2/H3
+invariants tested.
 
 Address resolution (routing frames to the target handler) is stubbed at the looper level — all dispatch currently assumes primary_connection (the single pane's own connection). Phase 2 adds multi-connection routing.
 
@@ -91,7 +107,13 @@ Test invariants under adversarial conditions:
 
 ### Known Gaps
 
-**Highest priority (Phase 1):** ConnectionSource (calloop EventSource adapter for a single Connection — blocks Messenger real routing and ServiceHandle over real transport).
+**ConnectionSource (C1-C6 landed):** calloop EventSource for
+post-handshake connections, two-function send API, deferred
+revocation, CancelHandle wiring, Looper-side registration. New
+modules: `connection_source.rs`, `subscriber_sender.rs`,
+`backpressure.rs`. Remaining: bridge-side integration (replacing
+bridge threads with ConnectionSource for real connections). See
+`decision/connection_source_design`.
 
 **Messenger:** set_content, watch/unwatch, post_app_message are stubs awaiting real ctl send wiring.
 

@@ -56,6 +56,14 @@ verify the relevant spoke.
   degradation-only, 8 not-observable, 2 subsumed) and
   minimal covering test set.
 
+- [`analysis/verification/invariants/inv_rw`](invariants/inv_rw.md)
+  — defines Inv-RW (Request-Wait graph acyclicity), the
+  load-bearing progress invariant. Three guarantees (I2, I8,
+  protocol-scoped send_request). Distinguishes from [JHK24]
+  Theorem 1.2 (local star topology) and [FH] EAct progress
+  (whole-system). Created 2026-04-11 per O6 in
+  `decision/connection_source_design`.
+
 Archived (superseded, kept for provenance):
 
 - `archive/analysis/verification/wiring_soundness_2026_04_06`

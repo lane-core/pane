@@ -115,6 +115,37 @@ protocol and compositor design.
 | Deep view traversal for scripting | Declared properties only (`PropertyInfo`) | Stable scripting contracts at pane boundary. |
 | Per-window thread (`BWindow`) | Single-threaded calloop per pane | Same responsiveness, no lock contention. |
 
+## Deliberate divergences
+
+### Two-function send split (D1/D7, `decision/connection_source_design`)
+
+**Be pattern:** One function with timeout.
+`BMessenger::SendMessage(message, reply, delivery_timeout,
+reply_timeout)` — blocking with configurable timeout.
+`write_port_etc(port, code, buf, size, timeout)` — kernel call
+with timeout. `BPrivate::LinkSender::Flush(timeout)` — link-layer
+flush with timeout.
+
+**Pane pattern:** Two functions per send site (where both are
+warranted). `send_request` (infallible, cap-and-abort on overflow)
+and `try_send_request` → `Result<CancelHandle, (Msg, Backpressure)>`.
+Only `send_request` and `send_notification` get both variants;
+ctl-plane sends (`cancel`, `set_content`, `watch`/`unwatch`) are
+infallible-only. See D7 tier classification.
+
+**Why the divergence:** Be's one-function-with-timeout pattern
+implies blocking. Pane's I2 invariant (handlers must not block)
+rules out timeouts in handler context. The two-function split
+separates the 90% infallible path from the fallible path that
+returns the message for caller-driven retry, without blocking.
+The fallible variant must return the request inside the error
+(`Result<Token, (Req, Backpressure)>`) to preserve I4 typestate
+linearity — Be had no equivalent obligation.
+
+**Haiku precedent confirmed:** Be never had a non-blocking
+try-send. `write_port_etc` with `B_TIMEOUT = 0` was the closest
+approximation but was kernel-level, not application-visible.
+
 ## Deferred (not yet in architecture.md)
 
 - Display-specific Messenger methods (`set_title`, `resize_to`, etc.)

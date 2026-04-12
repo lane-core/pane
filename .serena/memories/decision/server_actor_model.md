@@ -54,11 +54,29 @@ acquisitions in the teardown path.
 
 ## DLfActRiS relevance
 
-Star topology (actor at center owning all write endpoints) is
-trivially acyclic per Jacobs / Hinrichsen / Krebbers POPL 2024
-Theorem 1.2 (global progress). Dynamic forwarder topology
+**[JHK24] Theorem 1.2 (scoped):** Star topology (actor at center
+owning all write endpoints) is trivially acyclic per Jacobs /
+Hinrichsen / Krebbers POPL 2024 Theorem 1.2 — this proves
+ProtocolServer's **local** star topology is progress-safe. The
+theorem's hypothesis is connectivity-graph acyclicity; star
+topology satisfies it trivially. Dynamic forwarder topology
 changes are outside LinearActris's current scope but sequential
 processing makes them safe.
+
+**Whole-system progress:** For progress across the full pane
+system (especially Phase 2 direct pane-to-pane per
+`decision/messenger_addressing`), cite **[FH] EAct progress**
+(Fowler / Hu, "Speak Now," Theorems 6 + 8) — per-actor, no
+topology requirement. The load-bearing invariant for whole-system
+progress is Inv-RW (Request-Wait graph acyclicity), defined in
+`analysis/verification/invariants/inv_rw`. [JHK24] Theorem 1.2
+and [FH] EAct progress address different graphs and different
+scopes; neither subsumes the other.
+
+**Citation correction (D3, `decision/connection_source_design`):**
+The original text read [JHK24] Theorem 1.2 as covering whole-pane
+progress. Restricted 2026-04-11 to local star topology per D3
+analysis.
 
 See `reference/papers/dlfactris` and `reference/papers/eact`
 for the formal grounding.
