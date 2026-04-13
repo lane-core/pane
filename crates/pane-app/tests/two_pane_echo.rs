@@ -773,6 +773,384 @@ fn second_hello_mid_session_rejected() {
     conn.wait();
 }
 
+/// Provider death delivers teardown, not transparent rebind.
+///
+/// When a provider dies, all sessions bound through it get
+/// ServiceTeardown. The server does not silently rebind the
+/// consumer to another provider — the handle is invalidated.
+///
+/// Design heritage: Plan 9 — when a mount point's server dies,
+/// all fids bound through it receive Rerror, not transparent
+/// rebind to a different server.
+#[test]
+fn provider_death_sends_teardown_not_rebind() {
+    let server = Arc::new(ProtocolServer::new());
+    let echo_id = echo_service_id();
+
+    // Pane B: echo provider
+    let (b_client, b_server) = MemoryTransport::pair();
+    let accept_b = accept_on_thread(&server, b_server);
+    let (mut pane_b, _) = ClientConn::connect(
+        b_client,
+        Hello {
+            version: 1,
+            max_message_size: 16 * 1024 * 1024,
+            max_outstanding_requests: 0,
+            interests: vec![],
+            provides: vec![ServiceProvision {
+                service: echo_id,
+                version: 1,
+            }],
+        },
+    );
+    let conn_b = accept_b.join().unwrap();
+    pane_b.expect_ready();
+
+    // Pane A: consumer
+    let (a_client, a_server) = MemoryTransport::pair();
+    let accept_a = accept_on_thread(&server, a_server);
+    let (mut pane_a, _) = ClientConn::connect(
+        a_client,
+        Hello {
+            version: 1,
+            max_message_size: 16 * 1024 * 1024,
+            max_outstanding_requests: 0,
+            interests: vec![],
+            provides: vec![],
+        },
+    );
+    let conn_a = accept_a.join().unwrap();
+    pane_a.expect_ready();
+
+    // Establish session
+    pane_a.send_control(&ControlMessage::DeclareInterest {
+        service: echo_id,
+        expected_version: 1,
+    });
+    let a_session = match pane_a.read_control() {
+        ControlMessage::InterestAccepted { session_id, .. } => session_id,
+        other => panic!("expected InterestAccepted for A, got {other:?}"),
+    };
+    let _b_session = match pane_b.read_control() {
+        ControlMessage::InterestAccepted { session_id, .. } => session_id,
+        other => panic!("expected InterestAccepted for B, got {other:?}"),
+    };
+
+    // Kill the provider
+    drop(pane_b);
+    conn_b.wait();
+
+    // Consumer should get ServiceTeardown for the bound session
+    match pane_a.read_control() {
+        ControlMessage::ServiceTeardown {
+            session_id,
+            reason,
+        } => {
+            assert_eq!(session_id, a_session, "teardown must reference A's session");
+            assert!(
+                matches!(reason, pane_proto::control::TeardownReason::ConnectionLost),
+                "expected ConnectionLost, got {reason:?}"
+            );
+        }
+        other => panic!("expected ServiceTeardown, got {other:?}"),
+    }
+
+    // Connection survives — verify liveness by declaring interest in
+    // a service that no longer exists (B is dead, no providers left).
+    pane_a.send_control(&ControlMessage::DeclareInterest {
+        service: echo_id,
+        expected_version: 1,
+    });
+    match pane_a.read_control() {
+        ControlMessage::InterestDeclined { reason, .. } => {
+            assert!(
+                matches!(reason, pane_proto::control::DeclineReason::ServiceUnknown),
+                "liveness check: expected ServiceUnknown, got {reason:?}"
+            );
+        }
+        other => panic!("liveness check: expected InterestDeclined, got {other:?}"),
+    }
+
+    drop(pane_a);
+    conn_a.wait();
+}
+
+/// A new provider does not hijack existing session routes.
+///
+/// Once a session is bound to a specific provider, a second
+/// provider registering the same service does not affect the
+/// routing of the existing session. Route table entries are
+/// immutable after creation.
+///
+/// Design heritage: Plan 9 — namec is consulted during walk
+/// only, not on every I/O. Once a fid is bound to a qid, the
+/// mount table is not re-consulted per read/write.
+#[test]
+fn new_provider_does_not_affect_existing_handle() {
+    let server = Arc::new(ProtocolServer::new());
+    let echo_id = echo_service_id();
+
+    // Pane B: first echo provider
+    let (b_client, b_server) = MemoryTransport::pair();
+    let accept_b = accept_on_thread(&server, b_server);
+    let (mut pane_b, _) = ClientConn::connect(
+        b_client,
+        Hello {
+            version: 1,
+            max_message_size: 16 * 1024 * 1024,
+            max_outstanding_requests: 0,
+            interests: vec![],
+            provides: vec![ServiceProvision {
+                service: echo_id,
+                version: 1,
+            }],
+        },
+    );
+    let conn_b = accept_b.join().unwrap();
+    pane_b.expect_ready();
+
+    // Pane A: consumer — binds session to B
+    let (a_client, a_server) = MemoryTransport::pair();
+    let accept_a = accept_on_thread(&server, a_server);
+    let (mut pane_a, _) = ClientConn::connect(
+        a_client,
+        Hello {
+            version: 1,
+            max_message_size: 16 * 1024 * 1024,
+            max_outstanding_requests: 0,
+            interests: vec![],
+            provides: vec![],
+        },
+    );
+    let conn_a = accept_a.join().unwrap();
+    pane_a.expect_ready();
+
+    // Establish A→B session
+    pane_a.send_control(&ControlMessage::DeclareInterest {
+        service: echo_id,
+        expected_version: 1,
+    });
+    let a_session = match pane_a.read_control() {
+        ControlMessage::InterestAccepted { session_id, .. } => session_id,
+        other => panic!("expected InterestAccepted for A, got {other:?}"),
+    };
+    let b_session = match pane_b.read_control() {
+        ControlMessage::InterestAccepted { session_id, .. } => session_id,
+        other => panic!("expected InterestAccepted for B, got {other:?}"),
+    };
+    pane_a.register_session(a_session);
+    pane_b.register_session(b_session);
+
+    // Pane C: second echo provider — joins AFTER the session exists
+    let (c_client, c_server) = MemoryTransport::pair();
+    let accept_c = accept_on_thread(&server, c_server);
+    let (mut pane_c, _) = ClientConn::connect(
+        c_client,
+        Hello {
+            version: 1,
+            max_message_size: 16 * 1024 * 1024,
+            max_outstanding_requests: 0,
+            interests: vec![],
+            provides: vec![ServiceProvision {
+                service: echo_id,
+                version: 1,
+            }],
+        },
+    );
+    let conn_c = accept_c.join().unwrap();
+    pane_c.expect_ready();
+
+    // A sends Request on the existing session — must reach B, not C
+    let echo_tag = echo_service_id().tag();
+    let ping = EchoMessage::Ping("routed-to-b".into());
+    let ping_bytes = postcard::to_allocvec(&ping).unwrap();
+    let mut inner = Vec::with_capacity(1 + ping_bytes.len());
+    inner.push(echo_tag);
+    inner.extend_from_slice(&ping_bytes);
+
+    pane_a.send_service(
+        a_session,
+        &ServiceFrame::Request {
+            token: 99,
+            payload: inner,
+        },
+    );
+
+    // B receives the request
+    let (recv_session, recv_frame) = pane_b.read_service();
+    assert_eq!(recv_session, b_session);
+    match recv_frame {
+        ServiceFrame::Request { token, payload } => {
+            assert_eq!(token, 99);
+            assert_eq!(payload[0], echo_tag);
+            let msg: EchoMessage = postcard::from_bytes(&payload[1..]).unwrap();
+            assert_eq!(msg, EchoMessage::Ping("routed-to-b".into()));
+
+            // B replies
+            let pong = EchoMessage::Pong("from-b".into());
+            let pong_bytes = postcard::to_allocvec(&pong).unwrap();
+            let mut reply_inner = Vec::with_capacity(1 + pong_bytes.len());
+            reply_inner.push(echo_tag);
+            reply_inner.extend_from_slice(&pong_bytes);
+
+            pane_b.send_service(
+                b_session,
+                &ServiceFrame::Reply {
+                    token,
+                    payload: reply_inner,
+                },
+            );
+        }
+        other => panic!("expected Request on B, got {other:?}"),
+    }
+
+    // A receives the reply from B
+    let (recv_session, recv_frame) = pane_a.read_service();
+    assert_eq!(recv_session, a_session);
+    match recv_frame {
+        ServiceFrame::Reply { token, payload } => {
+            assert_eq!(token, 99);
+            assert_eq!(payload[0], echo_tag);
+            let msg: EchoMessage = postcard::from_bytes(&payload[1..]).unwrap();
+            assert_eq!(msg, EchoMessage::Pong("from-b".into()));
+        }
+        other => panic!("expected Reply on A, got {other:?}"),
+    }
+
+    // C never received any frames for A's session — verified
+    // structurally: the route table entry for (A, a_session)
+    // points to (B, b_session). C has no route entry for this
+    // session. The successful B→A round trip above is the proof.
+
+    drop(pane_a);
+    drop(pane_b);
+    drop(pane_c);
+    conn_a.wait();
+    conn_b.wait();
+    conn_c.wait();
+}
+
+/// After a provider dies, new DeclareInterest routes to a survivor.
+///
+/// When multiple providers serve the same service and one dies,
+/// the server's provider_index is cleaned up. A new DeclareInterest
+/// finds the surviving provider — the service is still available.
+///
+/// Design heritage: Plan 9 mount table — after one server in a
+/// union mount dies, surviving servers still serve the namespace.
+#[test]
+fn new_declare_interest_after_provider_death_routes_to_survivor() {
+    let server = Arc::new(ProtocolServer::new());
+    let echo_id = echo_service_id();
+
+    // Pane B: first echo provider
+    let (b_client, b_server) = MemoryTransport::pair();
+    let accept_b = accept_on_thread(&server, b_server);
+    let (mut pane_b, _) = ClientConn::connect(
+        b_client,
+        Hello {
+            version: 1,
+            max_message_size: 16 * 1024 * 1024,
+            max_outstanding_requests: 0,
+            interests: vec![],
+            provides: vec![ServiceProvision {
+                service: echo_id,
+                version: 1,
+            }],
+        },
+    );
+    let conn_b = accept_b.join().unwrap();
+    pane_b.expect_ready();
+
+    // Pane C: second echo provider
+    let (c_client, c_server) = MemoryTransport::pair();
+    let accept_c = accept_on_thread(&server, c_server);
+    let (mut pane_c, _) = ClientConn::connect(
+        c_client,
+        Hello {
+            version: 1,
+            max_message_size: 16 * 1024 * 1024,
+            max_outstanding_requests: 0,
+            interests: vec![],
+            provides: vec![ServiceProvision {
+                service: echo_id,
+                version: 1,
+            }],
+        },
+    );
+    let conn_c = accept_c.join().unwrap();
+    pane_c.expect_ready();
+
+    // Kill B — provider_index drops B, C survives
+    drop(pane_b);
+    conn_b.wait();
+
+    // Pane A: consumer — connects after B is dead
+    let (a_client, a_server) = MemoryTransport::pair();
+    let accept_a = accept_on_thread(&server, a_server);
+    let (mut pane_a, _) = ClientConn::connect(
+        a_client,
+        Hello {
+            version: 1,
+            max_message_size: 16 * 1024 * 1024,
+            max_outstanding_requests: 0,
+            interests: vec![],
+            provides: vec![],
+        },
+    );
+    let conn_a = accept_a.join().unwrap();
+    pane_a.expect_ready();
+
+    // A declares interest — should route to C (the survivor)
+    pane_a.send_control(&ControlMessage::DeclareInterest {
+        service: echo_id,
+        expected_version: 1,
+    });
+    let a_session = match pane_a.read_control() {
+        ControlMessage::InterestAccepted { session_id, .. } => session_id,
+        other => panic!("expected InterestAccepted (routed to C), got {other:?}"),
+    };
+    let c_session = match pane_c.read_control() {
+        ControlMessage::InterestAccepted { session_id, .. } => session_id,
+        other => panic!("expected InterestAccepted for C, got {other:?}"),
+    };
+    pane_a.register_session(a_session);
+    pane_c.register_session(c_session);
+
+    // Verify routing: A sends Request, C receives it
+    let echo_tag = echo_service_id().tag();
+    let ping = EchoMessage::Ping("to-survivor".into());
+    let ping_bytes = postcard::to_allocvec(&ping).unwrap();
+    let mut inner = Vec::with_capacity(1 + ping_bytes.len());
+    inner.push(echo_tag);
+    inner.extend_from_slice(&ping_bytes);
+
+    pane_a.send_service(
+        a_session,
+        &ServiceFrame::Request {
+            token: 77,
+            payload: inner,
+        },
+    );
+
+    let (recv_session, recv_frame) = pane_c.read_service();
+    assert_eq!(recv_session, c_session);
+    match recv_frame {
+        ServiceFrame::Request { token, payload } => {
+            assert_eq!(token, 77);
+            assert_eq!(payload[0], echo_tag);
+            let msg: EchoMessage = postcard::from_bytes(&payload[1..]).unwrap();
+            assert_eq!(msg, EchoMessage::Ping("to-survivor".into()));
+        }
+        other => panic!("expected Request on C, got {other:?}"),
+    }
+
+    drop(pane_a);
+    drop(pane_c);
+    conn_a.wait();
+    conn_c.wait();
+}
+
 /// Regression guard: version 1 still produces Ok(Welcome).
 /// Ensures version validation doesn't accidentally reject valid clients.
 #[test]
