@@ -1,11 +1,12 @@
 ---
 type: architecture
 status: current
+supersedes: []
 created: 2026-04-11
-last_updated: 2026-04-11
+last_updated: 2026-04-12
 importance: high
-keywords: [pane-fs, namespace, FUSE, attributes, monadic_lens, optics, snapshot, scriptability, ctl, panenode, arcswap]
-related: [decision/panefs_query_unification, decision/observer_pattern, decision/headless_strategic_priority, analysis/verification/fs_scripting, analysis/optics/panefs_taxonomy]
+keywords: [pane-fs, namespace, FUSE, attributes, monadic_lens, optics, snapshot, scriptability, ctl, panenode, arcswap, Dev, compositor, kernel, router, tags]
+related: [decision/panefs_query_unification, decision/observer_pattern, decision/headless_strategic_priority, architecture/kernel, architecture/compositor, architecture/router, analysis/verification/fs_scripting, analysis/optics/panefs_taxonomy]
 agents: [pane-architect, plan9-systems-engineer, optics-theorist]
 ---
 
@@ -13,161 +14,250 @@ agents: [pane-architect, plan9-systems-engineer, optics-theorist]
 
 ## Summary
 
-pane-fs is the filesystem namespace crate — a strategic but currently sparse implementation that projects pane state into a `/pane/` synthetic filesystem for scripting and inspection. The crate embodies a unifying vision: **directories ARE queries, observable state lives as filesystem attributes** (per `decision/panefs_query_unification` and `decision/observer_pattern`), and scriptability happens through Plan 9-style ctl files and optics-powered attribute reads. 
+pane-fs is the namespace layer — the universal projection
+surface that every subsystem mounts into. It provides the
+file protocol access path for the two-tier pattern
+(file protocol + typed API) that is uniform across pane.
 
-The runtime is mostly stubs. Only the optics bridge (`AttrReader/AttrSet`) and directory model (`PaneEntry`) are real. No FUSE integration exists today. The crate contains just 3 source files (~240 LOC including tests), 5 passing tests, and explicit queuing in the status memo for: snapshot synchronization (ArcSwap), `PaneNode` trait, ctl parsing module, FUSE integration, and `#[derive(Scriptable)]` macro. 
+In the Plan 9 tradition: the namespace IS the interface.
+pane-kernel registers devices, pane-compositor registers
+window state, pane-app registers pane state, and pane-fs
+presents all of it as a coherent synthetic filesystem under
+`/pane/`. Everything observable or controllable through the
+file protocol goes through pane-fs.
 
-The spec is complete in `docs/architecture.md` § "Namespace (pane-fs)". The design is ambitious: each `/pane/<id>/` directory carries monadic lenses that simultaneously serve read (through optics-derived `AttrReader` views) and write (through ctl commands). Per `decision/headless_strategic_priority`, this filesystem IS what makes Plan 9-style scriptability and cross-machine observability real — it's the foundational model for headless distribution.
+Currently sparse (3 files, ~240 LOC, 5 tests). The optics
+bridge (AttrReader/AttrSet) and directory model (PaneEntry)
+are real. FUSE integration, ctl parsing, computed views, and
+subsystem mount points are queued for Phase 1.
 
-## Modules
+## Role in the architecture
 
-**`src/lib.rs`** (20 LOC) — Crate root with module declarations. Documents the namespace vision: per-pane directories under `/pane/` with structured entries (tag, body, attrs/*, ctl). Defines design heritage (Plan 9 /proc, rio /dev/wsys, BeOS hey scripting). No implementation.
+pane-fs is the namespace that binds all subsystems together:
 
-**`src/namespace.rs`** (97 LOC) — `PaneEntry<S>` struct modeling a registered pane. Holds id, tag, state snapshot (clone-able, looper-updated), and an `AttrSet<S>`. Two methods: `read_attr(name)` for FUSE reads, `update_state(s)` for looper snapshots. Two tests covering snapshot reads and updates. This is the only real type in the crate today.
+pane occupies three mount points on the host filesystem:
 
-**`src/attrs.rs`** (160 LOC) — Optics bridge between pane-proto's effectful `MonadicLens<S,A>` (read/write/parse) and pane-fs's snapshot-only `AttrReader<S>` (read-only). Core types: `AttrValue` (newtype String, serialized for FUSE), `AttrReader<S>` (type-erased closure-based reader), `AttrSet<S>` (HashMap of readers, names() for readdir). Three tests: reader single-attribute read, attrset multi-attribute serve, attrset name enumeration. Intentionally separate from pane-proto's version — this is read-only HashMap snapshot access tuned for FUSE, not the writer-monad mutation layer.
+| Host path | Provider | Role |
+|---|---|---|
+| `/srv` | pane-kernel / pane-session | Service posting (Plan 9 /srv directly) |
+| `/dev/pane/` | pane-kernel | Devices from DeviceRegistry |
+| `/pane/` | pane-fs | Pane state, compositor, computed views |
 
-## PaneNode Trait Status
+`/srv` and `/dev/pane/` are root-level namespace positions
+because pane is a system layer, not an application. Services
+go where services go, devices where devices go.
 
-**Queued for Phase 1** per status memo. No stub today. Will model a directory in the `/pane/` tree (either concrete — `/pane/<id>/` — or computed — `/pane/by-sig/`). Should support: `read_child(name)` → Option<PaneNode>, `list_children()` → Vec<&str>, `read_file(name)` → Vec<u8>, `stat()` → FUSE Attr. Design requirement from `decision/panefs_query_unification`: directories are computed views (predicates on pane state). No inheritance hierarchy — compositional, stateless methods on snapshots.
+### Full namespace layout
 
-## Namespace Model
+| Path | Provider | Content |
+|---|---|---|
+| `/srv/<name>` | pane-session services | Posted service fds (clipboard, ime, plumb, etc.) |
+| `/dev/pane/<name>` | pane-kernel | Individual Dev device (read/write) |
+| `/dev/pane/keyboard` | pane-kernel | Input device |
+| `/dev/pane/display` | pane-kernel | Display device |
+| `/dev/pane/audio` | pane-kernel | Audio device |
+| `/pane/<id>/` | pane-app | Pane state, attrs, ctl, tags |
+| `/pane/<id>/tag` | pane-app | Title text (Lens) |
+| `/pane/<id>/body` | pane-app | Content (Lens) |
+| `/pane/<id>/attrs/<name>` | pane-app | Attribute (Getter) |
+| `/pane/<id>/ctl` | pane-app | Command channel (write-only) |
+| `/pane/<id>/tags` | pane-app | Command hierarchy for tab launcher |
+| `/pane/comp/` | pane-compositor | Compositor state |
+| `/pane/comp/windows/` | pane-compositor | Window list |
+| `/pane/comp/windows/<id>/` | pane-compositor | Per-window state |
+| `/pane/comp/windows/<id>/ctl` | pane-compositor | Window management commands |
+| `/pane/comp/workspaces/` | pane-compositor | Workspace list and state |
+| `/pane/by-sig/<sig>/` | pane-fs (computed) | Query: filter by signature |
+| `/pane/by-type/<type>/` | pane-fs (computed) | Query: filter by type |
+| `/pane/remote/` | pane-fs (computed) | Query: topology == remote |
+| `/pane/local/` | pane-fs (computed) | Query: topology == local |
 
-**Path structure** (from `docs/architecture.md`):
+Each subsystem registers its namespace subtree with pane-fs.
+pane-fs handles path resolution, FUSE integration, and
+computed views. Subsystems implement the content.
+
+### The two-tier pattern
+
+Every subsystem exposes both access paths through pane-fs:
+
+- **File protocol:** `cat /pane/3/tag`, `echo resize 0 0 800 600 > /pane/comp/windows/3/ctl`, `cat /dev/pane/keyboard`, `ls /srv`
+- **Typed API:** Handler methods, Protocol messages, Dev traits
+
+Both paths access the same underlying state. pane-fs owns
+the file protocol path. The typed API path is direct (no
+pane-fs involvement).
+
+### Relationship to pane-kernel
+
+pane-kernel provides the DeviceRegistry (devtab[]). pane-fs
+mounts DeviceRegistry entries at `/dev/pane/`. When a pane
+reads `/dev/pane/keyboard`, pane-fs resolves the path to the
+Dev object and calls `dev.read()`. When a script writes to
+`/dev/pane/display`, pane-fs calls `dev.write()`.
+
+pane-kernel does NOT do path resolution. pane-fs does.
+pane-kernel provides the device table; pane-fs provides the
+namespace.
+
+Per-pane device visibility: the compositor provides a device
+view predicate per pane (HashSet of visible device names).
+pane-fs applies this predicate when resolving paths under
+`/pane/dev/` in a pane's context.
+
+### Relationship to pane-compositor
+
+pane-compositor registers its state tree with pane-fs:
+- Window list, per-window state (title, geometry, workspace,
+  focus)
+- Workspace list and active workspace
+- wctl commands via ctl files
+
+This makes window management scriptable:
+`echo "workspace 2" > /pane/comp/windows/3/ctl`
+
+The compositor's tab/launcher reads the command hierarchy
+from `/pane/<id>/tags` — pane-fs provides this file, sourced
+from the pane's registered tag tree.
+
+### Relationship to pane-router
+
+pane-router's rules may be observable/configurable through
+pane-fs in the future. The router's audit log could be
+readable from the namespace. This is deferred.
+
+## Namespace model
+
+**Directories ARE queries** (per `decision/panefs_query_unification`).
+Each directory is a computed view — a predicate on pane
+state. The tree is computed, not stored.
+
+- `/pane/by-sig/com.pane.agent/` = query `signature == 'com.pane.agent'`
+- `/pane/remote/` = query `topology == remote`
+- `/pane/local/` = query `topology == local`
+
+Local + remote unified is the **default**. Filtering is
+another computed directory view.
+
+**Observable state via filesystem attributes, not messaging**
+(per `decision/observer_pattern`). Replaces BeOS
+StartWatching/SendNotices. Reasons: initial-value problem
+solved (read then watch), crash recovery, scriptability,
+minimal infrastructure.
+
+## Modules (current implementation)
+
+**`src/lib.rs`** (20 LOC) — Crate root. Documents the
+namespace vision and design heritage (Plan 9 /proc, rio
+/dev/wsys, BeOS hey scripting).
+
+**`src/namespace.rs`** (97 LOC) — `PaneEntry<S>` struct:
+id, tag, state snapshot, AttrSet. Methods: read_attr,
+update_state. Two tests.
+
+**`src/attrs.rs`** (160 LOC) — Optics bridge. `AttrValue`
+(newtype String), `AttrReader<S>` (type-erased closure
+reader), `AttrSet<S>` (HashMap of readers). Three tests.
+
+## Per-pane directory structure
 
 ```
-/pane/json              all panes as JSON array
-/pane/<id>/             pane directory (id = local sequential index)
-  tag                   title text (Lens, read-write)
-  body                  content (Lens, read-write)
-  attrs/                attribute directory
-    <name>              individual attribute (Getter, read-only)
-    json                all attrs from one snapshot (bulk Getter)
-  ctl                   line-oriented command channel (write-only)
-  json                  full pane state object
-/pane/by-uuid/<uuid>/   view directory (symlink to /pane/<id>/)
-/pane/by-sig/<sig>/     query directory (filtered by signature)
-/pane/remote/           query directory (topology == remote)
+/pane/<id>/
+  tag              title text (Lens, read-write via ctl)
+  body             content (Lens, read-write via ctl)
+  attrs/           attribute directory
+    <name>         individual attribute (Getter, read-only)
+    json           all attrs from one snapshot (bulk)
+  ctl              line-oriented command channel (write-only)
+  tags             command hierarchy tree (read-only, for launcher)
+  json             full pane state as JSON
 ```
 
-**Types representing the tree:**
+The `tags` file is new — it exposes the pane's declared
+command vocabulary as a navigable hierarchy. The
+compositor's tab/launcher reads this to populate the command
+palette. Composable with unix tools: `cat /pane/3/tags | fzf`.
 
-- **`PaneEntry<S>`** (namespace.rs:16–34) — Concrete entry for `/pane/<id>/`. Generic over handler state S. Holds id (u64), tag (String), attrs (AttrSet<S>), state (S clone snapshot). Methods: read_attr, update_state.
+## Optic classification
 
-- **`AttrValue`** (attrs.rs:31–38) — Newtype `(String)`, serialized for FUSE. From optics view via Display impl. Semantics: text-based `/pane/<id>/attrs/<name>` file content.
+From `analysis/optics/panefs_taxonomy`:
 
-- **`AttrReader<S>`** (attrs.rs:47–73) — Type-erased attribute reader. Wraps a boxed closure `Fn(&S) -> AttrValue`. Constructed from a view function and Display type. No mutable state — pure read from snapshot.
+- `/pane/<id>/tag`, `/pane/<id>/body` → **Lens** (PutGet/GetPut/PutPut)
+- `/pane/<id>/attrs/<name>` → **Getter** (read-only)
+- `/pane/<id>/ctl` → **NOT an optic** (write-only, effectful)
+- `/pane/<id>/tags` → **Getter** (read-only command tree)
+- `/pane/dev/<name>` → **Dev trait** (open/read/write/close, not an optic)
+- `/pane/comp/windows/<id>/*` → **Getter** (compositor state projection)
+- Path composition: `/pane/3/tag` = Iso ∘ AffineTraversal ∘ Lens = AffineTraversal
 
-- **`AttrSet<S>`** (attrs.rs:77–107) — HashMap<&'static str, AttrReader<S>>. Methods: add (builder), read (lookup), names (readdir). The attribute namespace for one pane.
+## Snapshot synchronization (queued)
 
-**No explicit type for query directories** (`/pane/by-sig/`, `/pane/remote/`) yet. Will be computed in PaneNode impl. Filtering is a closure captured in PaneNode construction.
+ArcSwap-based. Looper publishes Clone'd state snapshot after
+each dispatch cycle. FUSE threads read via ArcSwap
+(zero-contention atomic swap). Per-pane consistency: all
+attributes in one FUSE operation from same dispatch cycle.
 
-## Ctl Parsing Status
+## Ctl parsing (queued)
 
-**Queued for Phase 1** per status memo. No implementation today. Design is specified: "line-oriented command interface" with synchronous blocking writes. Multi-line writes process sequentially, stop on first error.
+Line-oriented command interface. Write handler sends
+(command, oneshot_tx) to looper via calloop channel. Looper
+processes, executes effects, publishes snapshot, sends result.
+Error reporting via FUSE errno: EINVAL (syntax), EIO (panic),
+ENXIO (pane exited), ETIMEDOUT (5s).
 
-**Spec from `docs/architecture.md`:**
-- Write handler sends (command, oneshot_tx) to looper via calloop channel.
-- Looper processes command, executes effects, publishes snapshot, sends result.
-- Error reporting via FUSE errno: EINVAL (syntax), EIO (handler panic), ENXIO (pane exited), ETIMEDOUT (5s).
-- Commands are stateful: e.g., "cursor 42", "set-tag \"foo\"", "goto". Consumed by Handler via monadic lens setters.
+## PaneNode trait (queued)
 
-**Grammar notes (implicit from optics layer):**
-- Each command name maps to a MonadicLens<S, A> via its `parse` function.
-- Argument syntax is value-type-specific (set_tag: quoted string, cursor: integer, etc.).
-- Multi-arg commands case-analyzed by handler (future struct-based API).
-- Per `analysis/verification/fs_scripting`: structured ctl commands better than dynamic message fields.
+Models a directory in the `/pane/` tree. Must support
+subsystem registration — pane-kernel registers `/pane/dev/`,
+pane-compositor registers `/pane/comp/`, pane-app registers
+`/pane/<id>/`. Compositional, stateless methods on snapshots.
 
-## Snapshot Synchronization Status
+## FUSE integration (queued)
 
-**Queued for Phase 1** per status memo: "ArcSwap-based snapshot synchronization". Greenfield today — no hooks.
+Completely unimplemented. No fuse dependency in Cargo.toml.
+Design specified in docs/architecture.md. Operations: read,
+readdir, write (ctl dispatch).
 
-**Design from `docs/architecture.md`:**
-- Looper publishes a Clone'd state snapshot after each dispatch cycle (batch end, before Notifications phase).
-- FUSE threads read from snapshot via ArcSwap (zero-contention atomic swap).
-- Per-pane consistency: all attributes in one FUSE operation from same dispatch cycle.
-- `attrs/json` extends to bulk reads — one FUSE read, one snapshot, all attrs as JSON object.
+## `#[derive(Scriptable)]` macro (queued)
 
-**Implementation pattern (future):**
-- `PaneEntry<S>` should wrap S in ArcSwap<Arc<S>>.
-- `update_state(s)` becomes `self.state_arc.swap(Arc::new(s))`.
-- `read_attr(name)` clones the arc: `let snap = Arc::clone(&self.state_arc.load()); self.attrs.read(name, &snap)`.
-- Looper calls `update_state()` at batch end → immediate visibility to FUSE without blocking.
+Generates AttrSet + ctl dispatch from handler struct with
+MonadicLens attributes. Also generates the tags hierarchy
+from the declared command vocabulary.
 
-## FUSE Integration Status
+## Invariants
 
-**Completely unimplemented** per status memo and code review. Confirmation: no FUSE crate dependency in Cargo.toml, no integration code or stubs. Filesystem mounting is purely aspirational.
+1. **Snapshot consistency:** Per-FUSE-operation atomicity via
+   Clone. Reads never block the looper.
+2. **Filesystem = scripting:** ctl writes block until looper
+   processes. Read after write sees effect.
+3. **Computed views:** directories are predicates on state.
+   Tree is entirely computed, not stored.
+4. **Observable state:** filesystem attributes, not messaging.
+5. **Namespace = universal interface:** every subsystem mounts
+   into `/pane/`. File protocol + typed API both access the
+   same state.
 
-**Design stubs from `docs/architecture.md`:**
-- FUSE operations: read, readdir, write.
-- `open(path)` resolves via PaneNode tree walk.
-- `read(fd)` → calls node's read_file(), returns Vec<u8>.
-- `readdir(fd)` → calls node's list_children(), returns DirEntry vector.
-- `write(fd, buf)` → ctl dispatch: send (command, oneshot_tx) to looper, block on oneshot_rx, return bytes consumed or errno.
-- FUSE permission model: ReadWrite (0660) from AttrAccess::ReadWrite, ReadOnly (0440) from ReadOnly/Computed (pane-proto/src/monadic_lens.rs:69–74).
+## Provenance
 
-**Missing:** fuse-sys/fuse3 crate integration, fd→node mapping, directory enumeration logic, permission enforcement, error translation.
+Initial design established early in pane development.
+Updated 2026-04-12 to reflect the broader namespace role
+after pane-kernel (DeviceRegistry mount), pane-compositor
+(window state projection, tags for launcher), and
+pane-router (signal-flow policy) were designed. The
+two-tier pattern (file protocol + typed API) and exokernel
+framing clarified pane-fs as the universal projection
+surface.
 
-## `#[derive(Scriptable)]` Macro Status
+## See also
 
-**Queued for Phase 1** per status memo. No scaffolding today. Intended to: 
-- Accept handler struct with MonadicLens attributes.
-- Generate `AttrSet::new()` with all lenses registered as `AttrReader`s.
-- Emit a `ctl_dispatch` function that maps command names to lens parse/set functions.
-- Derive `PropertyInfo` metadata (optics type, access mode, description).
+- `architecture/kernel` — DeviceRegistry → `/pane/dev/`
+- `architecture/compositor` — window state → `/pane/comp/`
+- `architecture/router` — future: rules in namespace
+- `decision/panefs_query_unification` — directories ARE queries
+- `decision/observer_pattern` — attrs not messaging
+- `decision/headless_strategic_priority` — fs IS the foundation
+- `analysis/optics/panefs_taxonomy` — optic classification
+- `analysis/verification/fs_scripting` — scripting validation
+- `docs/architecture.md` § "Namespace (pane-fs)" — full spec
 
-**Macro target:**
-```rust
-#[derive(Scriptable)]
-struct MyHandler {
-    #[monadic_lens]
-    state: MyState,
-}
-```
-
-Should produce AttrSet + dispatch logic, similar to BeOS `GetSupportedSuites()/ResolveSpecifier()` pattern.
-
-## Five Tests
-
-All in `namespace.rs` and `attrs.rs`:
-
-1. **`attr_reader_reads_from_state_ref`** (attrs.rs:119–129) — Construct reader from view closure, call read(), assert string-serialized value. Tests: view capture, Display conversion.
-
-2. **`attr_set_serves_multiple_attributes`** (attrs.rs:131–147) — Build AttrSet with two readers, read by name, nonexistent returns None. Tests: HashMap add/read, multiple attributes, missing key.
-
-3. **`attr_set_lists_names`** (attrs.rs:149–158) — Build AttrSet, call names(), assert Vec matches inserted keys. Tests: readdir enumeration.
-
-4. **`pane_entry_reads_attrs_from_snapshot`** (namespace.rs:47–67) — Build PaneEntry with status/uptime attributes, call read_attr() twice, assert values match snapshot. Tests: PaneEntry attr bridging.
-
-5. **`pane_entry_reflects_state_updates`** (namespace.rs:69–95) — Build PaneEntry, read attr, call update_state() with new snapshot, read again, assert new value. Tests: looper update contract.
-
-**What's real:** attribute snapshot read model (optics→filesystem bridge). **What's stubbed:** FUSE operations, ctl parsing, batch synchronization, computed directories.
-
-## Invariants & Design Principles
-
-From `docs/architecture.md` and decisions:
-
-1. **Snapshot consistency:** Per-FUSE-operation atomicity via Clone. Reads never block the looper. Cross-attribute reads use bulk json to maintain consistency.
-
-2. **Optic classification** (from `analysis/optics/panefs_taxonomy.md`):
-   - `/pane/<id>/tag`, `/pane/<id>/body` → **Lens** (PutGet/GetPut/PutPut laws within snapshot)
-   - `/pane/<id>/attrs/<name>` → **Getter** (read-only, AffineFold if filtering)
-   - `/pane/<id>/ctl` → **NOT an optic** (write-only command channel, effectful/non-idempotent)
-   - Path composition: `/pane/3/tag` = Iso . AffineTraversal . Lens = AffineTraversal
-
-3. **Filesystem = scripting:** Plan 9 model: ctl writes block until looper processes and publishes updated snapshot. Read after write sees effect. Validated against 10 real BeOS scripting scenarios (analysis/verification/fs_scripting.md: 7/10 clean, 1/10 better, 2/10 design attention needed).
-
-4. **Computed views:** `/pane/by-sig/`, `/pane/remote/` are predicates on pane state, not stored. Tree is entirely computed. Unifies BFS queries (indices → live result sets) with Plan 9 synthetic filesystems.
-
-5. **Observable state via attributes, not messaging:** Replaces BeOS StartWatching/SendNotices. Reasons (decision/observer_pattern): initial-value problem solved (read then watch), crash recovery (state persists), scriptability (pane-notify watch without app cooperation), C1 alignment (separate watches), minimal infra.
-
-## See Also
-
-- **`docs/architecture.md`** § "Namespace (pane-fs)" — Full spec: paths, snapshot model, ctl writes, namespace as test surface.
-- **`decision/panefs_query_unification`** — Vision: directories ARE queries, hierarchy is view composition, BFS+Plan9 unification.
-- **`decision/observer_pattern`** — Why filesystem attributes, not messaging. Replaces BeOS StartWatching.
-- **`decision/headless_strategic_priority`** — Filesystem IS the foundation for distributed/headless scriptability.
-- **`analysis/verification/fs_scripting.md`** — Validation against 10 BeOS scripting scenarios. Outcome: 7/10 clean, needs ctl syntax definition and per-sig index.
-- **`analysis/optics/panefs_taxonomy.md`** — Optic classification of every path. Guides FUSE permission derivation.
-- **`pane-proto/src/monadic_lens.rs`** — Effectful optics layer (view pure, set returns effects). AttrReader/AttrSet types pane-fs depends on.
-- **`status.md`** Phase 1 queue — snapshot sync (ArcSwap), PaneNode trait, ctl parsing, FUSE, Scriptable derive.
+**Files:** `crates/pane-fs/src/{lib,namespace,attrs}.rs`
+(~240 LOC, 5 tests)

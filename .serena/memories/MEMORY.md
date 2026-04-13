@@ -24,7 +24,7 @@ that matches your task.
 
 ## When you need a process rule
 
-- [`policy/memory_discipline`](policy/memory_discipline.md) — how memory is organized in this project (memx principles, ported)
+- [`policy/memory/_hub`](policy/memory/_hub.md) — how memory is organized (memx principles, ported; spokes: principles, agents, hub_spokes, schemas, workflow, migration)
 - [`policy/block_escalation_policy`](policy/block_escalation_policy.md) — escalate blocks immediately
 - [`policy/refactor_review_policy`](policy/refactor_review_policy.md) — review + stale doc audit after refactors
 - [`policy/no_stability_commitment`](policy/no_stability_commitment.md) — no users, no deprecations
@@ -56,6 +56,8 @@ that matches your task.
 
 ### Subsystem decisions
 
+- [`decision/kernel_naming`](decision/kernel_naming.md) — why "kernel" not translator/host/sys: Plan 9 kernel role in userspace, exokernel framing
+- [`decision/thread_per_pane`](decision/thread_per_pane.md) — thread-per-pane default, shared memory primitives, process isolation opt-in
 - [`decision/messenger_addressing`](decision/messenger_addressing.md) — Address, Messenger, ServiceHandle, direct pane-to-pane
 - [`decision/server_actor_model`](decision/server_actor_model.md) — ProtocolServer is a single-threaded actor
 - [`decision/observer_pattern`](decision/observer_pattern.md) — observable state via filesystem attrs, not messaging
@@ -71,7 +73,7 @@ that matches your task.
 
 ## Dependencies
 
-- [`dependency/par`](dependency/par.md) — par 0.3.10 complete API digest: Session/Dual, Send/Recv, Enqueue/Dequeue, Server/Proxy/Connection, linear logic mapping, limitations, pane usage analysis
+- [`dependency/par/_hub`](dependency/par/_hub.md) — par 0.3.10 API digest (hub with 5 spokes: exchange, queue, server, linear_discipline, pane_integration)
 
 ## When working on a subsystem
 
@@ -79,6 +81,10 @@ that matches your task.
 - [`architecture/session`](architecture/session.md) — pane-session IPC: framing, transport, bridge, ProtocolServer single-threaded actor, watch/PaneExited
 - [`architecture/app`](architecture/app.md) — pane-app actor framework: Handler, DispatchCtx, Messenger, ServiceHandle, install-before-wire, destruction sequence
 - [`architecture/fs`](architecture/fs.md) — pane-fs filesystem namespace: PaneEntry, AttrSet, snapshot model, FUSE/ctl/PaneNode gaps
+- [`architecture/compositor`](architecture/compositor.md) — pane-compositor: rio-style Dev multiplexer, CSD, tab/launcher, workspaces, nesting, input routing
+- [`architecture/shared_state`](architecture/shared_state.md) — Observable, SharedLens, IntraMessenger, AppState: thread-per-pane shared-memory primitives
+- [`architecture/kernel`](architecture/kernel.md) — pane-kernel exokernel: Dev trait, DeviceRegistry, typed domain APIs, platform backends, rio connection
+- [`architecture/router`](architecture/router.md) — pane-router signal-flow policy: placement, invariants R-I1/R-I2/R-I3, audit, data management rules
 - [`architecture/looper`](architecture/looper.md) — calloop event loop, six-phase batch ordering, watchdog, send_and_wait/I8
 - [`architecture/rustix_migration`](architecture/rustix_migration.md) — pane-session FFI → rustix migration plan
 
@@ -141,8 +147,8 @@ on 2026-04-11; its content migrated to `agent/<n>/*` in serena.
 
 ## How memory works in this project
 
-See [`policy/memory_discipline`](policy/memory_discipline.md) for
-the full principles. Briefly:
+See [`policy/memory/_hub`](policy/memory/_hub.md) for the full
+principles (hub with 6 spokes). Briefly:
 
 - One memory store per project (this serena project), all agents
   share it

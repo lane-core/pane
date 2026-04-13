@@ -48,8 +48,13 @@ Phase 6 hub-and-spoked the analysis cluster currently at
 
 ## Analyses in this folder
 
+- [`linux_namespace_analysis`](linux_namespace_analysis.md) — seven-section analysis: Linux namespace primitives mapped to Plan 9, per-pane kernel namespaces design, threads→processes constraint, syscall sequences, minimum kernel versions, what Linux cannot provide
+
 - [`async_concurrency_assessment`](async_concurrency_assessment.md) — async vs sync verdict for pane's actor loop: sync correct for Phase 1, async deferred to Phase 2 trigger conditions
 - [`pane_kernel_design_consultation`](pane_kernel_design_consultation.md) — six-section analysis mapping Plan 9 kernel to pane-kernel userspace trait suite: Dev→device traits, platform backends, cfg(target_os), thin kernel boundary
+- [`pane_kernel_exokernel_synthesis`](pane_kernel_exokernel_synthesis.md) — five-section synthesis: Dev trait as universal foundation with typed Be-style APIs as ergonomic layer, namespace model (DeviceRegistry + PaneDeviceView), event model reconciliation (calloop + blocking-read files), essential vs optional Plan 9 concepts, Inferno/emu lessons
+- [`pane_compositor_design_consultation`](pane_compositor_design_consultation.md) — seven-section analysis mapping rio to pane-compositor: buffer-based compositor (not draw protocol), two-tier wctl, input routing vs router policy, recursive nesting, compositor-as-pane-app
+- [`thread_vs_process_consultation`](thread_vs_process_consultation.md) — thread-per-pane vs process-per-pane analysis: rfork in rio, hybrid model recommendation, predicate=mount-table equivalence
 
 ## Currently in this folder
 

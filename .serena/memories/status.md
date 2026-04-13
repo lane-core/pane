@@ -3,9 +3,9 @@ type: status
 status: current
 supersedes: [archive/status/2026-04-06, pane/current_state]
 created: 2026-04-10
-last_updated: 2026-04-12T5
+last_updated: 2026-04-12T7
 importance: high
-keywords: [status, crates, tests, calloop, looper, invariants, send_and_wait, watchdog, NLnet]
+keywords: [status, crates, tests, calloop, looper, invariants, send_and_wait, watchdog, NLnet, pane-kernel, pane-router]
 agents: [all]
 ---
 
@@ -13,25 +13,95 @@ agents: [all]
 
 ## Where we are
 
-Six crates, 380 regular tests + 48 stress/adversarial + 6 benchmarks.
+Six crates, 401 regular tests + 48 stress/adversarial + 6 benchmarks.
 All invariants verified or detection-enforced (22 of 22 + N1-N4
 identified, extraction pending).
 
-**Next session priority:** N1 integration complete. MPST extraction
-Phases A-C complete. Next: deeper API refactoring (DispatchCtx
-carries &dyn NonBlockingSend), or B1 RequestCorrelator extraction.
+Two new subsystems designed (architecture memories written):
+**pane-kernel** (exokernel system interface) and **pane-router**
+(signal-flow policy). Not yet implemented — design phase complete,
+pending Lane's refinement and implementation planning.
+
+**Async migration complete (all 5 phases landed).** Next session
+priority: ctx.schedule API is live — ready to use in real handlers.
+B1 (RequestCorrelator extraction to pane-session) and
+pane-kernel/pane-router implementation are the next major tracks.
 
 | Crate | Role | Tests |
 |---|---|---|
 | pane-proto | Protocol vocabulary, no IO | 99 |
 | pane-session | Session-typed IPC, transport, framing, server | 103 + 21 stress |
-| pane-app | Actor framework, dispatch, looper | 170 + 12 stress + 12 adversarial + 14 integration + 6 bench |
+| pane-app | Actor framework, dispatch, looper | 178 + 12 stress + 12 adversarial + 14 integration + 6 bench |
 | pane-fs | Filesystem namespace | 5 |
 | pane-hello | First running pane app (binary) | 0 |
 | pane-notify | Filesystem notification abstraction | preserved from prototype |
+| pane-kernel | System interface (DESIGNED, not yet implemented) | — |
+| pane-router | Signal-flow policy (DESIGNED, not yet implemented) | — |
+
+### Designed since 2026-04-12
+
+- **pane-kernel architecture** — Exokernel system interface layer.
+  Plan 9 Dev trait as universal device foundation, Be kit-style
+  typed APIs (Translator, InputSource, DisplayBackend, AudioDevice)
+  extending Dev. DeviceRegistry (devtab[]), DevId (Qid equivalent).
+  Per-pane device visibility via predicate. calloop EventSource
+  integration via event_fd(). Platform backends: Linux (rustix,
+  Wayland, PipeWire), Darwin (Cocoa, CoreAudio, IOKit), Headless.
+  Named "kernel" after Plan 9's kernel role: thin system interface,
+  not privileged core. Enables rio-style compositor. Future: Redox
+  OS port target. See `architecture/kernel`, `decision/kernel_naming`.
+
+- **pane-router architecture** — Signal-flow policy layer. Hybrid
+  placement: security/routing at server level, per-pane filters at
+  looper level. Router invariants R-I1/R-I2/R-I3 for request/reply
+  safety. AuditSink for non-interfering observation. Data management
+  rules (MIME-based routing with copy/symlink/delete effects).
+  Heritage: Plan 9 plumber + BeOS BMessageFilter + BQuery. See
+  `architecture/router`.
 
 ### Landed since 2026-04-12
 
+- **Phase 5: ctx.schedule() API for handler async composition**
+  (`76a4a32`) — DispatchCtx gains `Option<&Scheduler<()>>` field
+  and `pub fn schedule<F: Future<Output=()> + 'static>(&self, F)
+  -> bool` method. Scheduler threaded through dispatch_batch →
+  LooperCore::dispatch_request_with_context (renamed from
+  dispatch_request_with_writer to carry both SharedWriter and
+  Scheduler). Returns true if spawned, false if no scheduler
+  (test/standalone mode). 4 new tests: no-scheduler returns false,
+  observable side-effect, multiple futures, Phase 4+5 integration
+  (insert_async + ReplyFuture + schedule + fire_reply end-to-end).
+  pane-app lib: 178 tests. Completes async migration — all 5
+  phases landed.
+- **Phase 4: Executor-driven par Recv for request/reply futures**
+  (`ca88c0d`) — reply_future.rs: ReplySender (wraps par
+  exchange::Send, Drop sends Disconnected via catch_unwind),
+  ReplyFuture<T> (wraps par exchange::Recv, async recv() with
+  typed downcast), reply_channel<T>() (fork_sync slot pattern).
+  AsyncDispatchEntry in dispatch.rs with parallel async_entries
+  HashMap. Dispatch methods (fire_reply, fire_failed, cancel,
+  fail_connection, fail_session, clear) check both callback and
+  async maps. Async entries resolve through par channel to executor
+  futures, returning Flow::Continue (no handler involvement).
+  insert_async on DispatchCtx delegates to Dispatch. ReplyError
+  and ReplyFuture re-exported from lib.rs. 15 new tests (6
+  reply_future unit + 8 dispatch async integration + 1
+  dispatch_ctx). pane-app lib: 174 tests. Phase 4 of async
+  migration complete; Phase 5 (ctx.schedule) is next.
+- **Phase 3: StreamSource for par Dequeue** (`b772314`) —
+  SubscriberSender<P> rewritten from SyncSender<(u16, Vec<u8>)> to
+  par Enqueue<Vec<u8>>. Dequeue driven as calloop StreamSource with
+  real PingWaker. Pre-creation pattern: Looper creates Enqueue/Dequeue
+  pair in dispatch_batch Phase 3, stashes Enqueue in Messenger's
+  Arc<Mutex<HashMap>>, handler claims via subscriber_sender(), Dequeue
+  registered as StreamSource. send_notification(&mut self) uses
+  take/replace for Enqueue::push's consuming API. Drop calls close1().
+  Unclaimed Enqueues cleaned up after handler callback. calloop stream
+  feature enabled. First direct par runtime integration in active
+  dispatch phase. 2 new tests (stream_source_delivers_par_dequeue_items,
+  stream_source_cross_thread_push), SubscriberSender tests rewritten
+  (7 total). pane-app lib: 159 tests. Phase 3 of async migration
+  complete; Phase 4 (Executor-driven par Recv) is next.
 - **Phase 2: Executor/Scheduler in Looper** (`6a32d94`) — calloop
   Executor<()>/Scheduler<()> pair created in Looper::run(), registered
   as calloop EventSource alongside channel/timer/sync_rx. Scheduler
@@ -217,6 +287,10 @@ Outstanding request counter: tested against negotiated cap (D9).
 Cap-and-abort on overflow (send_request), Backpressure return on
 try_send_request. Counter monotonic within batch phases.
 
+Router invariants (designed, not yet implemented):
+R-I1 (block→Failed), R-I2 (preserve token on transform),
+R-I3 (drain deferral queue on teardown).
+
 ## What's next
 
 ### IMMEDIATE: pane-session MPST extraction
@@ -264,6 +338,8 @@ Other Phase 1:
 - AppPayload marker trait
 - pane-fs: snapshot synchronization (ArcSwap), PaneNode trait, ctl
   parsing module, FUSE integration, `#[derive(Scriptable)]` macro
+- pane-kernel: Dev trait, DeviceRegistry, DevId, platform backends
+- pane-router: server-side policy hooks, AuditSink, rule engine
 - pane-server: service-aware routing, per-service wire dispatch,
   pane_owned_by()
 - pane-headless: calloop event loop, unix listener, handshake
@@ -322,8 +398,8 @@ Handles<Routing>.
 ## Dev workflow
 
 ```
-cargo test --workspace          # 349 regular tests
-cargo test -- --ignored         # 36 stress tests
+cargo test --workspace          # 401 regular tests
+cargo test -- --ignored         # 48 stress/adversarial tests
 cargo test --test bench_ipc --release -- --ignored --nocapture bench_all  # benchmarks
 cargo fmt
 cargo clippy --workspace        # zero warnings
