@@ -1151,6 +1151,741 @@ fn new_declare_interest_after_provider_death_routes_to_survivor() {
     conn_c.wait();
 }
 
+/// Watch a live pane, then disconnect it — watcher receives PaneExited.
+///
+/// Design heritage: Haiku IsWatched2+3 — add watcher, observed event
+/// fires on target death. BRoster::StartWatching registered watchers
+/// at the registrar; the registrar broadcast B_SOME_APP_QUIT on app
+/// death (src/servers/registrar/TRoster.cpp:1523-1536).
+#[test]
+fn watch_then_disconnect_delivers_pane_exited() {
+    let server = Arc::new(ProtocolServer::new());
+
+    // Pane B: the watch target.
+    let (b_client, b_server) = MemoryTransport::pair();
+    let accept_b = accept_on_thread(&server, b_server);
+    let (mut pane_b, _) = ClientConn::connect(
+        b_client,
+        Hello {
+            version: 1,
+            max_message_size: 16 * 1024 * 1024,
+            max_outstanding_requests: 0,
+            interests: vec![],
+            provides: vec![],
+        },
+    );
+    let conn_b = accept_b.join().unwrap();
+    pane_b.expect_ready();
+    let b_address = pane_proto::Address::local(conn_b.conn_id.0);
+
+    // Pane A: the watcher.
+    let (a_client, a_server) = MemoryTransport::pair();
+    let accept_a = accept_on_thread(&server, a_server);
+    let (mut pane_a, _) = ClientConn::connect(
+        a_client,
+        Hello {
+            version: 1,
+            max_message_size: 16 * 1024 * 1024,
+            max_outstanding_requests: 0,
+            interests: vec![],
+            provides: vec![],
+        },
+    );
+    let conn_a = accept_a.join().unwrap();
+    pane_a.expect_ready();
+
+    // A watches B.
+    pane_a.send_control(&ControlMessage::Watch { target: b_address });
+
+    // B disconnects — server should send PaneExited to A.
+    drop(pane_b);
+    conn_b.wait();
+
+    // A receives PaneExited for B.
+    match pane_a.read_control() {
+        ControlMessage::PaneExited { address, reason } => {
+            assert_eq!(address, b_address);
+            assert_eq!(reason, pane_proto::ExitReason::Disconnected);
+        }
+        other => panic!("expected PaneExited, got {other:?}"),
+    }
+
+    drop(pane_a);
+    conn_a.wait();
+}
+
+/// Watch then unwatch — target disconnect does NOT deliver PaneExited.
+///
+/// Design heritage: Haiku IsWatched4 — remove watcher, observed event
+/// does not fire. BRoster::StopWatching
+/// (src/servers/registrar/TRoster.cpp:1538-1558) removed the watcher
+/// from the registrar's table.
+#[test]
+fn unwatch_then_disconnect_no_pane_exited() {
+    let server = Arc::new(ProtocolServer::new());
+
+    // Pane B: the watch target.
+    let (b_client, b_server) = MemoryTransport::pair();
+    let accept_b = accept_on_thread(&server, b_server);
+    let (mut pane_b, _) = ClientConn::connect(
+        b_client,
+        Hello {
+            version: 1,
+            max_message_size: 16 * 1024 * 1024,
+            max_outstanding_requests: 0,
+            interests: vec![],
+            provides: vec![],
+        },
+    );
+    let conn_b = accept_b.join().unwrap();
+    pane_b.expect_ready();
+    let b_address = pane_proto::Address::local(conn_b.conn_id.0);
+
+    // Pane A: the watcher.
+    let (a_client, a_server) = MemoryTransport::pair();
+    let accept_a = accept_on_thread(&server, a_server);
+    let (mut pane_a, _) = ClientConn::connect(
+        a_client,
+        Hello {
+            version: 1,
+            max_message_size: 16 * 1024 * 1024,
+            max_outstanding_requests: 0,
+            interests: vec![],
+            provides: vec![],
+        },
+    );
+    let conn_a = accept_a.join().unwrap();
+    pane_a.expect_ready();
+
+    // A watches B, then unwatches.
+    pane_a.send_control(&ControlMessage::Watch { target: b_address });
+    pane_a.send_control(&ControlMessage::Unwatch { target: b_address });
+
+    // B disconnects — A should NOT receive PaneExited.
+    drop(pane_b);
+    conn_b.wait();
+
+    // Verify A's next message is NOT PaneExited: send a DeclareInterest
+    // for a non-existent service. The server replies with InterestDeclined
+    // (ServiceUnknown). If PaneExited were queued, it would arrive first.
+    let phantom_id = ServiceId::new("com.pane.phantom");
+    pane_a.send_control(&ControlMessage::DeclareInterest {
+        service: phantom_id,
+        expected_version: 1,
+    });
+    match pane_a.read_control() {
+        ControlMessage::InterestDeclined { reason, .. } => {
+            assert!(
+                matches!(reason, pane_proto::control::DeclineReason::ServiceUnknown),
+                "expected ServiceUnknown (no PaneExited before it), got {reason:?}"
+            );
+        }
+        ControlMessage::PaneExited { .. } => {
+            panic!("received PaneExited after Unwatch — Unwatch did not take effect");
+        }
+        other => panic!("expected InterestDeclined, got {other:?}"),
+    }
+
+    drop(pane_a);
+    conn_a.wait();
+}
+
+/// Watch a target that never existed — immediate PaneExited.
+///
+/// Design heritage: Haiku IsWatched5 — SendNotices to an empty
+/// watcher table is safe, and watching a dead target should resolve
+/// immediately. Plan 9 — watching a dead name resolves immediately
+/// rather than blocking.
+#[test]
+fn watch_unknown_target_immediate_pane_exited() {
+    let server = Arc::new(ProtocolServer::new());
+
+    // Pane A: the watcher.
+    let (a_client, a_server) = MemoryTransport::pair();
+    let accept_a = accept_on_thread(&server, a_server);
+    let (mut pane_a, _) = ClientConn::connect(
+        a_client,
+        Hello {
+            version: 1,
+            max_message_size: 16 * 1024 * 1024,
+            max_outstanding_requests: 0,
+            interests: vec![],
+            provides: vec![],
+        },
+    );
+    let conn_a = accept_a.join().unwrap();
+    pane_a.expect_ready();
+
+    // Watch a target that was never connected.
+    let ghost_address = pane_proto::Address::local(9999);
+    pane_a.send_control(&ControlMessage::Watch {
+        target: ghost_address,
+    });
+
+    // Should get immediate PaneExited — no blocking.
+    match pane_a.read_control() {
+        ControlMessage::PaneExited { address, reason } => {
+            assert_eq!(address, ghost_address);
+            assert_eq!(reason, pane_proto::ExitReason::Disconnected);
+        }
+        other => panic!("expected immediate PaneExited for unknown target, got {other:?}"),
+    }
+
+    drop(pane_a);
+    conn_a.wait();
+}
+
+/// Watch self then disconnect — server handles gracefully without panic.
+///
+/// Edge case: when A watches itself and then disconnects, the server's
+/// process_disconnect tries to send PaneExited to A (the watcher), but
+/// A's transport is being torn down. The enqueue either fails (pushing
+/// to overflow_teardown, which is a no-op on an already-disconnecting
+/// connection) or succeeds into a dead writer thread. Neither panics.
+#[test]
+fn watch_self_then_disconnect() {
+    let server = Arc::new(ProtocolServer::new());
+
+    let (a_client, a_server) = MemoryTransport::pair();
+    let accept_a = accept_on_thread(&server, a_server);
+    let (mut pane_a, _) = ClientConn::connect(
+        a_client,
+        Hello {
+            version: 1,
+            max_message_size: 16 * 1024 * 1024,
+            max_outstanding_requests: 0,
+            interests: vec![],
+            provides: vec![],
+        },
+    );
+    let conn_a = accept_a.join().unwrap();
+    pane_a.expect_ready();
+
+    // A watches itself.
+    let a_address = pane_proto::Address::local(conn_a.conn_id.0);
+    pane_a.send_control(&ControlMessage::Watch { target: a_address });
+
+    // A disconnects — server must not panic during process_disconnect
+    // when it tries to deliver PaneExited to the dying connection.
+    drop(pane_a);
+    conn_a.wait();
+
+    // If we reach here, the server handled watch-self teardown
+    // without panicking. Verify the server is still functional
+    // by connecting a new pane.
+    let (b_client, b_server) = MemoryTransport::pair();
+    let accept_b = accept_on_thread(&server, b_server);
+    let (mut pane_b, _) = ClientConn::connect(
+        b_client,
+        Hello {
+            version: 1,
+            max_message_size: 16 * 1024 * 1024,
+            max_outstanding_requests: 0,
+            interests: vec![],
+            provides: vec![],
+        },
+    );
+    let conn_b = accept_b.join().unwrap();
+    pane_b.expect_ready();
+
+    drop(pane_b);
+    conn_b.wait();
+}
+
+/// Full disconnect cleanup: no ghost routes, stale providers, or orphaned
+/// watch table entries survive after all connections close.
+///
+/// Lifecycle: connect, provide, declare interest, watch, then disconnect
+/// both panes in sequence. After cleanup, verify a new provider/consumer
+/// pair can bind the same service and complete a full round-trip.
+///
+/// Design heritage: Plan 9 — freefidpool walks the entire fid pool on
+/// close; closepgrp walks the mount table. Property: zero residual
+/// references after close (reference/plan9/src/sys/src/cmd/exportfs/).
+#[test]
+fn disconnect_cleans_all_state() {
+    let server = Arc::new(ProtocolServer::new());
+    let echo_id = echo_service_id();
+
+    // -- Phase 1: establish a full session with watches --
+
+    // Pane B: echo provider
+    let (b_client, b_server) = MemoryTransport::pair();
+    let accept_b = accept_on_thread(&server, b_server);
+    let (mut pane_b, _) = ClientConn::connect(
+        b_client,
+        Hello {
+            version: 1,
+            max_message_size: 16 * 1024 * 1024,
+            max_outstanding_requests: 0,
+            interests: vec![],
+            provides: vec![ServiceProvision {
+                service: echo_id,
+                version: 1,
+            }],
+        },
+    );
+    let conn_b = accept_b.join().unwrap();
+    pane_b.expect_ready();
+
+    // Pane A: consumer
+    let (a_client, a_server) = MemoryTransport::pair();
+    let accept_a = accept_on_thread(&server, a_server);
+    let (mut pane_a, _) = ClientConn::connect(
+        a_client,
+        Hello {
+            version: 1,
+            max_message_size: 16 * 1024 * 1024,
+            max_outstanding_requests: 0,
+            interests: vec![],
+            provides: vec![],
+        },
+    );
+    let conn_a = accept_a.join().unwrap();
+    pane_a.expect_ready();
+
+    // A declares interest in echo → gets session
+    pane_a.send_control(&ControlMessage::DeclareInterest {
+        service: echo_id,
+        expected_version: 1,
+    });
+    let _a_session = match pane_a.read_control() {
+        ControlMessage::InterestAccepted { session_id, .. } => session_id,
+        other => panic!("expected InterestAccepted for A, got {other:?}"),
+    };
+    let _b_session = match pane_b.read_control() {
+        ControlMessage::InterestAccepted { session_id, .. } => session_id,
+        other => panic!("expected InterestAccepted for B, got {other:?}"),
+    };
+
+    // A watches B
+    let b_address = pane_proto::Address::local(conn_b.conn_id.0);
+    pane_a.send_control(&ControlMessage::Watch { target: b_address });
+
+    // -- Phase 2: disconnect A, then B --
+
+    // Drop A's transport — server processes disconnect, cleans A's
+    // routing_table entries, watch registrations, conn_addresses.
+    // B should receive ServiceTeardown (A revoked interest via disconnect).
+    drop(pane_a);
+    conn_a.wait();
+
+    match pane_b.read_control() {
+        ControlMessage::ServiceTeardown { reason, .. } => {
+            assert!(
+                matches!(reason, pane_proto::control::TeardownReason::ConnectionLost),
+                "expected ConnectionLost, got {reason:?}"
+            );
+        }
+        other => panic!("expected ServiceTeardown after A disconnect, got {other:?}"),
+    }
+
+    // Drop B's transport — server processes disconnect, cleans B's
+    // provider_index entry, watch_table, conn_addresses.
+    drop(pane_b);
+    conn_b.wait();
+
+    // -- Phase 3: verify no ghost state --
+
+    // Pane D: new consumer — DeclareInterest for echo should get
+    // ServiceUnknown because B (the provider) is dead and cleaned up.
+    let (d_client, d_server) = MemoryTransport::pair();
+    let accept_d = accept_on_thread(&server, d_server);
+    let (mut pane_d, _) = ClientConn::connect(
+        d_client,
+        Hello {
+            version: 1,
+            max_message_size: 16 * 1024 * 1024,
+            max_outstanding_requests: 0,
+            interests: vec![],
+            provides: vec![],
+        },
+    );
+    let conn_d = accept_d.join().unwrap();
+    pane_d.expect_ready();
+
+    pane_d.send_control(&ControlMessage::DeclareInterest {
+        service: echo_id,
+        expected_version: 1,
+    });
+    match pane_d.read_control() {
+        ControlMessage::InterestDeclined { reason, .. } => {
+            assert!(
+                matches!(reason, pane_proto::control::DeclineReason::ServiceUnknown),
+                "ghost provider: expected ServiceUnknown, got {reason:?}"
+            );
+        }
+        other => panic!("ghost provider check: expected InterestDeclined, got {other:?}"),
+    }
+
+    drop(pane_d);
+    conn_d.wait();
+
+    // -- Phase 4: new provider/consumer round-trip on same service --
+
+    // Pane E: new echo provider
+    let (e_client, e_server) = MemoryTransport::pair();
+    let accept_e = accept_on_thread(&server, e_server);
+    let (mut pane_e, _) = ClientConn::connect(
+        e_client,
+        Hello {
+            version: 1,
+            max_message_size: 16 * 1024 * 1024,
+            max_outstanding_requests: 0,
+            interests: vec![],
+            provides: vec![ServiceProvision {
+                service: echo_id,
+                version: 1,
+            }],
+        },
+    );
+    let conn_e = accept_e.join().unwrap();
+    pane_e.expect_ready();
+
+    // Pane F: new consumer
+    let (f_client, f_server) = MemoryTransport::pair();
+    let accept_f = accept_on_thread(&server, f_server);
+    let (mut pane_f, _) = ClientConn::connect(
+        f_client,
+        Hello {
+            version: 1,
+            max_message_size: 16 * 1024 * 1024,
+            max_outstanding_requests: 0,
+            interests: vec![],
+            provides: vec![],
+        },
+    );
+    let conn_f = accept_f.join().unwrap();
+    pane_f.expect_ready();
+
+    // F declares interest → routes to E (not ghost B)
+    pane_f.send_control(&ControlMessage::DeclareInterest {
+        service: echo_id,
+        expected_version: 1,
+    });
+    let f_session = match pane_f.read_control() {
+        ControlMessage::InterestAccepted { session_id, .. } => session_id,
+        other => panic!("expected InterestAccepted for F, got {other:?}"),
+    };
+    let e_session = match pane_e.read_control() {
+        ControlMessage::InterestAccepted { session_id, .. } => session_id,
+        other => panic!("expected InterestAccepted for E, got {other:?}"),
+    };
+    pane_f.register_session(f_session);
+    pane_e.register_session(e_session);
+
+    // Full round-trip: F sends Request, E receives and replies, F gets Reply.
+    let echo_tag = echo_service_id().tag();
+    let ping = EchoMessage::Ping("post-cleanup".into());
+    let ping_bytes = postcard::to_allocvec(&ping).unwrap();
+    let mut inner = Vec::with_capacity(1 + ping_bytes.len());
+    inner.push(echo_tag);
+    inner.extend_from_slice(&ping_bytes);
+
+    pane_f.send_service(
+        f_session,
+        &ServiceFrame::Request {
+            token: 1,
+            payload: inner,
+        },
+    );
+
+    let (recv_session, recv_frame) = pane_e.read_service();
+    assert_eq!(recv_session, e_session);
+    match recv_frame {
+        ServiceFrame::Request { token, payload } => {
+            assert_eq!(token, 1);
+            assert_eq!(payload[0], echo_tag);
+            let msg: EchoMessage = postcard::from_bytes(&payload[1..]).unwrap();
+            assert_eq!(msg, EchoMessage::Ping("post-cleanup".into()));
+
+            let pong = EchoMessage::Pong("post-cleanup".into());
+            let pong_bytes = postcard::to_allocvec(&pong).unwrap();
+            let mut reply_inner = Vec::with_capacity(1 + pong_bytes.len());
+            reply_inner.push(echo_tag);
+            reply_inner.extend_from_slice(&pong_bytes);
+
+            pane_e.send_service(
+                e_session,
+                &ServiceFrame::Reply {
+                    token,
+                    payload: reply_inner,
+                },
+            );
+        }
+        other => panic!("expected Request on E, got {other:?}"),
+    }
+
+    let (recv_session, recv_frame) = pane_f.read_service();
+    assert_eq!(recv_session, f_session);
+    match recv_frame {
+        ServiceFrame::Reply { token, payload } => {
+            assert_eq!(token, 1);
+            assert_eq!(payload[0], echo_tag);
+            let msg: EchoMessage = postcard::from_bytes(&payload[1..]).unwrap();
+            assert_eq!(msg, EchoMessage::Pong("post-cleanup".into()));
+        }
+        other => panic!("expected Reply on F, got {other:?}"),
+    }
+
+    drop(pane_e);
+    drop(pane_f);
+    conn_e.wait();
+    conn_f.wait();
+}
+
+/// Rapid full-mesh connect-disconnect, then verify server is fully functional.
+///
+/// Four panes form a mesh (two providers, two consumers, watches between
+/// them), then all disconnect in rapid succession. After cleanup, a new
+/// provider/consumer pair completes a full round-trip — proving the server
+/// has no residual state from the torn-down mesh.
+///
+/// Design heritage: Plan 9 — after full mesh teardown, new mounts work.
+/// The server's state machine returns to an equivalent of fresh-start.
+#[test]
+fn post_disconnect_new_connections_fully_functional() {
+    let server = Arc::new(ProtocolServer::new());
+    let echo_id = echo_service_id();
+
+    // -- Phase 1: build a 4-pane mesh --
+
+    // Pane A: echo provider #1
+    let (a_client, a_server) = MemoryTransport::pair();
+    let accept_a = accept_on_thread(&server, a_server);
+    let (mut pane_a, _) = ClientConn::connect(
+        a_client,
+        Hello {
+            version: 1,
+            max_message_size: 16 * 1024 * 1024,
+            max_outstanding_requests: 0,
+            interests: vec![],
+            provides: vec![ServiceProvision {
+                service: echo_id,
+                version: 1,
+            }],
+        },
+    );
+    let conn_a = accept_a.join().unwrap();
+    pane_a.expect_ready();
+
+    // Pane B: echo provider #2
+    let (b_client, b_server) = MemoryTransport::pair();
+    let accept_b = accept_on_thread(&server, b_server);
+    let (mut pane_b, _) = ClientConn::connect(
+        b_client,
+        Hello {
+            version: 1,
+            max_message_size: 16 * 1024 * 1024,
+            max_outstanding_requests: 0,
+            interests: vec![],
+            provides: vec![ServiceProvision {
+                service: echo_id,
+                version: 1,
+            }],
+        },
+    );
+    let conn_b = accept_b.join().unwrap();
+    pane_b.expect_ready();
+
+    // Pane C: consumer #1
+    let (c_client, c_server) = MemoryTransport::pair();
+    let accept_c = accept_on_thread(&server, c_server);
+    let (mut pane_c, _) = ClientConn::connect(
+        c_client,
+        Hello {
+            version: 1,
+            max_message_size: 16 * 1024 * 1024,
+            max_outstanding_requests: 0,
+            interests: vec![],
+            provides: vec![],
+        },
+    );
+    let conn_c = accept_c.join().unwrap();
+    pane_c.expect_ready();
+
+    // Pane D: consumer #2
+    let (d_client, d_server) = MemoryTransport::pair();
+    let accept_d = accept_on_thread(&server, d_server);
+    let (mut pane_d, _) = ClientConn::connect(
+        d_client,
+        Hello {
+            version: 1,
+            max_message_size: 16 * 1024 * 1024,
+            max_outstanding_requests: 0,
+            interests: vec![],
+            provides: vec![],
+        },
+    );
+    let conn_d = accept_d.join().unwrap();
+    pane_d.expect_ready();
+
+    // C declares interest → gets session (routed to A or B)
+    pane_c.send_control(&ControlMessage::DeclareInterest {
+        service: echo_id,
+        expected_version: 1,
+    });
+    let _c_session = match pane_c.read_control() {
+        ControlMessage::InterestAccepted { session_id, .. } => session_id,
+        other => panic!("expected InterestAccepted for C, got {other:?}"),
+    };
+    // Provider (A or B) also receives InterestAccepted — drain it.
+    // The server sends to whichever provider was selected; we don't
+    // know which, so try A first, fall back to B.
+    //
+    // Because the server picks the first provider in the index, and
+    // A connected first, A gets the session for C.
+    let _a_session_for_c = match pane_a.read_control() {
+        ControlMessage::InterestAccepted { session_id, .. } => session_id,
+        other => panic!("expected InterestAccepted for A (from C), got {other:?}"),
+    };
+
+    // D declares interest → gets session
+    pane_d.send_control(&ControlMessage::DeclareInterest {
+        service: echo_id,
+        expected_version: 1,
+    });
+    let _d_session = match pane_d.read_control() {
+        ControlMessage::InterestAccepted { session_id, .. } => session_id,
+        other => panic!("expected InterestAccepted for D, got {other:?}"),
+    };
+    // Provider receives InterestAccepted — A again (first in index).
+    let _a_session_for_d = match pane_a.read_control() {
+        ControlMessage::InterestAccepted { session_id, .. } => session_id,
+        other => panic!("expected InterestAccepted for A (from D), got {other:?}"),
+    };
+
+    // C watches A, D watches B
+    let a_address = pane_proto::Address::local(conn_a.conn_id.0);
+    let b_address = pane_proto::Address::local(conn_b.conn_id.0);
+    pane_c.send_control(&ControlMessage::Watch { target: a_address });
+    pane_d.send_control(&ControlMessage::Watch { target: b_address });
+
+    // -- Phase 2: disconnect all four in rapid succession --
+    // Drop transports, then wait on all handles. The waits ensure
+    // the actor has processed every disconnect event.
+    drop(pane_a);
+    drop(pane_b);
+    drop(pane_c);
+    drop(pane_d);
+    conn_a.wait();
+    conn_b.wait();
+    conn_c.wait();
+    conn_d.wait();
+
+    // -- Phase 3: verify server is fully functional --
+
+    // Pane E: new echo provider
+    let (e_client, e_server) = MemoryTransport::pair();
+    let accept_e = accept_on_thread(&server, e_server);
+    let (mut pane_e, _) = ClientConn::connect(
+        e_client,
+        Hello {
+            version: 1,
+            max_message_size: 16 * 1024 * 1024,
+            max_outstanding_requests: 0,
+            interests: vec![],
+            provides: vec![ServiceProvision {
+                service: echo_id,
+                version: 1,
+            }],
+        },
+    );
+    let conn_e = accept_e.join().unwrap();
+    pane_e.expect_ready();
+
+    // Pane F: new consumer
+    let (f_client, f_server) = MemoryTransport::pair();
+    let accept_f = accept_on_thread(&server, f_server);
+    let (mut pane_f, _) = ClientConn::connect(
+        f_client,
+        Hello {
+            version: 1,
+            max_message_size: 16 * 1024 * 1024,
+            max_outstanding_requests: 0,
+            interests: vec![],
+            provides: vec![],
+        },
+    );
+    let conn_f = accept_f.join().unwrap();
+    pane_f.expect_ready();
+
+    // F declares interest → routes to E (no ghost A/B)
+    pane_f.send_control(&ControlMessage::DeclareInterest {
+        service: echo_id,
+        expected_version: 1,
+    });
+    let f_session = match pane_f.read_control() {
+        ControlMessage::InterestAccepted { session_id, .. } => session_id,
+        other => panic!("expected InterestAccepted for F, got {other:?}"),
+    };
+    let e_session = match pane_e.read_control() {
+        ControlMessage::InterestAccepted { session_id, .. } => session_id,
+        other => panic!("expected InterestAccepted for E, got {other:?}"),
+    };
+    pane_f.register_session(f_session);
+    pane_e.register_session(e_session);
+
+    // Full round-trip proves no residual routing state interferes.
+    let echo_tag = echo_service_id().tag();
+    let ping = EchoMessage::Ping("post-mesh-teardown".into());
+    let ping_bytes = postcard::to_allocvec(&ping).unwrap();
+    let mut inner = Vec::with_capacity(1 + ping_bytes.len());
+    inner.push(echo_tag);
+    inner.extend_from_slice(&ping_bytes);
+
+    pane_f.send_service(
+        f_session,
+        &ServiceFrame::Request {
+            token: 2,
+            payload: inner,
+        },
+    );
+
+    let (recv_session, recv_frame) = pane_e.read_service();
+    assert_eq!(recv_session, e_session);
+    match recv_frame {
+        ServiceFrame::Request { token, payload } => {
+            assert_eq!(token, 2);
+            assert_eq!(payload[0], echo_tag);
+            let msg: EchoMessage = postcard::from_bytes(&payload[1..]).unwrap();
+            assert_eq!(msg, EchoMessage::Ping("post-mesh-teardown".into()));
+
+            let pong = EchoMessage::Pong("post-mesh-teardown".into());
+            let pong_bytes = postcard::to_allocvec(&pong).unwrap();
+            let mut reply_inner = Vec::with_capacity(1 + pong_bytes.len());
+            reply_inner.push(echo_tag);
+            reply_inner.extend_from_slice(&pong_bytes);
+
+            pane_e.send_service(
+                e_session,
+                &ServiceFrame::Reply {
+                    token,
+                    payload: reply_inner,
+                },
+            );
+        }
+        other => panic!("expected Request on E, got {other:?}"),
+    }
+
+    let (recv_session, recv_frame) = pane_f.read_service();
+    assert_eq!(recv_session, f_session);
+    match recv_frame {
+        ServiceFrame::Reply { token, payload } => {
+            assert_eq!(token, 2);
+            assert_eq!(payload[0], echo_tag);
+            let msg: EchoMessage = postcard::from_bytes(&payload[1..]).unwrap();
+            assert_eq!(msg, EchoMessage::Pong("post-mesh-teardown".into()));
+        }
+        other => panic!("expected Reply on F, got {other:?}"),
+    }
+
+    drop(pane_e);
+    drop(pane_f);
+    conn_e.wait();
+    conn_f.wait();
+}
+
 /// Regression guard: version 1 still produces Ok(Welcome).
 /// Ensures version validation doesn't accidentally reject valid clients.
 #[test]
