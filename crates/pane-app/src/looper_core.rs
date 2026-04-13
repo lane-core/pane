@@ -417,22 +417,27 @@ impl<H: pane_proto::Handler> LooperCore<H> {
         token: u64,
         inner: Vec<u8>,
     ) -> DispatchOutcome {
-        self.dispatch_request_with_writer(session_id, token, inner, None)
+        self.dispatch_request_with_context(session_id, token, inner, None, None)
     }
 
-    /// Dispatch a request with an optional direct write path (D12).
+    /// Dispatch a request with optional looper-thread resources.
     ///
     /// When `shared_writer` is Some, the DispatchCtx carries the
     /// direct writer so send_request can bypass the mpsc channel
-    /// for looper-thread sends. The SharedWriter is Rc-based (!Send)
-    /// and lives on the Looper (created on the looper thread), not
-    /// on LooperCore (which must be Send for thread::spawn).
-    pub(crate) fn dispatch_request_with_writer(
+    /// for looper-thread sends (D12). When `scheduler` is Some,
+    /// the DispatchCtx carries the calloop Scheduler so handlers
+    /// can spawn async futures via `ctx.schedule()` (Phase 5).
+    ///
+    /// Both are Rc-based (!Send) and live on the Looper (created
+    /// on the looper thread), not on LooperCore (which must be
+    /// Send for thread::spawn).
+    pub(crate) fn dispatch_request_with_context(
         &mut self,
         session_id: u16,
         token: u64,
         inner: Vec<u8>,
         shared_writer: Option<&SharedWriter>,
+        scheduler: Option<&calloop::futures::Scheduler<()>>,
     ) -> DispatchOutcome {
         // catch_unwind: the request receiver closure may panic
         // (handler panic in receive_request). The ReplyPort
@@ -446,10 +451,16 @@ impl<H: pane_proto::Handler> LooperCore<H> {
         let service_dispatch = &self.service_dispatch;
         let messenger = &self.messenger;
         let write_tx = &self.write_tx;
-        // D12 Part 2: create DispatchCtx with direct writer when available.
-        let mut ctx = match shared_writer {
-            Some(sw) => DispatchCtx::with_writer(&mut self.dispatch, self.primary_connection, sw),
-            None => DispatchCtx::new(&mut self.dispatch, self.primary_connection),
+        // Create DispatchCtx with looper-thread resources when available.
+        let mut ctx = if shared_writer.is_some() || scheduler.is_some() {
+            DispatchCtx::with_writer(
+                &mut self.dispatch,
+                self.primary_connection,
+                shared_writer,
+                scheduler,
+            )
+        } else {
+            DispatchCtx::new(&mut self.dispatch, self.primary_connection)
         };
         let result = catch_unwind(AssertUnwindSafe(|| {
             service_dispatch.dispatch_request(

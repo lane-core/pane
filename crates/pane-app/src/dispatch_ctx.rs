@@ -27,18 +27,25 @@
 use crate::connection_source::SharedWriter;
 use crate::dispatch::{Dispatch, DispatchEntry, PeerScope, Token};
 use crate::reply_future::ReplyFuture;
+use std::future::Future;
 
 /// Scoped dispatch context provided to request handlers.
 ///
-/// Carries `&mut Dispatch<H>`, `PeerScope`, and an optional
-/// `SharedWriter` for the active connection. The lifetime `'a`
-/// ties the context to the LooperCore's dispatch cycle — it
-/// cannot outlive the handler call.
+/// Carries `&mut Dispatch<H>`, `PeerScope`, and optional
+/// looper-thread resources (SharedWriter, Scheduler). The
+/// lifetime `'a` ties the context to the LooperCore's dispatch
+/// cycle — it cannot outlive the handler call.
 ///
 /// D12 Part 2: when a SharedWriter is present, `send_request`
 /// writes directly to the shared queue instead of going through
 /// the mpsc channel. This eliminates the cross-thread primitive
 /// overhead for looper-thread sends (90% of all sends).
+///
+/// Phase 5: when a Scheduler is present, `schedule()` spawns
+/// async futures on the calloop executor. Futures run on the
+/// looper thread during calloop's poll cycle (not during batch
+/// dispatch), preserving S3 ordering and I6 single-thread
+/// dispatch.
 pub struct DispatchCtx<'a, H> {
     dispatch: &'a mut Dispatch<H>,
     connection: PeerScope,
@@ -46,6 +53,11 @@ pub struct DispatchCtx<'a, H> {
     /// None when the context is created without a ConnectionSource
     /// (e.g., unit tests, or the pre-ConnectionSource code path).
     writer: Option<&'a SharedWriter>,
+    /// Scheduler for spawning async futures on the calloop executor.
+    /// None when running without calloop (tests, non-calloop LooperCore::run).
+    /// The future runs on the looper thread during calloop's poll cycle,
+    /// not during batch dispatch — S3 ordering preserved.
+    scheduler: Option<&'a calloop::futures::Scheduler<()>>,
 }
 
 impl<'a, H> DispatchCtx<'a, H> {
@@ -54,19 +66,23 @@ impl<'a, H> DispatchCtx<'a, H> {
             dispatch,
             connection,
             writer: None,
+            scheduler: None,
         }
     }
 
-    /// Create a DispatchCtx with a direct write path (D12).
+    /// Create a DispatchCtx with a direct write path (D12) and
+    /// optional async scheduler (Phase 5).
     pub(crate) fn with_writer(
         dispatch: &'a mut Dispatch<H>,
         connection: PeerScope,
-        writer: &'a SharedWriter,
+        writer: Option<&'a SharedWriter>,
+        scheduler: Option<&'a calloop::futures::Scheduler<()>>,
     ) -> Self {
         DispatchCtx {
             dispatch,
             connection,
-            writer: Some(writer),
+            writer,
+            scheduler,
         }
     }
 
@@ -77,6 +93,41 @@ impl<'a, H> DispatchCtx<'a, H> {
         if let Some(writer) = self.writer {
             writer.enqueue(service, payload);
             true
+        } else {
+            false
+        }
+    }
+
+    /// Spawn an async future on the calloop executor.
+    ///
+    /// The future runs on the looper thread during calloop's poll
+    /// cycle — after the current batch dispatch completes, not
+    /// during it (S3 ordering preserved). The handler (`&mut H`)
+    /// cannot be captured by the future because it's borrowed, not
+    /// `'static`. Futures communicate results via channels, shared
+    /// state, or par's exchange pairs (see `insert_async` +
+    /// `ReplyFuture`).
+    ///
+    /// Returns `true` if the future was scheduled, `false` if no
+    /// scheduler is available (standalone/test mode). Callers that
+    /// need async composition should check the return value or
+    /// use `insert_async` which returns a `ReplyFuture` regardless.
+    ///
+    /// Design heritage: BeOS BLooper ran handler callbacks
+    /// sequentially; async I/O was delegated to separate BLoopers.
+    /// Plan 9's mountmux correlated sleeping readers, not inline
+    /// continuations. `schedule` encodes the same separation:
+    /// handlers own synchronous state mutations, futures compose
+    /// external operations.
+    pub fn schedule<F>(&self, future: F) -> bool
+    where
+        F: Future<Output = ()> + 'static,
+    {
+        if let Some(scheduler) = self.scheduler {
+            // calloop Scheduler::schedule returns Result<(), ExecutorDestroyed>.
+            // If the executor was destroyed (looper shutting down), the
+            // future is silently dropped — same as a cancelled ReplyFuture.
+            scheduler.schedule(future).is_ok()
         } else {
             false
         }
@@ -129,6 +180,8 @@ mod tests {
     use super::*;
     use crate::dispatch::Dispatch;
     use pane_proto::Flow;
+    use std::cell::RefCell;
+    use std::rc::Rc;
 
     struct TestHandler;
 
@@ -189,5 +242,152 @@ mod tests {
 
         // Clean up — clear drops ReplySender, which sends Disconnected
         dispatch.clear();
+    }
+
+    // ── Claim: schedule returns false without a scheduler ────
+
+    #[test]
+    fn schedule_without_scheduler_returns_false() {
+        let mut dispatch = Dispatch::<TestHandler>::new();
+        let conn = PeerScope(1);
+        let ctx = DispatchCtx::new(&mut dispatch, conn);
+
+        let scheduled = ctx.schedule(async {});
+        assert!(!scheduled, "schedule must return false without a scheduler");
+    }
+
+    // ── Claim: schedule spawns a future on the executor ─────
+
+    #[test]
+    fn schedule_spawns_future_on_executor() {
+        let mut event_loop = calloop::EventLoop::<()>::try_new().unwrap();
+        let handle = event_loop.handle();
+
+        let (executor, scheduler) = calloop::futures::executor::<()>().unwrap();
+        handle
+            .insert_source(executor, |(), _, _: &mut ()| {})
+            .unwrap();
+
+        // Observable side effect — Rc is safe on the same thread.
+        let result = Rc::new(RefCell::new(String::new()));
+        let result_clone = result.clone();
+
+        let mut dispatch = Dispatch::<TestHandler>::new();
+        let conn = PeerScope(1);
+        let ctx = DispatchCtx::with_writer(&mut dispatch, conn, None, Some(&scheduler));
+
+        let scheduled = ctx.schedule(async move {
+            *result_clone.borrow_mut() = "scheduled".to_string();
+        });
+        assert!(scheduled, "schedule must return true with a scheduler");
+
+        // Future hasn't run yet — it runs during calloop dispatch.
+        assert_eq!(*result.borrow(), "");
+
+        // Drive the executor.
+        let mut state = ();
+        event_loop
+            .dispatch(Some(std::time::Duration::ZERO), &mut state)
+            .unwrap();
+
+        assert_eq!(*result.borrow(), "scheduled");
+    }
+
+    // ── Claim: multiple schedule calls all execute ──────────
+
+    #[test]
+    fn schedule_multiple_futures() {
+        let mut event_loop = calloop::EventLoop::<()>::try_new().unwrap();
+        let handle = event_loop.handle();
+
+        let (executor, scheduler) = calloop::futures::executor::<()>().unwrap();
+        handle
+            .insert_source(executor, |(), _, _: &mut ()| {})
+            .unwrap();
+
+        let counter = Rc::new(RefCell::new(0u32));
+
+        let mut dispatch = Dispatch::<TestHandler>::new();
+        let conn = PeerScope(1);
+        let ctx = DispatchCtx::with_writer(&mut dispatch, conn, None, Some(&scheduler));
+
+        for _ in 0..5 {
+            let c = counter.clone();
+            let ok = ctx.schedule(async move {
+                *c.borrow_mut() += 1;
+            });
+            assert!(ok);
+        }
+
+        let mut state = ();
+        event_loop
+            .dispatch(Some(std::time::Duration::ZERO), &mut state)
+            .unwrap();
+
+        assert_eq!(*counter.borrow(), 5, "all five scheduled futures must run");
+    }
+
+    // ── Claim: schedule composes with insert_async / ReplyFuture ─
+
+    #[test]
+    fn schedule_composes_with_reply_future() {
+        let mut event_loop = calloop::EventLoop::<()>::try_new().unwrap();
+        let handle = event_loop.handle();
+
+        let (executor, scheduler) = calloop::futures::executor::<()>().unwrap();
+        handle
+            .insert_source(executor, |(), _, _: &mut ()| {})
+            .unwrap();
+
+        let mut dispatch = Dispatch::<TestHandler>::new();
+        let conn = PeerScope(1);
+        let mut ctx = DispatchCtx::with_writer(&mut dispatch, conn, None, Some(&scheduler));
+
+        // Phase 4 + Phase 5 composition: install async entry, get
+        // ReplyFuture, schedule a future that awaits the reply.
+        let (_token, reply_future) = ctx.insert_async::<String>(7);
+
+        let result = Rc::new(RefCell::new(String::new()));
+        let result_clone = result.clone();
+
+        let ok = ctx.schedule(async move {
+            match reply_future.recv().await {
+                Ok(reply) => {
+                    *result_clone.borrow_mut() = reply;
+                }
+                Err(_) => {
+                    *result_clone.borrow_mut() = "error".to_string();
+                }
+            }
+        });
+        assert!(ok, "schedule must succeed");
+
+        // Dispatch once — the future is waiting on the ReplyFuture,
+        // which hasn't been resolved yet.
+        let mut state = ();
+        event_loop
+            .dispatch(Some(std::time::Duration::ZERO), &mut state)
+            .unwrap();
+        assert_eq!(*result.borrow(), "", "future must be pending");
+
+        // Resolve the reply via Dispatch::fire_reply — simulates
+        // a wire reply arriving and being dispatched.
+        let mut handler = TestHandler;
+        let messenger = crate::Messenger::stub();
+        dispatch.fire_reply(
+            conn,
+            Token(0),
+            &mut handler,
+            &messenger,
+            Box::new("hello async".to_string()),
+        );
+
+        // Dispatch again — the ReplyFuture completes, the
+        // scheduled future runs to completion.
+        event_loop
+            .dispatch(Some(std::time::Duration::ZERO), &mut state)
+            .unwrap();
+
+        assert_eq!(*result.borrow(), "hello async");
     }
 }

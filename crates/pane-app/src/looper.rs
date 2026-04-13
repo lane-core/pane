@@ -466,8 +466,8 @@ impl<H: pane_proto::Handler + 'static> Looper<H> {
         // feed results into the batch. The Scheduler stays on the
         // looper thread (!Send by construction via Rc<State>).
         //
-        // Executor<()>: futures handle result delivery internally.
-        // Phase 5 (ctx.schedule) will specialize when needed.
+        // Executor<()>: futures handle result delivery internally
+        // via channels, shared state, or par exchange pairs.
         //
         // Theoretical basis: EAct's E-Suspend / E-React pattern
         // ([FH] §6, l.4093-4094). Future .await = E-Suspend (yield
@@ -479,8 +479,8 @@ impl<H: pane_proto::Handler + 'static> Looper<H> {
                 if handle
                     .insert_source(executor, |(), _, _state: &mut LoopState| {
                         // Executor<()>: completed futures produce ().
-                        // Real work delivered via channels/shared state.
-                        // Phase 5 will route typed results into batch.
+                        // Real work delivered via channels/shared state
+                        // or par exchange pairs (ReplyFuture).
                     })
                     .is_err()
                 {
@@ -765,14 +765,14 @@ impl<H: pane_proto::Handler + 'static> Looper<H> {
             let token = requests[req_idx].1;
             let inner = std::mem::take(&mut requests[req_idx].2);
 
-            // D12 Part 2: pass the shared writer so dispatch_request
-            // creates DispatchCtx::with_writer for direct looper-thread
-            // sends.
-            let outcome = self.core.dispatch_request_with_writer(
+            // D12 Part 2 + Phase 5: pass looper-thread resources so
+            // DispatchCtx carries the direct writer and async scheduler.
+            let outcome = self.core.dispatch_request_with_context(
                 session_id,
                 token,
                 inner,
                 state.shared_writer.as_ref(),
+                state.scheduler.as_ref(),
             );
             req_idx += 1;
             dispatched += 1;
@@ -971,10 +971,8 @@ struct LoopState {
     /// which feeds into the batch.
     ///
     /// Currently Executor<()> — futures handle their own result
-    /// delivery (channels, shared state). Phase 5 (ctx.schedule)
-    /// will specialize the type parameter when handler-spawned
-    /// futures need to deliver typed results into dispatch.
-    #[allow(dead_code)] // Phase 5 (ctx.schedule) accesses this
+    /// delivery (channels, shared state). Passed through
+    /// dispatch_batch to DispatchCtx::schedule().
     scheduler: Option<calloop::futures::Scheduler<()>>,
 }
 
