@@ -20,6 +20,7 @@
 //! insert is E-Suspend (register callback), fire_reply is E-React
 //! (consume and invoke).
 
+use crate::reply_future::{reply_channel, ReplyError, ReplyFuture, ReplySender};
 use pane_proto::Flow;
 use pane_session::RequestCorrelator;
 use std::collections::HashMap;
@@ -43,6 +44,16 @@ pub(crate) struct DispatchEntry<H> {
     pub on_failed: OnFailed<H>,
 }
 
+/// An async dispatch entry: par-backed reply channel.
+///
+/// Unlike DispatchEntry<H>, this doesn't capture the handler type —
+/// resolution goes through the par channel to a future on the
+/// executor. Phase 4 of async migration.
+pub(crate) struct AsyncDispatchEntry {
+    pub session_id: u16,
+    pub sender: ReplySender,
+}
+
 /// The dynamic handler store for request/reply.
 /// Internal to the looper — not in the handler API.
 ///
@@ -52,6 +63,10 @@ pub(crate) struct DispatchEntry<H> {
 pub struct Dispatch<H> {
     correlator: RequestCorrelator,
     entries: HashMap<(PeerScope, Token), DispatchEntry<H>>,
+    /// Par-backed async entries (Phase 4). Resolution goes through
+    /// the par channel to a future on the calloop executor, not
+    /// through handler callbacks.
+    async_entries: HashMap<(PeerScope, Token), AsyncDispatchEntry>,
 }
 
 impl<H> Default for Dispatch<H> {
@@ -65,10 +80,11 @@ impl<H> Dispatch<H> {
         Dispatch {
             correlator: RequestCorrelator::new(),
             entries: HashMap::new(),
+            async_entries: HashMap::new(),
         }
     }
 
-    /// Install a dispatch entry (E-Suspend analogy).
+    /// Install a callback dispatch entry (E-Suspend analogy).
     /// Returns the Token for cancellation. Increments the
     /// outstanding request counter — every entry represents a
     /// pending request awaiting reply resolution.
@@ -78,7 +94,27 @@ impl<H> Dispatch<H> {
         token
     }
 
+    /// Install an async dispatch entry (Phase 4 E-Suspend).
+    /// Returns the Token and a ReplyFuture<T> for the caller to
+    /// await on the executor. The ReplySender is stored internally
+    /// and resolved when the wire reply arrives.
+    #[cfg_attr(not(test), allow(dead_code))]
+    pub(crate) fn insert_async<T: std::any::Any + Send>(
+        &mut self,
+        connection: PeerScope,
+        session_id: u16,
+    ) -> (Token, ReplyFuture<T>) {
+        let token = self.correlator.allocate_token();
+        let (sender, future) = reply_channel::<T>();
+        self.async_entries.insert(
+            (connection, token),
+            AsyncDispatchEntry { session_id, sender },
+        );
+        (token, future)
+    }
+
     /// Consume an entry and fire on_reply (E-React analogy).
+    /// Checks callback entries first, then async entries.
     /// Returns None if the token doesn't exist (already consumed/cancelled).
     /// Decrements the outstanding request counter on removal.
     pub(crate) fn fire_reply(
@@ -89,12 +125,22 @@ impl<H> Dispatch<H> {
         messenger: &crate::Messenger,
         payload: Box<dyn std::any::Any + Send>,
     ) -> Option<Flow> {
-        let entry = self.entries.remove(&(connection, token))?;
-        self.correlator.record_resolution();
-        Some((entry.on_reply)(handler, messenger, payload))
+        // Callback entries (hot path)
+        if let Some(entry) = self.entries.remove(&(connection, token)) {
+            self.correlator.record_resolution();
+            return Some((entry.on_reply)(handler, messenger, payload));
+        }
+        // Async entries — resolve through par channel
+        if let Some(async_entry) = self.async_entries.remove(&(connection, token)) {
+            self.correlator.record_resolution();
+            async_entry.sender.resolve(payload);
+            return Some(Flow::Continue);
+        }
+        None
     }
 
     /// Consume an entry and fire on_failed.
+    /// Checks callback entries first, then async entries.
     /// Decrements the outstanding request counter on removal.
     pub(crate) fn fire_failed(
         &mut self,
@@ -103,25 +149,37 @@ impl<H> Dispatch<H> {
         handler: &mut H,
         messenger: &crate::Messenger,
     ) -> Option<Flow> {
-        let entry = self.entries.remove(&(connection, token))?;
-        self.correlator.record_resolution();
-        Some((entry.on_failed)(handler, messenger))
+        if let Some(entry) = self.entries.remove(&(connection, token)) {
+            self.correlator.record_resolution();
+            return Some((entry.on_failed)(handler, messenger));
+        }
+        if let Some(async_entry) = self.async_entries.remove(&(connection, token)) {
+            self.correlator.record_resolution();
+            async_entry.sender.reject(ReplyError::Failed);
+            return Some(Flow::Continue);
+        }
+        None
     }
 
     /// Cancel an entry without firing callbacks (S5).
-    /// Used by try_send_request rollback and Cancel message wiring.
+    /// For async entries, sends Cancelled through the par channel.
     /// Decrements the outstanding request counter on removal.
     pub(crate) fn cancel(&mut self, connection: PeerScope, token: Token) -> bool {
         if self.entries.remove(&(connection, token)).is_some() {
             self.correlator.record_resolution();
-            true
-        } else {
-            false
+            return true;
         }
+        if let Some(async_entry) = self.async_entries.remove(&(connection, token)) {
+            self.correlator.record_resolution();
+            async_entry.sender.reject(ReplyError::Cancelled);
+            return true;
+        }
+        false
     }
 
     /// Fire on_failed for all entries keyed to a specific connection (S4).
     /// Called during destruction sequence step 1.
+    /// Async entries receive Disconnected through par channel.
     /// Decrements the outstanding request counter for each removed entry.
     pub(crate) fn fail_connection(
         &mut self,
@@ -141,11 +199,24 @@ impl<H> Dispatch<H> {
                 let _ = (entry.on_failed)(handler, messenger);
             }
         }
+        let async_keys: Vec<_> = self
+            .async_entries
+            .keys()
+            .filter(|(c, _)| *c == connection)
+            .copied()
+            .collect();
+        for key in async_keys {
+            if let Some(async_entry) = self.async_entries.remove(&key) {
+                self.correlator.record_resolution();
+                async_entry.sender.reject(ReplyError::Disconnected);
+            }
+        }
     }
 
     /// Fire on_failed for all entries on a specific session (S1 fix).
     /// Called when a service teardown is received — the consumer's
     /// outstanding requests for that session will never get replies.
+    /// Async entries receive Disconnected through par channel.
     /// Decrements the outstanding request counter for each removed entry.
     pub(crate) fn fail_session(
         &mut self,
@@ -165,23 +236,37 @@ impl<H> Dispatch<H> {
                 let _ = (entry.on_failed)(handler, messenger);
             }
         }
+        let async_keys: Vec<_> = self
+            .async_entries
+            .iter()
+            .filter(|(_, e)| e.session_id == session_id)
+            .map(|(k, _)| *k)
+            .collect();
+        for key in async_keys {
+            if let Some(async_entry) = self.async_entries.remove(&key) {
+                self.correlator.record_resolution();
+                async_entry.sender.reject(ReplyError::Disconnected);
+            }
+        }
     }
 
     /// Drop all remaining entries without firing callbacks (S4 step 2).
-    /// Called during destruction sequence after fail_connection.
+    /// Async entries are dropped — ReplySender::Drop sends
+    /// Disconnected to prevent orphaned futures.
     /// Resets the outstanding request counter to zero.
     pub(crate) fn clear(&mut self) {
         self.entries.clear();
+        self.async_entries.clear();
         self.correlator.clear();
     }
 
-    /// Number of pending entries.
+    /// Number of pending entries (callback + async).
     pub fn len(&self) -> usize {
-        self.entries.len()
+        self.entries.len() + self.async_entries.len()
     }
 
     pub fn is_empty(&self) -> bool {
-        self.entries.is_empty()
+        self.entries.is_empty() && self.async_entries.is_empty()
     }
 
     /// Set the negotiated request cap from Welcome.max_outstanding_requests (D9).
@@ -193,7 +278,7 @@ impl<H> Dispatch<H> {
         self.correlator.set_cap(cap);
     }
 
-    /// Current count of outstanding requests.
+    /// Current count of outstanding requests (callback + async).
     pub fn outstanding_requests(&self) -> u64 {
         self.correlator.outstanding_requests()
     }
@@ -415,4 +500,224 @@ mod tests {
     // are tested on RequestCorrelator directly in pane-session's
     // correlator.rs. Tests here focus on the integration between
     // the correlator and the handler-typed entry map.
+
+    // -- Async dispatch entry tests (Phase 4) --
+
+    #[test]
+    fn async_insert_and_fire_reply_resolves_future() {
+        let mut dispatch = Dispatch::<TestHandler>::new();
+        let mut handler = TestHandler {
+            replies: vec![],
+            failures: vec![],
+        };
+        let messenger = Messenger::stub();
+        let conn = PeerScope(1);
+
+        let (token, future) = dispatch.insert_async::<String>(conn, 5);
+        assert_eq!(dispatch.len(), 1);
+
+        let flow = dispatch.fire_reply(
+            conn,
+            token,
+            &mut handler,
+            &messenger,
+            Box::new("async hello".to_string()),
+        );
+        assert_eq!(flow, Some(Flow::Continue));
+        assert_eq!(dispatch.len(), 0);
+
+        // Handler callbacks were NOT invoked — resolution goes through par channel
+        assert!(handler.replies.is_empty());
+
+        let result = futures::executor::block_on(future.recv());
+        assert_eq!(result.unwrap(), "async hello");
+    }
+
+    #[test]
+    fn async_fire_failed_delivers_failed_error() {
+        let mut dispatch = Dispatch::<TestHandler>::new();
+        let mut handler = TestHandler {
+            replies: vec![],
+            failures: vec![],
+        };
+        let messenger = Messenger::stub();
+        let conn = PeerScope(1);
+
+        let (token, future) = dispatch.insert_async::<u32>(conn, 5);
+
+        let flow = dispatch.fire_failed(conn, token, &mut handler, &messenger);
+        assert_eq!(flow, Some(Flow::Continue));
+        assert_eq!(dispatch.len(), 0);
+
+        // Handler callbacks were NOT invoked
+        assert!(handler.failures.is_empty());
+
+        let result = futures::executor::block_on(future.recv());
+        assert_eq!(result.unwrap_err(), ReplyError::Failed);
+    }
+
+    #[test]
+    fn async_cancel_delivers_cancelled() {
+        let mut dispatch = Dispatch::<TestHandler>::new();
+        let conn = PeerScope(1);
+
+        let (token, future) = dispatch.insert_async::<u32>(conn, 5);
+        assert!(dispatch.cancel(conn, token));
+        assert_eq!(dispatch.len(), 0);
+
+        let result = futures::executor::block_on(future.recv());
+        assert_eq!(result.unwrap_err(), ReplyError::Cancelled);
+    }
+
+    #[test]
+    fn async_fail_connection_delivers_disconnected() {
+        let mut dispatch = Dispatch::<TestHandler>::new();
+        let mut handler = TestHandler {
+            replies: vec![],
+            failures: vec![],
+        };
+        let messenger = Messenger::stub();
+        let conn = PeerScope(1);
+
+        let (_t1, f1) = dispatch.insert_async::<u32>(conn, 5);
+        let (_t2, f2) = dispatch.insert_async::<String>(conn, 6);
+        assert_eq!(dispatch.len(), 2);
+
+        dispatch.fail_connection(conn, &mut handler, &messenger);
+        assert_eq!(dispatch.len(), 0);
+
+        let r1 = futures::executor::block_on(f1.recv());
+        let r2 = futures::executor::block_on(f2.recv());
+        assert_eq!(r1.unwrap_err(), ReplyError::Disconnected);
+        assert_eq!(r2.unwrap_err(), ReplyError::Disconnected);
+    }
+
+    #[test]
+    fn async_fail_session_delivers_disconnected() {
+        let mut dispatch = Dispatch::<TestHandler>::new();
+        let mut handler = TestHandler {
+            replies: vec![],
+            failures: vec![],
+        };
+        let messenger = Messenger::stub();
+        let conn = PeerScope(1);
+
+        // Two entries on session 5, one on session 6
+        let (_t1, f1) = dispatch.insert_async::<u32>(conn, 5);
+        let (_t2, f2) = dispatch.insert_async::<u32>(conn, 5);
+        let (_t3, f3) = dispatch.insert_async::<u32>(conn, 6);
+        assert_eq!(dispatch.len(), 3);
+
+        dispatch.fail_session(5, &mut handler, &messenger);
+        assert_eq!(dispatch.len(), 1); // session 6 entry survives
+
+        let r1 = futures::executor::block_on(f1.recv());
+        let r2 = futures::executor::block_on(f2.recv());
+        assert_eq!(r1.unwrap_err(), ReplyError::Disconnected);
+        assert_eq!(r2.unwrap_err(), ReplyError::Disconnected);
+
+        // Session 6 entry still live — clean it up
+        dispatch.clear();
+        let r3 = futures::executor::block_on(f3.recv());
+        assert_eq!(r3.unwrap_err(), ReplyError::Disconnected);
+    }
+
+    #[test]
+    fn mixed_sync_and_async_entries_coexist() {
+        let mut dispatch = Dispatch::new();
+        let mut handler = TestHandler {
+            replies: vec![],
+            failures: vec![],
+        };
+        let messenger = Messenger::stub();
+        let conn = PeerScope(1);
+
+        // One callback entry
+        let sync_token = dispatch.insert(
+            conn,
+            DispatchEntry {
+                session_id: 0,
+                on_reply: Box::new(|h: &mut TestHandler, _, payload| {
+                    let msg = payload.downcast::<String>().unwrap();
+                    h.replies.push(*msg);
+                    Flow::Continue
+                }),
+                on_failed: Box::new(|_, _| Flow::Continue),
+            },
+        );
+
+        // One async entry
+        let (async_token, future) = dispatch.insert_async::<String>(conn, 0);
+
+        assert_eq!(dispatch.len(), 2);
+        assert_eq!(dispatch.outstanding_requests(), 2);
+
+        // Resolve the sync entry
+        dispatch.fire_reply(
+            conn,
+            sync_token,
+            &mut handler,
+            &messenger,
+            Box::new("sync".to_string()),
+        );
+        assert_eq!(handler.replies, vec!["sync"]);
+        assert_eq!(dispatch.len(), 1);
+
+        // Resolve the async entry
+        dispatch.fire_reply(
+            conn,
+            async_token,
+            &mut handler,
+            &messenger,
+            Box::new("async".to_string()),
+        );
+        assert_eq!(dispatch.len(), 0);
+        assert_eq!(dispatch.outstanding_requests(), 0);
+
+        let result = futures::executor::block_on(future.recv());
+        assert_eq!(result.unwrap(), "async");
+    }
+
+    #[test]
+    fn clear_drops_async_entries_sends_disconnected() {
+        let mut dispatch = Dispatch::<TestHandler>::new();
+        let conn = PeerScope(1);
+
+        let (_t1, f1) = dispatch.insert_async::<u32>(conn, 5);
+        let (_t2, f2) = dispatch.insert_async::<u32>(conn, 5);
+        assert_eq!(dispatch.len(), 2);
+
+        // clear drops ReplySenders — Drop sends Disconnected
+        dispatch.clear();
+        assert_eq!(dispatch.len(), 0);
+        assert_eq!(dispatch.outstanding_requests(), 0);
+
+        let r1 = futures::executor::block_on(f1.recv());
+        let r2 = futures::executor::block_on(f2.recv());
+        assert_eq!(r1.unwrap_err(), ReplyError::Disconnected);
+        assert_eq!(r2.unwrap_err(), ReplyError::Disconnected);
+    }
+
+    #[test]
+    fn outstanding_requests_counts_both_entry_types() {
+        let mut dispatch = Dispatch::<TestHandler>::new();
+        let conn = PeerScope(1);
+
+        dispatch.insert(
+            conn,
+            DispatchEntry {
+                session_id: 0,
+                on_reply: Box::new(|_: &mut TestHandler, _, _| Flow::Continue),
+                on_failed: Box::new(|_: &mut TestHandler, _| Flow::Continue),
+            },
+        );
+        let (_token, _future) = dispatch.insert_async::<u32>(conn, 0);
+
+        // Both entry types contribute to outstanding count
+        assert_eq!(dispatch.outstanding_requests(), 2);
+        assert_eq!(dispatch.len(), 2);
+
+        dispatch.clear();
+        assert_eq!(dispatch.outstanding_requests(), 0);
+    }
 }

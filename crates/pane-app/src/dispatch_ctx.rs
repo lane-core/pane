@@ -26,6 +26,7 @@
 
 use crate::connection_source::SharedWriter;
 use crate::dispatch::{Dispatch, DispatchEntry, PeerScope, Token};
+use crate::reply_future::ReplyFuture;
 
 /// Scoped dispatch context provided to request handlers.
 ///
@@ -90,6 +91,17 @@ impl<'a, H> DispatchCtx<'a, H> {
     /// send in send_request.
     pub(crate) fn insert(&mut self, entry: DispatchEntry<H>) -> Token {
         self.dispatch.insert(self.connection, entry)
+    }
+
+    /// Install an async dispatch entry (Phase 4 E-Suspend).
+    /// Returns a Token (for the wire frame) and a ReplyFuture<T>
+    /// to await on the calloop executor.
+    #[cfg_attr(not(test), allow(dead_code))]
+    pub(crate) fn insert_async<T: std::any::Any + Send>(
+        &mut self,
+        session_id: u16,
+    ) -> (Token, ReplyFuture<T>) {
+        self.dispatch.insert_async(self.connection, session_id)
     }
 
     /// The connection this dispatch context is scoped to.
@@ -163,5 +175,19 @@ mod tests {
 
         assert_eq!(t0, Token(0));
         assert_eq!(t1, Token(1));
+    }
+
+    #[test]
+    fn ctx_insert_async_returns_token_and_future() {
+        let mut dispatch = Dispatch::<TestHandler>::new();
+        let conn = PeerScope(1);
+        let mut ctx = DispatchCtx::new(&mut dispatch, conn);
+
+        let (token, _future) = ctx.insert_async::<String>(5);
+        assert_eq!(token, Token(0));
+        assert_eq!(dispatch.len(), 1);
+
+        // Clean up — clear drops ReplySender, which sends Disconnected
+        dispatch.clear();
     }
 }
