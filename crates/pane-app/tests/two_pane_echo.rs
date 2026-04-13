@@ -1220,6 +1220,16 @@ fn watch_then_disconnect_delivers_pane_exited() {
 /// does not fire. BRoster::StopWatching
 /// (src/servers/registrar/TRoster.cpp:1538-1558) removed the watcher
 /// from the registrar's table.
+///
+/// Synchronization: A and B each have independent reader threads that
+/// forward frames to the actor's single event channel. Without a sync
+/// point, B's reader could send Disconnected(B) to the actor BEFORE
+/// A's reader forwards the Unwatch frame, making the actor process
+/// Watch → Disconnected → PaneExited → Unwatch (too late). We force
+/// A's reader to drain Watch+Unwatch by round-tripping a probe
+/// (DeclareInterest → InterestDeclined) through A's transport — the
+/// probe response can only arrive after the actor handled all prior
+/// frames from A in sequence.
 #[test]
 fn unwatch_then_disconnect_no_pane_exited() {
     let server = Arc::new(ProtocolServer::new());
@@ -1261,13 +1271,28 @@ fn unwatch_then_disconnect_no_pane_exited() {
     pane_a.send_control(&ControlMessage::Watch { target: b_address });
     pane_a.send_control(&ControlMessage::Unwatch { target: b_address });
 
-    // B disconnects — A should NOT receive PaneExited.
+    // Synchronize: force A's reader thread to forward Watch+Unwatch to
+    // the actor before we disconnect B. A round-trip probe (DeclareInterest
+    // → InterestDeclined) guarantees all prior frames from A have been
+    // processed by the actor — the response can only arrive after the
+    // actor handled Watch, Unwatch, and this DeclareInterest in sequence.
+    let sync_id = ServiceId::new("com.pane.sync-probe");
+    pane_a.send_control(&ControlMessage::DeclareInterest {
+        service: sync_id,
+        expected_version: 1,
+    });
+    match pane_a.read_control() {
+        ControlMessage::InterestDeclined { .. } => {} // sync complete
+        other => panic!("expected sync probe InterestDeclined, got {other:?}"),
+    }
+
+    // NOW safe to disconnect B — Unwatch is guaranteed processed.
     drop(pane_b);
     conn_b.wait();
 
-    // Verify A's next message is NOT PaneExited: send a DeclareInterest
-    // for a non-existent service. The server replies with InterestDeclined
-    // (ServiceUnknown). If PaneExited were queued, it would arrive first.
+    // Verify no PaneExited: send another probe. If PaneExited were
+    // queued during disconnect processing, it would arrive before
+    // this probe's response.
     let phantom_id = ServiceId::new("com.pane.phantom");
     pane_a.send_control(&ControlMessage::DeclareInterest {
         service: phantom_id,
@@ -1370,9 +1395,8 @@ fn watch_self_then_disconnect() {
     drop(pane_a);
     conn_a.wait();
 
-    // If we reach here, the server handled watch-self teardown
-    // without panicking. Verify the server is still functional
-    // by connecting a new pane.
+    // Verify watch tables are clean: a new Watch/PaneExited cycle
+    // must work correctly after self-watch teardown.
     let (b_client, b_server) = MemoryTransport::pair();
     let accept_b = accept_on_thread(&server, b_server);
     let (mut pane_b, _) = ClientConn::connect(
@@ -1387,6 +1411,39 @@ fn watch_self_then_disconnect() {
     );
     let conn_b = accept_b.join().unwrap();
     pane_b.expect_ready();
+
+    let (c_client, c_server) = MemoryTransport::pair();
+    let accept_c = accept_on_thread(&server, c_server);
+    let (mut pane_c, _) = ClientConn::connect(
+        c_client,
+        Hello {
+            version: 1,
+            max_message_size: 16 * 1024 * 1024,
+            max_outstanding_requests: 0,
+            interests: vec![],
+            provides: vec![],
+        },
+    );
+    let conn_c = accept_c.join().unwrap();
+    pane_c.expect_ready();
+
+    // B watches C.
+    let c_address = pane_proto::Address::local(conn_c.conn_id.0);
+    pane_b.send_control(&ControlMessage::Watch { target: c_address });
+
+    // C disconnects — B must receive PaneExited.
+    drop(pane_c);
+    conn_c.wait();
+
+    match pane_b.read_control() {
+        ControlMessage::PaneExited { address, reason } => {
+            assert_eq!(address, c_address);
+            assert!(matches!(reason, pane_proto::ExitReason::Disconnected));
+        }
+        other => panic!(
+            "watch tables corrupted after self-watch teardown: expected PaneExited, got {other:?}"
+        ),
+    }
 
     drop(pane_b);
     conn_b.wait();
@@ -1729,12 +1786,9 @@ fn post_disconnect_new_connections_fully_functional() {
         ControlMessage::InterestAccepted { session_id, .. } => session_id,
         other => panic!("expected InterestAccepted for C, got {other:?}"),
     };
-    // Provider (A or B) also receives InterestAccepted — drain it.
-    // The server sends to whichever provider was selected; we don't
-    // know which, so try A first, fall back to B.
-    //
-    // Because the server picks the first provider in the index, and
-    // A connected first, A gets the session for C.
+    // Server selects first provider in index (server.rs handle_declare_interest
+    // line 277: provider_index.get(&uuid).first()). A connected before B, so A
+    // receives both InterestAccepted notifications.
     let _a_session_for_c = match pane_a.read_control() {
         ControlMessage::InterestAccepted { session_id, .. } => session_id,
         other => panic!("expected InterestAccepted for A (from C), got {other:?}"),
@@ -1749,7 +1803,7 @@ fn post_disconnect_new_connections_fully_functional() {
         ControlMessage::InterestAccepted { session_id, .. } => session_id,
         other => panic!("expected InterestAccepted for D, got {other:?}"),
     };
-    // Provider receives InterestAccepted — A again (first in index).
+    // Same provider selection: A again (first in index).
     let _a_session_for_d = match pane_a.read_control() {
         ControlMessage::InterestAccepted { session_id, .. } => session_id,
         other => panic!("expected InterestAccepted for A (from D), got {other:?}"),
@@ -1762,8 +1816,11 @@ fn post_disconnect_new_connections_fully_functional() {
     pane_d.send_control(&ControlMessage::Watch { target: b_address });
 
     // -- Phase 2: disconnect all four in rapid succession --
-    // Drop transports, then wait on all handles. The waits ensure
-    // the actor has processed every disconnect event.
+    // Drop transports, then wait on all handles. wait() returns when
+    // the reader thread exits — at that point, Disconnected is in the
+    // actor's event channel. Subsequent accept() calls add NewConnection
+    // events AFTER the Disconnected events (MPSC FIFO), guaranteeing
+    // the actor processes all disconnects before any new connection.
     drop(pane_a);
     drop(pane_b);
     drop(pane_c);
@@ -1906,11 +1963,12 @@ fn version_one_accepted() {
         },
     );
 
-    let (pane, welcome) = match result {
+    let (mut pane, welcome) = match result {
         Ok(pair) => pair,
         Err(r) => panic!("version 1 should be accepted, got rejection: {r:?}"),
     };
     assert_eq!(welcome.version, 1);
+    pane.expect_ready(); // Verify full handshake — Ready follows Welcome
     let conn = accept_handle.join().unwrap();
 
     drop(pane);
