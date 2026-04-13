@@ -27,6 +27,7 @@
 use crate::connection_source::SharedWriter;
 use crate::dispatch::{Dispatch, DispatchEntry, PeerScope, Token};
 use crate::reply_future::ReplyFuture;
+use pane_session::ActiveSession;
 use std::future::Future;
 
 /// Scoped dispatch context provided to request handlers.
@@ -48,6 +49,7 @@ use std::future::Future;
 /// dispatch.
 pub struct DispatchCtx<'a, H> {
     dispatch: &'a mut Dispatch<H>,
+    active_session: &'a mut ActiveSession,
     connection: PeerScope,
     /// Direct write path for looper-thread sends (D12).
     /// None when the context is created without a ConnectionSource
@@ -61,9 +63,14 @@ pub struct DispatchCtx<'a, H> {
 }
 
 impl<'a, H> DispatchCtx<'a, H> {
-    pub(crate) fn new(dispatch: &'a mut Dispatch<H>, connection: PeerScope) -> Self {
+    pub(crate) fn new(
+        dispatch: &'a mut Dispatch<H>,
+        active_session: &'a mut ActiveSession,
+        connection: PeerScope,
+    ) -> Self {
         DispatchCtx {
             dispatch,
+            active_session,
             connection,
             writer: None,
             scheduler: None,
@@ -74,12 +81,14 @@ impl<'a, H> DispatchCtx<'a, H> {
     /// optional async scheduler (Phase 5).
     pub(crate) fn with_writer(
         dispatch: &'a mut Dispatch<H>,
+        active_session: &'a mut ActiveSession,
         connection: PeerScope,
         writer: Option<&'a SharedWriter>,
         scheduler: Option<&'a calloop::futures::Scheduler<()>>,
     ) -> Self {
         DispatchCtx {
             dispatch,
+            active_session,
             connection,
             writer,
             scheduler,
@@ -133,26 +142,31 @@ impl<'a, H> DispatchCtx<'a, H> {
         }
     }
 
-    /// Install a dispatch entry (E-Suspend). Returns the Token
-    /// for the wire frame.
+    /// Install a dispatch entry (E-Suspend). Allocates a token
+    /// from ActiveSession and returns it for the wire frame.
     ///
     /// Design heritage: Plan 9 devmnt.c:786-790 linked Mntrpc
     /// onto m->queue under spinlock BEFORE the write at line 798.
     /// pane: DispatchEntry installed via ctx.insert() before wire
     /// send in send_request.
-    pub(crate) fn insert(&mut self, entry: DispatchEntry<H>) -> Token {
-        self.dispatch.insert(self.connection, entry)
+    pub(crate) fn insert(&mut self, session_id: u16, entry: DispatchEntry<H>) -> Token {
+        let token = self.active_session.allocate_token(session_id);
+        self.dispatch.insert(self.connection, token, entry);
+        token
     }
 
     /// Install an async dispatch entry (Phase 4 E-Suspend).
-    /// Returns a Token (for the wire frame) and a ReplyFuture<T>
-    /// to await on the calloop executor.
+    /// Allocates a token from ActiveSession. Returns the Token
+    /// (for the wire frame) and a ReplyFuture<T> to await on the
+    /// calloop executor.
     #[cfg_attr(not(test), allow(dead_code))]
     pub(crate) fn insert_async<T: std::any::Any + Send>(
         &mut self,
         session_id: u16,
     ) -> (Token, ReplyFuture<T>) {
-        self.dispatch.insert_async(self.connection, session_id)
+        let token = self.active_session.allocate_token(session_id);
+        let future = self.dispatch.insert_async(self.connection, token);
+        (token, future)
     }
 
     /// The connection this dispatch context is scoped to.
@@ -163,15 +177,20 @@ impl<'a, H> DispatchCtx<'a, H> {
     /// Cancel an entry without firing callbacks. Used by
     /// try_send_request to roll back the DispatchEntry when the
     /// wire send fails (session-type-consultant requirement:
-    /// orphaned entries must not persist).
+    /// orphaned entries must not persist). Records resolution on
+    /// ActiveSession if an entry was actually removed.
     pub(crate) fn cancel(&mut self, token: Token) -> bool {
-        self.dispatch.cancel(self.connection, token)
+        let removed = self.dispatch.cancel(self.connection, token);
+        if removed {
+            self.active_session.record_resolution(token);
+        }
+        removed
     }
 
     /// Whether sending another request would exceed the
     /// negotiated max_outstanding_requests cap (D9).
     pub(crate) fn would_exceed_cap(&self) -> bool {
-        self.dispatch.would_exceed_cap()
+        self.active_session.would_exceed_cap()
     }
 }
 
@@ -185,17 +204,25 @@ mod tests {
 
     struct TestHandler;
 
+    /// Test helper: ActiveSession with unlimited cap.
+    fn test_session() -> ActiveSession {
+        ActiveSession::new(PeerScope(1), 8192, 0)
+    }
+
     #[test]
     fn ctx_insert_returns_token_and_installs_entry() {
         let mut dispatch = Dispatch::new();
+        let mut session = test_session();
         let conn = PeerScope(1);
-        let mut ctx = DispatchCtx::new(&mut dispatch, conn);
+        let mut ctx = DispatchCtx::new(&mut dispatch, &mut session, conn);
 
-        let token = ctx.insert(DispatchEntry {
-            session_id: 5,
-            on_reply: Box::new(|_: &mut TestHandler, _, _| Flow::Continue),
-            on_failed: Box::new(|_: &mut TestHandler, _| Flow::Continue),
-        });
+        let token = ctx.insert(
+            5,
+            DispatchEntry {
+                on_reply: Box::new(|_: &mut TestHandler, _, _| Flow::Continue),
+                on_failed: Box::new(|_: &mut TestHandler, _| Flow::Continue),
+            },
+        );
 
         assert_eq!(token, Token(0));
         assert_eq!(dispatch.len(), 1);
@@ -204,27 +231,33 @@ mod tests {
     #[test]
     fn ctx_connection_returns_scope() {
         let mut dispatch = Dispatch::<TestHandler>::new();
+        let mut session = ActiveSession::new(PeerScope(42), 8192, 0);
         let conn = PeerScope(42);
-        let ctx = DispatchCtx::new(&mut dispatch, conn);
+        let ctx = DispatchCtx::new(&mut dispatch, &mut session, conn);
         assert_eq!(ctx.connection(), PeerScope(42));
     }
 
     #[test]
     fn ctx_tokens_are_monotonic() {
         let mut dispatch = Dispatch::new();
+        let mut session = test_session();
         let conn = PeerScope(1);
-        let mut ctx = DispatchCtx::new(&mut dispatch, conn);
+        let mut ctx = DispatchCtx::new(&mut dispatch, &mut session, conn);
 
-        let t0 = ctx.insert(DispatchEntry {
-            session_id: 0,
-            on_reply: Box::new(|_: &mut TestHandler, _, _| Flow::Continue),
-            on_failed: Box::new(|_: &mut TestHandler, _| Flow::Continue),
-        });
-        let t1 = ctx.insert(DispatchEntry {
-            session_id: 0,
-            on_reply: Box::new(|_: &mut TestHandler, _, _| Flow::Continue),
-            on_failed: Box::new(|_: &mut TestHandler, _| Flow::Continue),
-        });
+        let t0 = ctx.insert(
+            0,
+            DispatchEntry {
+                on_reply: Box::new(|_: &mut TestHandler, _, _| Flow::Continue),
+                on_failed: Box::new(|_: &mut TestHandler, _| Flow::Continue),
+            },
+        );
+        let t1 = ctx.insert(
+            0,
+            DispatchEntry {
+                on_reply: Box::new(|_: &mut TestHandler, _, _| Flow::Continue),
+                on_failed: Box::new(|_: &mut TestHandler, _| Flow::Continue),
+            },
+        );
 
         assert_eq!(t0, Token(0));
         assert_eq!(t1, Token(1));
@@ -233,8 +266,9 @@ mod tests {
     #[test]
     fn ctx_insert_async_returns_token_and_future() {
         let mut dispatch = Dispatch::<TestHandler>::new();
+        let mut session = test_session();
         let conn = PeerScope(1);
-        let mut ctx = DispatchCtx::new(&mut dispatch, conn);
+        let mut ctx = DispatchCtx::new(&mut dispatch, &mut session, conn);
 
         let (token, _future) = ctx.insert_async::<String>(5);
         assert_eq!(token, Token(0));
@@ -249,8 +283,9 @@ mod tests {
     #[test]
     fn schedule_without_scheduler_returns_false() {
         let mut dispatch = Dispatch::<TestHandler>::new();
+        let mut session = test_session();
         let conn = PeerScope(1);
-        let ctx = DispatchCtx::new(&mut dispatch, conn);
+        let ctx = DispatchCtx::new(&mut dispatch, &mut session, conn);
 
         let scheduled = ctx.schedule(async {});
         assert!(!scheduled, "schedule must return false without a scheduler");
@@ -273,8 +308,10 @@ mod tests {
         let result_clone = result.clone();
 
         let mut dispatch = Dispatch::<TestHandler>::new();
+        let mut session = test_session();
         let conn = PeerScope(1);
-        let ctx = DispatchCtx::with_writer(&mut dispatch, conn, None, Some(&scheduler));
+        let ctx =
+            DispatchCtx::with_writer(&mut dispatch, &mut session, conn, None, Some(&scheduler));
 
         let scheduled = ctx.schedule(async move {
             *result_clone.borrow_mut() = "scheduled".to_string();
@@ -308,8 +345,10 @@ mod tests {
         let counter = Rc::new(RefCell::new(0u32));
 
         let mut dispatch = Dispatch::<TestHandler>::new();
+        let mut session = test_session();
         let conn = PeerScope(1);
-        let ctx = DispatchCtx::with_writer(&mut dispatch, conn, None, Some(&scheduler));
+        let ctx =
+            DispatchCtx::with_writer(&mut dispatch, &mut session, conn, None, Some(&scheduler));
 
         for _ in 0..5 {
             let c = counter.clone();
@@ -340,8 +379,10 @@ mod tests {
             .unwrap();
 
         let mut dispatch = Dispatch::<TestHandler>::new();
+        let mut session = test_session();
         let conn = PeerScope(1);
-        let mut ctx = DispatchCtx::with_writer(&mut dispatch, conn, None, Some(&scheduler));
+        let mut ctx =
+            DispatchCtx::with_writer(&mut dispatch, &mut session, conn, None, Some(&scheduler));
 
         // Phase 4 + Phase 5 composition: install async entry, get
         // ReplyFuture, schedule a future that awaits the reply.

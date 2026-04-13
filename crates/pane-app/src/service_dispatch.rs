@@ -428,6 +428,7 @@ mod tests {
     use crate::handles_request::HandlesRequest;
     use pane_proto::obligation::ReplyPort;
     use pane_proto::{RequestProtocol, ServiceFrame};
+    use pane_session::ActiveSession;
     use std::sync::mpsc::sync_channel;
 
     #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -494,7 +495,8 @@ mod tests {
         payload.extend_from_slice(&msg_bytes);
 
         let mut dispatch = Dispatch::new();
-        let mut ctx = DispatchCtx::new(&mut dispatch, PeerScope(1));
+        let mut session = ActiveSession::new(PeerScope(1), 8192, 0);
+        let mut ctx = DispatchCtx::new(&mut dispatch, &mut session, PeerScope(1));
         let flow = receiver(&mut handler, &messenger, &payload, 42, &mut ctx);
         assert_eq!(flow, Flow::Continue);
         assert!(handler.received.is_empty());
@@ -519,7 +521,8 @@ mod tests {
         let payload = vec![correct_tag, 0xFF, 0xFF, 0xFF, 0xFF];
 
         let mut dispatch = Dispatch::new();
-        let mut ctx = DispatchCtx::new(&mut dispatch, PeerScope(1));
+        let mut session = ActiveSession::new(PeerScope(1), 8192, 0);
+        let mut ctx = DispatchCtx::new(&mut dispatch, &mut session, PeerScope(1));
         let flow = receiver(&mut handler, &messenger, &payload, 99, &mut ctx);
         assert_eq!(flow, Flow::Continue);
         assert!(handler.received.is_empty());
@@ -541,7 +544,8 @@ mod tests {
         let payload = tagged_payload::<TestRequestProto>(&TestMsg::Ping("hello".into()));
 
         let mut dispatch = Dispatch::new();
-        let mut ctx = DispatchCtx::new(&mut dispatch, PeerScope(1));
+        let mut session = ActiveSession::new(PeerScope(1), 8192, 0);
+        let mut ctx = DispatchCtx::new(&mut dispatch, &mut session, PeerScope(1));
         let flow = receiver(&mut handler, &messenger, &payload, 10, &mut ctx);
         assert_eq!(flow, Flow::Continue);
         assert_eq!(handler.received, vec!["hello"]);
@@ -590,8 +594,9 @@ mod tests {
         let payload = tagged_payload::<TestRequestProto>(&TestMsg::Ping("boom".into()));
 
         let mut dispatch = Dispatch::new();
+        let mut session = ActiveSession::new(PeerScope(1), 8192, 0);
         let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            let mut ctx = DispatchCtx::new(&mut dispatch, PeerScope(1));
+            let mut ctx = DispatchCtx::new(&mut dispatch, &mut session, PeerScope(1));
             receiver(&mut handler, &messenger, &payload, 55, &mut ctx)
         }));
         assert!(result.is_err());
@@ -704,7 +709,8 @@ mod tests {
         // Here both session_ids are registered, so this is never used.
         let (fallback_tx, _fallback_rx) = sync_channel(16);
         let mut dispatch_table = Dispatch::new();
-        let mut ctx = DispatchCtx::new(&mut dispatch_table, PeerScope(1));
+        let mut session = ActiveSession::new(PeerScope(1), 8192, 0);
+        let mut ctx = DispatchCtx::new(&mut dispatch_table, &mut session, PeerScope(1));
         service_dispatch.dispatch_request(
             1,
             &mut handler,
@@ -714,7 +720,7 @@ mod tests {
             &fallback_tx,
             &mut ctx,
         );
-        let mut ctx = DispatchCtx::new(&mut dispatch_table, PeerScope(1));
+        let mut ctx = DispatchCtx::new(&mut dispatch_table, &mut session, PeerScope(1));
         service_dispatch.dispatch_request(
             2,
             &mut handler,
@@ -744,7 +750,8 @@ mod tests {
 
         let (fallback_tx, fallback_rx) = sync_channel(16);
         let mut dispatch_table = Dispatch::new();
-        let mut ctx = DispatchCtx::new(&mut dispatch_table, PeerScope(1));
+        let mut session = ActiveSession::new(PeerScope(1), 8192, 0);
+        let mut ctx = DispatchCtx::new(&mut dispatch_table, &mut session, PeerScope(1));
         let flow = service_dispatch.dispatch_request(
             99,
             &mut handler,
@@ -801,7 +808,8 @@ mod tests {
         let messenger = crate::Messenger::stub();
 
         let mut dispatch = Dispatch::new();
-        let mut ctx = DispatchCtx::new(&mut dispatch, PeerScope(1));
+        let mut session = ActiveSession::new(PeerScope(1), 8192, 0);
+        let mut ctx = DispatchCtx::new(&mut dispatch, &mut session, PeerScope(1));
         let flow = receiver(&mut handler, &messenger, &[], 77, &mut ctx);
         assert_eq!(flow, Flow::Continue);
         assert!(handler.received.is_empty());

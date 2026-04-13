@@ -4,8 +4,8 @@
 //! handler dispatch in catch_unwind (I1) and runs the destruction
 //! sequence on exit:
 //!
-//!   1. dispatch.fail_connection(primary) — fires on_failed for
-//!      entries keyed to the lost Connection (S4)
+//!   1. active_session.cascade_connection_failure() → fail_tokens()
+//!      — fires on_failed for all tracked outstanding tokens [N3]
 //!   2. dispatch.clear() — drops remaining entries without
 //!      callbacks
 //!   3. handler dropped — obligation handles fire Drop compensation
@@ -48,6 +48,7 @@ use crate::exit_reason::ExitReason;
 use crate::messenger::Messenger;
 use crate::service_dispatch::ServiceDispatch;
 use pane_proto::Flow;
+use pane_session::ActiveSession;
 
 /// Outcome of a single dispatch cycle.
 #[derive(Debug, PartialEq, Eq)]
@@ -74,6 +75,7 @@ pub enum DispatchOutcome {
 pub struct LooperCore<H> {
     handler: H,
     dispatch: Dispatch<H>,
+    active_session: ActiveSession,
     service_dispatch: ServiceDispatch<H>,
     messenger: Messenger,
     primary_connection: PeerScope,
@@ -93,6 +95,9 @@ impl<H: pane_proto::Handler> LooperCore<H> {
         LooperCore {
             handler,
             dispatch: Dispatch::new(),
+            // cap/size set to 0 (unlimited) — will be set from
+            // Welcome params when ConnectionSource is wired.
+            active_session: ActiveSession::new(primary_connection, 0, 0),
             service_dispatch: ServiceDispatch::new(),
             messenger,
             primary_connection,
@@ -115,6 +120,7 @@ impl<H: pane_proto::Handler> LooperCore<H> {
         LooperCore {
             handler,
             dispatch: Dispatch::new(),
+            active_session: ActiveSession::new(primary_connection, 0, 0),
             service_dispatch,
             messenger,
             primary_connection,
@@ -127,6 +133,11 @@ impl<H: pane_proto::Handler> LooperCore<H> {
     /// Access the dispatch table for installing entries.
     pub fn dispatch_mut(&mut self) -> &mut Dispatch<H> {
         &mut self.dispatch
+    }
+
+    /// Access the active session state.
+    pub fn active_session_mut(&mut self) -> &mut ActiveSession {
+        &mut self.active_session
     }
 
     /// Access the messenger.
@@ -205,8 +216,8 @@ impl<H: pane_proto::Handler> LooperCore<H> {
     /// again (enforced by the caller shutting down).
     ///
     /// The sequence:
-    /// 1. fail_connection(primary) — fires on_failed for entries
-    ///    keyed to the primary Connection
+    /// 1. cascade_connection_failure() → fail_tokens() — fires
+    ///    on_failed for all tracked outstanding tokens [N3]
     /// 2. clear() — drops remaining entries without callbacks
     /// 3. (handler dropped when LooperCore is dropped — obligation
     ///    handles fire Drop compensation)
@@ -214,9 +225,15 @@ impl<H: pane_proto::Handler> LooperCore<H> {
     fn run_destruction(&mut self, reason: ExitReason) {
         self.exited = true;
 
-        // Step 1: fail pending requests on the primary connection (S4)
-        self.dispatch
-            .fail_connection(self.primary_connection, &mut self.handler, &self.messenger);
+        // Step 1: cascade ALL outstanding tokens via ActiveSession [N3]
+        let mut teardown = self.active_session.cascade_connection_failure();
+        let tokens: Vec<Token> = teardown.drain().map(|(_, tok)| tok).collect();
+        self.dispatch.fail_tokens(
+            self.primary_connection,
+            &tokens,
+            &mut self.handler,
+            &self.messenger,
+        );
 
         // Step 2: clear remaining entries across all connections
         self.dispatch.clear();
@@ -275,16 +292,14 @@ impl<H: pane_proto::Handler> LooperCore<H> {
         let reply_tx_ok = req.reply_tx.clone();
         let reply_tx_fail = req.reply_tx;
 
-        // 1. Install dispatch entry on the primary connection's
-        // PeerScope so reply routing (which uses primary_connection
-        // for lookup) can find it. During destruction,
-        // fail_connection fires on_failed for these entries —
-        // the caller receives Failed, meaning "your request did
-        // not get a reply." This is correct for both remote
-        // failure (explicit Failed frame) and local shutdown
-        // (destruction sequence).
+        // 1. Allocate token from ActiveSession and install dispatch
+        // entry on the primary connection's PeerScope so reply
+        // routing (which uses primary_connection for lookup) can
+        // find it. During destruction, cascade_connection_failure →
+        // fail_tokens fires on_failed for these entries — the caller
+        // receives Failed, meaning "your request did not get a reply."
+        let token = self.active_session.allocate_token(req.session_id);
         let entry = DispatchEntry {
-            session_id: req.session_id,
             on_reply: Box::new(move |_h: &mut H, _m: &Messenger, payload| {
                 let bytes = *payload
                     .downcast::<Vec<u8>>()
@@ -299,7 +314,7 @@ impl<H: pane_proto::Handler> LooperCore<H> {
                 Flow::Continue
             }),
         };
-        let token = self.dispatch.insert(self.primary_connection, entry);
+        self.dispatch.insert(self.primary_connection, token, entry);
 
         // 2. Build the wire frame with the allocated token.
         // The SyncRequest carries the inner payload (tag + msg);
@@ -322,6 +337,7 @@ impl<H: pane_proto::Handler> LooperCore<H> {
             .is_err()
         {
             self.dispatch.cancel(self.primary_connection, token);
+            self.active_session.record_resolution(token);
         }
     }
 
@@ -452,15 +468,21 @@ impl<H: pane_proto::Handler> LooperCore<H> {
         let messenger = &self.messenger;
         let write_tx = &self.write_tx;
         // Create DispatchCtx with looper-thread resources when available.
+        // Split borrow: dispatch and active_session are distinct fields.
         let mut ctx = if shared_writer.is_some() || scheduler.is_some() {
             DispatchCtx::with_writer(
                 &mut self.dispatch,
+                &mut self.active_session,
                 self.primary_connection,
                 shared_writer,
                 scheduler,
             )
         } else {
-            DispatchCtx::new(&mut self.dispatch, self.primary_connection)
+            DispatchCtx::new(
+                &mut self.dispatch,
+                &mut self.active_session,
+                self.primary_connection,
+            )
         };
         let result = catch_unwind(AssertUnwindSafe(|| {
             service_dispatch.dispatch_request(
@@ -500,7 +522,10 @@ impl<H: pane_proto::Handler> LooperCore<H> {
             dispatch.fire_reply(conn, tok, handler, messenger, Box::new(reply_bytes))
         }));
         match result {
-            Ok(Some(f)) => self.flow_to_outcome(f),
+            Ok(Some(f)) => {
+                self.active_session.record_resolution(tok);
+                self.flow_to_outcome(f)
+            }
             // Unknown token — entry already consumed or cancelled.
             Ok(None) => DispatchOutcome::Continue,
             Err(_) => {
@@ -526,7 +551,10 @@ impl<H: pane_proto::Handler> LooperCore<H> {
             dispatch.fire_failed(conn, tok, handler, messenger)
         }));
         match result {
-            Ok(Some(f)) => self.flow_to_outcome(f),
+            Ok(Some(f)) => {
+                self.active_session.record_resolution(tok);
+                self.flow_to_outcome(f)
+            }
             Ok(None) => DispatchOutcome::Continue,
             Err(_) => {
                 self.run_destruction(ExitReason::Failed);
@@ -536,14 +564,20 @@ impl<H: pane_proto::Handler> LooperCore<H> {
     }
 
     /// Dispatch a ServiceTeardown: fail all outstanding dispatch
-    /// entries for the torn-down session.
+    /// entries for the torn-down session via ActiveSession cascade.
     pub(crate) fn dispatch_teardown(
         &mut self,
         session_id: u16,
         _reason: pane_proto::control::TeardownReason,
     ) {
-        self.dispatch
-            .fail_session(session_id, &mut self.handler, &self.messenger);
+        let mut teardown = self.active_session.cascade_session_failure(session_id);
+        let tokens: Vec<Token> = teardown.drain().map(|(_, tok)| tok).collect();
+        self.dispatch.fail_tokens(
+            self.primary_connection,
+            &tokens,
+            &mut self.handler,
+            &self.messenger,
+        );
     }
 
     /// Notify the handler that a subscriber connected to a provided
@@ -856,7 +890,7 @@ mod tests {
 
     #[test]
     fn destruction_sequence_ordering() {
-        // Verify: fail_connection → clear → handler dropped
+        // Verify: cascade → fail_tokens → clear → handler dropped
         // (in that order)
         let (log, exit_tx, exit_rx) = setup();
         let log2 = log.clone();
@@ -864,12 +898,15 @@ mod tests {
 
         let mut core = make_core(log.clone(), exit_tx);
 
-        // Install a dispatch entry on the primary connection
+        // Install a dispatch entry on the primary connection.
+        // Token must be allocated from active_session so the
+        // cascade can find it during destruction.
         let conn = PeerScope(1);
+        let token = core.active_session_mut().allocate_token(0);
         core.dispatch_mut().insert(
             conn,
+            token,
             DispatchEntry {
-                session_id: 0,
                 on_reply: Box::new(|_h: &mut TestHandler, _, _| Flow::Continue),
                 on_failed: Box::new(move |_h: &mut TestHandler, _| {
                     log2.lock().unwrap().push("on_failed".into());
@@ -879,12 +916,14 @@ mod tests {
         );
 
         // Install an entry on a different connection (should be
-        // cleared in step 2, not failed in step 1)
+        // cleared in step 2, not failed in step 1). Not tracked
+        // by active_session — simulates a stale entry on another
+        // peer that cascade won't find.
         let other_conn = PeerScope(2);
         core.dispatch_mut().insert(
             other_conn,
+            Token(99),
             DispatchEntry {
-                session_id: 0,
                 on_reply: Box::new(|_h: &mut TestHandler, _, _| Flow::Continue),
                 on_failed: Box::new(move |_h: &mut TestHandler, _| {
                     // This should NOT fire — clear() drops without callbacks
@@ -906,7 +945,7 @@ mod tests {
         // Step 1: on_failed fired for primary connection entry
         assert!(
             events.contains(&"on_failed".to_string()),
-            "S4: fail_connection must fire on_failed. Got: {:?}",
+            "cascade → fail_tokens must fire on_failed. Got: {:?}",
             events
         );
 
@@ -929,7 +968,7 @@ mod tests {
         let dropped_pos = events.iter().position(|e| e == "handler_dropped").unwrap();
         assert!(
             failed_pos < dropped_pos,
-            "fail_connection must run before handler drop. Got: {:?}",
+            "cascade must run before handler drop. Got: {:?}",
             events
         );
 
@@ -1025,12 +1064,14 @@ mod tests {
         let mut core = make_core(log.clone(), exit_tx);
         let conn = PeerScope(1);
 
-        // E-Suspend: install a dispatch entry whose on_reply
-        // callback mutates the handler's log.
-        let token = core.dispatch.insert(
+        // E-Suspend: allocate token from active_session, install
+        // a dispatch entry whose on_reply callback mutates the
+        // handler's log.
+        let token = core.active_session.allocate_token(0);
+        core.dispatch.insert(
             conn,
+            token,
             DispatchEntry {
-                session_id: 0,
                 on_reply: Box::new(|h: &mut TestHandler, _, payload| {
                     let msg = payload.downcast::<String>().unwrap();
                     h.log.lock().unwrap().push(format!("on_reply:{}", msg));
@@ -1094,20 +1135,21 @@ mod tests {
         assert_eq!(outcome, DispatchOutcome::Exit(ExitReason::Failed));
     }
 
-    // ── Claim: fail_connection only affects keyed entries ───
+    // ── Claim: cascade only affects tracked tokens ───────────
 
     #[test]
-    fn fail_connection_scoped_to_primary() {
+    fn cascade_scoped_to_active_session_tokens() {
         let (log, exit_tx, _) = setup();
         let log2 = log.clone();
         let mut core = make_core(log.clone(), exit_tx);
 
-        // Entry on secondary connection — should survive fail_connection
+        // Entry on secondary connection — not tracked by
+        // active_session, so cascade won't find it.
         let secondary = PeerScope(99);
         core.dispatch_mut().insert(
             secondary,
+            Token(99),
             DispatchEntry {
-                session_id: 0,
                 on_reply: Box::new(|_h: &mut TestHandler, _, _| Flow::Continue),
                 on_failed: Box::new(move |_h: &mut TestHandler, _| {
                     log2.lock().unwrap().push("secondary_failed".into());
@@ -1116,14 +1158,16 @@ mod tests {
             },
         );
 
-        // Trigger destruction — fail_connection only hits primary (1)
+        // Trigger destruction — cascade only knows about tokens
+        // allocated via active_session (none here)
         core.dispatch(|_h| Flow::Stop);
 
-        // Secondary's on_failed must not have fired (step 1 is scoped)
+        // Secondary's on_failed must not have fired (cascade is
+        // scoped to active_session's tracked tokens)
         let events = log.lock().unwrap().clone();
         assert!(
             !events.contains(&"secondary_failed".into()),
-            "fail_connection must be scoped to primary. Got: {:?}",
+            "cascade must be scoped to active_session tokens. Got: {:?}",
             events
         );
 

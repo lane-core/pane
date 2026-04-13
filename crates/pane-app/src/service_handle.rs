@@ -98,10 +98,11 @@ impl<P: Protocol> ServiceHandle<P> {
              (use try_send_request for backpressure handling)"
         );
 
-        // 1. Build entry — install BEFORE wire send
+        // 1. Build entry — install BEFORE wire send.
+        // session_id is passed to ctx.insert() for token→session
+        // tracking in ActiveSession.
         let session_id = self.session_id;
         let entry = DispatchEntry {
-            session_id,
             on_reply: Box::new(move |h, m, payload| {
                 // The looper passes reply_bytes as Box<Vec<u8>>.
                 // Deserialize to the concrete reply type R here,
@@ -114,7 +115,7 @@ impl<P: Protocol> ServiceHandle<P> {
             }),
             on_failed: Box::new(on_failed),
         };
-        let token = ctx.insert(entry);
+        let token = ctx.insert(session_id, entry);
 
         // 2. Serialize with allocated token
         let tag = P::service_id().tag();
@@ -209,7 +210,6 @@ impl<P: Protocol> ServiceHandle<P> {
         // 1. Build entry — install BEFORE wire send
         let session_id = self.session_id;
         let entry = DispatchEntry {
-            session_id,
             on_reply: Box::new(move |h, m, payload| {
                 let bytes = *payload
                     .downcast::<Vec<u8>>()
@@ -219,7 +219,7 @@ impl<P: Protocol> ServiceHandle<P> {
             }),
             on_failed: Box::new(on_failed),
         };
-        let token = ctx.insert(entry);
+        let token = ctx.insert(session_id, entry);
 
         // 2. Serialize with allocated token
         let tag = P::service_id().tag();
@@ -476,6 +476,7 @@ mod tests {
     use crate::dispatch::{Dispatch, PeerScope};
     use pane_proto::protocol::ServiceId;
     use pane_proto::{Handler, Handles};
+    use pane_session::ActiveSession;
     use serde::{Deserialize, Serialize};
 
     // -- Test protocol for exercising type bounds --
@@ -528,7 +529,8 @@ mod tests {
         let (tx, _rx) = std::sync::mpsc::sync_channel(16);
         let handle = ServiceHandle::<TestProto>::with_channel(0, tx);
         let mut dispatch = Dispatch::<TestHandler>::new();
-        let mut ctx = DispatchCtx::new(&mut dispatch, PeerScope(1));
+        let mut session = ActiveSession::new(PeerScope(1), 8192, 0);
+        let mut ctx = DispatchCtx::new(&mut dispatch, &mut session, PeerScope(1));
         let cancel = handle.send_request::<TestHandler, TestReply>(
             &mut ctx,
             TestMsg::Ping,
@@ -544,7 +546,8 @@ mod tests {
         let (tx, _rx) = std::sync::mpsc::sync_channel(16);
         let handle = ServiceHandle::<TestProto>::with_channel(0, tx);
         let mut dispatch = Dispatch::<TestHandler>::new();
-        let mut ctx = DispatchCtx::new(&mut dispatch, PeerScope(1));
+        let mut session = ActiveSession::new(PeerScope(1), 8192, 0);
+        let mut ctx = DispatchCtx::new(&mut dispatch, &mut session, PeerScope(1));
         let cancel = handle.send_request::<TestHandler, TestReply>(
             &mut ctx,
             TestMsg::Ping,
@@ -561,7 +564,8 @@ mod tests {
         let handle = ServiceHandle::<TestProto>::with_channel(5, tx);
 
         let mut dispatch = Dispatch::<TestHandler>::new();
-        let mut ctx = DispatchCtx::new(&mut dispatch, PeerScope(1));
+        let mut session = ActiveSession::new(PeerScope(1), 8192, 0);
+        let mut ctx = DispatchCtx::new(&mut dispatch, &mut session, PeerScope(1));
         let _cancel = handle.send_request::<TestHandler, TestReply>(
             &mut ctx,
             TestMsg::Ping,
@@ -599,9 +603,10 @@ mod tests {
         let handle = ServiceHandle::<TestProto>::with_channel(5, tx);
 
         let mut dispatch = Dispatch::<TestHandler>::new();
+        let mut session = ActiveSession::new(PeerScope(1), 8192, 0);
         assert!(dispatch.is_empty());
 
-        let mut ctx = DispatchCtx::new(&mut dispatch, PeerScope(1));
+        let mut ctx = DispatchCtx::new(&mut dispatch, &mut session, PeerScope(1));
         let _cancel = handle.send_request::<TestHandler, TestReply>(
             &mut ctx,
             TestMsg::Ping,
@@ -644,7 +649,8 @@ mod tests {
         let (tx, _rx) = std::sync::mpsc::sync_channel(16);
         let handle = ServiceHandle::<TestProto>::with_channel(0, tx);
         let mut dispatch = Dispatch::<TestHandler>::new();
-        let mut ctx = DispatchCtx::new(&mut dispatch, PeerScope(1));
+        let mut session = ActiveSession::new(PeerScope(1), 8192, 0);
+        let mut ctx = DispatchCtx::new(&mut dispatch, &mut session, PeerScope(1));
         let _cancel = handle.send_request::<TestHandler, TestReply>(
             &mut ctx,
             TestMsg::Ping,
@@ -735,8 +741,9 @@ mod tests {
         let handle = ServiceHandle::<TestProto>::with_channel(5, tx);
 
         let mut dispatch = Dispatch::<TestHandler>::new();
-        dispatch.set_request_cap(2);
-        let mut ctx = DispatchCtx::new(&mut dispatch, PeerScope(1));
+        let mut session = ActiveSession::new(PeerScope(1), 8192, 0);
+        session.set_cap(2);
+        let mut ctx = DispatchCtx::new(&mut dispatch, &mut session, PeerScope(1));
 
         let result = handle.try_send_request::<TestHandler, TestReply>(
             &mut ctx,
@@ -751,7 +758,7 @@ mod tests {
         assert_eq!(session_id, 5);
 
         // Counter incremented
-        assert_eq!(dispatch.outstanding_requests(), 1);
+        assert_eq!(session.outstanding_requests(), 1);
     }
 
     #[test]
@@ -760,8 +767,9 @@ mod tests {
         let handle = ServiceHandle::<TestProto>::with_channel(5, tx);
 
         let mut dispatch = Dispatch::<TestHandler>::new();
-        dispatch.set_request_cap(1);
-        let mut ctx = DispatchCtx::new(&mut dispatch, PeerScope(1));
+        let mut session = ActiveSession::new(PeerScope(1), 8192, 0);
+        session.set_cap(1);
+        let mut ctx = DispatchCtx::new(&mut dispatch, &mut session, PeerScope(1));
 
         // First request succeeds
         let _cancel = handle
@@ -789,7 +797,7 @@ mod tests {
         }
 
         // No extra dispatch entry installed
-        assert_eq!(dispatch.outstanding_requests(), 1);
+        assert_eq!(session.outstanding_requests(), 1);
         assert_eq!(dispatch.len(), 1);
     }
 
@@ -801,10 +809,11 @@ mod tests {
         let handle = ServiceHandle::<TestProto>::with_channel(5, tx);
 
         let mut dispatch = Dispatch::<TestHandler>::new();
+        let mut session = ActiveSession::new(PeerScope(1), 8192, 0);
 
         // Scope ctx so we can inspect dispatch between operations.
         {
-            let mut ctx = DispatchCtx::new(&mut dispatch, PeerScope(1));
+            let mut ctx = DispatchCtx::new(&mut dispatch, &mut session, PeerScope(1));
 
             // First send fills the channel
             let _cancel = handle
@@ -816,12 +825,12 @@ mod tests {
                 )
                 .expect("first should succeed");
         }
-        assert_eq!(dispatch.outstanding_requests(), 1);
+        assert_eq!(session.outstanding_requests(), 1);
         assert_eq!(dispatch.len(), 1);
 
         // Second send: channel full, entry rolled back
         {
-            let mut ctx = DispatchCtx::new(&mut dispatch, PeerScope(1));
+            let mut ctx = DispatchCtx::new(&mut dispatch, &mut session, PeerScope(1));
             let result = handle.try_send_request::<TestHandler, TestReply>(
                 &mut ctx,
                 TestMsg::Ping,
@@ -839,7 +848,7 @@ mod tests {
         // Rollback: entry removed, counter back to 1
         assert_eq!(dispatch.len(), 1, "only first entry should remain");
         assert_eq!(
-            dispatch.outstanding_requests(),
+            session.outstanding_requests(),
             1,
             "counter must be decremented on rollback"
         );
@@ -853,10 +862,11 @@ mod tests {
         let handle = ServiceHandle::<TestProto>::with_channel(0, tx);
 
         let mut dispatch = Dispatch::<TestHandler>::new();
-        dispatch.set_request_cap(0); // unlimited — won't trigger cap
-                                     // Actually set cap=0 means unlimited. Set to 1 and fill it.
-        dispatch.set_request_cap(1);
-        let mut ctx = DispatchCtx::new(&mut dispatch, PeerScope(1));
+        let mut session = ActiveSession::new(PeerScope(1), 8192, 0);
+        session.set_cap(0); // unlimited — won't trigger cap
+                            // Actually set cap=0 means unlimited. Set to 1 and fill it.
+        session.set_cap(1);
+        let mut ctx = DispatchCtx::new(&mut dispatch, &mut session, PeerScope(1));
 
         // Fill the cap
         let _cancel = handle
@@ -888,7 +898,8 @@ mod tests {
         let handle = ServiceHandle::<TestProto>::with_channel(0, tx);
 
         let mut dispatch = Dispatch::<TestHandler>::new();
-        let mut ctx = DispatchCtx::new(&mut dispatch, PeerScope(1));
+        let mut session = ActiveSession::new(PeerScope(1), 8192, 0);
+        let mut ctx = DispatchCtx::new(&mut dispatch, &mut session, PeerScope(1));
 
         // Fill channel
         let _cancel = handle
@@ -919,16 +930,17 @@ mod tests {
         let handle = ServiceHandle::<TestProto>::with_channel(5, tx);
 
         let mut dispatch = Dispatch::<TestHandler>::new();
-        assert_eq!(dispatch.outstanding_requests(), 0);
+        let mut session = ActiveSession::new(PeerScope(1), 8192, 0);
+        assert_eq!(session.outstanding_requests(), 0);
 
-        let mut ctx = DispatchCtx::new(&mut dispatch, PeerScope(1));
+        let mut ctx = DispatchCtx::new(&mut dispatch, &mut session, PeerScope(1));
         let _cancel = handle.send_request::<TestHandler, TestReply>(
             &mut ctx,
             TestMsg::Ping,
             |_: &mut TestHandler, _, _: TestReply| Flow::Continue,
             |_: &mut TestHandler, _| Flow::Continue,
         );
-        assert_eq!(dispatch.outstanding_requests(), 1);
+        assert_eq!(session.outstanding_requests(), 1);
     }
 
     #[test]
@@ -938,8 +950,9 @@ mod tests {
         let handle = ServiceHandle::<TestProto>::with_channel(5, tx);
 
         let mut dispatch = Dispatch::<TestHandler>::new();
-        dispatch.set_request_cap(1);
-        let mut ctx = DispatchCtx::new(&mut dispatch, PeerScope(1));
+        let mut session = ActiveSession::new(PeerScope(1), 8192, 0);
+        session.set_cap(1);
+        let mut ctx = DispatchCtx::new(&mut dispatch, &mut session, PeerScope(1));
 
         // First succeeds
         let _cancel = handle.send_request::<TestHandler, TestReply>(
@@ -965,8 +978,9 @@ mod tests {
         let handle = ServiceHandle::<TestProto>::with_channel(5, tx);
 
         let mut dispatch = Dispatch::<TestHandler>::new();
+        let mut session = ActiveSession::new(PeerScope(1), 8192, 0);
         // cap stays 0 (default)
-        let mut ctx = DispatchCtx::new(&mut dispatch, PeerScope(1));
+        let mut ctx = DispatchCtx::new(&mut dispatch, &mut session, PeerScope(1));
 
         for _ in 0..10 {
             let _cancel = handle.send_request::<TestHandler, TestReply>(
@@ -976,7 +990,7 @@ mod tests {
                 |_: &mut TestHandler, _| Flow::Continue,
             );
         }
-        assert_eq!(dispatch.outstanding_requests(), 10);
+        assert_eq!(session.outstanding_requests(), 10);
     }
 
     // ── try_send_notification ────────────────────────────────
@@ -1043,7 +1057,8 @@ mod tests {
         let handle = ServiceHandle::<TestProto>::with_channel(5, tx);
 
         let mut dispatch = Dispatch::<TestHandler>::new();
-        let mut ctx = DispatchCtx::new(&mut dispatch, PeerScope(1));
+        let mut session = ActiveSession::new(PeerScope(1), 8192, 0);
+        let mut ctx = DispatchCtx::new(&mut dispatch, &mut session, PeerScope(1));
 
         let cancel = handle.send_request::<TestHandler, TestReply>(
             &mut ctx,
@@ -1081,7 +1096,8 @@ mod tests {
         let handle = ServiceHandle::<TestProto>::with_channel(5, tx);
 
         let mut dispatch = Dispatch::<TestHandler>::new();
-        let mut ctx = DispatchCtx::new(&mut dispatch, PeerScope(1));
+        let mut session = ActiveSession::new(PeerScope(1), 8192, 0);
+        let mut ctx = DispatchCtx::new(&mut dispatch, &mut session, PeerScope(1));
 
         let cancel = handle
             .try_send_request::<TestHandler, TestReply>(
@@ -1117,8 +1133,9 @@ mod tests {
         let handle = ServiceHandle::<TestProto>::with_channel(5, tx);
 
         let mut dispatch = Dispatch::<TestHandler>::new();
+        let mut session = ActiveSession::new(PeerScope(1), 8192, 0);
         let conn = PeerScope(1);
-        let mut ctx = DispatchCtx::new(&mut dispatch, conn);
+        let mut ctx = DispatchCtx::new(&mut dispatch, &mut session, conn);
 
         let cancel = handle.send_request::<TestHandler, TestReply>(
             &mut ctx,
@@ -1164,7 +1181,8 @@ mod tests {
         let handle = ServiceHandle::<TestProto>::with_channel(5, tx);
 
         let mut dispatch = Dispatch::<TestHandler>::new();
-        let mut ctx = DispatchCtx::new(&mut dispatch, PeerScope(1));
+        let mut session = ActiveSession::new(PeerScope(1), 8192, 0);
+        let mut ctx = DispatchCtx::new(&mut dispatch, &mut session, PeerScope(1));
 
         let cancel = handle.send_request::<TestHandler, TestReply>(
             &mut ctx,
@@ -1195,7 +1213,8 @@ mod tests {
         let handle = ServiceHandle::<TestProto>::with_channel(5, tx);
 
         let mut dispatch = Dispatch::<TestHandler>::new();
-        let mut ctx = DispatchCtx::new(&mut dispatch, PeerScope(1));
+        let mut session = ActiveSession::new(PeerScope(1), 8192, 0);
+        let mut ctx = DispatchCtx::new(&mut dispatch, &mut session, PeerScope(1));
 
         let cancel = handle.send_request::<TestHandler, TestReply>(
             &mut ctx,
@@ -1221,7 +1240,8 @@ mod tests {
         let handle = ServiceHandle::<TestProto>::with_channel(5, tx);
 
         let mut dispatch = Dispatch::<TestHandler>::new();
-        let mut ctx = DispatchCtx::new(&mut dispatch, PeerScope(1));
+        let mut session = ActiveSession::new(PeerScope(1), 8192, 0);
+        let mut ctx = DispatchCtx::new(&mut dispatch, &mut session, PeerScope(1));
 
         let cancel = handle.send_request::<TestHandler, TestReply>(
             &mut ctx,
@@ -1230,13 +1250,13 @@ mod tests {
             |_: &mut TestHandler, _| Flow::Continue,
         );
 
-        assert_eq!(dispatch.outstanding_requests(), 1);
+        assert_eq!(session.outstanding_requests(), 1);
 
         cancel.cancel();
 
         // Counter unchanged — CancelHandle only sends wire Cancel,
         // does not touch Dispatch.
-        assert_eq!(dispatch.outstanding_requests(), 1);
+        assert_eq!(session.outstanding_requests(), 1);
         assert_eq!(dispatch.len(), 1);
     }
 
@@ -1250,10 +1270,11 @@ mod tests {
         let handle = ServiceHandle::<TestProto>::with_channel(5, tx);
 
         let mut dispatch = Dispatch::<TestHandler>::new();
+        let mut session = ActiveSession::new(PeerScope(1), 8192, 0);
 
         // First send fills the channel.
         {
-            let mut ctx = DispatchCtx::new(&mut dispatch, PeerScope(1));
+            let mut ctx = DispatchCtx::new(&mut dispatch, &mut session, PeerScope(1));
             let _cancel1 = handle.send_request::<TestHandler, TestReply>(
                 &mut ctx,
                 TestMsg::Ping,
@@ -1262,11 +1283,11 @@ mod tests {
             );
         }
         assert_eq!(dispatch.len(), 1);
-        assert_eq!(dispatch.outstanding_requests(), 1);
+        assert_eq!(session.outstanding_requests(), 1);
 
         // Second send hits full channel — entry must be cancelled.
         {
-            let mut ctx = DispatchCtx::new(&mut dispatch, PeerScope(1));
+            let mut ctx = DispatchCtx::new(&mut dispatch, &mut session, PeerScope(1));
             let _cancel2 = handle.send_request::<TestHandler, TestReply>(
                 &mut ctx,
                 TestMsg::Ping,
@@ -1278,7 +1299,7 @@ mod tests {
         // first entry remains. Outstanding requests was incremented
         // then decremented by the cancel, so it stays at 1.
         assert_eq!(dispatch.len(), 1, "leaked DispatchEntry on full channel");
-        assert_eq!(dispatch.outstanding_requests(), 1);
+        assert_eq!(session.outstanding_requests(), 1);
     }
 
     #[test]
@@ -1290,8 +1311,9 @@ mod tests {
         drop(rx);
 
         let mut dispatch = Dispatch::<TestHandler>::new();
+        let mut session = ActiveSession::new(PeerScope(1), 8192, 0);
         {
-            let mut ctx = DispatchCtx::new(&mut dispatch, PeerScope(1));
+            let mut ctx = DispatchCtx::new(&mut dispatch, &mut session, PeerScope(1));
             let _cancel = handle.send_request::<TestHandler, TestReply>(
                 &mut ctx,
                 TestMsg::Ping,
@@ -1305,6 +1327,6 @@ mod tests {
             0,
             "leaked DispatchEntry on disconnected channel"
         );
-        assert_eq!(dispatch.outstanding_requests(), 0);
+        assert_eq!(session.outstanding_requests(), 0);
     }
 }

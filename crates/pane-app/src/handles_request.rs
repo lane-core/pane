@@ -65,6 +65,7 @@ mod tests {
     use pane_proto::obligation::ReplyFailed;
     use pane_proto::protocol::ServiceId;
     use pane_proto::{Handles, Protocol};
+    use pane_session::ActiveSession;
     use serde::{Deserialize, Serialize};
 
     #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -120,23 +121,27 @@ mod tests {
         }
     }
 
-    fn make_ctx(dispatch: &mut Dispatch<RequestHandler>) -> DispatchCtx<'_, RequestHandler> {
-        DispatchCtx::new(dispatch, PeerScope(1))
+    fn make_ctx<'a>(
+        dispatch: &'a mut Dispatch<RequestHandler>,
+        session: &'a mut ActiveSession,
+    ) -> DispatchCtx<'a, RequestHandler> {
+        DispatchCtx::new(dispatch, session, PeerScope(1))
     }
 
     #[test]
     fn handles_request_dispatches_and_replies() {
         let mut handler = RequestHandler { received: vec![] };
         let mut dispatch = Dispatch::new();
+        let mut session = ActiveSession::new(PeerScope(1), 8192, 0);
 
         let (port, rx) = ReplyPort::channel();
-        let mut ctx = make_ctx(&mut dispatch);
+        let mut ctx = make_ctx(&mut dispatch, &mut session);
         let flow = handler.receive_request(TestMessage::Ping, port, &mut ctx);
         assert_eq!(flow, Flow::Continue);
         assert_eq!(rx.recv().unwrap(), Ok(RequestReply::Pong));
 
         let (port, rx) = ReplyPort::channel();
-        let mut ctx = make_ctx(&mut dispatch);
+        let mut ctx = make_ctx(&mut dispatch, &mut session);
         let flow = handler.receive_request(TestMessage::Data("hello".into()), port, &mut ctx);
         assert_eq!(flow, Flow::Continue);
         assert_eq!(rx.recv().unwrap(), Ok(RequestReply::Echo("hello".into())));
@@ -163,8 +168,9 @@ mod tests {
 
         let mut handler = ForgetfulHandler;
         let mut dispatch = Dispatch::new();
+        let mut session = ActiveSession::new(PeerScope(1), 8192, 0);
         let (port, rx) = ReplyPort::channel();
-        let mut ctx = DispatchCtx::new(&mut dispatch, PeerScope(1));
+        let mut ctx = DispatchCtx::new(&mut dispatch, &mut session, PeerScope(1));
         let flow = handler.receive_request(TestMessage::Ping, port, &mut ctx);
         assert_eq!(flow, Flow::Continue);
         assert_eq!(rx.recv().unwrap(), Err(ReplyFailed));
@@ -188,8 +194,9 @@ mod tests {
 
         let mut handler = StopHandler;
         let mut dispatch = Dispatch::new();
+        let mut session = ActiveSession::new(PeerScope(1), 8192, 0);
         let (port, rx) = ReplyPort::channel();
-        let mut ctx = DispatchCtx::new(&mut dispatch, PeerScope(1));
+        let mut ctx = DispatchCtx::new(&mut dispatch, &mut session, PeerScope(1));
         let flow = handler.receive_request(TestMessage::Ping, port, &mut ctx);
         assert_eq!(flow, Flow::Stop);
         assert_eq!(rx.recv().unwrap(), Ok(RequestReply::Pong));
@@ -226,8 +233,9 @@ mod tests {
 
         // Request dispatch
         let mut dispatch = Dispatch::new();
+        let mut session = ActiveSession::new(PeerScope(1), 8192, 0);
         let (port, rx) = ReplyPort::channel();
-        let mut ctx = DispatchCtx::new(&mut dispatch, PeerScope(1));
+        let mut ctx = DispatchCtx::new(&mut dispatch, &mut session, PeerScope(1));
         assert_eq!(
             handler.receive_request(TestMessage::Ping, port, &mut ctx),
             Flow::Continue

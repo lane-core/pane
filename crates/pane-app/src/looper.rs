@@ -1200,11 +1200,13 @@ mod tests {
 
         // Install a dispatch entry on session_id=5.
         // The entry's on_reply logs "reply_resolved", on_failed
-        // logs "reply_orphaned".
-        let token = core.dispatch_mut().insert(
+        // logs "reply_orphaned". Token allocated from active_session
+        // so cascade can find it.
+        let token = core.active_session_mut().allocate_token(5);
+        core.dispatch_mut().insert(
             PeerScope(1),
+            token,
             DispatchEntry {
-                session_id: 5,
                 on_reply: Box::new(move |_h: &mut BatchTestHandler, _, _| {
                     log_reply.lock().unwrap().push("reply_resolved".into());
                     Flow::Continue
@@ -2292,10 +2294,11 @@ mod tests {
         );
 
         // Install a dispatch entry on session 5.
-        let token = core.dispatch_mut().insert(
+        let token = core.active_session_mut().allocate_token(5);
+        core.dispatch_mut().insert(
             PeerScope(1),
+            token,
             DispatchEntry {
-                session_id: 5,
                 on_reply: Box::new(move |_h: &mut BatchTestHandler, _, _| {
                     log_reply.lock().unwrap().push("reply_resolved".into());
                     Flow::Continue
@@ -2445,10 +2448,11 @@ mod tests {
 
         // Install a dispatch entry on session 5 — the teardown
         // would fire on_failed for this if the entry still existed.
+        let token = core.active_session_mut().allocate_token(5);
         core.dispatch_mut().insert(
             PeerScope(1),
+            token,
             DispatchEntry {
-                session_id: 5,
                 on_reply: Box::new(|_: &mut BatchTestHandler, _, _| Flow::Continue),
                 on_failed: Box::new(move |_: &mut BatchTestHandler, _| {
                     log_failed.lock().unwrap().push("spurious_failed".into());

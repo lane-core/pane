@@ -9,9 +9,10 @@
 //! The type exists as a named product (Iso: scattered fields ↔
 //! named product). It was defined before failure cascade methods
 //! (C2) because the cascade is a *consumer* of session state, not
-//! a contributor to its shape. C2 adds the cascade policy methods
-//! (`cascade_session_failure`, `cascade_connection_failure`) that
-//! return `TeardownSet` — the obligation type for N3.
+//! a contributor to its shape. The cascade policy methods
+//! (`cascade_session_failure`, `cascade_connection_failure`)
+//! query the correlator's token→session mapping and return
+//! `TeardownSet` — the obligation type for N3.
 //!
 //! Design heritage: Plan 9 `Mnt` struct in devmnt.c
 //! (reference/plan9/src/sys/src/9/port/devmnt.c) — per-mount,
@@ -93,14 +94,14 @@ impl ActiveSession {
 
     /// Allocate the next monotonic token and increment the
     /// outstanding request count. Delegates to `RequestCorrelator`.
-    pub fn allocate_token(&mut self) -> Token {
-        self.correlator.allocate_token()
+    pub fn allocate_token(&mut self, session_id: u16) -> Token {
+        self.correlator.allocate_token(session_id)
     }
 
     /// Record that one outstanding request has been resolved
     /// (reply, failed, cancel). Delegates to `RequestCorrelator`.
-    pub fn record_resolution(&mut self) {
-        self.correlator.record_resolution();
+    pub fn record_resolution(&mut self, token: Token) {
+        self.correlator.record_resolution(token);
     }
 
     /// Whether sending another request would exceed the negotiated
@@ -181,39 +182,46 @@ impl ActiveSession {
     /// session-level failure (e.g., ServiceTeardown received).
     ///
     /// Returns a `TeardownSet` containing all outstanding tokens
-    /// for the given session. The caller must fire `on_failed` for
-    /// every token in the set.
+    /// for the given session, paired with `primary_connection`.
+    /// The caller must fire `on_failed` for every token in the set.
     ///
-    /// Currently returns an empty set — the actual token
-    /// enumeration requires knowledge of which tokens belong to
-    /// which session, which `Dispatch<H>` tracks (via
-    /// `DispatchEntry.session_id`) but `RequestCorrelator` does
-    /// not. The method signature defines the pane-session/pane-app
-    /// boundary for N3; real enumeration comes when `LooperCore`
-    /// is refactored to use `ActiveSession` for token-to-session
-    /// tracking.
+    /// After this call, the affected tokens are removed from the
+    /// correlator — they are about to be failed by the caller,
+    /// so they count as resolved from the correlator's perspective.
     ///
     /// Reference: [FH] §4 (E-RaiseS — raise failure to session).
-    pub fn cascade_session_failure(&mut self, _session_id: u16) -> TeardownSet {
-        TeardownSet::new(vec![])
+    pub fn cascade_session_failure(&mut self, session_id: u16) -> TeardownSet {
+        let peer = self.primary_connection;
+        let tokens = self.correlator.tokens_for_session(session_id);
+        let entries: Vec<_> = tokens.iter().map(|&tok| (peer, tok)).collect();
+        // Remove from correlator — caller resolves the TeardownSet.
+        for &tok in &tokens {
+            self.correlator.record_resolution(tok);
+        }
+        TeardownSet::new(entries)
     }
 
     /// N3: Enumerate all tokens that should be failed due to a
     /// connection-level failure (transport death).
     ///
     /// Returns a `TeardownSet` containing ALL outstanding tokens
-    /// across all sessions on this connection. The caller must
-    /// fire `on_failed` for every token in the set.
+    /// across all sessions on this connection, paired with
+    /// `primary_connection`. The caller must fire `on_failed` for
+    /// every token in the set.
     ///
-    /// Currently returns an empty set — same caveat as
-    /// `cascade_session_failure`. The correlator tracks the
-    /// outstanding count but not which tokens are outstanding;
-    /// that mapping lives in `Dispatch<H>.entries`.
+    /// After this call, the correlator is cleared — all tokens
+    /// are about to be failed, so the outstanding count resets
+    /// to zero.
     ///
     /// Reference: [FH] §4 (E-CancelMsg — cancel outstanding
     /// messages on connection failure).
     pub fn cascade_connection_failure(&mut self) -> TeardownSet {
-        TeardownSet::new(vec![])
+        let peer = self.primary_connection;
+        let all = self.correlator.all_tokens();
+        let entries: Vec<_> = all.iter().map(|&(tok, _session_id)| (peer, tok)).collect();
+        // Bulk clear — more efficient than per-token resolution.
+        self.correlator.clear();
+        TeardownSet::new(entries)
     }
 }
 
@@ -243,18 +251,18 @@ mod tests {
         let mut session = ActiveSession::new(PeerScope(1), 8192, 0);
         assert_eq!(session.outstanding_requests(), 0);
 
-        let t0 = session.allocate_token();
+        let t0 = session.allocate_token(1);
         assert_eq!(t0, Token(0));
         assert_eq!(session.outstanding_requests(), 1);
 
-        let t1 = session.allocate_token();
+        let t1 = session.allocate_token(1);
         assert_eq!(t1, Token(1));
         assert_eq!(session.outstanding_requests(), 2);
 
-        session.record_resolution();
+        session.record_resolution(t1);
         assert_eq!(session.outstanding_requests(), 1);
 
-        session.record_resolution();
+        session.record_resolution(t0);
         assert_eq!(session.outstanding_requests(), 0);
     }
 
@@ -263,14 +271,14 @@ mod tests {
         let mut session = ActiveSession::new(PeerScope(1), 8192, 2);
         assert!(!session.would_exceed_cap());
 
-        session.allocate_token();
+        session.allocate_token(1);
         assert!(!session.would_exceed_cap());
 
-        session.allocate_token();
+        let t1 = session.allocate_token(1);
         // 2 of 2 — at cap
         assert!(session.would_exceed_cap());
 
-        session.record_resolution();
+        session.record_resolution(t1);
         assert!(!session.would_exceed_cap());
     }
 
@@ -305,9 +313,9 @@ mod tests {
     #[test]
     fn clear_correlator_resets_outstanding() {
         let mut session = ActiveSession::new(PeerScope(1), 8192, 0);
-        session.allocate_token();
-        session.allocate_token();
-        session.allocate_token();
+        session.allocate_token(1);
+        session.allocate_token(2);
+        session.allocate_token(1);
         assert_eq!(session.outstanding_requests(), 3);
 
         session.clear_correlator();
@@ -323,54 +331,177 @@ mod tests {
         session.set_cap(1);
         assert_eq!(session.request_cap(), 1);
 
-        session.allocate_token();
+        session.allocate_token(1);
         assert!(session.would_exceed_cap());
     }
 
     // --- Failure cascade policy [N3] ---
 
     #[test]
-    fn cascade_session_failure_returns_teardown_set() {
+    fn cascade_session_failure_returns_session_tokens() {
         let mut session = ActiveSession::new(PeerScope(1), 8192, 0);
-        // Currently returns empty — the method signature is the
-        // important part, establishing the pane-session/pane-app
-        // boundary for N3.
+        let t0 = session.allocate_token(5);
+        let _t1 = session.allocate_token(6);
+        let t2 = session.allocate_token(5);
+        assert_eq!(session.outstanding_requests(), 3);
+
         let mut set = session.cascade_session_failure(5);
-        assert!(set.is_empty());
-        assert_eq!(set.len(), 0);
-        let drained: Vec<_> = set.drain().collect();
-        assert!(drained.is_empty());
+        assert_eq!(set.len(), 2);
+
+        let mut drained: Vec<_> = set.drain().collect();
+        drained.sort_by_key(|&(_, tok)| tok.0);
+        assert_eq!(drained, vec![(PeerScope(1), t0), (PeerScope(1), t2)]);
+
+        // Cascaded tokens removed from correlator
+        assert_eq!(session.outstanding_requests(), 1);
     }
 
     #[test]
-    fn cascade_connection_failure_returns_teardown_set() {
+    fn cascade_connection_failure_returns_all_tokens() {
         let mut session = ActiveSession::new(PeerScope(1), 8192, 0);
+        let t0 = session.allocate_token(1);
+        let t1 = session.allocate_token(2);
+        let t2 = session.allocate_token(1);
+        assert_eq!(session.outstanding_requests(), 3);
+
         let mut set = session.cascade_connection_failure();
-        assert!(set.is_empty());
-        assert_eq!(set.len(), 0);
-        let drained: Vec<_> = set.drain().collect();
-        assert!(drained.is_empty());
+        assert_eq!(set.len(), 3);
+
+        let mut drained: Vec<_> = set.drain().collect();
+        drained.sort_by_key(|&(_, tok)| tok.0);
+        assert_eq!(
+            drained,
+            vec![(PeerScope(1), t0), (PeerScope(1), t1), (PeerScope(1), t2),]
+        );
+
+        // Correlator fully cleared
+        assert_eq!(session.outstanding_requests(), 0);
     }
 
     #[test]
-    fn cascade_after_allocations_still_empty() {
-        // Even with outstanding tokens, the cascade currently
-        // returns empty because token-to-session mapping is not
-        // yet tracked in ActiveSession. This test documents the
-        // expected future behavior change: once ActiveSession
-        // tracks mappings, this test should be updated to verify
-        // non-empty TeardownSets.
+    fn cascade_returns_allocated_tokens() {
+        // After allocating tokens across sessions, cascade returns
+        // the correct subset (session) or full set (connection).
         let mut session = ActiveSession::new(PeerScope(1), 8192, 0);
-        session.allocate_token();
-        session.allocate_token();
+        let t0 = session.allocate_token(1);
+        let t1 = session.allocate_token(2);
         assert_eq!(session.outstanding_requests(), 2);
 
-        let mut set = session.cascade_session_failure(0);
-        assert!(set.is_empty());
+        // Session cascade returns only session 1's token
+        let mut set = session.cascade_session_failure(1);
+        assert_eq!(set.len(), 1);
+        let drained: Vec<_> = set.drain().collect();
+        assert_eq!(drained, vec![(PeerScope(1), t0)]);
+        assert_eq!(session.outstanding_requests(), 1);
+
+        // Connection cascade returns remaining token
+        let mut set = session.cascade_connection_failure();
+        assert_eq!(set.len(), 1);
+        let drained: Vec<_> = set.drain().collect();
+        assert_eq!(drained, vec![(PeerScope(1), t1)]);
+        assert_eq!(session.outstanding_requests(), 0);
+    }
+
+    #[test]
+    fn cascade_session_failure_isolates_sessions() {
+        // Cascading one session does not affect other sessions' tokens.
+        let mut session = ActiveSession::new(PeerScope(1), 8192, 0);
+        session.allocate_token(10);
+        session.allocate_token(20);
+        session.allocate_token(10);
+        session.allocate_token(30);
+        assert_eq!(session.outstanding_requests(), 4);
+
+        let mut set = session.cascade_session_failure(10);
+        assert_eq!(set.len(), 2);
         let _: Vec<_> = set.drain().collect();
 
+        // Sessions 20 and 30 still have their tokens
+        assert_eq!(session.outstanding_requests(), 2);
+
+        let mut set = session.cascade_session_failure(20);
+        assert_eq!(set.len(), 1);
+        let _: Vec<_> = set.drain().collect();
+        assert_eq!(session.outstanding_requests(), 1);
+
+        let mut set = session.cascade_session_failure(30);
+        assert_eq!(set.len(), 1);
+        let _: Vec<_> = set.drain().collect();
+        assert_eq!(session.outstanding_requests(), 0);
+    }
+
+    #[test]
+    fn cascade_session_failure_decrements_outstanding() {
+        let mut session = ActiveSession::new(PeerScope(1), 8192, 0);
+        session.allocate_token(1);
+        session.allocate_token(1);
+        session.allocate_token(1);
+        session.allocate_token(2);
+        assert_eq!(session.outstanding_requests(), 4);
+
+        let mut set = session.cascade_session_failure(1);
+        assert_eq!(set.len(), 3);
+        let _: Vec<_> = set.drain().collect();
+
+        // Exactly 3 decremented — 1 remains for session 2
+        assert_eq!(session.outstanding_requests(), 1);
+    }
+
+    #[test]
+    fn cascade_connection_failure_clears_all() {
+        let mut session = ActiveSession::new(PeerScope(1), 8192, 0);
+        session.allocate_token(1);
+        session.allocate_token(2);
+        session.allocate_token(3);
+        session.allocate_token(1);
+        assert_eq!(session.outstanding_requests(), 4);
+
         let mut set = session.cascade_connection_failure();
+        assert_eq!(set.len(), 4);
+        let _: Vec<_> = set.drain().collect();
+
+        assert_eq!(session.outstanding_requests(), 0);
+
+        // No tokens left for any session
+        let mut set = session.cascade_session_failure(1);
         assert!(set.is_empty());
         let _: Vec<_> = set.drain().collect();
+    }
+
+    #[test]
+    fn double_cascade_same_session_second_empty() {
+        // First cascade resolves all tokens for the session.
+        // Second cascade on same session returns empty — tokens
+        // were already removed.
+        let mut session = ActiveSession::new(PeerScope(1), 8192, 0);
+        session.allocate_token(5);
+        session.allocate_token(5);
+
+        let mut first = session.cascade_session_failure(5);
+        assert_eq!(first.len(), 2);
+        let _: Vec<_> = first.drain().collect();
+
+        let mut second = session.cascade_session_failure(5);
+        assert!(second.is_empty());
+        let _: Vec<_> = second.drain().collect();
+    }
+
+    #[test]
+    fn cascade_empty_session_returns_empty() {
+        let mut session = ActiveSession::new(PeerScope(1), 8192, 0);
+        session.allocate_token(1);
+
+        // Session 99 has no tokens — cascade returns empty set
+        let set = session.cascade_session_failure(99);
+        assert!(set.is_empty());
+        assert_eq!(session.outstanding_requests(), 1);
+    }
+
+    #[test]
+    fn cascade_connection_failure_no_tokens_returns_empty() {
+        let mut session = ActiveSession::new(PeerScope(1), 8192, 0);
+        let set = session.cascade_connection_failure();
+        assert!(set.is_empty());
+        assert_eq!(session.outstanding_requests(), 0);
     }
 }
