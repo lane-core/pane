@@ -252,4 +252,110 @@ mod tests {
         assert_eq!(decoded.max_message_size, 16 * 1024 * 1024);
         assert_eq!(decoded.max_outstanding_requests, 0);
     }
+
+    /// Session subtyping: a newer Hello with additional fields is a
+    /// width subtype of the current Hello. Extra fields are silently
+    /// ignored during deserialization.
+    ///
+    /// Design heritage: Plan 9 version(5) — unknown version strings
+    /// are negotiated down, not rejected
+    /// (reference/plan9/man/5/version:19-48). The CBOR self-describing
+    /// format (D11) enables the same tolerance for unknown map keys.
+    #[test]
+    fn hello_extra_field_ignored() {
+        use std::collections::BTreeMap;
+
+        // Build a CBOR map with all standard Hello fields plus an
+        // unknown "experimental_feature" key. A future Hello revision
+        // might add this field; older deserializers must ignore it.
+        let mut map = BTreeMap::<String, ciborium::Value>::new();
+        map.insert("version".into(), ciborium::Value::Integer(1.into()));
+        map.insert(
+            "max_message_size".into(),
+            ciborium::Value::Integer((16 * 1024 * 1024_i64).into()),
+        );
+        map.insert(
+            "max_outstanding_requests".into(),
+            ciborium::Value::Integer(32.into()),
+        );
+        map.insert("interests".into(), ciborium::Value::Array(vec![]));
+        map.insert("provides".into(), ciborium::Value::Array(vec![]));
+        map.insert("experimental_feature".into(), ciborium::Value::Bool(true));
+
+        let bytes = cbor_serialize(&map);
+        let decoded: Hello = cbor_deserialize(&bytes);
+
+        assert_eq!(decoded.version, 1);
+        assert_eq!(decoded.max_message_size, 16 * 1024 * 1024);
+        assert_eq!(decoded.max_outstanding_requests, 32);
+        assert!(decoded.interests.is_empty());
+        assert!(decoded.provides.is_empty());
+    }
+
+    /// Same width-subtyping property for Welcome: extra fields from a
+    /// newer server are silently ignored by an older client.
+    ///
+    /// Design heritage: Plan 9 version(5) — unknown capabilities
+    /// negotiated away, not fatal.
+    #[test]
+    fn welcome_extra_field_ignored() {
+        use std::collections::BTreeMap;
+
+        let mut map = BTreeMap::<String, ciborium::Value>::new();
+        map.insert("version".into(), ciborium::Value::Integer(1.into()));
+        map.insert("instance_id".into(), ciborium::Value::Text("srv-42".into()));
+        map.insert(
+            "max_message_size".into(),
+            ciborium::Value::Integer((16 * 1024 * 1024_i64).into()),
+        );
+        map.insert(
+            "max_outstanding_requests".into(),
+            ciborium::Value::Integer(64.into()),
+        );
+        map.insert("bindings".into(), ciborium::Value::Array(vec![]));
+        // Unknown field from a hypothetical future server
+        map.insert("compression".into(), ciborium::Value::Text("zstd".into()));
+
+        let bytes = cbor_serialize(&map);
+        let decoded: Welcome = cbor_deserialize(&bytes);
+
+        assert_eq!(decoded.version, 1);
+        assert_eq!(decoded.instance_id, "srv-42");
+        assert_eq!(decoded.max_message_size, 16 * 1024 * 1024);
+        assert_eq!(decoded.max_outstanding_requests, 64);
+        assert!(decoded.bindings.is_empty());
+    }
+
+    /// Forward-compat in the other direction: an old client that omits
+    /// max_outstanding_requests deserializes with the field defaulting
+    /// to 0 (unlimited). Constructed via raw CBOR map to prove the
+    /// #[serde(default)] annotation is exercised at the CBOR layer.
+    ///
+    /// Complements hello_forward_compat_missing_field_defaults_to_zero
+    /// (which uses a surrogate struct) by going through the raw map
+    /// path, proving the property holds regardless of how the bytes
+    /// are produced.
+    #[test]
+    fn hello_missing_optional_field_defaults() {
+        use std::collections::BTreeMap;
+
+        let mut map = BTreeMap::<String, ciborium::Value>::new();
+        map.insert("version".into(), ciborium::Value::Integer(1.into()));
+        map.insert(
+            "max_message_size".into(),
+            ciborium::Value::Integer((16 * 1024 * 1024_i64).into()),
+        );
+        // max_outstanding_requests deliberately omitted
+        map.insert("interests".into(), ciborium::Value::Array(vec![]));
+        map.insert("provides".into(), ciborium::Value::Array(vec![]));
+
+        let bytes = cbor_serialize(&map);
+        let decoded: Hello = cbor_deserialize(&bytes);
+
+        assert_eq!(decoded.version, 1);
+        assert_eq!(decoded.max_message_size, 16 * 1024 * 1024);
+        assert_eq!(decoded.max_outstanding_requests, 0);
+        assert!(decoded.interests.is_empty());
+        assert!(decoded.provides.is_empty());
+    }
 }

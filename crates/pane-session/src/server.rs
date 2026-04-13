@@ -33,7 +33,7 @@ use std::sync::{Arc, Mutex};
 
 use crate::bridge::HANDSHAKE_MAX_MESSAGE_SIZE;
 use crate::frame::{Frame, FrameCodec, FrameError};
-use crate::handshake::{Hello, Rejection, ServiceProvision, Welcome};
+use crate::handshake::{Hello, RejectReason, Rejection, ServiceProvision, Welcome};
 use pane_proto::control::ControlMessage;
 use pane_proto::protocol::ServiceId;
 
@@ -595,12 +595,17 @@ impl ConnectionHandle {
 #[derive(Debug)]
 pub enum AcceptError {
     Transport(std::io::Error),
+    /// The server rejected the client's handshake (version mismatch,
+    /// unauthorized, etc.). The rejection has already been sent to
+    /// the client — no reader/writer threads were spawned.
+    Rejected(RejectReason),
 }
 
 impl std::fmt::Display for AcceptError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             AcceptError::Transport(e) => write!(f, "accept transport error: {e}"),
+            AcceptError::Rejected(reason) => write!(f, "handshake rejected: {reason:?}"),
         }
     }
 }
@@ -671,6 +676,27 @@ impl ProtocolServer {
                 e.to_string(),
             ))
         })?;
+
+        // Version validation — Plan 9 Tversion discipline: the server
+        // rejects unknown versions rather than silently accepting.
+        // (reference/plan9/man/5/version:19-48)
+        if hello.version != 1 {
+            let rejection = Rejection {
+                reason: RejectReason::VersionMismatch,
+                message: Some(format!(
+                    "server supports version 1, client sent {}",
+                    hello.version
+                )),
+            };
+            let decision: Result<Welcome, Rejection> = Err(rejection);
+            let mut bytes = Vec::new();
+            ciborium::ser::into_writer(&decision, &mut bytes)
+                .expect("Rejection serialization failed");
+            codec
+                .write_frame(&mut writer, 0, &bytes)
+                .map_err(AcceptError::Transport)?;
+            return Err(AcceptError::Rejected(RejectReason::VersionMismatch));
+        }
 
         // Allocate connection ID
         let conn_id = {

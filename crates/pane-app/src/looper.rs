@@ -1352,6 +1352,171 @@ mod tests {
         );
     }
 
+    // ── Claim: all phases dispatch in strict order ─────────
+
+    #[test]
+    fn all_phases_dispatch_in_order() {
+        // Inject one message of each type (phases 1, 2, 3, 5) in
+        // deliberately scrambled order. Verify handler log shows
+        // strict phase ordering: reply (1) before teardown (2)
+        // before lifecycle (3).
+        //
+        // Phase 5 messages are injected but won't dispatch because
+        // CloseRequested (phase 3) exits the batch before phase 5
+        // runs — that's correct and proves phases 1-3 complete
+        // before the exit propagates.
+        //
+        // Heritage: EAct operational semantics — E-Send/E-Receive
+        // interleaving discipline ([FH] §4). The phase ordering
+        // preserves safety theorems.
+        use crate::dispatch::DispatchEntry;
+
+        let log = Arc::new(Mutex::new(Vec::new()));
+        let log_reply = log.clone();
+        let log_failed = log.clone();
+
+        let (exit_tx, _exit_rx) = mpsc::channel();
+        let (msg_tx, msg_rx) = mpsc::channel();
+        let (write_tx, _write_rx) = std::sync::mpsc::sync_channel(16);
+
+        let mut service_dispatch = ServiceDispatch::new();
+        service_dispatch.register(3, make_service_receiver::<BatchTestHandler, TestProto>());
+
+        let handler = BatchTestHandler { log: log.clone() };
+        let mut core = LooperCore::with_service_dispatch(
+            handler,
+            PeerScope(1),
+            write_tx,
+            exit_tx,
+            service_dispatch,
+            crate::Messenger::stub(),
+        );
+
+        // Install a dispatch entry on session 5 so the reply
+        // resolves a real obligation (phase 1).
+        let token = core.active_session_mut().allocate_token(5);
+        core.dispatch_mut().insert(
+            PeerScope(1),
+            token,
+            DispatchEntry {
+                on_reply: Box::new(move |_h: &mut BatchTestHandler, _, _| {
+                    log_reply.lock().unwrap().push("phase1:reply".into());
+                    Flow::Continue
+                }),
+                on_failed: Box::new(move |_h: &mut BatchTestHandler, _| {
+                    log_failed.lock().unwrap().push("phase1:failed".into());
+                    Flow::Continue
+                }),
+            },
+        );
+
+        let looper = Looper::new(core, None, None);
+
+        // Scrambled injection order (5, 3, 2, 1, 5) — adversarial
+        // vs the correct dispatch order (1, 2, 3, 5).
+
+        // Phase 5: Notification (injected first)
+        let inner = tagged_payload(&TestMsg::Ping("late_notif".into()));
+        let outer = wire_notification(inner);
+        msg_tx
+            .send(LooperMessage::Service {
+                session_id: 3,
+                payload: outer,
+            })
+            .unwrap();
+
+        // Phase 3: Lifecycle (injected second)
+        msg_tx
+            .send(LooperMessage::Control(ControlMessage::Lifecycle(
+                LifecycleMessage::CloseRequested,
+            )))
+            .unwrap();
+
+        // Phase 2: ServiceTeardown (injected third)
+        msg_tx
+            .send(LooperMessage::Control(ControlMessage::ServiceTeardown {
+                session_id: 7,
+                reason: TeardownReason::ServiceRevoked,
+            }))
+            .unwrap();
+
+        // Phase 1: Reply for installed token (injected fourth)
+        let reply_outer = wire_reply(token.0, vec![1, 2, 3]);
+        msg_tx
+            .send(LooperMessage::Service {
+                session_id: 5,
+                payload: reply_outer,
+            })
+            .unwrap();
+
+        // Phase 5: Request (injected fifth)
+        let inner = tagged_payload(&TestMsg::Ping("late_req".into()));
+        let outer = wire_request(99, inner);
+        msg_tx
+            .send(LooperMessage::Service {
+                session_id: 3,
+                payload: outer,
+            })
+            .unwrap();
+
+        drop(msg_tx);
+
+        let reason = looper.run(msg_rx);
+        assert_eq!(reason, ExitReason::Graceful);
+
+        let events = log.lock().unwrap().clone();
+
+        // Phase 1 reply must have dispatched.
+        assert!(
+            events.contains(&"phase1:reply".to_string()),
+            "Reply must dispatch in phase 1. Got: {events:?}"
+        );
+        // Reply resolved the entry — teardown must not orphan it.
+        assert!(
+            !events.contains(&"phase1:failed".to_string()),
+            "on_failed must not fire — reply resolved before teardown. Got: {events:?}"
+        );
+
+        // Phase 2 teardown must have dispatched.
+        let teardown_pos = events
+            .iter()
+            .position(|e| e.starts_with("subscriber_disconnected:7:"))
+            .unwrap_or_else(|| {
+                panic!("subscriber_disconnected for session 7 must be logged. Got: {events:?}")
+            });
+
+        // Phase 3 lifecycle must have dispatched.
+        let lifecycle_pos = events
+            .iter()
+            .position(|e| e == "close_requested")
+            .unwrap_or_else(|| {
+                panic!("close_requested must be logged. Got: {events:?}")
+            });
+
+        // Phase 1 < Phase 2: reply before teardown.
+        let reply_pos = events
+            .iter()
+            .position(|e| e == "phase1:reply")
+            .unwrap();
+        assert!(
+            reply_pos < teardown_pos,
+            "Reply (phase 1) must dispatch before teardown (phase 2). Got: {events:?}"
+        );
+
+        // Phase 2 < Phase 3: teardown before lifecycle.
+        assert!(
+            teardown_pos < lifecycle_pos,
+            "Teardown (phase 2) must dispatch before lifecycle (phase 3). Got: {events:?}"
+        );
+
+        // Phase 5 messages must NOT appear — CloseRequested exits
+        // the batch before phase 5 runs.
+        assert!(
+            !events.contains(&"notification:late_notif".to_string()),
+            "Phase 5 notification must not dispatch after phase 3 exit. Got: {events:?}"
+        );
+    }
+
     // ── Timer tests ─────────────────────────────────────────
 
     /// Test handler that counts pulse events and exits after
