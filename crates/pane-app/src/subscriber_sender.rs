@@ -84,8 +84,10 @@ impl<P: Protocol> SubscriberSender<P> {
         let outer_payload =
             postcard::to_allocvec(&frame).expect("service frame serialization failed");
 
+        // N1: non-blocking. Notifications are fire-and-forget —
+        // silent drop on send failure matches try_send_notification.
         if let Some(ref tx) = self.write_tx {
-            let _ = tx.send((self.session_id, outer_payload));
+            let _ = tx.try_send((self.session_id, outer_payload));
         }
     }
 

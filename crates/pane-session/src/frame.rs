@@ -502,7 +502,17 @@ impl FrameWriter {
     ///
     /// Wire format: [length: u32 LE][service: u16 LE][payload]
     /// where length = 2 + payload.len() (counts service + payload).
+    ///
+    /// # Panics (debug only)
+    ///
+    /// Panics if `service` is 0xFFFF (reserved for ProtocolAbort).
+    /// Uses `debug_assert!` — hot path, checked in debug builds only.
+    /// Matches the guard in `FrameCodec::write_frame` and `encode_frame`.
     pub fn enqueue(&mut self, service: u16, payload: &[u8]) {
+        debug_assert!(
+            service != 0xFFFF,
+            "service 0xFFFF is reserved for ProtocolAbort"
+        );
         let frame_len = 2 + payload.len();
         self.buf
             .extend_from_slice(&(frame_len as u32).to_le_bytes());
@@ -1239,5 +1249,12 @@ mod tests {
         writer.try_flush(&mut buf).unwrap();
         assert_eq!(writer.pending_bytes(), 0);
         assert!(writer.is_empty());
+    }
+
+    #[test]
+    #[should_panic(expected = "reserved for ProtocolAbort")]
+    fn frame_writer_enqueue_rejects_protocol_abort_service() {
+        let mut writer = FrameWriter::new();
+        writer.enqueue(0xFFFF, b"should panic");
     }
 }

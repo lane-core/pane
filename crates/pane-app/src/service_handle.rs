@@ -135,9 +135,16 @@ impl<P: Protocol> ServiceHandle<P> {
         // write queue, bypassing the mpsc channel. Falls back to the
         // channel if no direct writer is available (pre-ConnectionSource
         // code path or tests).
+        //
+        // N1: all looper-thread sends are non-blocking. The fallback
+        // uses try_send — if the channel is full or disconnected, the
+        // entry we just installed must be cancelled to avoid a leaked
+        // DispatchEntry (same rollback pattern as try_send_request).
         if !ctx.enqueue_frame(self.session_id, &outer_payload) {
             if let Some(ref tx) = self.write_tx {
-                let _ = tx.send((self.session_id, outer_payload));
+                if tx.try_send((self.session_id, outer_payload)).is_err() {
+                    ctx.cancel(token);
+                }
             }
         }
 
@@ -280,8 +287,10 @@ impl<P: Protocol> ServiceHandle<P> {
         let outer_payload =
             postcard::to_allocvec(&frame).expect("service frame serialization failed");
 
+        // N1: non-blocking. Notifications are fire-and-forget —
+        // silent drop on send failure matches try_send_notification.
         if let Some(ref tx) = self.write_tx {
-            let _ = tx.send((self.session_id, outer_payload));
+            let _ = tx.try_send((self.session_id, outer_payload));
         }
     }
 
@@ -1229,5 +1238,73 @@ mod tests {
         // does not touch Dispatch.
         assert_eq!(dispatch.outstanding_requests(), 1);
         assert_eq!(dispatch.len(), 1);
+    }
+
+    // ── N1: non-blocking send_request fallback ──────────────
+
+    #[test]
+    fn send_request_cancels_entry_on_full_channel() {
+        // Channel capacity 1 — fill it, then send_request should
+        // use try_send and cancel the DispatchEntry on failure.
+        let (tx, _rx) = std::sync::mpsc::sync_channel(1);
+        let handle = ServiceHandle::<TestProto>::with_channel(5, tx);
+
+        let mut dispatch = Dispatch::<TestHandler>::new();
+
+        // First send fills the channel.
+        {
+            let mut ctx = DispatchCtx::new(&mut dispatch, PeerScope(1));
+            let _cancel1 = handle.send_request::<TestHandler, TestReply>(
+                &mut ctx,
+                TestMsg::Ping,
+                |_: &mut TestHandler, _, _: TestReply| Flow::Continue,
+                |_: &mut TestHandler, _| Flow::Continue,
+            );
+        }
+        assert_eq!(dispatch.len(), 1);
+        assert_eq!(dispatch.outstanding_requests(), 1);
+
+        // Second send hits full channel — entry must be cancelled.
+        {
+            let mut ctx = DispatchCtx::new(&mut dispatch, PeerScope(1));
+            let _cancel2 = handle.send_request::<TestHandler, TestReply>(
+                &mut ctx,
+                TestMsg::Ping,
+                |_: &mut TestHandler, _, _: TestReply| Flow::Continue,
+                |_: &mut TestHandler, _| Flow::Continue,
+            );
+        }
+        // The entry was installed then cancelled — net: only the
+        // first entry remains. Outstanding requests was incremented
+        // then decremented by the cancel, so it stays at 1.
+        assert_eq!(dispatch.len(), 1, "leaked DispatchEntry on full channel");
+        assert_eq!(dispatch.outstanding_requests(), 1);
+    }
+
+    #[test]
+    fn send_request_cancels_entry_on_disconnected_channel() {
+        let (tx, rx) = std::sync::mpsc::sync_channel(16);
+        let handle = ServiceHandle::<TestProto>::with_channel(5, tx);
+
+        // Drop the receiver — channel is disconnected.
+        drop(rx);
+
+        let mut dispatch = Dispatch::<TestHandler>::new();
+        {
+            let mut ctx = DispatchCtx::new(&mut dispatch, PeerScope(1));
+            let _cancel = handle.send_request::<TestHandler, TestReply>(
+                &mut ctx,
+                TestMsg::Ping,
+                |_: &mut TestHandler, _, _: TestReply| Flow::Continue,
+                |_: &mut TestHandler, _| Flow::Continue,
+            );
+        }
+        // Entry installed then cancelled — dispatch should be empty.
+        assert_eq!(
+            dispatch.len(),
+            0,
+            "leaked DispatchEntry on disconnected channel"
+        );
+        assert_eq!(dispatch.outstanding_requests(), 0);
     }
 }

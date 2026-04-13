@@ -140,6 +140,22 @@ impl SharedWriter {
     }
 }
 
+impl pane_session::NonBlockingSend for SharedWriter {
+    /// Enqueue a frame into the shared write buffer.
+    ///
+    /// Always succeeds — `FrameWriter::enqueue` is a `Vec` append
+    /// on the looper thread. The `FrameWriter::enqueue` debug_assert
+    /// guards against service 0xFFFF (ProtocolAbort).
+    fn try_send_frame(
+        &self,
+        service: u16,
+        payload: &[u8],
+    ) -> Result<(), pane_session::Backpressure> {
+        self.enqueue(service, payload);
+        Ok(())
+    }
+}
+
 /// A calloop EventSource wrapping a single post-handshake connection fd.
 ///
 /// Produces `LooperMessage` events by reading frames from the
@@ -800,5 +816,33 @@ mod tests {
     fn connection_id_accessible() {
         let (source, _peer, _write_tx) = setup();
         assert_eq!(source.connection_id(), 1);
+    }
+
+    // ── NonBlockingSend ──────────────────────────────────────
+
+    #[test]
+    fn shared_writer_non_blocking_send_enqueues_frame() {
+        use pane_session::NonBlockingSend;
+
+        let writer = SharedWriter::new(pane_session::FrameWriter::new());
+        let result = writer.try_send_frame(1, &[0xAA, 0xBB]);
+        assert!(result.is_ok());
+
+        // Verify the frame is in the buffer by checking pending bytes.
+        // Wire format: 4 (length) + 2 (service) + 2 (payload) = 8 bytes.
+        assert_eq!(writer.inner.borrow().pending_bytes(), 8);
+        assert!(writer.has_pending());
+    }
+
+    #[test]
+    fn shared_writer_non_blocking_send_multiple_frames() {
+        use pane_session::NonBlockingSend;
+
+        let writer = SharedWriter::new(pane_session::FrameWriter::new());
+        writer.try_send_frame(1, &[0x01]).unwrap();
+        writer.try_send_frame(2, &[0x02, 0x03]).unwrap();
+
+        // Frame 1: 4 + 2 + 1 = 7. Frame 2: 4 + 2 + 2 = 8. Total: 15.
+        assert_eq!(writer.inner.borrow().pending_bytes(), 15);
     }
 }

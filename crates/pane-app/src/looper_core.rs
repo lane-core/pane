@@ -313,7 +313,16 @@ impl<H: pane_proto::Handler> LooperCore<H> {
             postcard::to_allocvec(&frame).expect("ServiceFrame serialization failed");
 
         // 3. Wire send AFTER entry installed.
-        let _ = self.write_tx.send((req.session_id, outer_payload));
+        // N1: non-blocking. On failure, cancel the dispatch entry —
+        // dropping the entry drops both reply_tx clones, which causes
+        // the caller's recv_timeout to return Disconnected.
+        if self
+            .write_tx
+            .try_send((req.session_id, outer_payload))
+            .is_err()
+        {
+            self.dispatch.cancel(self.primary_connection, token);
+        }
     }
 
     /// Dispatch a lifecycle message through the Handler's blanket
