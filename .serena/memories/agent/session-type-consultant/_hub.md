@@ -75,6 +75,13 @@ The `reference_eact_paper` content is at
 this folder is provenance only.
 
 Recent analysis:
+- `rumpsteak_smol_translation` -- Full Rumpsteak paper read.
+  Tokio dependency is trivially replaceable (Sink/Stream
+  abstraction is runtime-agnostic). Channel model (reusable
+  per-role-pair) maps to pane's persistent connections. AMR
+  verification is external tool, usable without runtime adoption.
+  Real obstacle is async/sync gap, not Tokio. Recommendation:
+  Path A (use verification tools, keep sync Looper).
 - `eact_mpst_pane_session_analysis` — CRITICAL. Maps pane onto
   EAct formalism, defines active-phase global type, specifies
   pane-session's five abstractions (ActiveSession, NonBlockingSend,

@@ -69,6 +69,10 @@ that matches your task.
 - [`decision/s6_init`](decision/s6_init.md) — sixos (s6 + Nix) for the Linux distribution layer
 - [`decision/dependency_review`](decision/dependency_review.md) — Landlock, bcachefs, Wayland protocols, FUSE / io_uring
 
+## Dependencies
+
+- [`dependency/par`](dependency/par.md) — par 0.3.10 complete API digest: Session/Dual, Send/Recv, Enqueue/Dequeue, Server/Proxy/Connection, linear logic mapping, limitations, pane usage analysis
+
 ## When working on a subsystem
 
 - [`architecture/proto`](architecture/proto.md) — pane-proto vocabulary crate: Message, Protocol, Handles, Handler, ControlMessage, ServiceFrame, obligation handles, MonadicLens
@@ -125,10 +129,10 @@ Topics:
 Each project agent has its own hub for institutional knowledge.
 Read-everywhere, write-only-to-own-folder discipline applies.
 
-- [`agent/plan9-systems-engineer/_hub`](agent/plan9-systems-engineer/_hub.md)
+- [`agent/plan9-systems-engineer/_hub`](agent/plan9-systems-engineer/_hub.md) + [`pane_kernel_design_consultation`](agent/plan9-systems-engineer/pane_kernel_design_consultation.md)
 - [`agent/be-systems-engineer/_hub`](agent/be-systems-engineer/_hub.md)
 - [`agent/optics-theorist/_hub`](agent/optics-theorist/_hub.md) + [`linearity_gap`](agent/optics-theorist/linearity_gap.md)
-- [`agent/session-type-consultant/_hub`](agent/session-type-consultant/_hub.md) + [`feedback_mailbox_type_retraction`](agent/session-type-consultant/feedback_mailbox_type_retraction.md) + [`backpressure_tier_review`](agent/session-type-consultant/backpressure_tier_review.md)
+- [`agent/session-type-consultant/_hub`](agent/session-type-consultant/_hub.md) + [`feedback_mailbox_type_retraction`](agent/session-type-consultant/feedback_mailbox_type_retraction.md) + [`backpressure_tier_review`](agent/session-type-consultant/backpressure_tier_review.md) + [`async_looper_assessment`](agent/session-type-consultant/async_looper_assessment.md)
 - [`agent/formal-verifier/_hub`](agent/formal-verifier/_hub.md)
 - [`agent/pane-architect/_hub`](agent/pane-architect/_hub.md)
 

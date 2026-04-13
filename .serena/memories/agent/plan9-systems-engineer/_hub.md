@@ -46,6 +46,11 @@ Phase 6 hub-and-spoked the analysis cluster currently at
   contradiction, write in your own folder and use `supersedes:` /
   `contradicts:` frontmatter pointing at the other agent's memory.
 
+## Analyses in this folder
+
+- [`async_concurrency_assessment`](async_concurrency_assessment.md) — async vs sync verdict for pane's actor loop: sync correct for Phase 1, async deferred to Phase 2 trigger conditions
+- [`pane_kernel_design_consultation`](pane_kernel_design_consultation.md) — six-section analysis mapping Plan 9 kernel to pane-kernel userspace trait suite: Dev→device traits, platform backends, cfg(target_os), thin kernel boundary
+
 ## Currently in this folder
 
 Migrated 2026-04-11 from the retired

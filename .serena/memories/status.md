@@ -3,7 +3,7 @@ type: status
 status: current
 supersedes: [archive/status/2026-04-06, pane/current_state]
 created: 2026-04-10
-last_updated: 2026-04-12T3
+last_updated: 2026-04-12T5
 importance: high
 keywords: [status, crates, tests, calloop, looper, invariants, send_and_wait, watchdog, NLnet]
 agents: [all]
@@ -13,24 +13,45 @@ agents: [all]
 
 ## Where we are
 
-Six crates, 371 regular tests + 48 stress/adversarial + 6 benchmarks.
+Six crates, 380 regular tests + 48 stress/adversarial + 6 benchmarks.
 All invariants verified or detection-enforced (22 of 22 + N1-N4
 identified, extraction pending).
 
-**Next session priority:** pane-session MPST foundation extraction.
-Read `decision/pane_session_mpst_foundation` first.
+**Next session priority:** N1 integration complete. MPST extraction
+Phases A-C complete. Next: deeper API refactoring (DispatchCtx
+carries &dyn NonBlockingSend), or B1 RequestCorrelator extraction.
 
 | Crate | Role | Tests |
 |---|---|---|
 | pane-proto | Protocol vocabulary, no IO | 99 |
-| pane-session | Session-typed IPC, transport, framing, server | 102 + 21 stress |
-| pane-app | Actor framework, dispatch, looper | 162 + 12 stress + 12 adversarial + 14 integration + 6 bench |
+| pane-session | Session-typed IPC, transport, framing, server | 103 + 21 stress |
+| pane-app | Actor framework, dispatch, looper | 170 + 12 stress + 12 adversarial + 14 integration + 6 bench |
 | pane-fs | Filesystem namespace | 5 |
 | pane-hello | First running pane app (binary) | 0 |
 | pane-notify | Filesystem notification abstraction | preserved from prototype |
 
 ### Landed since 2026-04-12
 
+- **Phase 2: Executor/Scheduler in Looper** (`6a32d94`) — calloop
+  Executor<()>/Scheduler<()> pair created in Looper::run(), registered
+  as calloop EventSource alongside channel/timer/sync_rx. Scheduler
+  stored in LoopState for Phase 5 (ctx.schedule). Executor is !Send
+  (Rc-based), strengthening I6 by construction. Initial PaneBuilder
+  handshake stays synchronous (D2: microsecond-scale local sockets).
+  4 new tests: executor typed return, Executor<()> side-effect
+  delivery, executor+channel coexistence, Looper integration.
+  pane-app lib: 161 tests. Phase 2 of async migration complete;
+  Phase 3 (StreamSource for par Dequeue) is next async step.
+- **N1 integration: non-blocking sends** (`11772de`) — First
+  post-MPST integration task. Implemented NonBlockingSend for
+  SharedWriter (always succeeds — Vec append). Fixed four blocking
+  SyncSender::send() calls: send_request fallback (try_send +
+  DispatchEntry cancellation on failure), send_notification (try_send
+  + silent drop), SubscriberSender::send_notification (same),
+  process_sync_request (try_send + cancel, caller gets Disconnected).
+  Added debug_assert for 0xFFFF in FrameWriter::enqueue matching
+  FrameCodec guards. 5 new tests (pane-app: 162→166, pane-session:
+  102→103). All 12 adversarial tests pass.
 - **C2: Failure cascade policy** — New TeardownSet obligation
   type in pane-session/teardown.rs [N3]: #[must_use], Drop panics
   in debug / logs in release if tokens unconsumed (affine-gap
