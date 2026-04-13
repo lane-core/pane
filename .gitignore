@@ -9,3 +9,4 @@ verification/_build/
 .genai-archive/
 .claude/agent-memory/
 .gist/
+*.original.md

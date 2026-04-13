@@ -13,9 +13,16 @@ agents: [plan9-systems-engineer, be-systems-engineer]
 
 ## Decision
 
-Thread-per-pane is the default. Multiple panes run as
-threads within a shared process. Process isolation is
-opt-in for untrusted/sandboxed panes.
+Thread-per-pane is the default. An application is a process;
+its panes are threads sharing address space. Process
+isolation is opt-in for untrusted/sandboxed applications.
+
+The process is the natural namespace boundary. Threads
+share their process's namespace — the process manages
+visibility on behalf of its panes (predicate-based
+DeviceRegistry filter). This is BeOS's model (BApplication
+= process, BWindow = thread) with Plan 9's per-process
+namespaces.
 
 ## Rationale
 

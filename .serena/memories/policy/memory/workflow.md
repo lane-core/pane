@@ -19,3 +19,4 @@ agents: [all]
 6. **On consolidation/deletion** — apply merge test before merging, citation-count proxy before deleting.
 7. **On agent boundary writes** — write only to own folder under `agent/<n>/`. Cross-agent supersession/contradiction: write in own folder, use `supersedes:` / `contradicts:` frontmatter pointing at other agent's memory.
 8. **On migrations** — leave thin forwarder stubs at old paths one cycle, sweep next migration. Forwarder = one-line redirect: `See <new_path>.`. Preserves cross-references during cutover.
+9. **On status writes** — if status.md exceeds 150 lines, prune before adding. Collapse old landed entries to one line (hash + subject). Drop entries older than current epoch. Remove resolved questions. git log is authoritative for landed work; status orients, it doesn't chronicle.
