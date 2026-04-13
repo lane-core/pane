@@ -459,11 +459,49 @@ impl<H: pane_proto::Handler + 'static> Looper<H> {
             // Event::Closed on the calloop side.
         });
 
+        // Create the async executor and register it as a calloop
+        // event source. The executor runs futures during calloop's
+        // poll cycle; completed futures fire the callback which can
+        // feed results into the batch. The Scheduler stays on the
+        // looper thread (!Send by construction via Rc<State>).
+        //
+        // Executor<()>: futures handle result delivery internally.
+        // Phase 5 (ctx.schedule) will specialize when needed.
+        //
+        // Theoretical basis: EAct's E-Suspend / E-React pattern
+        // ([FH] §6, l.4093-4094). Future .await = E-Suspend (yield
+        // to event loop). Executor callback = E-React (event loop
+        // fires handler). Strengthens I6: spawn_local ensures all
+        // futures run on the looper thread.
+        let scheduler = match calloop::futures::executor::<()>() {
+            Ok((executor, scheduler)) => {
+                if handle
+                    .insert_source(executor, |(), _, _state: &mut LoopState| {
+                        // Executor<()>: completed futures produce ().
+                        // Real work delivered via channels/shared state.
+                        // Phase 5 will route typed results into batch.
+                    })
+                    .is_err()
+                {
+                    self.core.run_destruction_reason(ExitReason::InfraError);
+                    self.core.shutdown();
+                    return ExitReason::InfraError;
+                }
+                Some(scheduler)
+            }
+            Err(_) => {
+                self.core.run_destruction_reason(ExitReason::InfraError);
+                self.core.shutdown();
+                return ExitReason::InfraError;
+            }
+        };
+
         let mut state = LoopState {
             batch: Batch::new(),
             exit_reason: None,
             timers: HashMap::new(),
             shared_writer: None,
+            scheduler,
         };
 
         // Main loop: block for at least one event, drain any
@@ -852,7 +890,7 @@ impl Batch {
 /// calloop's EventLoop<LoopState> passes this to event callbacks.
 ///
 /// Created on the looper thread and never moved — Rc-based fields
-/// (SharedWriter) are safe.
+/// (SharedWriter, Scheduler) are safe.
 struct LoopState {
     batch: Batch,
     exit_reason: Option<ExitReason>,
@@ -864,6 +902,21 @@ struct LoopState {
     /// on the looper thread. Passed through dispatch_batch to
     /// LooperCore::dispatch_request_with_writer.
     shared_writer: Option<crate::connection_source::SharedWriter>,
+    /// Scheduler for spawning async futures on the calloop executor.
+    /// Rc-based (!Send) — lives on the looper thread only. Futures
+    /// scheduled here run during calloop's poll cycle (event
+    /// collection), not during batch dispatch. I6 (sequential
+    /// single-thread dispatch) is preserved by construction: the
+    /// executor uses spawn_local, the Scheduler is !Send, and
+    /// completed futures deliver results via the executor callback
+    /// which feeds into the batch.
+    ///
+    /// Currently Executor<()> — futures handle their own result
+    /// delivery (channels, shared state). Phase 5 (ctx.schedule)
+    /// will specialize the type parameter when handler-spawned
+    /// futures need to deliver typed results into dispatch.
+    #[allow(dead_code)] // Phase 5 (ctx.schedule) accesses this
+    scheduler: Option<calloop::futures::Scheduler<()>>,
 }
 
 #[cfg(test)]
@@ -2791,5 +2844,178 @@ mod tests {
 
         batch.notifications.push((1, vec![]));
         assert!(batch.has_pending_phase5());
+    }
+
+    // ── Claim: calloop executor runs spawned futures ────────
+
+    /// Proves calloop's Executor/Scheduler integration works as an
+    /// event source: a future spawned via Scheduler completes during
+    /// EventLoop::dispatch and produces observable side effects.
+    ///
+    /// This is the infrastructure test for Phase 2 of the async
+    /// migration (decision/async_migration_calloop_executor). The
+    /// Executor sits alongside other calloop event sources (channel,
+    /// timer) and processes futures during the poll cycle.
+    #[test]
+    fn executor_runs_spawned_future() {
+        let mut event_loop = calloop::EventLoop::<u32>::try_new().unwrap();
+        let handle = event_loop.handle();
+
+        let (executor, scheduler) = calloop::futures::executor::<u32>().unwrap();
+
+        // The executor callback delivers completed future values into
+        // the calloop state — same pattern as Looper::run().
+        handle
+            .insert_source(executor, |result, _, state: &mut u32| {
+                *state = result;
+            })
+            .unwrap();
+
+        let mut state: u32 = 0;
+
+        // Before scheduling: dispatch produces nothing.
+        event_loop
+            .dispatch(Some(std::time::Duration::ZERO), &mut state)
+            .unwrap();
+        assert_eq!(state, 0);
+
+        // Schedule a future that returns 42.
+        scheduler.schedule(async { 42u32 }).unwrap();
+
+        // Dispatch processes the future and delivers the result.
+        event_loop
+            .dispatch(Some(std::time::Duration::ZERO), &mut state)
+            .unwrap();
+        assert_eq!(state, 42);
+    }
+
+    /// Proves the Executor<()> pattern used by Looper: futures
+    /// deliver results through shared state rather than the executor's
+    /// return value. This matches the real Looper::run() integration
+    /// where Executor<()> futures use channels or Rc<RefCell<>> to
+    /// feed results into the batch.
+    #[test]
+    fn executor_unit_future_with_side_effects() {
+        use std::cell::RefCell;
+        use std::rc::Rc;
+
+        let mut event_loop = calloop::EventLoop::<()>::try_new().unwrap();
+        let handle = event_loop.handle();
+
+        let (executor, scheduler) = calloop::futures::executor::<()>().unwrap();
+
+        handle
+            .insert_source(executor, |(), _, _state: &mut ()| {})
+            .unwrap();
+
+        // Shared state: the future writes to it, the test reads it.
+        // Rc<RefCell<>> is safe because everything runs on one thread.
+        let result = Rc::new(RefCell::new(String::new()));
+        let result_clone = result.clone();
+
+        scheduler
+            .schedule(async move {
+                *result_clone.borrow_mut() = "async completed".to_string();
+            })
+            .unwrap();
+
+        let mut state = ();
+        event_loop
+            .dispatch(Some(std::time::Duration::ZERO), &mut state)
+            .unwrap();
+
+        assert_eq!(*result.borrow(), "async completed");
+    }
+
+    /// Proves multiple futures can be spawned and all complete,
+    /// and that the executor integrates correctly alongside other
+    /// calloop event sources (channel). This mirrors the Looper's
+    /// architecture where the executor sits beside the LooperMessage
+    /// channel, timer, and sync_request channel.
+    #[test]
+    fn executor_coexists_with_channel_source() {
+        let mut event_loop = calloop::EventLoop::<Vec<String>>::try_new().unwrap();
+        let handle = event_loop.handle();
+
+        // Channel source — like the LooperMessage channel in Looper.
+        let (chan_tx, chan_rx) = calloop::channel::channel::<String>();
+        handle
+            .insert_source(chan_rx, |event, _, state: &mut Vec<String>| {
+                if let calloop::channel::Event::Msg(s) = event {
+                    state.push(format!("channel:{s}"));
+                }
+            })
+            .unwrap();
+
+        // Executor source — futures deliver results into the same state.
+        let (executor, scheduler) = calloop::futures::executor::<String>().unwrap();
+        handle
+            .insert_source(executor, |result, _, state: &mut Vec<String>| {
+                state.push(format!("executor:{result}"));
+            })
+            .unwrap();
+
+        // Send a channel message and schedule a future.
+        chan_tx.send("hello".into()).unwrap();
+        scheduler.schedule(async { "world".to_string() }).unwrap();
+
+        let mut state: Vec<String> = Vec::new();
+        event_loop
+            .dispatch(Some(std::time::Duration::ZERO), &mut state)
+            .unwrap();
+
+        // Both sources fire in the same dispatch cycle.
+        assert!(
+            state.contains(&"channel:hello".to_string()),
+            "channel source must fire. Got: {state:?}"
+        );
+        assert!(
+            state.contains(&"executor:world".to_string()),
+            "executor source must fire. Got: {state:?}"
+        );
+    }
+
+    /// Proves the Looper creates and registers a functional
+    /// Executor/Scheduler during run() without error. The Scheduler
+    /// is !Send (Rc-based), so it can only be used from the looper
+    /// thread — this test verifies the Looper wires the executor
+    /// into its calloop EventLoop and exits normally.
+    ///
+    /// The executor_runs_spawned_future and
+    /// executor_coexists_with_channel_source tests above prove the
+    /// calloop executor mechanism directly. This test proves the
+    /// Looper integration: executor creation, registration as an
+    /// event source, and clean shutdown with the executor present.
+    #[test]
+    fn looper_executor_integration() {
+        let log = Arc::new(Mutex::new(Vec::new()));
+        let (exit_tx, _exit_rx) = mpsc::channel();
+        let (msg_tx, msg_rx) = mpsc::channel();
+        let (write_tx, _write_rx) = std::sync::mpsc::sync_channel(16);
+
+        let handler = BatchTestHandler { log: log.clone() };
+        let core = LooperCore::with_service_dispatch(
+            handler,
+            PeerScope(1),
+            write_tx,
+            exit_tx,
+            ServiceDispatch::new(),
+            crate::Messenger::stub(),
+        );
+
+        let looper = Looper::new(core, None, None);
+
+        // CloseRequested triggers graceful exit. The executor is
+        // registered during run() and participates in the calloop
+        // poll cycle even though no futures are scheduled.
+        msg_tx
+            .send(LooperMessage::Control(ControlMessage::Lifecycle(
+                LifecycleMessage::CloseRequested,
+            )))
+            .unwrap();
+        drop(msg_tx);
+
+        let reason = looper.run(msg_rx);
+        assert_eq!(reason, ExitReason::Graceful);
     }
 }
