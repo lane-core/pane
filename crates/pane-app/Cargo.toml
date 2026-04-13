@@ -6,7 +6,8 @@ description = "Actor framework for pane. Single-threaded dispatch, request/reply
 license = "AGPL-3.0-only"
 
 [dependencies]
-calloop = "0.14"
+calloop = { version = "0.14", features = ["executor", "futures-io"] }
+futures = { version = "0.3", default-features = false, features = ["std"] }
 pane-proto = { path = "../pane-proto" }
 pane-session = { path = "../pane-session" }
 postcard = { version = "1", features = ["alloc"] }
