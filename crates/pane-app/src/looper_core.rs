@@ -1821,4 +1821,269 @@ mod tests {
             assert!(matches!(frame, ServiceFrame::Failed { token: 55 }));
         }
     }
+
+    // ── Integration: cascade → fail_tokens → outstanding count ─
+
+    #[test]
+    fn cascade_fail_tokens_outstanding_count() {
+        // Full N1→N2 boundary flow: cascade_session_failure returns
+        // tokens, fail_tokens fires callbacks, and the correlator's
+        // outstanding count is correct afterward. The individual
+        // pieces (ActiveSession cascade, Dispatch fail_tokens) are
+        // tested in isolation; this verifies the composed path
+        // through dispatch_teardown.
+        let (log, exit_tx, _exit_rx) = setup();
+        let log_s5_a = log.clone();
+        let log_s5_b = log.clone();
+        let log_s5_c = log.clone();
+        let log_s7_a = log.clone();
+        let log_s7_b = log.clone();
+        let mut core = make_core(log.clone(), exit_tx);
+        let conn = PeerScope(1);
+
+        // Allocate 3 tokens on session 5
+        let t0 = core.active_session_mut().allocate_token(5);
+        let t1 = core.active_session_mut().allocate_token(5);
+        let t2 = core.active_session_mut().allocate_token(5);
+        // Allocate 2 tokens on session 7
+        let t3 = core.active_session_mut().allocate_token(7);
+        let t4 = core.active_session_mut().allocate_token(7);
+
+        // Install dispatch entries for all 5 tokens
+        core.dispatch_mut().insert(
+            conn,
+            t0,
+            DispatchEntry {
+                on_reply: Box::new(|_h: &mut TestHandler, _, _| Flow::Continue),
+                on_failed: Box::new(move |_h: &mut TestHandler, _| {
+                    log_s5_a.lock().unwrap().push("s5_t0_failed".into());
+                    Flow::Continue
+                }),
+            },
+        );
+        core.dispatch_mut().insert(
+            conn,
+            t1,
+            DispatchEntry {
+                on_reply: Box::new(|_h: &mut TestHandler, _, _| Flow::Continue),
+                on_failed: Box::new(move |_h: &mut TestHandler, _| {
+                    log_s5_b.lock().unwrap().push("s5_t1_failed".into());
+                    Flow::Continue
+                }),
+            },
+        );
+        core.dispatch_mut().insert(
+            conn,
+            t2,
+            DispatchEntry {
+                on_reply: Box::new(|_h: &mut TestHandler, _, _| Flow::Continue),
+                on_failed: Box::new(move |_h: &mut TestHandler, _| {
+                    log_s5_c.lock().unwrap().push("s5_t2_failed".into());
+                    Flow::Continue
+                }),
+            },
+        );
+        core.dispatch_mut().insert(
+            conn,
+            t3,
+            DispatchEntry {
+                on_reply: Box::new(|_h: &mut TestHandler, _, _| Flow::Continue),
+                on_failed: Box::new(move |_h: &mut TestHandler, _| {
+                    log_s7_a.lock().unwrap().push("s7_t3_failed".into());
+                    Flow::Continue
+                }),
+            },
+        );
+        core.dispatch_mut().insert(
+            conn,
+            t4,
+            DispatchEntry {
+                on_reply: Box::new(|_h: &mut TestHandler, _, _| Flow::Continue),
+                on_failed: Box::new(move |_h: &mut TestHandler, _| {
+                    log_s7_b.lock().unwrap().push("s7_t4_failed".into());
+                    Flow::Continue
+                }),
+            },
+        );
+
+        assert_eq!(core.active_session_mut().outstanding_requests(), 5);
+        assert_eq!(core.dispatch_mut().len(), 5);
+
+        // Cascade session 5's 3 tokens
+        core.dispatch_teardown(5, pane_proto::control::TeardownReason::ServiceRevoked);
+
+        // Session 7's 2 tokens remain in the correlator
+        assert_eq!(
+            core.active_session_mut().outstanding_requests(),
+            2,
+            "only session 7's tokens should remain outstanding"
+        );
+
+        // Session 5's on_failed callbacks all fired
+        let events = log.lock().unwrap().clone();
+        let s5_failures: Vec<_> = events
+            .iter()
+            .filter(|e| e.starts_with("s5_"))
+            .collect();
+        assert_eq!(
+            s5_failures.len(),
+            3,
+            "all 3 session 5 tokens must fire on_failed. Got: {:?}",
+            events
+        );
+
+        // Session 7's on_failed callbacks did NOT fire
+        let s7_failures: Vec<_> = events
+            .iter()
+            .filter(|e| e.starts_with("s7_"))
+            .collect();
+        assert!(
+            s7_failures.is_empty(),
+            "session 7 tokens must not be affected. Got: {:?}",
+            events
+        );
+
+        // Session 7's entries still in dispatch
+        assert_eq!(
+            core.dispatch_mut().len(),
+            2,
+            "session 7's dispatch entries must survive"
+        );
+    }
+
+    // ── Integration: panic in on_reply → cascade remaining tokens ─
+
+    #[test]
+    fn panic_in_reply_handler_cascades_remaining_tokens() {
+        // When on_reply panics inside dispatch_reply, the entry is
+        // already removed from Dispatch (HashMap::remove runs before
+        // the callback). catch_unwind catches the panic, then
+        // run_destruction → cascade_connection_failure → fail_tokens
+        // handles the remaining entries. This path is correct but
+        // non-obvious: record_resolution never fires for the
+        // panicking token (it's in the Ok(Some(_)) arm), but
+        // cascade_connection_failure clears the entire correlator.
+        let (log, exit_tx, exit_rx) = setup();
+        let log_t2 = log.clone();
+        let mut core = make_core(log.clone(), exit_tx);
+        let conn = PeerScope(1);
+
+        // Allocate two tokens on session 5
+        let t1 = core.active_session_mut().allocate_token(5);
+        let t2 = core.active_session_mut().allocate_token(5);
+
+        // T1: on_reply panics
+        core.dispatch_mut().insert(
+            conn,
+            t1,
+            DispatchEntry {
+                on_reply: Box::new(|_h: &mut TestHandler, _, _| {
+                    panic!("on_reply panic for T1");
+                }),
+                on_failed: Box::new(|_h: &mut TestHandler, _| Flow::Continue),
+            },
+        );
+
+        // T2: on_failed logs a marker
+        core.dispatch_mut().insert(
+            conn,
+            t2,
+            DispatchEntry {
+                on_reply: Box::new(|_h: &mut TestHandler, _, _| Flow::Continue),
+                on_failed: Box::new(move |_h: &mut TestHandler, _| {
+                    log_t2.lock().unwrap().push("t2_failed".into());
+                    Flow::Continue
+                }),
+            },
+        );
+
+        assert_eq!(core.active_session_mut().outstanding_requests(), 2);
+
+        // Dispatch a Reply for T1 — on_reply panics, catch_unwind
+        // catches it, run_destruction fires.
+        let outcome = core.dispatch_reply(5, t1.0, vec![]);
+        assert_eq!(
+            outcome,
+            DispatchOutcome::Exit(ExitReason::Failed),
+            "panic in on_reply must trigger destruction"
+        );
+
+        // After destruction: T2 was cascaded via
+        // cascade_connection_failure → fail_tokens
+        let events = log.lock().unwrap().clone();
+        assert!(
+            events.contains(&"t2_failed".to_string()),
+            "T2 must receive on_failed during destruction cascade. Got: {:?}",
+            events
+        );
+
+        // Correlator fully cleared by cascade_connection_failure
+        // (exited flag is set, but we can still read the field)
+        assert_eq!(
+            core.active_session_mut().outstanding_requests(),
+            0,
+            "all tokens must be resolved after destruction"
+        );
+
+        // Exit signal sent
+        assert_eq!(exit_rx.recv().unwrap(), ExitReason::Failed);
+    }
+
+    // ── Integration: sync request wire failure → rollback ──────
+
+    #[test]
+    fn sync_request_wire_failure_rolls_back() {
+        // When the wire send fails in process_sync_request, the
+        // dispatch entry is cancelled and the token is resolved.
+        // This verifies the rollback path at the LooperCore level.
+        let (log, exit_tx, _exit_rx) = setup();
+
+        // Create a write channel with capacity 1 and pre-fill it
+        // so the next try_send fails with Full.
+        let (write_tx, _write_rx) = std::sync::mpsc::sync_channel(1);
+        write_tx.try_send((0, vec![])).expect("pre-fill succeeded");
+
+        let handler = TestHandler::new(log.clone());
+        let mut core =
+            LooperCore::new(handler, PeerScope(1), write_tx, exit_tx, Messenger::stub());
+
+        assert_eq!(core.active_session_mut().outstanding_requests(), 0);
+        assert_eq!(core.dispatch_mut().len(), 0);
+
+        // Create a SyncRequest with a oneshot for the reply
+        let (reply_tx, reply_rx) = std::sync::mpsc::sync_channel(1);
+        let req = crate::send_and_wait::SyncRequest {
+            session_id: 5,
+            wire_payload: vec![1, 2, 3],
+            reply_tx,
+        };
+
+        // process_sync_request: allocates token, installs entry,
+        // try_send fails → cancel entry + record_resolution
+        core.process_sync_request(req);
+
+        // Token was rolled back
+        assert_eq!(
+            core.active_session_mut().outstanding_requests(),
+            0,
+            "token must be resolved after wire send failure"
+        );
+
+        // Dispatch entry was cancelled
+        assert_eq!(
+            core.dispatch_mut().len(),
+            0,
+            "dispatch entry must be cancelled after wire send failure"
+        );
+
+        // The reply_tx was dropped when the entry was cancelled,
+        // so the caller's receiver gets a disconnect (the SyncSender
+        // inside the DispatchEntry closures was dropped without sending).
+        let result = reply_rx.try_recv();
+        assert!(
+            result.is_err(),
+            "reply_rx must receive error (sender dropped). Got: {:?}",
+            result
+        );
+    }
 }
