@@ -1,27 +1,42 @@
 //! Messenger: inbound self-reference handle for handler use.
 //!
-//! Represents "what I am" — the pane's own identity and framework
+//! Represents "what I am" -- the pane's own identity and framework
 //! capabilities (address, content, timers). Cloneable, passed to
 //! handler methods by the looper at dispatch time.
 //!
 //! Distinct from ServiceHandle<P>, which represents "who I'm
-//! talking to" — an outbound connection to a remote service.
+//! talking to" -- an outbound connection to a remote service.
 //! Messenger is inbound (self-reference), ServiceHandle is
 //! outbound (remote reference). They are not unifiable because
 //! they face opposite directions and carry different state:
 //! Messenger carries self-address and framework APIs; ServiceHandle
 //! carries a session_id, write channel, and protocol type parameter.
 //!
-//! Plan 9: like a fid — resolution happens once at open time;
+//! Plan 9: like a fid -- resolution happens once at open time;
 //! the result is a direct binding, not a name.
 
-use std::sync::{Arc, OnceLock};
+use std::collections::HashMap;
+use std::sync::{Arc, Mutex, OnceLock};
 use std::thread::ThreadId;
 
 use pane_proto::Address;
+use pane_session::par;
 
 use crate::send_and_wait::SyncRequest;
 use crate::timer::{TimerControl, TimerToken};
+
+/// Pre-created par Enqueue endpoints for subscriber sessions.
+///
+/// The Looper creates Enqueue/Dequeue pairs during
+/// `dispatch_subscriber_connected` (Phase 3 of batch dispatch).
+/// The Dequeue is registered as a calloop StreamSource; the
+/// Enqueue is stashed here for the handler to claim via
+/// `Messenger::subscriber_sender()`.
+///
+/// Arc<Mutex<>> because Messenger is Clone + Send but the map
+/// is only accessed from the looper thread in practice (the
+/// Mutex is uncontended).
+pub(crate) type SubscriberEnqueueMap = Arc<Mutex<HashMap<u16, par::queue::Enqueue<Vec<u8>>>>>;
 
 /// Scoped handle to a pane. The pane ID is baked in.
 /// The handler receives this from the looper and uses it to
@@ -39,9 +54,17 @@ pub struct Messenger {
     /// The looper installs dispatch entries and sends wire frames
     /// on behalf of the blocked caller.
     sync_tx: calloop::channel::Sender<SyncRequest>,
-    /// Write channel to the connection's writer thread. Used by
-    /// subscriber_sender() to construct SubscriberSender<P> handles.
+    /// Write channel to the connection's writer thread. Retained
+    /// for future cross-thread send paths (e.g., external
+    /// SubscriberSender from non-looper threads). Not currently
+    /// read from Messenger -- subscriber_sender() now uses par
+    /// Enqueue via subscriber_enqueues.
+    #[allow(dead_code)]
     write_tx: std::sync::mpsc::SyncSender<(u16, Vec<u8>)>,
+    /// Pre-created par Enqueue endpoints for subscriber sessions.
+    /// Populated by the Looper before handler callbacks fire;
+    /// consumed by subscriber_sender().
+    subscriber_enqueues: SubscriberEnqueueMap,
     /// The looper thread's ThreadId, set during Looper::run().
     /// Used by send_and_wait for I8 enforcement: callers on the
     /// looper thread must not block (deadlock).
@@ -62,12 +85,13 @@ impl Messenger {
             timer_tx,
             sync_tx,
             write_tx,
+            subscriber_enqueues: Arc::new(Mutex::new(HashMap::new())),
             looper_thread,
         }
     }
 
     /// Test-only constructor with dummy channels.
-    /// Timer, sync, and write sends silently fail — correct for
+    /// Timer, sync, and write sends silently fail -- correct for
     /// tests that don't exercise those paths.
     #[doc(hidden)]
     pub fn stub() -> Self {
@@ -149,14 +173,35 @@ impl Messenger {
     /// subscriber session. Call this from `subscriber_connected` to
     /// obtain a handle for pushing notifications to the subscriber.
     ///
-    /// The returned sender shares the connection's write channel.
-    /// It becomes invalid when the subscriber disconnects — sends
-    /// are best-effort after that point.
+    /// The returned sender wraps a par `Enqueue<Vec<u8>>` that was
+    /// pre-created by the Looper during `dispatch_subscriber_connected`.
+    /// The paired Dequeue is already registered as a calloop
+    /// StreamSource that writes to the wire via SharedWriter.
+    ///
+    /// # Panics
+    ///
+    /// Panics if no pre-created Enqueue exists for the given
+    /// session_id. This indicates a programming error: the Looper
+    /// creates Enqueue endpoints for every subscriber_connected
+    /// event, so this should only fail if called with an invalid
+    /// session_id or outside of the subscriber_connected callback.
     pub fn subscriber_sender<P: pane_proto::Protocol>(
         &self,
         session_id: u16,
     ) -> crate::subscriber_sender::SubscriberSender<P> {
-        crate::subscriber_sender::SubscriberSender::new(session_id, self.write_tx.clone())
+        let enqueue = self
+            .subscriber_enqueues
+            .lock()
+            .unwrap()
+            .remove(&session_id)
+            .expect("subscriber_sender: no pre-created Enqueue for session_id (call only from subscriber_connected)");
+        crate::subscriber_sender::SubscriberSender::new(session_id, enqueue)
+    }
+
+    /// Access the subscriber enqueue map. Used by the Looper to
+    /// pre-create Enqueue endpoints before handler callbacks.
+    pub(crate) fn subscriber_enqueue_map(&self) -> &SubscriberEnqueueMap {
+        &self.subscriber_enqueues
     }
 }
 

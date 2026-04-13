@@ -41,6 +41,7 @@ use pane_proto::control::{ControlMessage, TeardownReason};
 use pane_proto::protocols::lifecycle::LifecycleMessage;
 use pane_proto::Address;
 use pane_session::bridge::LooperMessage;
+use pane_session::par::Session as _;
 
 /// Default watchdog timeout: 5 seconds. A handler callback that
 /// hasn't returned in this time is presumed stuck (I2/I3).
@@ -629,7 +630,65 @@ impl<H: pane_proto::Handler + 'static> Looper<H> {
         }
         let subscriber_connected = std::mem::take(&mut state.batch.subscriber_connected);
         for session_id in subscriber_connected {
+            // Phase 3 par integration: create the Enqueue/Dequeue
+            // pair before the handler callback fires. The handler
+            // calls messenger.subscriber_sender(session_id) to
+            // claim the pre-created Enqueue; the Dequeue becomes a
+            // calloop StreamSource that drives wire writes.
+            //
+            // par's Enqueue::push is always non-blocking (N1 by
+            // construction). The StreamSource is driven by calloop's
+            // poll cycle with a real PingWaker -- no noop-waker hack.
+            let mut dequeue_slot: Option<pane_session::par::queue::Dequeue<Vec<u8>>> = None;
+            let enqueue = pane_session::par::queue::Enqueue::<Vec<u8>>::fork_sync(|dequeue| {
+                dequeue_slot = Some(dequeue);
+            });
+            let dequeue = dequeue_slot.expect("fork_sync must deliver Dequeue");
+
+            // Stash the Enqueue for Messenger::subscriber_sender().
+            self.core
+                .messenger()
+                .subscriber_enqueue_map()
+                .lock()
+                .unwrap()
+                .insert(session_id, enqueue);
+
+            // Register the Dequeue's stream as a calloop StreamSource.
+            // When Enqueue::push resolves the internal oneshot,
+            // PingWaker::wake fires, calloop wakes, the callback
+            // writes the payload to the wire via SharedWriter.
+            let stream = dequeue.into_stream1();
+            if let Ok(source) = calloop::stream::StreamSource::new(stream) {
+                let _ = loop_handle.insert_source(
+                    source,
+                    move |event: Option<Vec<u8>>, _, loop_state: &mut LoopState| {
+                        if let Some(payload) = event {
+                            if let Some(ref writer) = loop_state.shared_writer {
+                                writer.enqueue(session_id, &payload);
+                            }
+                        }
+                        // None = stream closed (Enqueue dropped/closed).
+                        // calloop removes the source via PostAction::Remove.
+                    },
+                );
+            }
+
             let outcome = self.core.dispatch_subscriber_connected(session_id);
+
+            // Clean up: if the handler didn't call subscriber_sender()
+            // to claim the Enqueue, close it now. Leaving an unclaimed
+            // Enqueue would panic the Dequeue's StreamSource on drop.
+            if let Some(unclaimed) = self
+                .core
+                .messenger()
+                .subscriber_enqueue_map()
+                .lock()
+                .unwrap()
+                .remove(&session_id)
+            {
+                unclaimed.close1();
+            }
+
             if let DispatchOutcome::Exit(reason) = outcome {
                 state.batch.clear();
                 return Some(reason);
@@ -1931,8 +1990,14 @@ mod tests {
     fn subscriber_sender_push_via_messenger() {
         // Full loop: provider gets subscriber_connected, constructs
         // SubscriberSender via Messenger, pushes notification through
-        // it. The notification bytes arrive on the write channel.
-        let (write_tx, write_rx) = std::sync::mpsc::sync_channel(16);
+        // it. The notification bytes arrive on the par Dequeue.
+        //
+        // Simulates the Looper's Phase 3 flow: pre-create the par
+        // pair, stash the Enqueue in the Messenger's map, then call
+        // subscriber_sender() to claim it.
+        use pane_session::par::Session as _;
+
+        let (write_tx, _write_rx) = std::sync::mpsc::sync_channel(16);
         let messenger = {
             let (timer_tx, _) = calloop_channel::channel::<TimerControl>();
             let (sync_tx, _) = calloop_channel::channel::<crate::send_and_wait::SyncRequest>();
@@ -1940,13 +2005,43 @@ mod tests {
             crate::Messenger::new(timer_tx, sync_tx, write_tx, looper_thread)
         };
 
-        let sender: crate::SubscriberSender<TestProto> = messenger.subscriber_sender(42);
+        // Pre-create par Enqueue/Dequeue pair (normally the Looper does this).
+        let mut dequeue_slot = None;
+        let enqueue = pane_session::par::queue::Enqueue::<Vec<u8>>::fork_sync(|dequeue| {
+            dequeue_slot = Some(dequeue);
+        });
+        let dequeue = dequeue_slot.unwrap();
+
+        // Stash the Enqueue (normally the Looper does this).
+        messenger
+            .subscriber_enqueue_map()
+            .lock()
+            .unwrap()
+            .insert(42, enqueue);
+
+        let mut sender: crate::SubscriberSender<TestProto> = messenger.subscriber_sender(42);
         sender.send_notification(TestMsg::Ping("pushed".into()));
+        // Drop sender to close the Enqueue.
+        drop(sender);
 
-        let (session_id, payload) = write_rx.recv().expect("expected frame");
-        assert_eq!(session_id, 42);
+        // Drain the Dequeue to get the pushed notification bytes.
+        let items = futures::executor::block_on(async {
+            let mut items = Vec::new();
+            let mut dq = dequeue;
+            loop {
+                match dq.pop().await {
+                    pane_session::par::queue::Queue::Item(item, next) => {
+                        items.push(item);
+                        dq = next;
+                    }
+                    pane_session::par::queue::Queue::Closed(()) => break,
+                }
+            }
+            items
+        });
+        assert_eq!(items.len(), 1);
 
-        let frame: ServiceFrame = postcard::from_bytes(&payload).expect("ServiceFrame deser");
+        let frame: ServiceFrame = postcard::from_bytes(&items[0]).expect("ServiceFrame deser");
         match frame {
             ServiceFrame::Notification { payload } => {
                 let expected_tag = TestProto::service_id().tag();
@@ -2973,6 +3068,118 @@ mod tests {
             state.contains(&"executor:world".to_string()),
             "executor source must fire. Got: {state:?}"
         );
+    }
+
+    // ── Claim: StreamSource delivers par Dequeue items via calloop ──
+
+    /// Proves par's Enqueue/Dequeue pair works through calloop's
+    /// StreamSource: items pushed onto the Enqueue are delivered
+    /// to the calloop callback via the Dequeue's stream.
+    ///
+    /// This is the infrastructure test for Phase 3 of the async
+    /// migration. The StreamSource wraps DequeueStream1<T> with a
+    /// real PingWaker -- when Enqueue::push resolves the internal
+    /// oneshot, the PingWaker fires, calloop wakes, and the
+    /// callback receives the item.
+    #[test]
+    fn stream_source_delivers_par_dequeue_items() {
+        use pane_session::par::Session as _;
+
+        let mut event_loop = calloop::EventLoop::<Vec<Vec<u8>>>::try_new().unwrap();
+        let handle = event_loop.handle();
+
+        // Create par pair.
+        let mut dequeue_slot = None;
+        let enqueue = pane_session::par::queue::Enqueue::<Vec<u8>>::fork_sync(|dequeue| {
+            dequeue_slot = Some(dequeue);
+        });
+        let dequeue = dequeue_slot.unwrap();
+
+        // Wrap as StreamSource and register on calloop.
+        let stream = dequeue.into_stream1();
+        let source = calloop::stream::StreamSource::new(stream).unwrap();
+        handle
+            .insert_source(
+                source,
+                |event: Option<Vec<u8>>, _, state: &mut Vec<Vec<u8>>| {
+                    if let Some(item) = event {
+                        state.push(item);
+                    }
+                },
+            )
+            .unwrap();
+
+        let mut items: Vec<Vec<u8>> = Vec::new();
+
+        // Push items from the same thread (simulates handler push).
+        let enqueue = enqueue.push(vec![1, 2, 3]);
+        let enqueue = enqueue.push(vec![4, 5, 6]);
+        enqueue.close1();
+
+        // Dispatch until both items arrive.
+        for _ in 0..10 {
+            event_loop
+                .dispatch(Some(std::time::Duration::from_millis(10)), &mut items)
+                .unwrap();
+            if items.len() >= 2 {
+                break;
+            }
+        }
+
+        assert_eq!(items.len(), 2);
+        assert_eq!(items[0], vec![1, 2, 3]);
+        assert_eq!(items[1], vec![4, 5, 6]);
+    }
+
+    /// Proves StreamSource delivers items pushed from a different
+    /// thread -- the real pattern where the handler (looper thread)
+    /// pushes and calloop polls the stream.
+    #[test]
+    fn stream_source_cross_thread_push() {
+        use pane_session::par::Session as _;
+
+        let mut event_loop = calloop::EventLoop::<Vec<Vec<u8>>>::try_new().unwrap();
+        let handle = event_loop.handle();
+
+        let mut dequeue_slot = None;
+        let enqueue = pane_session::par::queue::Enqueue::<Vec<u8>>::fork_sync(|dequeue| {
+            dequeue_slot = Some(dequeue);
+        });
+        let dequeue = dequeue_slot.unwrap();
+
+        let stream = dequeue.into_stream1();
+        let source = calloop::stream::StreamSource::new(stream).unwrap();
+        handle
+            .insert_source(
+                source,
+                |event: Option<Vec<u8>>, _, state: &mut Vec<Vec<u8>>| {
+                    if let Some(item) = event {
+                        state.push(item);
+                    }
+                },
+            )
+            .unwrap();
+
+        // Push from a background thread -- par Enqueue is Send.
+        std::thread::spawn(move || {
+            let enqueue = enqueue.push(vec![10, 20]);
+            let enqueue = enqueue.push(vec![30, 40]);
+            enqueue.close1();
+        });
+
+        let mut items: Vec<Vec<u8>> = Vec::new();
+        for _ in 0..20 {
+            event_loop
+                .dispatch(Some(std::time::Duration::from_millis(50)), &mut items)
+                .unwrap();
+            if items.len() >= 2 {
+                break;
+            }
+        }
+
+        assert_eq!(items.len(), 2, "both items must arrive. Got: {items:?}");
+        assert_eq!(items[0], vec![10, 20]);
+        assert_eq!(items[1], vec![30, 40]);
     }
 
     /// Proves the Looper creates and registers a functional
